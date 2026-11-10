@@ -2512,6 +2512,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_command_left_running_by_a_closed_panel_shows_a_spinner_in_the_bottom_bar() {
         use crate::app_unsaved::testkit::{lock, test_app, tmp};

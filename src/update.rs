@@ -1332,6 +1332,7 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn appimage_swap_keeps_the_previous_file() {
         let d = scratch("ai");

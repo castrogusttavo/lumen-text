@@ -236,7 +236,7 @@ impl Clipboard {
     /// Wayland backend whose `wl-copy` / `wl-paste` are shell scripts in `dir` that keep the
     /// clipboard in `dir/mime` (offered types) and `dir/data` (the bytes), like a real run would
     /// see them. Tests inspect or rewrite those files to play "another program".
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn with_fake_tools(dir: &Path) -> Self {
         use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(dir).unwrap();
