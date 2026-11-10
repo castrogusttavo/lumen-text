@@ -199,6 +199,115 @@ mod tests {
         assert!(el.as_millis() < 300, "select_all_occurrences too slow: {el:?}");
     }
 
+    /// CPU time of this thread, so other tests/agents competing for cores cannot make a test flaky.
+    fn thread_cpu() -> f64 {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+    }
+
+    /// A headless `App` (fixture lock held in the returned guard) with a 100k-line file active,
+    /// drawn once so layout and highlighting windows exist.
+    fn big_app(tag: &str) -> (crate::app_unsaved::testkit::Guard, crate::app::App, Vec<u32>, (i32, i32)) {
+        let guard = crate::app_unsaved::testkit::lock();
+        let dir = crate::app_unsaved::testkit::tmp(tag);
+        let mut app = crate::app_unsaved::testkit::test_app(&dir);
+        let path = dir.join("big.ts");
+        std::fs::write(&path, gen_text(100_000)).unwrap();
+        let t0 = thread_cpu();
+        let idx = app.open_path(&path, None).expect("open big.ts");
+        let open = thread_cpu() - t0;
+        eprintln!("[perf] App::open_path 100k lines: {:.0} ms cpu", open * 1e3);
+        assert!(open < 2.0, "opening a 100k-line file in the app too slow: {open:.2}s cpu");
+        app.active = idx;
+        app.size = (1100, 700);
+        let (w, h) = (1100, 700);
+        let mut px = vec![0u32; (w * h) as usize];
+        for _ in 0..3 {
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        (guard, app, px, (w, h))
+    }
+
+    /// Cost of one drawn frame while scrolling through a 100k-line file.
+    #[test]
+    fn render_frame_while_scrolling() {
+        let (_g, mut app, mut px, (w, h)) = big_app("scroll");
+        let n = 120;
+        let t0 = thread_cpu();
+        for i in 0..n {
+            let d = &mut app.docs[app.active];
+            d.top = (i * 700) as f64;
+            d.target = d.top;
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        let avg = (thread_cpu() - t0) * 1e3 / n as f64;
+        eprintln!("[perf] frame while scrolling 100k lines: {avg:.2} ms cpu avg over {n}");
+        // A 60 Hz budget is 16 ms; measured ~40 ms here (a full software frame plus a provisional tokenize on every jump); 200 ms only catches big regressions.
+        assert!(avg < 200.0, "frame too slow: {avg:.1} ms cpu");
+    }
+
+    /// Typing latency: handle a key and draw the frame that shows it, in the middle of 100k lines.
+    #[test]
+    fn typing_latency_100k_lines() {
+        use crate::app::KeyIn;
+        use winit::keyboard::{Key, SmolStr};
+        let (_g, mut app, mut px, (w, h)) = big_app("typing");
+        {
+            let d = &mut app.docs[app.active];
+            let p = d.buf.line_start(50_000);
+            d.ed.sel = Sel::caret(p);
+            d.top = 49_990.0;
+            d.target = d.top;
+        }
+        app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        let n = 200;
+        let t0 = thread_cpu();
+        for _ in 0..n {
+            let ki = KeyIn { key: Key::Character(SmolStr::new("a")), text: Some("a".into()) };
+            app.handle_key(&ki);
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        let avg = (thread_cpu() - t0) * 1e3 / n as f64;
+        eprintln!("[perf] keystroke + frame at line 50000 of 100k: {avg:.2} ms cpu avg over {n}");
+        assert_eq!(app.docs[app.active].buf.line_count(), 100_001);
+        assert!(avg < 150.0, "typing latency too high: {avg:.1} ms cpu per key");
+    }
+
+    /// Idle: once everything settles, a frame reports "nothing to animate" (so the window loop
+    /// stops redrawing) and ticking costs next to no CPU.
+    #[test]
+    fn idle_does_not_redraw_or_burn_cpu() {
+        let (_g, mut app, mut px, (w, h)) = big_app("idle");
+        // Let background tokenizing and animations finish.
+        let deadline = Instant::now() + std::time::Duration::from_secs(20);
+        let mut busy = true;
+        while busy && Instant::now() < deadline {
+            app.pump_background();
+            app.tick();
+            busy = app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!busy, "the app never went idle (redraw loop keeps running)");
+        for _ in 0..30 {
+            assert!(
+                !app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016),
+                "an idle frame asked for another redraw"
+            );
+        }
+        let t0 = thread_cpu();
+        let wall = Instant::now();
+        while wall.elapsed() < std::time::Duration::from_millis(500) {
+            app.pump_background();
+            app.tick();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let cpu = thread_cpu() - t0;
+        eprintln!("[perf] idle: {:.1} ms cpu over 500 ms of pump+tick", cpu * 1e3);
+        assert!(cpu < 0.1, "idle polling burns CPU: {:.0} ms in 500 ms", cpu * 1e3);
+    }
+
     /// PSS is a whole-process number, so under a parallel `cargo test` other tests' fixtures would
     /// inflate it. The measurement therefore runs in a fresh child process (this same test binary,
     /// re-run with a marker variable), which holds nothing but this test's data.

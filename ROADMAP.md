@@ -1,7 +1,7 @@
 # lumen-text — roadmap
 
 Legend: ✅ done, wired up and tested · 🔌 module done and tested, still to be wired into the UI · 🔧 in progress now · ⬜ not done yet.
-Tests: `cargo test --release` (≈500 tests). Last updated: 2026-11-09 (evening). Roadmap features are complete; what remains is the visual design (coming from your mockups).
+Tests: `cargo test --release` (≈500 tests). Last updated: 2026-11-10. Roadmap features are complete; what remains is the visual design (coming from your mockups).
 
 ## Summary
 (the table counts the items listed in each section below; ➖ = deliberately dropped, not counted)
@@ -21,7 +21,7 @@ Tests: `cargo test --release` (≈500 tests). Last updated: 2026-11-09 (evening)
 - ✅ Rope, opens 100k lines in ~21 ms, atomic save, CRLF; Wayland/X11 window on CPU; scrolling with a short exponential glide (see "Mouse input and scrolling")
 - ✅ TextMate highlighting (65 themes) **on a background thread** (the UI spends ~0.05 ms; immediate color on long jumps)
 - ✅ Full editing: auto-indent, bracket pairs, JSX tags, multi-cursor, move/duplicate line, comment
-- ✅ **Tree undo** (branches; command "Ver ramos do histórico")
+- ✅ **Tree undo** (branches; command "View history branches")
 - ✅ Tabs, quick open, restored session, reload when the file changes on disk
 - ✅ Wayland and X11 clipboard, primary selection (middle click), IME (input-method text)
 - ✅ **Terminal**: PTY + VT emulator, **5,000-line scrollback**, **alternate screen** (vim/less), application cursor, bracketed paste
@@ -94,6 +94,7 @@ Tests: `cargo test --release` (≈500 tests). Last updated: 2026-11-09 (evening)
 - ✅ Live RAM (editor + servers), single font (+2 MB with variants and fallbacks), malloc_trim
 - ✅ 100k-line file with tsgo: editor at ~30 MB after open and ~37 MB after navigating all over it (peak RSS 51 MB), with outline, breadcrumbs, sticky scroll and semantic colors all working (the huge responses used to be skipped above 20k lines; building them as JSON values caused a ~900 MB spike); see "Big files" in section 2
 - ✅ Benchmarks: open 100k lines 21 ms · 1,000 keystrokes 3.9 ms · tokenizer 4–6k lines/s in the background · 18.8 MB with 100k lines
+- ✅ Budgets enforced in CI: perf tests (open, scroll frame, typing, idle CPU, PSS) and the release binary size
 - ➖ Parallel tokenization in chunks: dropped for now. Each line's state depends on the previous one (it would require speculative tokenization) and the background thread already covers 100k lines in a few seconds without blocking the UI
 
 ## Accessibility and scrolling (audit)
@@ -257,6 +258,7 @@ Validated by the user in the real window: mouse cursor, fractional hi-DPI, tab s
   - Limitations: only the focused pane shows the Markdown reader; one diff at a time (it stays in its pane); the pane count shortcuts stop at `Ctrl+4`; the minimap still colors only the lines near the viewport (it samples spans of the visible lines); the saved top of a pane is its scroll row (a fold or wrap change on disk shifts it).
 
 **Level 3 — hard**
+- ✅ Budgets enforced in CI: perf tests (open, scroll frame, typing, idle CPU, PSS) and the release binary size
 - ➖ Parallel tokenization (dropped)
 
 ## How to try it
@@ -274,18 +276,22 @@ Validated by the user in the real window: mouse cursor, fractional hi-DPI, tab s
 | Merge conflict | open a file with `<<<<<<<`: click "Aceitar …" |
 | Split panels | `Ctrl+\` splits right (same file; click another tab to swap the pane's document), `Ctrl+K \` splits below (up to 6 panes: a row of up to 4, or a grid of up to 3x2), `Ctrl+1`…`Ctrl+4` / `Ctrl+K ←→` focus (panes 5 and 6 by `Ctrl+K ←→` or a click), `Ctrl+K Shift+←→` move the tab to another pane, `Ctrl+K Shift+W` close the focused pane, drag the dividers; palette → "View: Close split (merge all)" |
 | Markdown reader | open a `.md`, `Ctrl+Shift+V` (or palette → "Markdown: Open reader beside"); click the links; again to close |
-| Undo branches | `Ctrl+Z`, edit, palette → "Ver ramos do histórico" |
+| Undo branches | `Ctrl+Z`, edit, palette → "View history branches" |
 | Custom shortcuts | `~/.config/lumen-text/keybindings.json` |
 
 ## Final: quality and performance pass
-- [ ] Zero compiler and `clippy` warnings (dead code, unused imports/variables are visible in every build today); `cargo fmt` clean; CI enforces both.
+- ✅ Zero compiler and `clippy` warnings; `cargo fmt --check` and `cargo clippy --release -- -D warnings` are CI gates.
+- ✅ Performance budgets enforced by tests (`src/perf.rs`, thread CPU time, generous thresholds): open 100k lines (buffer and in the app), edit and line access, tokenizer throughput, provisional highlight window, scroll frame cost, typing latency (key + frame) at the middle of 100k lines, idle (no redraw requested, near-zero CPU), PSS of the 100k fixture. The release binary size is checked in CI (fails above 30 MB, prints the size).
+- ✅ English UI: every user-facing string, tests and headless scripts updated; README screenshots regenerated from a neutral sample project.
+- ✅ Install and auto-update: packages, `install.sh`, `--install-user`, signed `latest.json`, in-app update card (see section 6).
 - [ ] Split the largest files (`app.rs`, `doc.rs`, `settingsui.rs`, `app_overlay.rs`) into focused modules without behavior changes; keep public APIs small and documented.
-- [ ] Performance budgets enforced by tests/CI: startup time, idle CPU ~0% (no redraw loops), frame time per redraw, open/scroll/type on a 100k-line file, memory (editor < ~100 MB on the large-file fixture), binary size.
+- [ ] Frame cost: a full 1100x700 software frame measures ~40 ms CPU in the perf test (scroll jumps and typing alike), well above the 16 ms ideal; profile draw/layout and bring the budgets down. Startup time is not under a test yet.
 - [ ] Profile real hot paths (draw, tokenizer, layout, minimap, scroll) and fix the top offenders.
 - [ ] Review error handling (no `unwrap` on I/O or LSP paths), crash/recovery behavior and the unsaved-work safety net.
 - [ ] Tidy the UI consistency (spacing scale, radii, icon sizes, hover/active states) against one small design-token table.
 
-## Next: English UI
-- [ ] Translate every user-facing string (~300+ literals in ~29 files: command palette labels, menus, tooltips, settings modal, Git panel, prompts, status messages, error messages) to English, keeping command ids stable.
-- [ ] Update tests and headless scripts that match on UI text (e.g. palette searches like "escolher tema").
-- [ ] Keep the string layer simple enough to add other languages later (optional `language` setting; Portuguese as the first extra locale).
+## Remaining
+- [ ] Windows and macOS (today: Linux only, Wayland/X11; clipboard, PTY, packaging, updater and CI would all need ports).
+- [ ] i18n string layer so other languages can be added (optional `language` setting; Portuguese as the first extra locale). The UI is English-only until then; strings are plain literals spread over ~29 files.
+- [ ] HugeIcons user setup: the Pro masks are licensed and gitignored, so each user generates them locally with `tools/setup-hugeicons.sh`; this still needs a smoother, documented first-run flow (builds and CI use the bundled Zed icons without them).
+- [ ] Splitting the big files listed above.

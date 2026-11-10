@@ -77,12 +77,10 @@ and no GPU driver:
 
 ![Markdown reader](docs/screenshots/dark-markdown.png)
 
-The interface strings are currently in Portuguese; an English UI is the next roadmap item.
-
 Regenerate the screenshots with the [headless mode](#headless-mode) on any small project, using a throwaway config so your own settings are not touched:
 
 ```sh
-mkdir -p ~/.cache/lumen-shots/cfg/lumen-text
+mkdir -p ~/.cache/lumen-shots/cfg/lumen-text ~/.cache/lumen-shots/state
 echo '{"theme":"github-light-default"}' > ~/.cache/lumen-shots/cfg/lumen-text/config.json
 XDG_CONFIG_HOME=~/.cache/lumen-shots/cfg XDG_STATE_HOME=~/.cache/lumen-shots/state \
   lumen-text --size 1100x700 --snap docs/screenshots \
@@ -366,7 +364,7 @@ HUGEICONS_TOKEN=<your npm token> tools/setup-hugeicons.sh   # needs node, npm, p
 
 ## Known limitations
 
-- Interface strings are Portuguese for now (English UI planned).
+- The interface is English only for now; other languages need a string layer (see the roadmap).
 - No TextMate `injections` (code embedded in Markdown/HTML gets only the outer grammar).
 - Opening a very large file and jumping to its end leaves that stretch uncolored for a few seconds.
 - In lean mode, errors and references only see open files and their imports; use the palette command

@@ -35,6 +35,13 @@ jobs:
         run: cargo clippy --release -- -D warnings
       - name: Build
         run: cargo build --release
+      - name: Release binary size budget
+        shell: bash
+        run: |
+          size=$(stat -c %s target/release/lumen-text)
+          budget=$((30 * 1024 * 1024))
+          echo "lumen-text release binary: $((size / 1024)) KiB (budget $((budget / 1024)) KiB)"
+          [ "$size" -le "$budget" ] || { echo "binary size over budget" >&2; exit 1; }
       - name: Test (the real-tsgo test skips itself when tsgo is absent)
         run: cargo test --release
 
