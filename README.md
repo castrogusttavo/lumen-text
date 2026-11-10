@@ -33,6 +33,7 @@ Look: light theme (GitHub Light Default) and a minimalist interface; switch them
 With no arguments it reopens the tabs from the project's last session. In development: `cargo run --release -- <files/folders>`.
 
 Configuration lives in `~/.config/lumen-text/config.json` (theme, font size, format on save, auto-import).
+`theme_chrome` (`derived` by default, or `theme`) makes the sidebar, tabs and status bar use the theme's own colors wherever the text stays readable (WCAG AA).
 Environment variables: `LUMEN_THEME`, `LUMEN_ASSETS`, `LUMEN_TSGO`, `LUMEN_AUTOIMPORT=1`, `LUMEN_DEBUG=1`.
 
 ## Shortcuts
@@ -54,6 +55,8 @@ Environment variables: `LUMEN_THEME`, `LUMEN_ASSETS`, `LUMEN_TSGO`, `LUMEN_AUTOI
 | Save / close tab / quit | `Ctrl+S` / `Ctrl+W` / `Ctrl+Q` |
 | Tabs | `Ctrl+Tab`, `Ctrl+Shift+Tab`, `Alt+1…9` |
 | Sidebar / focus explorer | `Ctrl+B` / `Ctrl+Shift+E` (in the explorer: `A` new file, `Shift+A` folder, `F2` rename, `Delete` delete) |
+| Explorer: select several / copy / move | `Ctrl+click`, `Shift+click` (or `Shift+↑/↓`), `Ctrl+A`; `Ctrl+C` / `Ctrl+X` / `Ctrl+V`; drag onto a folder (`Ctrl` copies) |
+| Git panel diff: pick / stage a hunk | `n` / `p` / `s` (or the Stage / Unstage button) |
 | Bottom panel (output / terminal) | `Ctrl+J` |
 | Integrated terminal: open / toggle focus | ``Ctrl+` `` |
 | Tests: at cursor / file / rerun task / stop | `Ctrl+K T` / `Ctrl+K F` / `Ctrl+K R` / `Ctrl+K X` |
@@ -64,6 +67,7 @@ Environment variables: `LUMEN_THEME`, `LUMEN_ASSETS`, `LUMEN_TSGO`, `LUMEN_AUTOI
 | Cursor above/below, cursor at click | `Ctrl+Alt+↑/↓`, `Alt+clique` |
 | Comment, move line, duplicate, delete line | `Ctrl+/`, `Alt+↑/↓`, `Ctrl+Shift+D`, `Ctrl+Shift+K` |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
+| Split panes (up to 4) | `Ctrl+\` right, `Ctrl+K \` below, `Ctrl+1…4` focus, `Ctrl+K ←/→` previous/next pane, `Ctrl+K Shift+←/→` move the tab to another pane, `Ctrl+K Shift+W` close the focused pane |
 
 Lint: with a `biome.json` in the project, the editor uses `biome lsp-proxy` for diagnostics and fixes (Ctrl+.).
 

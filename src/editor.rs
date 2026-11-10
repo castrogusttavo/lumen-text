@@ -857,29 +857,50 @@ impl Editor {
         self.apply_line_edits(buf, edits);
     }
 
+    /// First and last line of the selection (a selection ending at column 0 stops above it).
+    pub fn selected_line_range(&self, buf: &Buffer) -> (usize, usize) {
+        self.selected_lines(buf)
+    }
+
     pub fn duplicate(&mut self, buf: &mut Buffer) {
+        if self.sel.is_empty() {
+            let (l, _) = buf.line_col(self.sel.head);
+            return self.duplicate_lines(buf, l, l);
+        }
         buf.close_group();
         let before = self.sel;
-        if !self.sel.is_empty() {
-            let (s, e) = (self.sel.start(), self.sel.end());
-            let text = buf.slice(s, e);
-            let len = text.chars().count();
-            buf.replace(e, e, &text, EditKind::Other, before);
-            self.sel = Sel { anchor: e, head: e + len };
-        } else {
-            let (l, col) = buf.line_col(self.sel.head);
-            let text = buf.line(l);
-            let eol = buf.eol();
-            let end = buf.pos(l, usize::MAX);
-            buf.replace(end, end, &format!("{eol}{text}"), EditKind::Other, before);
-            self.sel = Sel::caret(buf.pos(l + 1, col));
-        }
+        let (s, e) = (self.sel.start(), self.sel.end());
+        let text = buf.slice(s, e);
+        let len = text.chars().count();
+        buf.replace(e, e, &text, EditKind::Other, before);
+        self.sel = Sel { anchor: e, head: e + len };
         buf.set_after(self.sel);
         buf.close_group();
     }
 
+    /// Copy lines `l0..=l1` right below themselves; the caret goes to the copy.
+    pub fn duplicate_lines(&mut self, buf: &mut Buffer, l0: usize, l1: usize) {
+        buf.close_group();
+        let before = self.sel;
+        let (_, col) = buf.line_col(self.sel.head);
+        let eol = buf.eol();
+        let text = (l0..=l1).map(|l| buf.line(l)).collect::<Vec<_>>().join(eol);
+        let end = buf.pos(l1, usize::MAX);
+        buf.replace(end, end, &format!("{eol}{text}"), EditKind::Other, before);
+        let (cl, _) = buf.line_col(before.head);
+        self.sel = Sel::caret(buf.pos(cl + (l1 - l0 + 1), col));
+        buf.set_after(self.sel);
+        buf.close_group();
+    }
+
+    #[allow(dead_code)]
     pub fn delete_line(&mut self, buf: &mut Buffer) {
         let (l0, l1) = self.selected_lines(buf);
+        self.delete_lines(buf, l0, l1);
+    }
+
+    /// Remove lines `l0..=l1` entirely.
+    pub fn delete_lines(&mut self, buf: &mut Buffer, l0: usize, l1: usize) {
         let s = buf.line_start(l0);
         let e = if l1 + 1 < buf.line_count() { buf.line_start(l1 + 1) } else { buf.len_chars() };
         // On the last line also remove the break before it so no empty line is left behind.
@@ -889,32 +910,37 @@ impl Editor {
         buf.close_group();
     }
 
+    #[allow(dead_code)]
     pub fn move_lines(&mut self, buf: &mut Buffer, down: bool) {
         let (l0, l1) = self.selected_lines(buf);
-        if (!down && l0 == 0) || (down && l1 + 1 >= buf.line_count()) {
+        let other = if down { (l1 + 1, l1 + 1) } else { (l0.wrapping_sub(1), l0.wrapping_sub(1)) };
+        self.move_block(buf, down, (l0, l1), other);
+    }
+
+    /// Move the whole lines `x` past the whole lines `y`, which must touch it (`y` below for
+    /// `down`, above otherwise). The selection moves with `x`. The buffer records the exchange as
+    /// a swap of two blocks so folds and other views follow the lines instead of the positions.
+    pub fn move_block(&mut self, buf: &mut Buffer, down: bool, x: (usize, usize), y: (usize, usize)) {
+        let n = buf.line_count();
+        if (!down && x.0 == 0) || (down && x.1 + 1 >= n) || y.1 >= n || y.0 > y.1 {
             return;
         }
-        let (a, b) = if down { (l0, l1 + 1) } else { (l0 - 1, l1) };
-        let lines: Vec<String> = (a..=b).map(|l| buf.line(l)).collect();
-        let mut reordered = Vec::with_capacity(lines.len());
-        if down {
-            reordered.push(lines.last().unwrap().clone());
-            reordered.extend(lines[..lines.len() - 1].iter().cloned());
-        } else {
-            reordered.extend(lines[1..].iter().cloned());
-            reordered.push(lines[0].clone());
+        let adjacent = if down { y.0 == x.1 + 1 } else { y.1 + 1 == x.0 };
+        if !adjacent {
+            return;
         }
+        let (a, b) = if down { (x, y) } else { (y, x) }; // `a` is the upper block
         let eol = buf.eol();
-        let text = reordered.join(eol);
-        let start = buf.line_start(a);
-        let end = buf.pos(b, usize::MAX);
-        let shift = if down {
-            lines.last().unwrap().chars().count() + eol.len()
-        } else {
-            lines[0].chars().count() + eol.len()
-        };
+        let text_of = |buf: &Buffer, r: (usize, usize)| (r.0..=r.1).map(|l| buf.line(l)).collect::<Vec<_>>().join(eol);
+        let (ta, tb) = (text_of(buf, a), text_of(buf, b));
+        let (ca, cb) = (ta.chars().count(), tb.chars().count());
+        let text = format!("{tb}{eol}{ta}");
+        let start = buf.line_start(a.0);
+        let end = buf.pos(b.1, usize::MAX);
+        let shift = if down { cb + eol.len() } else { ca + eol.len() };
         buf.close_group();
         let before = self.sel;
+        buf.tag_swap(a.1 - a.0 + 1, b.1 - b.0 + 1, ca, cb, eol.len());
         buf.replace(start, end, &text, EditKind::Other, before);
         let mv = |p: usize| if down { p + shift } else { p - shift };
         self.sel = Sel { anchor: mv(self.sel.anchor), head: mv(self.sel.head) };

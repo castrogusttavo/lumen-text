@@ -41,6 +41,13 @@ pub struct FileClip {
     pub cut: bool,
 }
 
+impl FileClip {
+    /// Is `p` waiting to be moved (cut, or inside a cut folder)? The explorer draws it dimmed.
+    pub fn is_cut(&self, p: &Path) -> bool {
+        self.cut && self.paths.iter().any(|c| p.starts_with(c))
+    }
+}
+
 /// `(stem, extension-with-dot)`; dotfiles have no extension, `.tar.gz` is one extension.
 pub fn split_name(name: &str) -> (&str, &str) {
     for ext in [".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst"] {
@@ -212,24 +219,6 @@ pub fn tab_order(docs: &[Doc]) -> Vec<usize> {
     pinned_first(&p)
 }
 
-/// Tabs "Fechar outras" (`keep = Some(i)`) / "Fechar todas" (`None`) close, highest index first.
-/// Pinned tabs stay; unsaved ones are skipped and counted.
-pub fn tabs_to_close(pinned: &[bool], dirty: &[bool], keep: Option<usize>) -> (Vec<usize>, usize) {
-    let mut out = Vec::new();
-    let mut skipped = 0;
-    for i in (0..pinned.len()).rev() {
-        if Some(i) == keep || pinned[i] {
-            continue;
-        }
-        if dirty[i] {
-            skipped += 1;
-        } else {
-            out.push(i);
-        }
-    }
-    (out, skipped)
-}
-
 // ───────────────────────── menu model ─────────────────────────
 
 #[derive(Clone, Debug, PartialEq)]
@@ -238,6 +227,8 @@ pub enum Target {
     File(PathBuf),
     /// Empty area of the explorer: the project root.
     Root(PathBuf),
+    /// Several rows of the explorer (the menu acts on all of them).
+    Multi(Vec<PathBuf>),
     /// Document index.
     Tab(usize),
 }
@@ -334,6 +325,17 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
             }
             v
         }
+        Target::Multi(_) => vec![
+            item(Act::Cut, "Recortar", "ui/scissors", "Ctrl+X"),
+            item(Act::Copy, "Copiar", "hugeicons/copy", "Ctrl+C"),
+            sep(),
+            item(Act::Duplicate, "Duplicar", "ui/file_multiple", ""),
+            sep(),
+            trash(),
+            delete(),
+            sep(),
+            item(Act::CopyPath, "Copiar caminhos", "hugeicons/link", ""),
+        ],
         Target::Tab(_) => {
             let mut v = vec![
                 item(Act::CloseTab, "Fechar", "ui/close", "Ctrl+W"),
@@ -376,7 +378,8 @@ pub fn step(entries: &[Entry], sel: Option<usize>, dir: i32) -> Option<usize> {
 }
 
 pub struct Confirm {
-    pub path: PathBuf,
+    /// What "Sim" deletes (one or several explorer items).
+    pub paths: Vec<PathBuf>,
     /// Focused button: true = "Sim". Starts on "Não".
     pub yes: bool,
     /// Buttons ("Não", "Sim") as drawn last frame.
@@ -395,6 +398,8 @@ pub struct CtxMenu {
     /// The card drawn last frame.
     pub card: Rect,
     pub confirm: Option<Confirm>,
+    /// "Salvar tudo / Descartar / Cancelar" card (see `app_unsaved.rs`).
+    pub unsaved: Option<crate::app_unsaved::Unsaved>,
 }
 
 // ───────────────────────── App integration ─────────────────────────
@@ -429,8 +434,13 @@ impl App {
             let row = (rel >= 0.0).then(|| (rel / ROW_H as f64) as usize).filter(|&i| i < self.tree.rows.len());
             return Some(match row {
                 Some(i) => {
-                    self.tree.sel = i;
                     self.focus = Focus::Sidebar;
+                    // Right click on a row of a multi-selection: the menu acts on all of it.
+                    let sel = self.tree.selection();
+                    if sel.len() > 1 && self.tree.is_selected(&self.tree.rows[i].path) {
+                        return Some(Target::Multi(sel));
+                    }
+                    self.tree.select_only(i);
                     let r = &self.tree.rows[i];
                     if r.is_dir { Target::Folder(r.path.clone()) } else { Target::File(r.path.clone()) }
                 }
@@ -449,11 +459,14 @@ impl App {
             f.md = crate::app_md::is_markdown_name(&d.name).then(|| d.md.is_some());
         }
         let entries = entries_for(&target, &f);
-        self.overlay = Overlay::Ctx(Box::new(CtxMenu { target, entries, at, sel: None, rects: Vec::new(), card: Rect::default(), confirm: None }));
+        self.overlay = Overlay::Ctx(Box::new(CtxMenu { target, entries, at, sel: None, rects: Vec::new(), card: Rect::default(), confirm: None, unsaved: None }));
     }
 
     pub fn ctxmenu_key(&mut self, ev: &crate::app::KeyIn) {
         let Overlay::Ctx(m) = &mut self.overlay else { return };
+        if m.unsaved.is_some() {
+            return self.unsaved_key(&ev.key);
+        }
         if let Some(c) = m.confirm.as_mut() {
             match &ev.key {
                 Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
@@ -461,18 +474,18 @@ impl App {
                 Key::Named(NamedKey::ArrowRight) => c.yes = true,
                 Key::Named(NamedKey::Tab) => c.yes = !c.yes,
                 Key::Named(NamedKey::Enter) => {
-                    let (yes, path) = (c.yes, c.path.clone());
+                    let (yes, paths) = (c.yes, c.paths.clone());
                     self.overlay = Overlay::None;
                     if yes {
-                        self.delete_path(&path);
+                        self.delete_confirmed(&paths);
                     } else {
                         self.say("exclusão cancelada");
                     }
                 }
                 Key::Character(s) if matches!(s.to_lowercase().as_str(), "s" | "y") => {
-                    let path = c.path.clone();
+                    let paths = c.paths.clone();
                     self.overlay = Overlay::None;
-                    self.delete_path(&path);
+                    self.delete_confirmed(&paths);
                 }
                 Key::Character(s) if s.to_lowercase() == "n" => self.overlay = Overlay::None,
                 _ => {}
@@ -500,11 +513,15 @@ impl App {
     /// Left click while the menu is open. Always consumes the click.
     pub fn ctxmenu_mouse(&mut self, x: f64, y: f64) -> bool {
         let Overlay::Ctx(m) = &mut self.overlay else { return false };
+        if m.unsaved.is_some() {
+            self.unsaved_mouse(x, y);
+            return true;
+        }
         if let Some(c) = m.confirm.as_ref() {
-            let (no, yes, path) = (c.rects[0], c.rects[1], c.path.clone());
+            let (no, yes, paths) = (c.rects[0], c.rects[1], c.paths.clone());
             if yes.contains(x, y) {
                 self.overlay = Overlay::None;
-                self.delete_path(&path);
+                self.delete_confirmed(&paths);
             } else if no.contains(x, y) || !m.card.contains(x, y) {
                 self.overlay = Overlay::None;
                 self.say("exclusão cancelada");
@@ -523,6 +540,9 @@ impl App {
     pub fn ctxmenu_hover(&mut self) -> bool {
         let (x, y) = self.mouse;
         let Overlay::Ctx(m) = &mut self.overlay else { return false };
+        if m.unsaved.is_some() {
+            return self.unsaved_hover(x, y);
+        }
         if let Some(c) = m.confirm.as_mut() {
             if c.rects[1].contains(x, y) && !c.yes {
                 c.yes = true;
@@ -543,6 +563,18 @@ impl App {
         }
     }
 
+    /// Esc in the explorer while something is cut: forget the cut (rows stop being dimmed).
+    /// True when there was a cut to cancel.
+    pub fn cancel_cut(&mut self) -> bool {
+        if !self.file_clip.cut || self.file_clip.paths.is_empty() {
+            return false;
+        }
+        self.file_clip = FileClip::default();
+        self.say("recorte cancelado");
+        self.request_redraw();
+        true
+    }
+
     pub fn ctxmenu_active(&self) -> bool {
         matches!(self.overlay, Overlay::Ctx(_))
     }
@@ -560,11 +592,73 @@ impl App {
     fn ctx_path(&self, t: &Target) -> Option<PathBuf> {
         match t {
             Target::Folder(p) | Target::File(p) | Target::Root(p) => Some(p.clone()),
+            Target::Multi(v) => v.first().cloned(),
             Target::Tab(i) => self.docs.get(*i).and_then(|d| d.path()).map(Path::to_path_buf),
         }
     }
 
+    /// Delete confirmed in the card: one path, or the whole selection.
+    fn delete_confirmed(&mut self, paths: &[PathBuf]) {
+        match paths {
+            [one] => self.delete_path(one),
+            many => self.remove_paths(many, false),
+        }
+    }
+
+    /// Delete key with several explorer rows selected: the confirmation card for all of them.
+    pub fn ctx_delete_selection(&mut self) {
+        let paths = self.tree.selection();
+        self.ctx_run_multi(Act::Delete, paths);
+    }
+
+    /// Menu actions on a multi-selection.
+    fn ctx_run_multi(&mut self, act: Act, paths: Vec<PathBuf>) {
+        match act {
+            Act::Cut | Act::Copy => {
+                let cut = act == Act::Cut;
+                self.say(format!("{}: {}", if cut { "recortado" } else { "copiado" }, crate::app_explorer::describe(&paths)));
+                self.file_clip = FileClip { paths, cut };
+            }
+            Act::Duplicate => {
+                let mut made = Vec::new();
+                for p in &paths {
+                    let Some(dir) = p.parent() else { continue };
+                    if let Ok(Some(to)) = paste_one(p, dir, false) {
+                        made.push(to);
+                    }
+                }
+                if let Some(first) = made.first().cloned() {
+                    self.after_fs_change(&first);
+                    self.tree.select_paths(&made);
+                }
+                self.say(format!("{} item(ns) duplicado(s)", made.len()));
+            }
+            Act::Trash => self.remove_paths(&paths, true),
+            Act::Delete => {
+                self.overlay = Overlay::Ctx(Box::new(CtxMenu {
+                    target: Target::Multi(paths.clone()),
+                    entries: Vec::new(),
+                    at: (0, 0),
+                    sel: None,
+                    rects: Vec::new(),
+                    card: Rect::default(),
+                    confirm: Some(Confirm { paths, yes: false, rects: [Rect::default(); 2] }),
+                    unsaved: None,
+                }));
+            }
+            Act::CopyPath => {
+                let text = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
+                self.clip.set(&text);
+                self.say("caminhos copiados");
+            }
+            _ => {}
+        }
+    }
+
     fn ctx_run(&mut self, act: Act, t: Target) {
+        if let Target::Multi(paths) = &t {
+            return self.ctx_run_multi(act, paths.clone());
+        }
         let path = self.ctx_path(&t);
         let name = path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         match act {
@@ -624,7 +718,8 @@ impl App {
                     sel: None,
                     rects: Vec::new(),
                     card: Rect::default(),
-                    confirm: Some(Confirm { path: p, yes: false, rects: [Rect::default(); 2] }),
+                    confirm: Some(Confirm { paths: vec![p], yes: false, rects: [Rect::default(); 2] }),
+                    unsaved: None,
                 }));
             }
             Act::CopyPath => {
@@ -648,20 +743,8 @@ impl App {
                     (Target::Tab(i), Act::CloseOthers) => Some(*i),
                     _ => None,
                 };
-                let pinned: Vec<bool> = self.docs.iter().map(|d| d.pinned).collect();
-                let dirty: Vec<bool> = self.docs.iter().map(|d| d.buf.is_dirty()).collect();
-                let (list, skipped) = tabs_to_close(&pinned, &dirty, keep);
-                let kept_idx = keep.map(|k| k - list.iter().filter(|&&i| i < k).count());
-                for i in list {
-                    self.close_tab(i, true);
-                }
-                if let Some(k) = kept_idx.filter(|&k| k < self.docs.len()) {
-                    // "Fechar outras": the tab the menu was opened on is the one left in front.
-                    self.activate(k);
-                }
-                if skipped > 0 {
-                    self.say(format!("{skipped} aba(s) com alterações não salvas foram mantidas"));
-                }
+                // Unsaved tabs among them: asks (Salvar tudo / Descartar / Cancelar) first.
+                self.close_tabs_request(keep);
             }
             Act::TogglePin => {
                 if let Target::Tab(i) = t {
@@ -687,7 +770,7 @@ impl App {
         self.watch_dirs();
     }
 
-    fn close_docs_under(&mut self, path: &Path) {
+    pub fn close_docs_under(&mut self, path: &Path) {
         let mut i = 0;
         while i < self.docs.len() {
             if self.docs[i].path().is_some_and(|p| p.starts_with(path)) {
@@ -704,30 +787,9 @@ impl App {
         if clip.paths.is_empty() {
             return self.say("nada para colar");
         }
-        let (mut done, mut last, mut err) = (0, None, None);
-        for from in &clip.paths {
-            match paste_one(from, dir, clip.cut) {
-                Ok(Some(to)) => {
-                    if clip.cut {
-                        self.repoint_docs(from, &to);
-                    }
-                    done += 1;
-                    last = Some(to);
-                }
-                Ok(None) => {}
-                Err(e) => err = Some(e),
-            }
-        }
-        if clip.cut && done > 0 {
+        let done = self.transfer(&clip.paths, dir, clip.cut);
+        if clip.cut && !done.is_empty() {
             self.file_clip = FileClip::default();
-        }
-        if let Some(to) = &last {
-            self.after_fs_change(to);
-        }
-        match (err, done) {
-            (Some(e), _) => self.say(format!("erro ao colar: {e}")),
-            (None, 0) => self.say("já está nesta pasta"),
-            (None, n) => self.say(format!("{n} item(ns) {}", if clip.cut { "movido(s)" } else { "colado(s)" })),
         }
     }
 
@@ -736,10 +798,7 @@ impl App {
         let Some(prev) = self.split.as_ref().map(|_| self.active) else { return self.say("divida o editor primeiro (Ctrl+\\)") };
         let Some(idx) = self.open_path(path, None) else { return };
         self.activate(prev);
-        if let Some(sp) = self.split.as_mut() {
-            sp.other = idx;
-            sp.view = Default::default();
-        }
+        self.split_set_other_doc(idx);
         self.request_redraw();
     }
 
@@ -774,15 +833,27 @@ impl App {
         let tint = fg.with_alpha(0x1c);
         let (sw, sh) = (self.size.0 as i32, self.size.1 as i32);
 
+        if m.unsaved.is_some() {
+            self.draw_unsaved(cv, &mut m);
+            self.overlay = Overlay::Ctx(m);
+            return;
+        }
         if let Some(cf) = m.confirm.as_mut() {
-            let name = cf.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = crate::app_explorer::describe(&cf.paths);
+            let many = cf.paths.len() > 1;
             let w = (sw - 40).clamp(280, 400);
             let r = Rect::new((sw - w) / 2, 70, w, 124);
             cv.shadow(r, 12);
             cv.card(r, 12, c.widget_bg, c.border);
-            let title = clip_text(&mut self.tx, &format!("Excluir “{name}”?"), r.w - 32);
+            let title = clip_text(&mut self.tx, &if many { format!("Excluir {name}?") } else { format!("Excluir “{name}”?") }, r.w - 32);
             self.tx.draw_ui(cv, r.x + 16, r.y + 14, &title, fg, r, true);
-            let what = if cf.path.is_dir() { "A pasta e tudo dentro dela serão apagados." } else { "O arquivo será apagado." };
+            let what = if many {
+                "Os itens (e tudo dentro das pastas) serão apagados."
+            } else if cf.paths.first().is_some_and(|p| p.is_dir()) {
+                "A pasta e tudo dentro dela serão apagados."
+            } else {
+                "O arquivo será apagado."
+            };
             self.tx.draw_ui(cv, r.x + 16, r.y + 40, what, dim, r, false);
             self.tx.draw_ui(cv, r.x + 16, r.y + 60, "Isso não pode ser desfeito.", dim, r, false);
             let (bw, bh) = (72, 30);
@@ -975,17 +1046,19 @@ mod tests {
     }
 
     #[test]
-    fn pinned_tabs_come_first_and_survive_close_all() {
+    fn pinned_tabs_come_first() {
         assert_eq!(pinned_first(&[false, true, false, true]), vec![1, 3, 0, 2]);
         assert_eq!(pinned_first(&[false, false]), vec![0, 1]);
-        let pinned = [false, true, false, false];
-        let dirty = [false, false, true, false];
-        // Close all: pinned (1) stays, dirty (2) is skipped, highest index first.
-        assert_eq!(tabs_to_close(&pinned, &dirty, None), (vec![3, 0], 1));
-        // Close others of tab 3: tab 3 and the pinned one stay.
-        assert_eq!(tabs_to_close(&pinned, &dirty, Some(3)), (vec![0], 1));
-        // Nothing pinned, keep 0.
-        assert_eq!(tabs_to_close(&[false; 3], &[false; 3], Some(0)), (vec![2, 1], 0));
+    }
+
+    #[test]
+    fn cut_rows_are_dimmed_until_cleared() {
+        let clip = FileClip { paths: vec![PathBuf::from("/p/src"), PathBuf::from("/p/a.ts")], cut: true };
+        assert!(clip.is_cut(Path::new("/p/a.ts")));
+        assert!(clip.is_cut(Path::new("/p/src/deep/b.ts")), "children of a cut folder are cut too");
+        assert!(!clip.is_cut(Path::new("/p/src2/b.ts")), "a sibling that merely shares the prefix is not");
+        assert!(!FileClip { cut: false, ..clip.clone() }.is_cut(Path::new("/p/a.ts")), "copied rows are not dimmed");
+        assert!(!FileClip::default().is_cut(Path::new("/p/a.ts")));
     }
 
     fn labels(v: &[Entry]) -> Vec<&'static str> {
@@ -1015,6 +1088,25 @@ mod tests {
         assert_eq!(l.last(), Some(&"Fixar aba"));
         // Root: only creation (+ paste).
         assert_eq!(labels(&entries_for(&Target::Root("/p".into()), &f)), ["Novo arquivo", "Nova pasta"]);
+        // Several rows: no rename / new / open-beside, plural "Copiar caminhos".
+        let multi = Target::Multi(vec!["/p/a.ts".into(), "/p/b.ts".into()]);
+        assert_eq!(labels(&entries_for(&multi, &f)), ["Recortar", "Copiar", "-", "Duplicar", "-", "Mover para a lixeira", "Excluir", "-", "Copiar caminhos"]);
+    }
+
+    #[test]
+    fn moving_several_items_applies_the_unique_name_rule_to_each() {
+        let d = scratch("multi");
+        fs::create_dir_all(d.join("src")).unwrap();
+        fs::create_dir_all(d.join("dest")).unwrap();
+        for f in ["a.ts", "b.ts"] {
+            fs::write(d.join("src").join(f), f).unwrap();
+        }
+        fs::write(d.join("dest/a.ts"), "old").unwrap();
+        let moved: Vec<PathBuf> = [d.join("src/a.ts"), d.join("src/b.ts")].iter().filter_map(|p| paste_one(p, &d.join("dest"), true).unwrap()).collect();
+        assert_eq!(moved, [d.join("dest/a (cópia).ts"), d.join("dest/b.ts")]);
+        assert!(!d.join("src/a.ts").exists() && !d.join("src/b.ts").exists());
+        assert_eq!(fs::read_to_string(d.join("dest/a.ts")).unwrap(), "old");
+        fs::remove_dir_all(&d).ok();
     }
 
     #[test]

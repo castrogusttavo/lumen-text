@@ -163,7 +163,8 @@ pub struct App {
     pub clicks: u32,
     pub last_click: Instant,
     pub last_click_pos: (f64, f64),
-    pub chord: Option<char>,
+    /// First stroke of a pending chord (normalized, e.g. "ctrl+k"); see `keymap::DEFAULTS`.
+    pub chord: Option<String>,
 
     pub status: Option<(String, Instant)>,
     pub quit_armed: bool,
@@ -220,6 +221,7 @@ pub struct App {
 impl App {
     pub fn new(files: Vec<(PathBuf, Option<(usize, usize)>)>, root: PathBuf, theme: Theme, wake_fn: crate::lsp::Wake, config: crate::config::Config) -> Self {
         let mut tx = TextCtx::new(None);
+        crate::minimap::set_style(crate::minimap::Style::from_name(&config.minimap_style));
         if (config.font_size - 14.0).abs() > f32::EPSILON {
             tx.set_zoom(config.font_size);
         }
@@ -573,6 +575,7 @@ impl App {
         }
         want(self.last_trim + Duration::from_secs(4));
         self.check_disk(now, &mut want);
+        self.gitpanel_tick(now, &mut want);
 
         // Git gutter against the buffer, debounced.
         let active = self.active;
@@ -733,7 +736,7 @@ impl App {
             .iter()
             .filter_map(|d| {
                 let (l, c) = d.buf.line_col(d.ed.head());
-                Some(serde_json::json!({"path": d.path()?.to_string_lossy(), "line": l, "col": c, "top": d.target, "pinned": d.pinned}))
+                Some(serde_json::json!({"path": d.path()?.to_string_lossy(), "line": l, "col": c, "top": d.target, "pinned": d.pinned, "md": d.md.is_some()}))
             })
             .collect();
         let v = serde_json::json!({"active": self.active, "files": files});
@@ -756,6 +759,7 @@ impl App {
             if let Some(i) = self.open_path(Path::new(p), at) {
                 let top = f["top"].as_f64().unwrap_or(0.0);
                 self.docs[i].pinned = f["pinned"].as_bool().unwrap_or(false);
+                self.docs[i].md_restore(f["md"].as_bool().unwrap_or(false));
                 self.docs[i].target = top;
                 self.docs[i].top = top;
                 self.docs[i].reveal = false;
@@ -879,6 +883,7 @@ impl App {
         }
         self.draw_panel(cv);
         self.draw_gitpanel(cv);
+        self.draw_tree_drag(cv);
         self.draw_status(cv);
         if let Some((r, rad)) = self.hover_rect {
             let f = self.theme.foreground;
@@ -895,14 +900,15 @@ impl App {
     fn draw_tabs(&mut self, cv: &mut Canvas) {
         let c = self.theme.chrome;
         let bar = self.layout.tabbar;
+        cv.fill(bar, c.tabbar_bg);
         self.layout.tabs.clear();
-        let other_pane = self.split_other_doc();
+        let pane_docs = self.split_pane_docs();
         // Geometry of every tab in strip coordinates, then scroll so the active one is visible.
         let order = crate::app_ctxmenu::tab_order(&self.docs);
         let mut geo: Vec<(usize, i32, i32)> = Vec::with_capacity(order.len());
         let mut x = 6;
         for &i in &order {
-            let w = self.tx.ui_width(&self.docs[i].name, false) + 34 + 34;
+            let w = self.tx.ui_width(&self.docs[i].name, false) + 34 + 34 + 11 * pane_docs.iter().filter(|p| p.0 == i).count() as i32;
             geo.push((i, x, w));
             x += w;
         }
@@ -959,9 +965,15 @@ impl App {
             } else if active {
                 self.tx.icon(cv, "ui/close", close.x + 8, r.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, strip);
             }
-            if other_pane == Some(i) {
-                // Split editor: the document of the unfocused pane.
-                cv.fill_clip(Rect::new(r.x + 14, bar.bottom() - 5, r.w - 28, 2), c.tab_inactive_fg.with_alpha(0x80), strip);
+            // Split editor: an underline and the pane number for every pane that shows this tab, in
+            // the accent color for the focused pane and gray for the others.
+            for (k, &(_, focused)) in pane_docs.iter().enumerate().filter(|(_, p)| p.0 == i) {
+                let (col, label) = if focused { (c.accent, c.accent_text) } else { (c.tab_inactive_fg.with_alpha(0x80), c.tab_inactive_fg) };
+                let seg = (r.w - 28) / pane_docs.iter().filter(|p| p.0 == i).count() as i32;
+                let nth = pane_docs.iter().take(k).filter(|p| p.0 == i).count() as i32;
+                cv.fill_clip(Rect::new(r.x + 14 + nth * seg, bar.bottom() - 5, (seg - 2).max(4), 2), col, strip);
+                let name_w = self.tx.ui_width(&d.name, active);
+                self.tx.draw_ui(cv, r.x + lead + name_w + 6 + nth * 11, ty + 1, &(k + 1).to_string(), label, strip, focused);
             }
             self.layout.tabs.push((r.intersect(&strip), close.intersect(&strip), i));
         }
@@ -1003,7 +1015,7 @@ impl App {
         for (k, row) in self.tree.rows.iter().enumerate().skip(first).take(rows) {
             let y = top + off + ((k - first) as i32) * ROW_H;
             let rr = Rect::new(r.x + 8, y + 1, r.w - 17, ROW_H - 2);
-            let is_sel = k == self.tree.sel;
+            let is_sel = self.tree.row_selected(k);
             let is_active = active_path.as_deref() == Some(row.path.as_path());
             if is_sel && sidebar_focused {
                 cv.fill_clip(Rect::new(rr.x, rr.y, rr.w, rr.h), c.list_active_bg, body);
@@ -1015,7 +1027,9 @@ impl App {
             }
             let indent = 18 + row.depth as i32 * 14;
             // Zed-style: a chevron for folders, a type icon for files (tinted, so it follows the theme).
+            let cut = self.file_clip.is_cut(&row.path);
             let icon_color = if is_active { c.tab_active_fg } else { c.tab_inactive_fg };
+            let icon_color = if cut { icon_color.with_alpha(0x60).over(c.sidebar_bg) } else { icon_color };
             let iy = y + (ROW_H - 16) / 2;
             if row.is_dir {
                 let chev = if row.expanded { "ui/chevron_down" } else { "ui/chevron_right" };
@@ -1028,6 +1042,7 @@ impl App {
             }
             let badge = self.git_status.get(&row.path).copied();
             let fg = if is_active { c.tab_active_fg } else { c.sidebar_fg };
+            let fg = if cut { fg.with_alpha(0x60).over(c.sidebar_bg) } else { fg };
             self.tx.draw_ui(cv, r.x + hx + indent + 38, y + (ROW_H - 18) / 2, &row.name, fg, body, false);
             if let Some(b) = badge {
                 // A quiet dot instead of a colored letter: modified / new / deleted.
@@ -1258,8 +1273,7 @@ impl App {
             if rel >= 0.0 {
                 let i = (rel / ROW_H as f64) as usize;
                 if i < self.tree.rows.len() {
-                    self.tree.sel = i;
-                    self.sidebar_activate();
+                    self.tree_press(i, x, y);
                 }
             }
             return self.request_redraw();
@@ -1388,6 +1402,9 @@ impl App {
         if self.drag_bar.is_some() || self.over_hbar(x, y) || self.sidebar_bar.is_some_and(|b| b.track.contains(x, y)) || self.docs.get(self.active).and_then(|d| d.sb).is_some_and(|b| b.track.contains(x, y)) {
             return CursorIcon::Default;
         }
+        if let Some(c) = self.split_cursor(x, y) {
+            return c;
+        }
         if l.divider.w > 0 && Rect::new(l.divider.x - 4, l.divider.y, l.divider.w + 8, l.divider.h).contains(x, y) {
             return CursorIcon::ColResize;
         }
@@ -1413,7 +1430,7 @@ impl App {
                 }
             }
         }
-        if l.editor.contains(x, y) || l.other.contains(x, y) {
+        if l.editor.contains(x, y) || self.split_in_other(x, y) {
             // Gutter (line numbers, fold chevrons, breakpoints) is not text.
             let gutter_right = l.editor.x + 56;
             return if x < gutter_right as f64 && l.editor.contains(x, y) { CursorIcon::Default } else { CursorIcon::Text };
@@ -1451,6 +1468,9 @@ impl App {
         }
         if let Some((r, _)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((*r, 6));
+        }
+        if let Some(h) = self.debug_hover_target() {
+            return Some(h);
         }
         if self.sidebar_open && l.sidebar.contains(x, y) && y >= (l.sidebar.y + TAB_H) as f64 {
             let rel = y - (l.sidebar.y + TAB_H) as f64 + self.tree.scroll;
@@ -1544,6 +1564,9 @@ impl App {
         if self.regions_drag() {
             return self.request_redraw();
         }
+        if self.tree_drag_move() {
+            return self.request_redraw();
+        }
         if let Some((kind, grab)) = self.drag_bar {
             match kind {
                 0 => {
@@ -1565,7 +1588,7 @@ impl App {
         if self.gitpanel_move() {
             self.request_redraw();
         }
-        if self.split_drag(x) {
+        if self.split_drag(x, y) {
             return self.request_redraw();
         }
         if self.dragging_minimap {
@@ -1639,49 +1662,48 @@ impl App {
                 return false;
             }
         }
+        // Second stroke of a chord (`Ctrl+K` then a letter): modifier presses alone keep it pending.
+        if let Some(prefix) = self.chord.clone() {
+            if matches!(&key, Key::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::AltGraph | NamedKey::Super | NamedKey::Meta | NamedKey::CapsLock)) {
+                return false;
+            }
+            self.chord = None;
+            if let Some(id) = self.keymap.lookup_chord(&prefix, ctrl, shift, alt, &key).map(str::to_string) {
+                let quit = self.run_bound(&id);
+                self.request_redraw();
+                return quit;
+            }
+            self.request_redraw();
+            return false; // an unbound second stroke only cancels the chord
+        }
+        // The explorer's own keys (A, Shift+A, F2, Delete) win over the global table while it has the focus.
+        if self.focus == Focus::Sidebar {
+            if let Some(id) = self.keymap.lookup_explorer(ctrl, shift, alt, &key).map(str::to_string) {
+                let quit = self.run_bound(&id);
+                self.request_redraw();
+                return quit;
+            }
+        }
         // One table: keybindings.json first ("none" disables), then keymap::DEFAULTS.
         if let Some(id) = self.keymap.lookup(ctrl, shift, alt, &key).map(str::to_string) {
             let cmd = crate::app_overlay::Cmd::from_id(&id);
             // Ctrl+Shift+V is also "paste" outside Markdown files: let it through.
             let paste = cmd == Some(crate::app_overlay::Cmd::MarkdownPreview) && !self.active_is_markdown() && ctrl && shift && !alt;
             if !paste {
-                self.chord = None;
-                let mut quit = false;
-                match cmd {
-                    Some(c) => quit = self.run_key_cmd(c),
-                    None if id != "none" => self.say(format!("atalho aponta para um comando desconhecido: {id}")),
-                    None => {}
-                }
+                let quit = self.run_bound(&id);
                 self.request_redraw();
                 return quit;
             }
         }
-
-        // Ctrl+K chords.
-        if let Some(c) = self.chord.take() {
-            if c == 'k' {
-                if let Key::Character(s) = &key {
-                    match s.to_lowercase().as_str() {
-                        "i" => self.request_hover_at_cursor(),
-                        "t" => self.run_tests(true),
-                        "f" => self.run_tests(false),
-                        "r" => self.repeat_task(),
-                        "x" => self.stop_task(),
-                        "s" => self.save_active(),
-                        "w" => {
-                            let a = self.active;
-                            self.close_tab(a, false)
-                        }
-                        _ => {}
-                    }
-                }
-                self.request_redraw();
-                return false;
-            }
+        // First stroke of a chord.
+        if let Some(c) = self.keymap.chord_start(ctrl, shift, alt, &key) {
+            self.chord = Some(c);
+            self.request_redraw();
+            return false;
         }
 
         if ctrl || alt {
-            if let Some(r) = self.shortcut(&key, ctrl, shift, alt) {
+            if let Some(r) = self.shortcut(&key, ctrl, alt) {
                 self.request_redraw();
                 return r;
             }
@@ -1718,9 +1740,6 @@ impl App {
                     d.ed.clear_extra();
                 }
                 match (k.as_str(), shift) {
-                    ("z", true) => d.ed.redo(&mut d.buf),
-                    ("z", false) => d.ed.undo(&mut d.buf),
-                    ("y", _) => d.ed.redo(&mut d.buf),
                     ("a", _) => d.ed.select_all(&mut d.buf),
                     ("d", false) => d.ed.add_next_occurrence(&mut d.buf),
                     ("l", true) => d.ed.select_all_occurrences(&mut d.buf),
@@ -1743,9 +1762,8 @@ impl App {
                         let d = &mut self.docs[self.active];
                         d.ed.paste_multi(&mut d.buf, &t);
                     }
-                    ("d", true) => d.ed.duplicate(&mut d.buf),
-                    ("k", true) => d.ed.delete_line(&mut d.buf),
-                    ("/", _) => d.ed.toggle_comment(&mut d.buf),
+                    ("d", true) => d.duplicate_cmd(),
+                    ("k", true) => d.delete_line_cmd(),
                     ("]", _) => d.ed.tab(&mut d.buf, false),
                     ("[", _) => d.ed.tab(&mut d.buf, true),
                     _ => {}
@@ -1762,11 +1780,11 @@ impl App {
                 NamedKey::ArrowRight => d.ed.move_multi(&mut d.buf, |e, b| e.right(b, shift, ctrl)),
                 NamedKey::ArrowUp if alt => {
                     d.ed.clear_extra();
-                    d.ed.move_lines(&mut d.buf, false)
+                    d.move_lines_cmd(false)
                 }
                 NamedKey::ArrowDown if alt => {
                     d.ed.clear_extra();
-                    d.ed.move_lines(&mut d.buf, true)
+                    d.move_lines_cmd(true)
                 }
                 NamedKey::ArrowUp if ctrl => {
                     d.reveal = false;
@@ -1937,8 +1955,8 @@ impl App {
     }
 
     /// Hard-wired shortcuts that are not `Cmd`s (everything else is dispatched through
-    /// `keymap::DEFAULTS` in `handle_key`): Alt+digit tab jumps, the Ctrl+K chord prefix.
-    fn shortcut(&mut self, key: &Key, ctrl: bool, shift: bool, alt: bool) -> Option<bool> {
+    /// `keymap::DEFAULTS` in `handle_key`): Alt+digit tab jumps.
+    fn shortcut(&mut self, key: &Key, ctrl: bool, alt: bool) -> Option<bool> {
         let Key::Character(c) = key else { return None };
         let c = c.to_lowercase();
         if alt && !ctrl {
@@ -1946,27 +1964,22 @@ impl App {
             self.activate(crate::app_ctxmenu::tab_order(&self.docs).get(n as usize - 1).copied().unwrap_or(usize::MAX));
             return Some(false);
         }
-        if !ctrl {
-            return None;
-        }
-        match (c.as_str(), shift) {
-            ("k", false) => self.chord = Some('k'),
-            _ => return None,
-        }
-        Some(false)
+        None
     }
 
     fn sidebar_key(&mut self, key: &Key) -> bool {
         match key {
-            Key::Named(NamedKey::ArrowDown) => self.tree.move_sel(1),
-            Key::Named(NamedKey::ArrowUp) => self.tree.move_sel(-1),
+            Key::Named(NamedKey::ArrowDown) => self.tree.step(1, self.mods.shift_key()),
+            Key::Named(NamedKey::ArrowUp) => self.tree.step(-1, self.mods.shift_key()),
             Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::Enter) => self.sidebar_activate(),
+            Key::Character(c) if self.mods.control_key() && !self.mods.alt_key() && self.explorer_ctrl_key(c.as_str()) => {}
             Key::Named(NamedKey::ArrowLeft) => self.tree.collapse_or_parent(),
-            Key::Named(NamedKey::Escape) => self.focus = Focus::Editor,
-            Key::Named(NamedKey::F2) => self.prompt_rename_path(),
-            Key::Named(NamedKey::Delete) => self.prompt_delete_path(),
-            Key::Character(c) if c.as_str() == "a" => self.prompt_new_file(false),
-            Key::Character(c) if c.as_str() == "A" => self.prompt_new_file(true),
+            Key::Named(NamedKey::Escape) => {
+                // First Esc forgets a pending cut (the dimmed rows); the next one leaves the explorer.
+                if !self.explorer_escape() {
+                    self.focus = Focus::Editor;
+                }
+            }
             _ => return false,
         }
         // Keep the selection in view.

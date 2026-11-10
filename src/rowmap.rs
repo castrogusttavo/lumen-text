@@ -15,6 +15,7 @@
 //! `ceil(width/cols)`; use `update_line` with `wrap_breaks(..).len() + 1` for
 //! exact counts.
 
+use crate::buffer::LineOp;
 use std::collections::BTreeMap;
 
 /// Char indices where each continuation row starts (empty = no wrap needed).
@@ -196,10 +197,15 @@ impl FoldSet {
     /// regions that start inside removed lines, or collapse to one line, are
     /// dropped.
     pub fn adjust_for_edit(&mut self, first_changed_line: usize, delta_lines: isize) {
+        self.shift_after(first_changed_line as isize, delta_lines);
+    }
+
+    /// Like `adjust_for_edit` with `after` = the last line that keeps its place (-1: before line 0).
+    pub fn shift_after(&mut self, after: isize, delta_lines: isize) {
         if delta_lines == 0 {
             return;
         }
-        let f = first_changed_line as isize;
+        let f = after;
         let mut out = Vec::with_capacity(self.regions.len());
         for &(s, e) in &self.regions {
             let (si, ei) = (s as isize, e as isize);
@@ -209,17 +215,56 @@ impl FoldSet {
                 }
                 out.push(((si + delta_lines) as usize, (ei + delta_lines) as usize));
             } else if ei > f {
-                let ne = ei + delta_lines;
+                let ne = if delta_lines < 0 && ei <= f - delta_lines { f } else { ei + delta_lines };
                 if ne <= si {
                     continue;
                 }
-                out.push((s, ne.max(f) as usize));
+                out.push((s, ne as usize));
             } else {
                 out.push((s, e));
             }
         }
         self.regions = out;
         self.recompute();
+    }
+
+    /// Two adjacent blocks of whole lines exchanged places: lines `first..first+a_lines` and the
+    /// `b_lines` after them. Folds inside a block travel with it, folds around both stay, a fold
+    /// that straddles a block edge is dropped.
+    pub fn swap_blocks(&mut self, first: usize, a_lines: usize, b_lines: usize) {
+        let (a0, a1, b1) = (first, first + a_lines, first + a_lines + b_lines);
+        let mut out = Vec::with_capacity(self.regions.len());
+        for &(s, e) in &self.regions {
+            if e < a0 || s >= b1 {
+                out.push((s, e));
+            } else if s >= a0 && e < a1 {
+                out.push((s + b_lines, e + b_lines));
+            } else if s >= a1 && e < b1 {
+                out.push((s - a_lines, e - a_lines));
+            } else if s < a0 && e >= b1 {
+                out.push((s, e));
+            }
+        }
+        self.regions = out;
+        self.recompute();
+    }
+
+    /// Apply the line-level effect of one text edit.
+    pub fn apply_op(&mut self, op: LineOp) {
+        match op {
+            LineOp::Remove { after, n } => self.shift_after(after, -(n as isize)),
+            LineOp::Insert { after, n } => self.shift_after(after, n as isize),
+            LineOp::Swap { first, a_lines, b_lines } => self.swap_blocks(first, a_lines, b_lines),
+        }
+    }
+
+    /// Drop regions that reach past the last of `lines` lines.
+    pub fn clip(&mut self, lines: usize) {
+        let n = self.regions.len();
+        self.regions.retain(|r| r.1 < lines);
+        if self.regions.len() != n {
+            self.recompute();
+        }
     }
 }
 
@@ -777,6 +822,38 @@ mod tests {
         assert_eq!(f.regions(), &[(7, 8)]);
         f.adjust_for_edit(7, -1);
         assert!(f.is_empty());
+    }
+
+    #[test]
+    fn shift_after_handles_the_line_before_the_first() {
+        let mut f = FoldSet::new();
+        f.fold_all(&[(0, 3), (5, 8)]);
+        f.shift_after(-1, 2); // two lines inserted before line 0
+        assert_eq!(f.regions(), &[(2, 5), (7, 10)]);
+        f.shift_after(-1, -2); // and removed again
+        assert_eq!(f.regions(), &[(0, 3), (5, 8)]);
+        f.shift_after(-1, -1); // the first line removed: the first fold starts inside it
+        assert_eq!(f.regions(), &[(4, 7)]);
+    }
+
+    #[test]
+    fn swap_blocks_moves_folds_with_their_lines() {
+        let mut f = FoldSet::new();
+        f.fold_all(&[(1, 2), (4, 6), (9, 12)]);
+        // lines 1..=2 (2 lines) and 3..=6 (4 lines) change places
+        f.swap_blocks(1, 2, 4);
+        assert_eq!(f.regions(), &[(2, 4), (5, 6), (9, 12)]);
+        // a fold around both blocks stays, one that straddles the edge between them is dropped
+        let mut f = FoldSet::new();
+        f.fold_all(&[(0, 8), (2, 5), (7, 9)]);
+        f.swap_blocks(1, 2, 4);
+        assert_eq!(f.regions(), &[(0, 8), (7, 9)]);
+        // swapping back restores the original positions
+        let mut f = FoldSet::new();
+        f.fold_all(&[(1, 2), (4, 6)]);
+        f.swap_blocks(1, 2, 4);
+        f.swap_blocks(1, 4, 2);
+        assert_eq!(f.regions(), &[(1, 2), (4, 6)]);
     }
 
     #[test]

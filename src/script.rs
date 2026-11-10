@@ -310,6 +310,7 @@ pub fn run(mut app: App, opts: Opts) {
                 app.regions.drag = None;
                 app.drag_bar = None;
                 app.dragging = false;
+                app.tree.drag = None;
                 settle(&mut app, 20);
             }
         } else if let Some(xy) = tok.strip_prefix("click:").or_else(|| tok.strip_prefix("hover:")) {
@@ -320,6 +321,7 @@ pub fn run(mut app: App, opts: Opts) {
                     frame(&mut app, w, h);
                     app.mouse_down(MouseButton::Left);
                     app.dragging = false;
+                    app.tree.drag = None;
                 } else {
                     // Layout and hit rects only exist after a frame; draw one so `hover:` works first thing.
                     let mut px = vec![0u32; (w * h) as usize];

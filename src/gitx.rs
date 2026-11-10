@@ -96,21 +96,27 @@ fn range_header(start: usize, len: usize) -> String {
 
 /// Unified diff with zero context for exactly hunk `h`, suitable for
 /// `git apply --cached --unidiff-zero -`.
+///
+/// Both ranges start at `base_start`: the patch is applied on its own, without the hunks before
+/// it, so the lines land where they are in the *base*. (git places a zero-context insertion by
+/// the new-side position, which would be off by the net size of every earlier hunk.)
 pub fn hunk_patch(rel_path: &str, base: &str, current: &str, h: &Hunk) -> String {
+    hunk_patch_at(rel_path, base, current, h, h.base_start)
+}
+
+/// Same as [`hunk_patch`] with an explicit line where the hunk sits in the file it is applied to.
+fn hunk_patch_at(rel_path: &str, base: &str, current: &str, h: &Hunk, at: usize) -> String {
     let a = lines(base);
     let b = lines(current);
     let mut out = format!("--- a/{rel_path}\n+++ b/{rel_path}\n");
-    out.push_str(&format!(
-        "@@ -{} +{} @@\n",
-        range_header(h.base_start, h.base_len),
-        range_header(h.new_start, h.new_len)
-    ));
+    out.push_str(&format!("@@ -{} +{} @@\n", range_header(at, h.base_len), range_header(at, h.new_len)));
     push_body(&mut out, '-', &a[h.base_start..h.base_start + h.base_len]);
     push_body(&mut out, '+', &b[h.new_start..h.new_start + h.new_len]);
     out
 }
 
-/// Stage only hunk `h` in the index of the repo at `repo_dir`.
+/// Stage only hunk `h` in the index of the repo at `repo_dir`. `base` / `current` are the texts
+/// the hunk was computed from (the index and the working file, for a working-tree hunk).
 pub fn stage_hunk(
     repo_dir: &Path,
     rel_path: &str,
@@ -118,11 +124,40 @@ pub fn stage_hunk(
     current: &str,
     h: &Hunk,
 ) -> Result<(), String> {
-    let patch = hunk_patch(rel_path, base, current, h);
+    apply_hunk(repo_dir, rel_path, base, current, h, false)
+}
+
+/// Remove hunk `h` from the index: `base` is HEAD's text and `current` the index text, so the
+/// patch describes what is staged and is applied in reverse.
+pub fn unstage_hunk(
+    repo_dir: &Path,
+    rel_path: &str,
+    base: &str,
+    current: &str,
+    h: &Hunk,
+) -> Result<(), String> {
+    apply_hunk(repo_dir, rel_path, base, current, h, true)
+}
+
+fn apply_hunk(
+    repo_dir: &Path,
+    rel_path: &str,
+    base: &str,
+    current: &str,
+    h: &Hunk,
+    reverse: bool,
+) -> Result<(), String> {
+    // Unstaging applies HEAD -> index in reverse onto the index, where the hunk sits at `new_start`.
+    let patch = hunk_patch_at(rel_path, base, current, h, if reverse { h.new_start } else { h.base_start });
+    let mut args = vec!["apply", "--cached", "--unidiff-zero"];
+    if reverse {
+        args.push("--reverse");
+    }
+    args.push("-");
     let mut child = Command::new("git")
         .arg("-C")
         .arg(repo_dir)
-        .args(["apply", "--cached", "--unidiff-zero", "-"])
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -139,6 +174,37 @@ pub fn stage_hunk(
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&o.stderr).trim().to_string())
+    }
+}
+
+/// Which two texts a diff compares, for hunk staging.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    /// Index against the working file: its hunks can be staged.
+    Unstaged,
+    /// HEAD against the index: its hunks can be unstaged.
+    Staged,
+}
+
+fn blob(top: &Path, spec: &str) -> Option<String> {
+    let out = Command::new("git").arg("-C").arg(top).args(["show", spec]).stderr(Stdio::null()).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `(old, new)` of a file for `side`; None = that version does not exist (untracked, deleted,
+/// added, unmerged), which also means its hunks cannot be staged one by one.
+pub fn side_texts(top: &Path, rel: &str, old_rel: Option<&str>, side: Side) -> (Option<String>, Option<String>) {
+    match side {
+        Side::Unstaged => (blob(top, &format!(":{rel}")), std::fs::read(top.join(rel)).ok().map(|b| String::from_utf8_lossy(&b).into_owned())),
+        Side::Staged => (blob(top, &format!("HEAD:{}", old_rel.unwrap_or(rel))), blob(top, &format!(":{rel}"))),
+    }
+}
+
+/// Stage (`Unstaged` side) or unstage (`Staged` side) one hunk.
+pub fn toggle_hunk(top: &Path, rel: &str, side: Side, old: &str, new: &str, h: &Hunk) -> Result<(), String> {
+    match side {
+        Side::Unstaged => stage_hunk(top, rel, old, new, h),
+        Side::Staged => unstage_hunk(top, rel, old, new, h),
     }
 }
 
@@ -373,6 +439,27 @@ pub struct Row {
     pub left: Option<(usize, String)>,
     pub right: Option<(usize, String)>,
     pub kind: RowKind,
+}
+
+/// Row ranges `(first, end)` of the changed blocks (runs of non-`Same` rows). They line up one to
+/// one with `hunks(old, new)`, since both come from the same line diff.
+pub fn blocks(rows: &[Row]) -> Vec<(usize, usize)> {
+    let mut v: Vec<(usize, usize)> = Vec::new();
+    let mut start = None;
+    for (i, r) in rows.iter().enumerate() {
+        match (r.kind == RowKind::Same, start) {
+            (false, None) => start = Some(i),
+            (true, Some(s)) => {
+                v.push((s, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        v.push((s, rows.len()));
+    }
+    v
 }
 
 /// Align `old` and `new` into side-by-side rows. Replace blocks pair lines
@@ -660,6 +747,140 @@ mod tests {
         commit_file(&t.0, "f.txt", "a\n", "c");
         let h = hunks("zzz\n", "yyy\n");
         assert!(stage_hunk(&t.0, "f.txt", "zzz\n", "yyy\n", &h[0]).is_err());
+    }
+
+    // ---- stage / unstage with partial staging ----
+
+    /// A file with four separate hunks: stage 1 and 3, look at both sides, unstage 1 again.
+    #[test]
+    fn stage_and_unstage_hunks_with_partial_staging() {
+        let base = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n";
+        // hunk 1: modify b; hunk 2: delete e; hunk 3: add after h; hunk 4: modify l
+        let cur = "a\nB\nc\nd\nf\ng\nh\nNEW\ni\nj\nk\nL\n";
+        let t = init();
+        commit_file(&t.0, "f.txt", base, "base");
+        fs::write(t.0.join("f.txt"), cur).unwrap();
+        let (top, rel) = (t.0.as_path(), "f.txt");
+
+        // Unstaged side: index == HEAD, so the same four hunks as base -> cur, and blocks agree.
+        let (o, n) = side_texts(top, rel, None, Side::Unstaged);
+        let (o, n) = (o.unwrap(), n.unwrap());
+        assert_eq!(o, base);
+        let hs = hunks(&o, &n);
+        assert_eq!(hs.len(), 4);
+        assert_eq!(blocks(&side_by_side(&o, &n)).len(), 4, "diff view blocks line up with hunks");
+        assert!(side_texts(top, rel, None, Side::Staged).1.as_deref() == Some(base), "nothing staged yet");
+
+        // Stage hunk 3, then (index changed) re-diff and stage what is now hunk 1.
+        toggle_hunk(top, rel, Side::Unstaged, &o, &n, &hs[2]).unwrap();
+        let staged = git(top, &["show", ":f.txt"]);
+        assert_eq!(staged, "a\nb\nc\nd\ne\nf\ng\nh\nNEW\ni\nj\nk\nl\n");
+        let (o, n) = side_texts(top, rel, None, Side::Unstaged);
+        let (o, n) = (o.unwrap(), n.unwrap());
+        let hs = hunks(&o, &n);
+        assert_eq!(hs.len(), 3, "the staged hunk left the unstaged side");
+        toggle_hunk(top, rel, Side::Unstaged, &o, &n, &hs[0]).unwrap();
+        assert_eq!(git(top, &["show", ":f.txt"]), "a\nB\nc\nd\ne\nf\ng\nh\nNEW\ni\nj\nk\nl\n");
+
+        // Staged side: HEAD -> index has two hunks; unstage the first (b) and keep the other.
+        let (ho, hi) = side_texts(top, rel, None, Side::Staged);
+        let (ho, hi) = (ho.unwrap(), hi.unwrap());
+        let hs = hunks(&ho, &hi);
+        assert_eq!(hs.len(), 2);
+        toggle_hunk(top, rel, Side::Staged, &ho, &hi, &hs[0]).unwrap();
+        assert_eq!(git(top, &["show", ":f.txt"]), "a\nb\nc\nd\ne\nf\ng\nh\nNEW\ni\nj\nk\nl\n");
+        // And the working file is untouched.
+        assert_eq!(fs::read_to_string(t.0.join("f.txt")).unwrap(), cur);
+
+        // Unstage the rest: the index is HEAD again.
+        let (ho, hi) = side_texts(top, rel, None, Side::Staged);
+        let (ho, hi) = (ho.unwrap(), hi.unwrap());
+        let hs = hunks(&ho, &hi);
+        toggle_hunk(top, rel, Side::Staged, &ho, &hi, &hs[0]).unwrap();
+        assert!(git(top, &["diff", "--cached"]).is_empty());
+    }
+
+    /// base with the hunks of `which` (indexes into `hs`) taken from `cur`.
+    fn with_hunks(base: &str, cur: &str, hs: &[Hunk], which: &[usize]) -> String {
+        let (a, b) = (lines(base), lines(cur));
+        let mut out = String::new();
+        let mut at = 0;
+        for (i, h) in hs.iter().enumerate() {
+            a[at..h.base_start].iter().for_each(|l| out.push_str(l));
+            if which.contains(&i) {
+                b[h.new_start..h.new_start + h.new_len].iter().for_each(|l| out.push_str(l));
+            } else {
+                a[h.base_start..h.base_start + h.base_len].iter().for_each(|l| out.push_str(l));
+            }
+            at = h.base_start + h.base_len;
+        }
+        a[at..].iter().for_each(|l| out.push_str(l));
+        out
+    }
+
+    /// Every subset of hunks staged one at a time, then each one unstaged again: the index must be
+    /// exactly "base plus the remaining subset" (hunks of different sizes shift the line numbers).
+    #[test]
+    fn any_order_of_stage_and_unstage_keeps_the_index_exact() {
+        let base = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n";
+        // delete 2,3 | insert x,y,z after 5 | modify 8 | insert w after 11 | delete 14
+        let cur = "1\n4\n5\nx\ny\nz\n6\n7\nEIGHT\n9\n10\n11\nw\n12\n13\n";
+        let hs = hunks(base, cur);
+        assert_eq!(hs.len(), 5, "{hs:?}");
+        let t = init();
+        commit_file(&t.0, "f.txt", base, "base");
+        fs::write(t.0.join("f.txt"), cur).unwrap();
+        let (top, rel) = (t.0.as_path(), "f.txt");
+        let n = hs.len();
+        for mask in 1u32..(1 << n) {
+            let set: Vec<usize> = (0..n).filter(|i| mask & (1 << i) != 0).collect();
+            git(top, &["reset", "-q"]);
+            // Stage in a mask-dependent order: the remaining unstaged hunks are always re-diffed.
+            let mut order = set.clone();
+            if mask % 2 == 0 {
+                order.reverse();
+            }
+            let mut left: Vec<usize> = (0..n).collect();
+            for k in &order {
+                let (o, w) = side_texts(top, rel, None, Side::Unstaged);
+                let (o, w) = (o.unwrap(), w.unwrap());
+                let cur_hs = hunks(&o, &w);
+                let pos = left.iter().position(|x| x == k).unwrap();
+                toggle_hunk(top, rel, Side::Unstaged, &o, &w, &cur_hs[pos]).unwrap();
+                left.remove(pos);
+            }
+            assert_eq!(git(top, &["show", ":f.txt"]), with_hunks(base, cur, &hs, &set), "stage mask {mask:b} order {order:?}");
+            // Unstage them again, a different order.
+            let mut staged = set.clone();
+            let mut undo = set.clone();
+            if mask % 3 == 0 {
+                undo.reverse();
+            }
+            for k in &undo {
+                let (o, i) = side_texts(top, rel, None, Side::Staged);
+                let (o, i) = (o.unwrap(), i.unwrap());
+                let cur_hs = hunks(&o, &i);
+                let pos = staged.iter().position(|x| x == k).unwrap();
+                toggle_hunk(top, rel, Side::Staged, &o, &i, &cur_hs[pos]).unwrap();
+                staged.remove(pos);
+                assert_eq!(git(top, &["show", ":f.txt"]), with_hunks(base, cur, &hs, &staged), "unstage {k} mask {mask:b}");
+            }
+        }
+    }
+
+    #[test]
+    fn side_texts_are_none_for_files_without_both_versions() {
+        let t = init();
+        commit_file(&t.0, "kept.txt", "x\n", "base");
+        fs::write(t.0.join("new.txt"), "n\n").unwrap();
+        let (o, n) = side_texts(&t.0, "new.txt", None, Side::Unstaged);
+        assert!(o.is_none() && n.is_some(), "untracked: no index version");
+        git(&t.0, &["add", "new.txt"]);
+        let (o, n) = side_texts(&t.0, "new.txt", None, Side::Staged);
+        assert!(o.is_none() && n.is_some(), "added: no HEAD version");
+        fs::remove_file(t.0.join("kept.txt")).unwrap();
+        let (o, n) = side_texts(&t.0, "kept.txt", None, Side::Unstaged);
+        assert!(o.is_some() && n.is_none(), "deleted in the working tree");
     }
 
     // ---- revert ----

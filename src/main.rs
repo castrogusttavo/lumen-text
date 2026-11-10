@@ -1,5 +1,6 @@
 mod app;
 mod app_ctxmenu;
+mod app_explorer;
 mod app_debug;
 mod app_files;
 mod app_gitx;
@@ -25,6 +26,7 @@ mod field;
 mod format;
 mod fuzzy;
 mod git;
+mod gitsync;
 mod gitx;
 mod highlight;
 mod hover_md;
@@ -32,6 +34,7 @@ mod icons;
 mod instance;
 mod keymap;
 mod lsp;
+mod mdimg;
 mod mdview;
 mod mem;
 mod minimap;
@@ -51,6 +54,7 @@ mod app_settings;
 mod app_split;
 mod app_tooltip;
 mod app_topbar;
+mod app_unsaved;
 mod terminal;
 mod textmate;
 mod theme;
@@ -116,6 +120,7 @@ fn main() -> ExitCode {
         }
     }
     let cfg = config::Config::load();
+    theme::set_theme_chrome(cfg.own_chrome());
     let theme_path = env::var("LUMEN_THEME").map(PathBuf::from).unwrap_or_else(|_| {
         let name = cfg.resolve_theme(if cfg.appearance == "system" { config::detect_dark() } else { None });
         match zedtheme::list_user_themes().into_iter().find(|(n, _)| *n == name) {

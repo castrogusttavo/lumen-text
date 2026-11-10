@@ -491,6 +491,8 @@ impl App {
     /// Button released (anywhere): ends scrollbar drags and selection drags.
     pub fn mouse_up(&mut self) {
         self.hover_mouse_up();
+        self.gitpanel_release();
+        self.tree_drag_release();
         self.dragging_minimap = false;
         if self.regions.drag.take().is_some() {
             self.request_redraw();

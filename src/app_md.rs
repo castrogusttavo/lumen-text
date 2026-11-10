@@ -13,7 +13,11 @@ use crate::{
     mdview::MdView,
     ui::{line_h, Canvas, Rect},
 };
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 use winit::event::{MouseButton, MouseScrollDelta};
 
 /// Per-document reader state.
@@ -28,11 +32,13 @@ pub struct MdState {
     fresh: bool,
     /// `#heading` to scroll to once the layout exists (links to other files carry one).
     pub anchor: Option<String>,
+    /// The divider between the editor and the preview is being dragged.
+    pub dragging: bool,
 }
 
 impl MdState {
     pub fn new() -> Self {
-        MdState { view: MdView::new(), scroll: 0.0, rect: Rect::default(), ver: 0, top_seen: -1.0, fresh: true, anchor: None }
+        MdState { view: MdView::new(), scroll: 0.0, rect: Rect::default(), ver: 0, top_seen: -1.0, fresh: true, anchor: None, dragging: false }
     }
 }
 
@@ -40,6 +46,29 @@ impl Default for MdState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The reader needs at least this much editor area; narrower, the editor keeps all of it.
+pub const MIN_AREA: i32 = 420;
+/// Narrowest side (editor or preview) the divider can squeeze.
+const MIN_PANE: i32 = 160;
+/// Pixels on each side of the 1 px divider that grab the mouse.
+const GRAB: i32 = 3;
+
+/// (editor, divider, preview) inside `card` for a source-side share `ratio`; `None` when the card
+/// is narrower than [`MIN_AREA`].
+pub fn md_rects(card: Rect, ratio: f32) -> Option<(Rect, Rect, Rect)> {
+    if card.w < MIN_AREA {
+        return None;
+    }
+    let avail = card.w - 1;
+    let lw = ((avail as f32 * ratio).round() as i32).clamp(MIN_PANE, avail - MIN_PANE);
+    Some((Rect::new(card.x, card.y, lw, card.h), Rect::new(card.x + lw, card.y, 1, card.h), Rect::new(card.x + lw + 1, card.y, avail - lw, card.h)))
+}
+
+/// Source-side share that puts the divider under window x (kept inside the configured range).
+pub fn md_ratio_at(card: Rect, x: f64) -> f32 {
+    (((x - card.x as f64) / (card.w - 1).max(1) as f64) as f32).clamp(crate::config::MD_SPLIT_RANGE.0, crate::config::MD_SPLIT_RANGE.1)
 }
 
 pub fn is_markdown_name(name: &str) -> bool {
@@ -159,11 +188,60 @@ fn open_external(url: &str) {
     });
 }
 
+// ── code highlighting ──
+
+/// TextMate scope for a fence language: a manifest id (`typescript`), one of its aliases (`ts`,
+/// `sh`) or a top-level alias (`bash`), case-insensitive.
+pub fn scope_of(assets: &Path, lang: &str) -> Option<String> {
+    static MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
+    let map = MAP.get_or_init(|| {
+        let mut m = HashMap::new();
+        let Ok(text) = std::fs::read_to_string(assets.join("language-manifest.json")) else { return m };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return m };
+        let mut by_id: HashMap<String, String> = HashMap::new();
+        for l in v["languages"].as_array().into_iter().flatten() {
+            let (Some(id), Some(scope)) = (l["id"].as_str(), l["scopeName"].as_str()) else { continue };
+            by_id.insert(id.to_string(), scope.to_string());
+            m.insert(id.to_lowercase(), scope.to_string());
+            for a in l["aliases"].as_array().into_iter().flatten().filter_map(|a| a.as_str()) {
+                m.entry(a.to_lowercase()).or_insert_with(|| scope.to_string());
+            }
+        }
+        for (alias, id) in v["aliases"].as_object().into_iter().flatten() {
+            if let Some(scope) = id.as_str().and_then(|i| by_id.get(i)) {
+                m.entry(alias.to_lowercase()).or_insert_with(|| scope.clone());
+            }
+        }
+        m
+    });
+    map.get(&lang.to_lowercase()).cloned()
+}
+
+/// The character that flips when a task checkbox is clicked: `' '` <-> `'x'` between the brackets
+/// at char index `c` (`[ ]` / `[x]`), if that is what the text holds there.
+pub fn task_flip(buf: &crate::buffer::Buffer, c: usize) -> Option<(usize, &'static str)> {
+    if buf.char_at(c) != Some('[') || buf.char_at(c + 2) != Some(']') {
+        return None;
+    }
+    match buf.char_at(c + 1)? {
+        ' ' => Some((c + 1, "x")),
+        'x' | 'X' => Some((c + 1, " ")),
+        _ => None,
+    }
+}
+
 // ── App integration ──
 
 impl Doc {
     fn md_is_markdown(&self) -> bool {
         is_markdown_name(&self.name)
+    }
+
+    /// Reopen the reader when the session said it was open (no-op for files that aren't Markdown).
+    pub fn md_restore(&mut self, open: bool) {
+        if open && self.md_is_markdown() && self.md.is_none() {
+            self.md = Some(Box::new(MdState::new()));
+        }
     }
 }
 
@@ -193,13 +271,34 @@ impl App {
         if self.diff.is_some() || !self.docs.get(self.active).is_some_and(|d| d.md.is_some()) {
             return;
         }
-        let c = self.layout.card;
-        if c.w < 420 {
-            return;
+        self.layout.divider = Rect::default();
+        if let Some((ed, dv, md)) = md_rects(self.layout.card, self.config.md_split) {
+            self.layout.editor = ed;
+            self.layout.divider = dv; // the split-pane divider is never in use while a reader is open
+            self.layout.md = md;
         }
-        let half = c.w / 2;
-        self.layout.editor = Rect::new(c.x, c.y, half, c.h);
-        self.layout.md = Rect::new(c.x + half + 1, c.y, c.w - half - 1, c.h);
+    }
+
+    /// Mouse move while dragging the reader's divider.
+    pub fn md_drag(&mut self, x: f64) -> bool {
+        let card = self.layout.card;
+        if !self.docs.get(self.active).and_then(|d| d.md.as_ref()).is_some_and(|s| s.dragging) {
+            return false;
+        }
+        self.config.md_split = md_ratio_at(card, x);
+        self.split_layout();
+        for d in &mut self.docs {
+            d.reveal = true;
+        }
+        true
+    }
+
+    /// Mouse release: ends a divider drag and keeps the ratio in config.json.
+    pub fn md_release(&mut self) {
+        let was = self.docs.iter_mut().filter_map(|d| d.md.as_mut()).fold(false, |a, st| std::mem::replace(&mut st.dragging, false) || a);
+        if was {
+            self.config.save();
+        }
     }
 
     /// Draw the preview and keep both scroll positions in step. Returns true while a redraw is wanted.
@@ -210,6 +309,7 @@ impl App {
         }
         let Some(d) = self.docs.get_mut(self.active) else { return false };
         let max_top = d.max_top();
+        let base = d.path().and_then(Path::parent).map(Path::to_path_buf);
         let Some(st) = d.md.as_mut() else { return false };
         let border = self.theme.chrome.border;
         cv.fill(Rect::new(r.x - 1, r.y, 1, r.h), border);
@@ -219,6 +319,7 @@ impl App {
             st.view.set_text(&d.buf.to_string());
             st.ver = d.version;
         }
+        st.view.set_base_dir(base.as_deref());
         st.view.ensure_layout(&mut self.tx, r.w);
         let max_scroll = (st.view.content_height() - r.h).max(0) as f64;
 
@@ -243,7 +344,23 @@ impl App {
         st.fresh = false;
         st.scroll = st.scroll.clamp(0.0, max_scroll);
         st.rect = r;
-        st.view.draw(cv, &mut self.tx, &self.theme, r, st.scroll);
+        {
+            let (theme, assets, tokenizers) = (&self.theme, &self.assets, &mut self.tokenizers);
+            let mut hl = |lang: &str, text: &str| {
+                let scope = scope_of(assets, lang)?;
+                let tk = match tokenizers.get(&scope) {
+                    Some(t) => t.clone(),
+                    None => {
+                        let t = crate::highlight::make_tokenizer(assets, &scope)?;
+                        tokenizers.insert(scope.clone(), t.clone());
+                        t
+                    }
+                };
+                Some(crate::highlight::highlight_text(&tk, theme, text))
+            };
+            st.view.draw_with(cv, &mut self.tx, &self.theme, r, st.scroll, Some(&mut hl));
+        }
+        busy |= st.view.pending();
         let (total, visible, pos) = (st.view.content_height() as f64, r.h as f64, st.scroll);
         self.region_bar(cv, crate::scrollreg::Reg::Md, r, total, visible, pos, 1.0, false);
         busy
@@ -275,6 +392,13 @@ impl App {
 
     /// Click inside the preview: follows links. False when the click is not on the preview.
     pub fn md_mouse_down(&mut self, x: f64, y: f64, button: MouseButton) -> bool {
+        let dv = self.layout.divider;
+        if button == MouseButton::Left && self.layout.md.w > 0 && dv.w > 0 && Rect::new(dv.x - GRAB, dv.y, dv.w + 2 * GRAB, dv.h).contains(x, y) {
+            if let Some(st) = self.docs.get_mut(self.active).and_then(|d| d.md.as_mut()) {
+                st.dragging = true;
+                return true;
+            }
+        }
         let r = self.layout.md;
         if r.w <= 0 || !r.contains(x, y) {
             return false;
@@ -285,10 +409,34 @@ impl App {
         }
         let Some(d) = self.docs.get(self.active) else { return true };
         let Some(st) = d.md.as_ref() else { return true };
+        if let Some(off) = st.view.check_at(x, y, st.rect, st.scroll) {
+            self.md_toggle_task(off);
+            return true;
+        }
         let Some(url) = st.view.link_at(x, y, st.rect, st.scroll) else { return true };
         let base = d.path().and_then(Path::parent).map(Path::to_path_buf);
         self.md_follow(classify_link(&url, base.as_deref()));
         true
+    }
+
+    /// A task checkbox was clicked: flip `[ ]` / `[x]` in the source (one undo step). `off` is the
+    /// byte offset of the `[` in the text the preview was built from.
+    pub fn md_toggle_task(&mut self, off: usize) {
+        use crate::buffer::EditKind;
+        let Some(d) = self.docs.get_mut(self.active) else { return };
+        if d.md.as_ref().is_none_or(|st| st.ver != d.version) {
+            return; // the text changed since the last draw: the offset may be stale
+        }
+        let c = d.buf.snapshot().byte_to_char(off.min(d.buf.len_bytes()));
+        let Some((at, new)) = task_flip(&d.buf, c) else { return };
+        let (top, target, before) = (d.top, d.target, d.ed.sel);
+        d.buf.close_group();
+        d.buf.replace(at, at + 1, new, EditKind::Other, before);
+        d.buf.close_group();
+        d.sync_edits();
+        d.top = top;
+        d.target = target;
+        self.request_redraw();
     }
 
     pub fn md_follow(&mut self, act: LinkAction) {
@@ -342,6 +490,56 @@ mod tests {
         let mut tx = TextCtx::new(None);
         v.ensure_layout(&mut tx, 600);
         (v, src.lines().count())
+    }
+
+    #[test]
+    fn md_rects_keep_the_420_minimum_and_clamp_the_panes() {
+        let card = |w| Rect::new(10, 20, w, 300);
+        assert!(md_rects(card(419), 0.5).is_none(), "below 420 px nothing is split");
+        let (ed, dv, md) = md_rects(card(420), 0.5).unwrap();
+        assert_eq!((ed.x, ed.w, dv.w, md.w), (10, 210, 1, 209));
+        assert_eq!(ed.w + dv.w + md.w, 420, "the three parts tile the card");
+        assert_eq!(dv.x, ed.right());
+        assert_eq!(md.x, dv.right());
+        // Extreme ratios never squeeze a side under the minimum pane.
+        let (ed, _, md) = md_rects(card(600), 0.0).unwrap();
+        assert_eq!(ed.w, MIN_PANE);
+        assert!(md.w >= MIN_PANE);
+        let (ed, _, md) = md_rects(card(600), 1.0).unwrap();
+        assert_eq!(md.w, MIN_PANE);
+        assert!(ed.w >= MIN_PANE);
+        let (ed, _, _) = md_rects(card(1000), 0.7).unwrap();
+        assert_eq!(ed.w, 699);
+    }
+
+    #[test]
+    fn dragging_maps_x_to_a_bounded_ratio() {
+        let card = Rect::new(100, 0, 801, 300);
+        assert!((md_ratio_at(card, 100.0 + 400.0) - 0.5).abs() < 1e-3);
+        assert_eq!(md_ratio_at(card, 0.0), crate::config::MD_SPLIT_RANGE.0);
+        assert_eq!(md_ratio_at(card, 5000.0), crate::config::MD_SPLIT_RANGE.1);
+        // Round trip: dragging to the divider's own x keeps the ratio.
+        let (_, dv, _) = md_rects(card, 0.35).unwrap();
+        let r = md_ratio_at(card, dv.x as f64);
+        assert_eq!(md_rects(card, r).unwrap().1.x, dv.x);
+    }
+
+    #[test]
+    fn md_restore_only_reopens_markdown_files() {
+        use crate::buffer::Buffer;
+        let mk = |name: &str| {
+            let mut d = Doc::new(Buffer::from_str("# a\n"), None, None, "//", 8.0);
+            d.name = name.to_string();
+            d
+        };
+        let mut a = mk("notes.md");
+        a.md_restore(false);
+        assert!(a.md.is_none(), "closed in the session -> stays closed");
+        a.md_restore(true);
+        assert!(a.md.is_some());
+        let mut b = mk("main.rs");
+        b.md_restore(true);
+        assert!(b.md.is_none(), "not a Markdown file");
     }
 
     #[test]

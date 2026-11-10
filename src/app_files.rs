@@ -42,6 +42,9 @@ impl App {
     }
 
     pub fn prompt_delete_path(&mut self) {
+        if self.focus == Focus::Sidebar && self.tree.selection().len() > 1 {
+            return self.ctx_delete_selection();
+        }
         let Some(p) = self.target_path() else { return };
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let what = if p.is_dir() { "a pasta (e tudo dentro)" } else { "o arquivo" };

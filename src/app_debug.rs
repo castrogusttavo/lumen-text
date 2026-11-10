@@ -4,12 +4,37 @@
 use crate::{
     app::App,
     app_overlay::Cmd,
-    app_panel::PanelTab,
+    app_panel::{PANEL_HEADER, PanelTab},
     dap::{self, Dap, Frame, MultiSession, Session, State, Var},
     scrollreg::Reg,
     ui::{Canvas, Rect, line_h},
 };
 use std::path::{Path, PathBuf};
+
+/// Height of the column titles in the debug body (rows start right below).
+const DEBUG_TITLE_H: i32 = 28;
+
+/// The Pilha (column 0) / Variáveis (column 1) row under (x, y): `(column, index, row rect)`.
+/// `body` is the debug body, `scroll` the per-column scroll in px and `counts` the number of
+/// rows of those two columns. The Saída column has no interactive rows.
+fn debug_row_at(body: Rect, scroll: [f64; 3], counts: [usize; 2], lh: i32, x: f64, y: f64) -> Option<(usize, usize, Rect)> {
+    let top = body.y + DEBUG_TITLE_H;
+    let area = Rect::new(body.x, top, body.w, (body.bottom() - top).max(0));
+    if !area.contains(x, y) || lh <= 0 {
+        return None;
+    }
+    let w3 = body.w / 3;
+    let k = if x < (body.x + w3) as f64 { 0 } else if x < (body.x + 2 * w3) as f64 { 1 } else { return None };
+    let col = if k == 0 { Rect::new(body.x, top, w3, area.h) } else { Rect::new(body.x + w3, top, w3, area.h) };
+    let idx = ((y - top as f64 + scroll[k]) / lh as f64).floor();
+    if idx < 0.0 || idx as usize >= counts[k] {
+        return None;
+    }
+    let idx = idx as usize;
+    let ry = top + idx as i32 * lh - scroll[k] as i32;
+    let r = Rect::new(col.x + 4, ry, col.w - 8, lh).intersect(&area);
+    (r.w > 0 && r.h > 0).then_some((k, idx, r))
+}
 
 pub enum Debugger {
     Node(Box<MultiSession>),
@@ -375,6 +400,18 @@ impl App {
         }
     }
 
+    /// Hover tint (rect, radius) for the stack frame / variable row under the pointer.
+    pub fn debug_hover_target(&self) -> Option<(Rect, i32)> {
+        let r = self.layout.panel;
+        if !self.panel.open || self.panel.tab != PanelTab::Debug || !self.overlay.is_none() {
+            return None;
+        }
+        let d = self.dbg.as_ref()?;
+        let body = Rect::new(r.x, r.y + PANEL_HEADER + 1, r.w, (r.h - PANEL_HEADER - 1).max(0));
+        let (x, y) = self.mouse;
+        debug_row_at(body, self.panel.dbg_scroll, [d.frames().len(), d.locals().len()], line_h() as i32, x, y).map(|(_, _, rect)| (rect, 5))
+    }
+
     /// Click in the debug panel body: selects a stack frame.
     pub fn debug_click(&mut self, x: f64, y: f64) -> bool {
         let Some((_, i)) = self.layout.debug_frames.iter().find(|(r, _)| r.contains(x, y)).copied() else { return false };
@@ -408,5 +445,26 @@ mod tests {
         let m = "[workspace]\nmembers=[]\n\n[package]\nname = \"lumen-text\"\nversion = \"0.1.0\"\n\n[dependencies]\nname = \"x\"\n";
         assert_eq!(cargo_package_name(m).as_deref(), Some("lumen-text"));
         assert_eq!(cargo_package_name("[dependencies]\nname = \"x\""), None);
+    }
+
+    #[test]
+    fn hover_row_geometry() {
+        let body = Rect::new(0, 100, 300, 200);
+        let lh = 20;
+        // Column 0, second row (top = 128).
+        let (k, i, r) = debug_row_at(body, [0.0; 3], [3, 5], lh, 50.0, 150.0).unwrap();
+        assert_eq!((k, i), (0, 1));
+        assert_eq!((r.x, r.y, r.h), (4, 148, 20));
+        assert_eq!(r.w, 100 - 8);
+        // Column 1 uses its own count and scroll.
+        let (k, i, _) = debug_row_at(body, [0.0, 40.0, 0.0], [3, 5], lh, 150.0, 130.0).unwrap();
+        assert_eq!((k, i), (1, 2));
+        // Past the last row, in the title strip, in the output column: nothing.
+        assert!(debug_row_at(body, [0.0; 3], [3, 5], lh, 50.0, 128.0 + 3.0 * 20.0 + 1.0).is_none());
+        assert!(debug_row_at(body, [0.0; 3], [3, 5], lh, 50.0, 110.0).is_none());
+        assert!(debug_row_at(body, [0.0; 3], [3, 5], lh, 250.0, 150.0).is_none());
+        // A partly scrolled row is clipped to the list area.
+        let (_, _, r) = debug_row_at(body, [10.0, 0.0, 0.0], [10, 0], lh, 50.0, 130.0).unwrap();
+        assert_eq!((r.y, r.h), (128, 10));
     }
 }

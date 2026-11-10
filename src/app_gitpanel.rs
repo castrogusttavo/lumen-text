@@ -12,7 +12,9 @@ use crate::{
     app::{App, KeyIn},
     app_gitx::DiffView,
     field::TextField,
-    git, gitx,
+    git,
+    gitsync::{self, Fail, FailKind, Job, Op, SyncInfo},
+    gitx::{self, Side},
     theme::Rgba,
     ui::{Canvas, Rect, TextCtx},
 };
@@ -21,7 +23,7 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use winit::{
     event::MouseScrollDelta,
@@ -48,7 +50,8 @@ impl Group {
     }
 }
 
-/// One entry of `git status`. A file that is staged *and* modified again appears twice.
+/// One entry of `git status`. A file that is staged *and* modified again is ONE entry in the
+/// Staged group whose `also` holds the working-tree state (so the panel draws a single row).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
     /// Repository-root-relative path.
@@ -58,6 +61,33 @@ pub struct Change {
     /// M A D R C T U or '?'.
     pub code: char,
     pub group: Group,
+    /// Staged entries only: the file also has unstaged changes (their M/D code).
+    pub also: Option<char>,
+}
+
+impl Change {
+    /// Has working-tree changes that "discard" can throw away.
+    pub fn discardable(&self) -> bool {
+        self.group != Group::Staged || self.also.is_some()
+    }
+}
+
+/// State of a row's checkbox: nothing staged, everything staged, or staged with later edits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CheckState {
+    Off,
+    On,
+    Partial,
+}
+
+impl Change {
+    pub fn check_state(&self) -> CheckState {
+        match (self.group, self.also) {
+            (Group::Staged, None) => CheckState::On,
+            (Group::Staged, Some(_)) => CheckState::Partial,
+            _ => CheckState::Off,
+        }
+    }
 }
 
 /// Parse `git status --porcelain=v1 -z -uall`; sorted by group (Staged, Mudanças, Não rastreados)
@@ -72,7 +102,7 @@ pub fn parse_status_z(out: &str) -> Vec<Change> {
         let (x, y) = (e.as_bytes()[0] as char, e.as_bytes()[1] as char);
         let path = e[3..].to_string();
         let old = (matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C')).then(|| it.next().unwrap_or("").to_string());
-        let mk = |code: char, group: Group| Change { path: path.clone(), old: old.clone(), code, group };
+        let mk = |code: char, group: Group| Change { path: path.clone(), old: old.clone(), code, group, also: None };
         if x == '?' && y == '?' {
             v.push(mk('?', Group::Untracked));
         } else if x == '!' {
@@ -80,11 +110,12 @@ pub fn parse_status_z(out: &str) -> Vec<Change> {
         } else if x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D') {
             v.push(mk('U', Group::Changes));
         } else {
-            if x != ' ' {
-                v.push(mk(x, Group::Staged));
-            }
-            if y != ' ' {
-                v.push(mk(y, Group::Changes));
+            match (x != ' ', y != ' ') {
+                // Staged and modified again: a single row carrying both states.
+                (true, true) => v.push(Change { also: Some(y), ..mk(x, Group::Staged) }),
+                (true, false) => v.push(mk(x, Group::Staged)),
+                (false, true) => v.push(mk(y, Group::Changes)),
+                (false, false) => {}
             }
         }
     }
@@ -187,8 +218,9 @@ pub fn unstage(top: &Path, paths: &[String]) -> Result<(), String> {
 pub fn discard(top: &Path, c: &Change) -> Result<(), String> {
     match c.group {
         Group::Untracked => std::fs::remove_file(top.join(&c.path)).map_err(|e| e.to_string()),
-        Group::Changes => run_owned(top, &with_paths(&["checkout"], std::slice::from_ref(&c.path))).map(|_| ()),
-        Group::Staged => Err("tire do stage antes de descartar".into()),
+        // Staged + modified again: restore the working tree from the index (keeps the staged part).
+        Group::Changes | Group::Staged if c.discardable() => run_owned(top, &with_paths(&["checkout"], std::slice::from_ref(&c.path))).map(|_| ()),
+        Group::Changes | Group::Staged => Err("tire do stage antes de descartar".into()),
     }
 }
 
@@ -312,6 +344,18 @@ pub enum Hit {
     CommitBtn,
     Commit(usize),
     CFile(usize),
+    Fetch,
+    Pull,
+    Push,
+    /// "Emendar o último commit" checkbox.
+    Amend,
+    /// "Publicar" in the set-upstream prompt.
+    PublishYes,
+    PublishNo,
+    /// Cancel the running fetch / pull / push.
+    JobCancel,
+    /// The result / error line under the branch row (click dismisses it).
+    Note,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -324,13 +368,18 @@ pub enum Row {
 
 const LOG_PAGE: usize = 60;
 const HEAD_H: i32 = 44;
-const BRANCH_H: i32 = 26;
+const BRANCH_H: i32 = 36;
+/// One line of the result / progress strip under the branch row.
+const STRIP_LINE: i32 = 17;
+/// Height of the "publish this branch?" prompt.
+const PROMPT_H: i32 = 58;
 const FILE_H: i32 = 30;
 const SEC_H: i32 = 34;
 const COMMIT_H: i32 = 52;
 const CFILE_H: i32 = 28;
 const MSG_H: i32 = 92;
-const COMMIT_AREA_H: i32 = 12 + 22 + MSG_H + 8 + 34 + 12;
+const AMEND_H: i32 = 28;
+const COMMIT_AREA_H: i32 = 12 + 22 + MSG_H + 8 + AMEND_H + 34 + 12;
 const LINE: i32 = 18;
 
 pub struct GitPanel {
@@ -361,6 +410,24 @@ pub struct GitPanel {
     pub sig: u64,
     pub hist_sig: u64,
     pub closed: bool,
+    /// The left edge is being dragged.
+    pub resizing: bool,
+    /// Ahead / behind of the branch against its upstream.
+    pub sync: SyncInfo,
+    /// Fetch / pull / push running on a worker thread.
+    pub job: Option<Job>,
+    /// Last result of a remote operation: (text, ok, when). Errors stay until dismissed.
+    pub sync_note: Option<(String, bool, Instant)>,
+    /// Lines the note was wrapped into at the last draw (the strip grows with it).
+    pub note_lines: i32,
+    /// "Publish branch on remote?" prompt: (remote, branch).
+    pub publish: Option<(String, String)>,
+    /// "Amend" is checked: the message box holds the last commit's message.
+    pub amend: bool,
+    /// What was in the message box before Amend replaced it.
+    pub amend_draft: String,
+    /// Last time the progress counter forced a redraw.
+    pub spun: Instant,
 }
 
 impl GitPanel {
@@ -392,6 +459,15 @@ impl GitPanel {
             sig: 0,
             hist_sig: 0,
             closed: false,
+            resizing: false,
+            sync: SyncInfo::default(),
+            job: None,
+            sync_note: None,
+            note_lines: 1,
+            publish: None,
+            amend: false,
+            amend_draft: String::new(),
+            spun: Instant::now(),
         };
         p.refresh();
         p
@@ -403,9 +479,36 @@ impl GitPanel {
             Some(t) => git_run(t, &["status", "--porcelain=v1", "-z", "-uall"]).map(|o| parse_status_z(&o)).unwrap_or_default(),
             None => Vec::new(),
         };
+        self.sync = match &self.top {
+            Some(t) => gitsync::info(t),
+            None => SyncInfo::default(),
+        };
         self.confirm = None;
         let n = self.rows().len();
         self.cursor = self.cursor.min(n.saturating_sub(1));
+    }
+
+    fn note_visible(&self) -> bool {
+        self.sync_note.as_ref().is_some_and(|(_, ok, t)| !*ok || t.elapsed().as_secs() < 8)
+    }
+
+    /// Height of the strip under the branch row: the set-upstream prompt, the progress of a
+    /// running command, or the last result.
+    pub fn strip_h(&self) -> i32 {
+        if self.publish.is_some() {
+            PROMPT_H
+        } else if self.job.is_some() {
+            STRIP_LINE + 10
+        } else if self.note_visible() {
+            self.note_lines.max(1) * STRIP_LINE + 10
+        } else {
+            0
+        }
+    }
+
+    /// Everything above the list: tabs, branch row and strip.
+    pub fn chrome_h(&self) -> i32 {
+        HEAD_H + BRANCH_H + self.strip_h()
     }
 
     pub fn reset_history(&mut self) {
@@ -513,6 +616,21 @@ impl GitPanel {
         }
     }
 
+    /// Scroll the active tab so that rows `first..=last` are visible in a viewport of height
+    /// `view`: the last row's bottom wins when the span fits, otherwise the first row's top.
+    pub fn reveal_span(&mut self, first: usize, last: usize, view: i32) {
+        let rows = self.rows();
+        let k = if self.tab == Tab::Changes { 0 } else { 1 };
+        let top: i32 = rows.iter().take(first).map(|r| Self::row_h(*r)).sum();
+        let bottom: i32 = rows.iter().take(last + 1).map(|r| Self::row_h(*r)).sum();
+        let (s, v) = (self.scroll[k], view as f64);
+        if bottom - top > view || (top as f64) < s {
+            self.scroll[k] = top as f64;
+        } else if bottom as f64 > s + v {
+            self.scroll[k] = (bottom - view) as f64;
+        }
+    }
+
     /// Scroll so that row `idx` is inside a viewport of height `view`.
     pub fn reveal(&mut self, view: i32) {
         let rows = self.rows();
@@ -568,11 +686,59 @@ fn fit(tx: &mut TextCtx, text: &str, max: i32, bold: bool) -> String {
     chars[..lo].iter().collect::<String>() + "…"
 }
 
+/// Greedy word wrap of `text` into at most `max` lines of `width` px; the last one gets an
+/// ellipsis when the text does not fit.
+fn wrap_lines(tx: &mut TextCtx, text: &str, width: i32, max: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        let cand = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+        if cur.is_empty() || tx.ui_width(&cand, false) <= width {
+            cur = cand;
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur = word.to_string();
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.len() > max {
+        lines.truncate(max);
+        let last = lines.pop().unwrap_or_default();
+        lines.push(fit(tx, &format!("{last}…"), width, false));
+    }
+    // A single word wider than the line is cut with an ellipsis.
+    lines.into_iter().map(|l| fit(tx, &l, width, false)).collect()
+}
+
 fn split_name(path: &str) -> (&str, &str) {
     match path.rfind('/') {
         Some(i) => (&path[i + 1..], &path[..i]),
         None => (path, ""),
     }
+}
+
+/// Narrowest the panel may be dragged to.
+const GP_MIN_W: i32 = 280;
+/// Half-width of the grab band around the panel's left edge.
+const GP_GRAB: i32 = 4;
+
+/// Panel width for a requested `want` px (a dragged value) inside a window `win` px wide:
+/// at least `GP_MIN_W` (less in tiny windows) and at most 60% of the window.
+pub fn clamp_panel_width(want: i32, win: i32) -> i32 {
+    let lo = GP_MIN_W.min(win / 2);
+    want.clamp(lo, (win * 6 / 10).max(lo))
+}
+
+/// Automatic width: 30% of the window, 340..440 px.
+fn auto_panel_width(win: i32) -> i32 {
+    ((win as f32 * 0.30) as i32).clamp(340, 440).min(win / 2)
+}
+
+/// Keys that only change modifier state; they never mean anything on their own.
+fn is_modifier_key(key: &Key) -> bool {
+    matches!(key, Key::Named(NamedKey::Control | NamedKey::Shift | NamedKey::Alt | NamedKey::AltGraph | NamedKey::Super | NamedKey::Meta | NamedKey::Hyper | NamedKey::CapsLock | NamedKey::NumLock | NamedKey::ScrollLock | NamedKey::Fn | NamedKey::FnLock | NamedKey::Symbol | NamedKey::SymbolLock))
 }
 
 /// Text color that reads on top of `bg`.
@@ -586,7 +752,24 @@ impl App {
     /// Width the panel takes when open (also valid while the panel state is taken out of `self`).
     fn gp_width(&self) -> i32 {
         let w = self.size.0 as i32;
-        ((w as f32 * 0.30) as i32).clamp(340, 440).min(w / 2)
+        match self.config.git_panel_width {
+            0 => auto_panel_width(w),
+            n => clamp_panel_width(n, w),
+        }
+    }
+
+    /// Is (x, y) on the draggable left edge of the open panel?
+    fn gp_on_edge(&self, x: f64, y: f64) -> bool {
+        let p = self.gitpanel_rect();
+        self.gitpanel.is_some() && Rect::new(p.x - GP_GRAB, p.y, 2 * GP_GRAB, p.h).contains(x, y)
+    }
+
+    /// Mouse button released: ends an edge drag and stores the width in `config.json`.
+    pub fn gitpanel_release(&mut self) {
+        if self.gitpanel.as_mut().is_some_and(|gp| std::mem::take(&mut gp.resizing)) {
+            self.config.save();
+            self.request_redraw();
+        }
     }
 
     /// Width taken from the editor area: 0 when the panel is closed.
@@ -677,10 +860,11 @@ impl App {
     fn gp_toggle_stage(&mut self, gp: &mut GitPanel, i: usize) {
         let (Some(top), Some(c)) = (gp.top.clone(), gp.changes.get(i).cloned()) else { return };
         let mut paths = vec![c.path.clone()];
-        if c.group == Group::Staged {
+        if c.check_state() == CheckState::On {
             paths.extend(c.old.clone());
         }
-        let r = if c.group == Group::Staged { unstage(&top, &paths) } else { stage(&top, &paths) };
+        // Fully staged -> unstage; unstaged or staged-with-later-edits -> stage everything.
+        let r = if c.check_state() == CheckState::On { unstage(&top, &paths) } else { stage(&top, &paths) };
         if let Err(e) = r {
             gp.say(format!("git: {e}"), false);
         }
@@ -715,12 +899,59 @@ impl App {
         self.gp_after_change(gp);
     }
 
+    /// Check / uncheck "Amend": checking loads the last commit's message into the box (the draft
+    /// is kept and comes back when unchecking).
+    fn gp_toggle_amend(&mut self, gp: &mut GitPanel) {
+        let Some(top) = gp.top.clone() else { return };
+        if gp.amend {
+            gp.amend = false;
+            gp.msg = TextField::with(&std::mem::take(&mut gp.amend_draft));
+        } else {
+            match gitsync::last_message(&top) {
+                Some(m) => {
+                    gp.amend_draft = std::mem::take(&mut gp.msg.text);
+                    gp.msg = TextField::with(&m);
+                    gp.amend = true;
+                    gp.msg_focus = true;
+                }
+                None => return gp.say("Nenhum commit para emendar", false),
+            }
+        }
+        gp.msg_top = 0;
+    }
+
+    fn gp_amend(&mut self, gp: &mut GitPanel, top: &Path) {
+        // The commit being rewritten is already on the upstream when nothing is ahead of it.
+        let published = gp.sync.upstream.is_some() && gp.sync.ahead == 0;
+        match gitsync::commit_amend(top, &gp.msg.text) {
+            Ok(line) => {
+                gp.amend = false;
+                gp.msg = TextField::with(&std::mem::take(&mut gp.amend_draft));
+                gp.msg_top = 0;
+                let extra = if published { " (já publicado: o push exige force)" } else { "" };
+                gp.say(format!("Commit emendado{extra}"), true);
+                self.say(format!("amend: {line}"));
+                self.sync_docs_with_head();
+                self.diff = None;
+                gp.reset_history();
+            }
+            Err(e) => {
+                gp.say(format!("git commit --amend: {e}"), false);
+                self.say(format!("git commit --amend: {e}"));
+            }
+        }
+        self.gp_after_change(gp);
+    }
+
     fn gp_commit(&mut self, gp: &mut GitPanel) {
         let Some(top) = gp.top.clone() else { return };
         if gp.msg.text.trim().is_empty() {
             gp.say("Escreva uma mensagem de commit", false);
             gp.msg_focus = true;
             return;
+        }
+        if gp.amend {
+            return self.gp_amend(gp, &top);
         }
         if gp.staged() == 0 {
             if gp.changes.is_empty() {
@@ -751,16 +982,110 @@ impl App {
         self.gp_after_change(gp);
     }
 
+    // ───────────── remote: fetch / pull / push ─────────────
+
+    fn gp_start(&mut self, gp: &mut GitPanel, op: Op) {
+        let Some(top) = gp.top.clone() else { return };
+        if gp.job.is_some() {
+            return gp.say("Aguarde: já há uma operação em andamento", false);
+        }
+        gp.sync_note = None;
+        gp.publish = None;
+        gp.job = Some(gitsync::spawn(&top, op, self.wake()));
+        gp.spun = Instant::now();
+    }
+
+    fn gp_pull(&mut self, gp: &mut GitPanel) {
+        if gp.top.is_some() && gp.sync.upstream.is_none() {
+            let b = self.branch.clone().unwrap_or_default();
+            return self.gp_note(gp, format!("O branch “{b}” não tem upstream: use Push para publicá-lo antes"), false);
+        }
+        self.gp_start(gp, Op::Pull);
+    }
+
+    fn gp_push(&mut self, gp: &mut GitPanel) {
+        if gp.sync.upstream.is_none() {
+            return self.gp_ask_publish(gp);
+        }
+        self.gp_start(gp, Op::Push);
+    }
+
+    /// Branch without upstream: ask before publishing it (`push --set-upstream`).
+    fn gp_ask_publish(&mut self, gp: &mut GitPanel) {
+        let Some(top) = gp.top.clone() else { return };
+        let Some(branch) = self.branch.clone().filter(|b| b != "HEAD") else {
+            return self.gp_note(gp, "HEAD solto (sem branch): crie um branch antes de enviar".into(), false);
+        };
+        match gitsync::default_remote(&top, &branch) {
+            Some(remote) => {
+                gp.sync_note = None;
+                gp.publish = Some((remote, branch));
+            }
+            None => self.gp_note(gp, "Nenhum remote configurado (git remote add origin <url>)".into(), false),
+        }
+    }
+
+    fn gp_note(&mut self, gp: &mut GitPanel, text: String, ok: bool) {
+        self.say(&text);
+        gp.sync_note = Some((text, ok, Instant::now()));
+    }
+
+    fn gp_job_done(&mut self, gp: &mut GitPanel, op: Op, res: Result<String, Fail>) {
+        match res {
+            Ok(msg) => self.gp_note(gp, msg, true),
+            Err(f) if f.kind == FailKind::NoUpstream && op == Op::Push => return self.gp_ask_publish(gp),
+            Err(f) => self.gp_note(gp, format!("{}: {}", op.label(), f.text), false),
+        }
+        // A pull moves HEAD and files; everything the panel shows may have changed.
+        self.sync_docs_with_head();
+        self.refresh_tree();
+        gp.reset_history();
+        self.gp_after_change(gp);
+    }
+
+    /// Per-event hook (`App::tick`): collect the finished command and keep the elapsed counter alive.
+    pub fn gitpanel_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        let Some(mut gp) = self.gitpanel.take() else { return };
+        if let Some(job) = gp.job.as_mut() {
+            let before = job.progress.len();
+            match job.poll() {
+                Some(res) => {
+                    let op = job.op.clone();
+                    gp.job = None;
+                    self.gp_job_done(&mut gp, op, res);
+                    self.request_redraw();
+                }
+                None => {
+                    let due = gp.spun + Duration::from_millis(500);
+                    if job.progress.len() != before || due <= now {
+                        gp.spun = now;
+                        self.request_redraw();
+                    }
+                    want(gp.spun + Duration::from_millis(500));
+                }
+            }
+        }
+        if gp.closed {
+            self.focus = crate::app::Focus::Editor;
+        } else {
+            self.gitpanel = Some(gp);
+        }
+    }
+
     fn gp_open_diff_change(&mut self, gp: &mut GitPanel, i: usize) {
         let (Some(top), Some(c)) = (gp.top.clone(), gp.changes.get(i).cloned()) else { return };
         let big = std::fs::metadata(top.join(&c.path)).map_or(false, |m| m.len() > 3_000_000);
         if big {
             return gp.say("Arquivo grande demais para o diff lado a lado", false);
         }
-        let (old, new) = working_pair(&top, &c);
-        let rows = gitx::side_by_side(&old, &new);
         let name = split_name(&c.path).0.to_string();
-        self.diff = Some(DiffView { title: format!("{name} — alterações"), left_name: "HEAD".into(), right_name: "Atual".into(), rows, scroll: 0.0 });
+        // Fully staged files open on the staged side (their hunks can be unstaged); the rest on the
+        // not-staged side (their hunks can be staged). A staged + modified file offers both.
+        let side = if c.group == Group::Staged && c.also.is_none() { Side::Staged } else { Side::Unstaged };
+        self.diff = DiffView::staging_auto(&top, &c.path, c.old.as_deref(), side, &name);
+        if self.diff.is_none() {
+            gp.say("Sem diferenças de conteúdo para mostrar", false);
+        }
     }
 
     fn gp_open_diff_commit(&mut self, gp: &mut GitPanel, j: usize) {
@@ -769,7 +1094,7 @@ impl App {
         let (old, new) = commit_pair(&top, &c.hash, &f);
         let rows = gitx::side_by_side(&old, &new);
         let name = split_name(&f.path).0.to_string();
-        self.diff = Some(DiffView { title: format!("{name} — {}  {}", c.short, c.subject), left_name: format!("{}^", c.short), right_name: c.short.clone(), rows, scroll: 0.0 });
+        self.diff = Some(DiffView::plain(format!("{name} — {}  {}", c.short, c.subject), format!("{}^", c.short), c.short.clone(), rows));
         gp.open_file = Some(j);
     }
 
@@ -784,6 +1109,13 @@ impl App {
         gp.files = commit_files(&top, &c.hash);
         gp.open_commit = Some(i);
         gp.open_file = None;
+        // Another commit may have been collapsed above this one: re-find it and bring the commit
+        // together with its files into view.
+        if let Some(k) = gp.rows().iter().position(|r| *r == Row::Commit(i)) {
+            gp.cursor = k;
+            let view = self.gitpanel_rect().h - gp.chrome_h();
+            gp.reveal_span(k, k + gp.files.len(), view);
+        }
         if !gp.files.is_empty() {
             self.gp_open_diff_commit(gp, 0);
         } else {
@@ -814,6 +1146,14 @@ impl App {
         consumed
     }
 
+    /// A key the panel does not use: hand the focus back and report "not consumed" so the
+    /// global shortcut handler sees it.
+    fn gp_pass(gp: &mut GitPanel) -> bool {
+        gp.focused = false;
+        gp.msg_focus = false;
+        false
+    }
+
     fn gp_key(&mut self, gp: &mut GitPanel, ev: &KeyIn) -> bool {
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
         let key = &ev.key;
@@ -823,7 +1163,7 @@ impl App {
             return true;
         }
         if matches!(key, Key::Named(NamedKey::Escape)) {
-            if gp.confirm.take().is_some() {
+            if gp.confirm.take().is_some() || gp.publish.take().is_some() {
             } else if gp.msg_focus && gp.tab == Tab::Changes && self.diff.is_none() {
                 gp.msg_focus = false;
             } else if self.diff.is_some() {
@@ -833,12 +1173,13 @@ impl App {
             }
             return true;
         }
+        if is_modifier_key(key) {
+            return true;
+        }
         // Anything bound to a command (Ctrl+P, Ctrl+Shift+G, ...) keeps working.
         let bound = (ctrl || alt) && self.keymap.lookup(ctrl, shift, alt, key).is_some();
         if bound {
-            gp.focused = false;
-            gp.msg_focus = false;
-            return false;
+            return Self::gp_pass(gp);
         }
         if gp.msg_focus && gp.tab == Tab::Changes {
             let f = &mut gp.msg;
@@ -861,19 +1202,25 @@ impl App {
                 Key::Named(NamedKey::Home) => ml_home(f),
                 Key::Named(NamedKey::End) => ml_end(f),
                 Key::Named(NamedKey::Tab) => gp.msg_focus = false,
-                Key::Character(c) if ctrl && c.to_lowercase() == "v" => {
+                Key::Character(c) if ctrl && !alt && c.to_lowercase() == "v" => {
                     let t = self.clip.get();
                     ml_insert(&mut gp.msg, &t);
                 }
+                // Any other Ctrl/Alt combo has no meaning here: let the global shortcut run.
+                _ if ctrl || alt => return Self::gp_pass(gp),
                 _ => {
-                    if let (Some(t), false, false) = (&ev.text, ctrl, alt) {
+                    if let Some(t) = &ev.text {
                         ml_insert(f, t);
                     }
                 }
             }
             return true;
         }
-        // List mode.
+        // List mode. Ctrl/Alt + a character key means nothing here (the arrows, Enter, Space,
+        // Delete and Tab below keep working with modifiers): let the global shortcut run.
+        if (ctrl || alt) && matches!(key, Key::Character(_)) {
+            return Self::gp_pass(gp);
+        }
         let rows = gp.rows();
         match key {
             Key::Named(NamedKey::ArrowDown) => gp.move_cursor(1),
@@ -905,7 +1252,7 @@ impl App {
             },
             Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
                 if let Some(Row::File(i)) = rows.get(gp.cursor).copied() {
-                    if gp.changes[i].group != Group::Staged {
+                    if gp.changes[i].discardable() {
                         gp.confirm = Some(i);
                     }
                 }
@@ -913,7 +1260,7 @@ impl App {
             Key::Named(NamedKey::PageUp | NamedKey::PageDown | NamedKey::Home | NamedKey::End) if self.diff.is_some() => {
                 self.diff_key(key);
             }
-            Key::Character(c) if matches!(c.as_str(), "n" | "q") && self.diff.is_some() => {
+            Key::Character(c) if matches!(c.as_str(), "n" | "p" | "s" | "q") && self.diff.is_some() => {
                 self.diff_key(key);
             }
             Key::Character(c) if c.as_str() == "y" && gp.confirm.is_some() => {
@@ -925,14 +1272,26 @@ impl App {
                 gp.refresh();
                 gp.reset_history();
             }
+            _ if ctrl || alt => return Self::gp_pass(gp),
             _ => {}
         }
-        let view = self.gitpanel_rect().h - HEAD_H - BRANCH_H - if gp.tab == Tab::Changes { COMMIT_AREA_H } else { 0 };
+        let view = self.gitpanel_rect().h - gp.chrome_h() - if gp.tab == Tab::Changes { COMMIT_AREA_H } else { 0 };
         gp.reveal(view);
         true
     }
 
     pub fn gitpanel_mouse(&mut self, x: f64, y: f64) -> bool {
+        // A click on a "stage this hunk" button of the open diff.
+        if self.diff_click(x, y) {
+            return true;
+        }
+        if self.gp_on_edge(x, y) {
+            if let Some(gp) = self.gitpanel.as_mut() {
+                gp.resizing = true;
+                gp.focused = true;
+            }
+            return true;
+        }
         let Some(mut gp) = self.gitpanel.take() else { return false };
         let p = self.gitpanel_rect();
         let inside = p.contains(x, y);
@@ -997,6 +1356,22 @@ impl App {
                     gp.msg.cursor = ml_index(&gp.msg, line, col);
                 }
                 Some(Hit::Opt) => gp.include_all = !gp.include_all,
+                Some(Hit::Amend) => self.gp_toggle_amend(&mut gp),
+                Some(Hit::Fetch) => self.gp_start(&mut gp, Op::Fetch),
+                Some(Hit::Pull) => self.gp_pull(&mut gp),
+                Some(Hit::Push) => self.gp_push(&mut gp),
+                Some(Hit::PublishYes) => {
+                    if let Some((remote, branch)) = gp.publish.take() {
+                        self.gp_start(&mut gp, Op::Publish { remote, branch });
+                    }
+                }
+                Some(Hit::PublishNo) => gp.publish = None,
+                Some(Hit::JobCancel) => {
+                    if let Some(j) = gp.job.as_mut() {
+                        j.cancel();
+                    }
+                }
+                Some(Hit::Note) => gp.sync_note = None,
                 Some(Hit::CommitBtn) => self.gp_commit(&mut gp),
                 Some(Hit::Commit(i)) => {
                     if let Some(k) = rows.iter().position(|r| *r == Row::Commit(i)) {
@@ -1041,7 +1416,17 @@ impl App {
     pub fn gitpanel_move(&mut self) -> bool {
         let (x, y) = self.mouse;
         let p = self.gitpanel_rect();
+        let win = self.size.0 as i32;
         let Some(gp) = self.gitpanel.as_mut() else { return false };
+        if gp.resizing {
+            // The panel is docked on the right, so its width is the distance to the window edge.
+            let w = clamp_panel_width(win - x as i32, win);
+            if self.config.git_panel_width != w {
+                self.config.git_panel_width = w;
+                return true;
+            }
+            return false;
+        }
         let h = if p.contains(x, y) { gp.hit_at(x, y) } else { None };
         let changed = h != gp.hover;
         gp.hover = h;
@@ -1051,6 +1436,9 @@ impl App {
     /// Cursor over the panel: hand on clickable things, I-beam in the message box.
     pub fn gitpanel_cursor(&self, x: f64, y: f64) -> Option<CursorIcon> {
         let gp = self.gitpanel.as_ref()?;
+        if gp.resizing || self.gp_on_edge(x, y) {
+            return Some(CursorIcon::ColResize);
+        }
         if !self.gitpanel_rect().contains(x, y) {
             return None;
         }
@@ -1099,6 +1487,11 @@ impl App {
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
         cv.fill(p, c.sidebar_bg);
         cv.fill(Rect::new(p.x, p.y, 1, p.h), c.border);
+        // Resize handle: the left edge lights up under the pointer and while dragging.
+        let (mx, my) = (self.mouse.0, self.mouse.1);
+        if gp.resizing || (self.overlay.is_none() && Rect::new(p.x - GP_GRAB, p.y, 2 * GP_GRAB, p.h).contains(mx, my)) {
+            cv.fill(Rect::new(p.x - 1, p.y, 3, p.h), c.accent.with_alpha(if gp.resizing { 0xc0 } else { 0x70 }));
+        }
 
         // Header: tabs on the left, refresh / close on the right.
         let mut x = p.x + 12;
@@ -1121,14 +1514,32 @@ impl App {
         self.gp_icon_btn(cv, &mut gp, Rect::new(p.right() - 12 - 28, p.y + 8, 28, 28), "ui/close", Hit::Close);
         self.gp_icon_btn(cv, &mut gp, Rect::new(p.right() - 12 - 28 - 32, p.y + 8, 28, 28), "ui/rotate_cw", Hit::Refresh);
 
-        // Branch line.
+        // Branch line: name on the left, fetch / pull / push on the right.
         let by = p.y + HEAD_H;
-        self.tx.icon(cv, "ui/git_branch", p.x + 16, by + 5, 14, dim, p);
+        let mut right = p.right() - 10;
+        if gp.top.is_some() {
+            let busy = gp.job.is_some();
+            let (ahead, behind, has_up) = (gp.sync.ahead, gp.sync.behind, gp.sync.upstream.is_some());
+            let count = |n: usize| if n > 0 { format!(" {n}") } else { String::new() };
+            let push = format!("Push{}", if has_up { count(ahead) } else { String::new() });
+            right -= self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/arrow_up", &push, Hit::Push, !busy && (ahead > 0 || !has_up)) + 4;
+            let pull = format!("Pull{}", count(behind));
+            right -= self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/arrow_down", &pull, Hit::Pull, !busy && behind > 0) + 4;
+            right -= self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/cloud_download", "", Hit::Fetch, !busy) + 4;
+        }
+        self.tx.icon(cv, "ui/git_branch", p.x + 16, by + 10, 14, dim, p);
         let branch = self.branch.clone().unwrap_or_else(|| "sem branch".into());
-        self.tx.draw_ui(cv, p.x + 36, by + 3, &branch, dim, p, false);
+        let branch = fit(&mut self.tx, &branch, right - (p.x + 36) - 4, false);
+        self.tx.draw_ui(cv, p.x + 36, by + 8, &branch, dim, p, false);
+
+        // Strip: set-upstream prompt, progress of the running command, or the last result.
+        let strip_h = gp.strip_h();
+        if strip_h > 0 && gp.top.is_some() {
+            self.gp_draw_strip(cv, &mut gp, Rect::new(p.x + 1, by + BRANCH_H, p.w - 1, strip_h));
+        }
 
         let commit_h = if gp.tab == Tab::Changes && gp.top.is_some() { COMMIT_AREA_H } else { 0 };
-        let body = Rect::new(p.x + 1, by + BRANCH_H, p.w - 1, (p.h - HEAD_H - BRANCH_H - commit_h).max(0));
+        let body = Rect::new(p.x + 1, by + BRANCH_H + strip_h, p.w - 1, (p.h - HEAD_H - BRANCH_H - strip_h - commit_h).max(0));
         if gp.top.is_none() {
             let msg = "Esta pasta não é um repositório git";
             let w = self.tx.ui_width(msg, false);
@@ -1143,11 +1554,73 @@ impl App {
         self.gitpanel = Some(gp);
     }
 
-    fn gp_checkbox(&mut self, cv: &mut Canvas, r: Rect, on_: bool, hov: bool) {
+    /// Pill with an icon and an optional label (fetch / pull / push); returns its width.
+    fn gp_sync_btn(&mut self, cv: &mut Canvas, gp: &mut GitPanel, right: i32, y: i32, icon: &str, label: &str, hit: Hit, active: bool) -> i32 {
         let c = self.theme.chrome;
-        if on_ {
-            cv.fill_round(r, 5, c.accent);
-            self.tx.icon(cv, "ui/check", r.x + 2, r.y + 2, r.w - 4, c.on_accent, r);
+        let lw = if label.is_empty() { 0 } else { self.tx.ui_width(label, false) + 5 };
+        let w = 12 + 14 + lw + if label.is_empty() { 0 } else { 6 };
+        let r = Rect::new(right - w, y, w, 26);
+        let hov = self.hv(r);
+        if hov {
+            cv.fill_round(r, 8, c.tab_active_fg.with_alpha(0x1c));
+        }
+        let tint = if active { c.accent_text } else if hov { c.tab_active_fg } else { c.tab_inactive_fg };
+        self.tx.icon(cv, icon, r.x + 6, r.y + 6, 14, tint, r);
+        if !label.is_empty() {
+            self.tx.draw_ui(cv, r.x + 6 + 14 + 5, r.y + 4, label, tint, r, false);
+        }
+        gp.hits.push((r, hit));
+        w
+    }
+
+    fn gp_draw_strip(&mut self, cv: &mut Canvas, gp: &mut GitPanel, area: Rect) {
+        let c = self.theme.chrome;
+        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
+        cv.fill(Rect::new(area.x, area.y, area.w, area.h), c.input_bg.with_alpha(0x80).over(c.sidebar_bg));
+        if let Some((remote, branch)) = gp.publish.clone() {
+            let q = format!("Publicar “{branch}” em {remote} e passar a acompanhá-lo (upstream)?");
+            let lines = wrap_lines(&mut self.tx, &q, area.w - 32, 2);
+            for (i, l) in lines.iter().enumerate() {
+                self.tx.draw_ui(cv, area.x + 16, area.y + 6 + i as i32 * STRIP_LINE, l, strong, area, false);
+            }
+            let y = area.bottom() - 30;
+            let w = self.gp_text_btn(cv, gp, area.right() - 10, y, "Publicar", Hit::PublishYes, c.accent_text);
+            self.gp_text_btn(cv, gp, area.right() - 10 - w - 4, y, "Cancelar", Hit::PublishNo, dim);
+            return;
+        }
+        if let Some(job) = &gp.job {
+            let secs = job.started.elapsed().as_secs();
+            let head = format!("{}… {secs}s", job.op.busy());
+            let hw = self.tx.ui_width(&head, true);
+            self.tx.draw_ui(cv, area.x + 16, area.y + 5, &head, strong, area, true);
+            let cancel_w = self.tx.ui_width("Cancelar", false) + 18;
+            let room = area.w - 32 - hw - cancel_w - 16;
+            let prog = fit(&mut self.tx, &job.progress.clone(), room, false);
+            self.tx.draw_ui(cv, area.x + 16 + hw + 10, area.y + 5, &prog, dim, area, false);
+            self.gp_text_btn(cv, gp, area.right() - 8, area.y + 2, "Cancelar", Hit::JobCancel, c.error);
+            return;
+        }
+        if let Some((text, ok, _)) = gp.sync_note.clone() {
+            let lines = wrap_lines(&mut self.tx, &text, area.w - 32, 3);
+            gp.note_lines = lines.len() as i32;
+            let col = if ok { c.git_added } else { c.error };
+            for (i, l) in lines.iter().enumerate() {
+                self.tx.draw_ui(cv, area.x + 16, area.y + 5 + i as i32 * STRIP_LINE, l, col, area, false);
+            }
+            gp.hits.push((area, Hit::Note));
+        }
+    }
+
+    fn gp_checkbox(&mut self, cv: &mut Canvas, r: Rect, state: CheckState, hov: bool) {
+        let c = self.theme.chrome;
+        if state != CheckState::Off {
+            cv.fill_round(r, 5, if hov { c.accent.shift(22) } else { c.accent });
+            if state == CheckState::On {
+                self.tx.icon(cv, "ui/check", r.x + 2, r.y + 2, r.w - 4, c.on_accent, r);
+            } else {
+                // Staged, but edited again afterwards: a dash instead of the check.
+                cv.fill_round(Rect::new(r.x + 4, r.y + r.h / 2 - 1, r.w - 8, 2), 1, c.on_accent);
+            }
         } else {
             if hov {
                 cv.fill_round(r, 5, c.tab_active_fg.with_alpha(0x1c));
@@ -1201,11 +1674,11 @@ impl App {
                     }
                     let cb = Rect::new(r.x + 8, y + 7, 16, 16);
                     let cbhit = Rect::new(r.x, y, 34, h);
-                    self.gp_checkbox(cv, cb, ch.group == Group::Staged, self.hv(cbhit) && self.hv(vis));
+                    self.gp_checkbox(cv, cb, ch.check_state(), self.hv(cbhit) && self.hv(vis));
                     let (name, dir) = split_name(&ch.path);
                     let icon = self.tx.icons.file_icon(name);
                     self.tx.icon(cv, &icon, r.x + 34, y + 7, 16, dim, clip);
-                    let reserved = if ch.group == Group::Staged { 36 } else { 66 };
+                    let reserved = (if ch.discardable() { 66 } else { 36 }) + if ch.also.is_some() { 16 } else { 0 };
                     let avail = r.w - 58 - reserved;
                     let nm = fit(&mut self.tx, name, avail, false);
                     let nw = self.tx.ui_width(&nm, false);
@@ -1215,22 +1688,36 @@ impl App {
                         let d = fit(&mut self.tx, dir, avail - nw - 10, false);
                         self.tx.draw_ui_sized(cv, r.x + 58 + nw + 8, y + 8, &d, dim, clip, false, 12.0);
                     }
-                    let letter = ch.code.to_string();
+                    // Rightmost the working-tree state; a staged+modified file also shows the staged
+                    // letter just before it.
+                    let (state_code, staged_code) = match ch.also {
+                        Some(w) => (w, Some(ch.code)),
+                        None => (ch.code, None),
+                    };
+                    let letter = state_code.to_string();
                     let lw = self.tx.ui_width(&letter, true);
-                    self.tx.draw_ui(cv, r.right() - 14 - lw / 2 - 4, y + 6, &letter, code_color(&c, ch.code), clip, true);
+                    let lx = r.right() - 14 - lw / 2 - 4;
+                    self.tx.draw_ui(cv, lx, y + 6, &letter, code_color(&c, state_code), clip, true);
+                    if let Some(sc) = staged_code {
+                        let sl = sc.to_string();
+                        let sw = self.tx.ui_width(&sl, true);
+                        self.tx.draw_ui(cv, lx - sw - 6, y + 6, &sl, code_color(&c, sc), clip, true);
+                    }
                     gp.hits.push((Rect::new(r.x + 34, vis.y, r.w - 34, vis.h).intersect(&vis), Hit::Row(i)));
                     gp.hits.push((cbhit.intersect(&vis), Hit::Check(i)));
-                    if ch.group != Group::Staged {
+                    if ch.discardable() {
+                        // Make room for the second state letter of a staged+modified row.
+                        let dx = if ch.also.is_some() { 16 } else { 0 };
                         if gp.confirm == Some(i) {
                             let label = "Descartar?";
                             let w = self.tx.ui_width(label, false) + 16;
-                            let br = Rect::new(r.right() - 34 - w, y + 3, w, 24);
+                            let br = Rect::new(r.right() - 34 - dx - w, y + 3, w, 24);
                             let bh = self.hv(br);
                             cv.fill_round_clip(br, 8, c.error.with_alpha(if bh { 0x55 } else { 0x33 }), clip);
                             self.tx.draw_ui(cv, br.x + 8, br.y + 3, label, c.error, br.intersect(&vis), false);
                             gp.hits.push((br.intersect(&vis), Hit::ConfirmDiscard(i)));
                         } else {
-                            let br = Rect::new(r.right() - 58, y + 3, 24, 24);
+                            let br = Rect::new(r.right() - 58 - dx, y + 3, 24, 24);
                             if hov || cur {
                                 let bh = self.hv(br);
                                 if bh {
@@ -1301,10 +1788,22 @@ impl App {
         }
         y += MSG_H + 8;
 
+        // Amend checkbox.
+        let am = Rect::new(area.x + 12, y, area.w - 24, AMEND_H);
+        let ah = self.hv(am);
+        if ah {
+            cv.fill_round(am, 8, strong.with_alpha(0x12));
+        }
+        self.gp_checkbox(cv, Rect::new(am.x + 6, y + 6, 16, 16), if gp.amend { CheckState::On } else { CheckState::Off }, ah);
+        let txt = fit(&mut self.tx, "Emendar o último commit (amend)", am.w - 36, false);
+        self.tx.draw_ui(cv, am.x + 30, y + 5, &txt, if ah || gp.amend { strong } else { dim }, am, false);
+        gp.hits.push((am, Hit::Amend));
+        y += AMEND_H;
+
         // Option + Commit button.
         let staged = gp.staged();
-        let ready = !gp.msg.text.trim().is_empty() && (staged > 0 || (gp.include_all && !gp.changes.is_empty()));
-        let label = "Commit";
+        let ready = !gp.msg.text.trim().is_empty() && (gp.amend || staged > 0 || (gp.include_all && !gp.changes.is_empty()));
+        let label = if gp.amend { "Amend" } else { "Commit" };
         let bw = self.tx.ui_width(label, true) + 36;
         let btn = Rect::new(area.right() - 12 - bw, y, bw, 34);
         let bh = self.hv(btn);
@@ -1319,7 +1818,7 @@ impl App {
         if oh {
             cv.fill_round(opt, 8, strong.with_alpha(0x12));
         }
-        self.gp_checkbox(cv, Rect::new(opt.x + 6, y + 9, 16, 16), gp.include_all, oh);
+        self.gp_checkbox(cv, Rect::new(opt.x + 6, y + 9, 16, 16), if gp.include_all { CheckState::On } else { CheckState::Off }, oh);
         let txt = "Incluir tudo se nada no stage".to_string();
         let txt = fit(&mut self.tx, &txt, opt.w - 36, false);
         self.tx.draw_ui(cv, opt.x + 30, y + 8, &txt, if oh { strong } else { dim }, opt, false);
@@ -1431,7 +1930,9 @@ mod tests {
         let find = |p: &str, g: Group| v.iter().find(|c| c.path == p && c.group == g).cloned();
         assert_eq!(find("staged.ts", Group::Staged).unwrap().code, 'M');
         assert_eq!(find("work.ts", Group::Changes).unwrap().code, 'M');
-        assert!(find("both.ts", Group::Staged).is_some() && find("both.ts", Group::Changes).is_some(), "staged and modified again = two entries");
+        let both = find("both.ts", Group::Staged).unwrap();
+        assert_eq!(both.also, Some('M'), "staged and modified again = one entry carrying both states");
+        assert!(find("both.ts", Group::Changes).is_none());
         assert_eq!(find("new.ts", Group::Untracked).unwrap().code, '?');
         let r = find("new name.ts", Group::Staged).unwrap();
         assert_eq!((r.code, r.old.as_deref()), ('R', Some("old name.ts")));
@@ -1626,5 +2127,138 @@ mod tests {
     fn fit_helpers() {
         assert_eq!(split_name("a/b/c.ts"), ("c.ts", "a/b"));
         assert_eq!(split_name("c.ts"), ("c.ts", ""));
+    }
+
+    #[test]
+    fn staged_and_modified_is_one_row_with_both_states() {
+        let v = parse_status_z("MM both.ts\0AD gone.ts\0M  staged.ts\0 M work.ts\0");
+        assert_eq!(v.len(), 4, "one entry per file: {v:?}");
+        let both = v.iter().find(|c| c.path == "both.ts").unwrap();
+        assert_eq!((both.group, both.code, both.also), (Group::Staged, 'M', Some('M')));
+        assert_eq!(both.check_state(), CheckState::Partial);
+        assert!(both.discardable());
+        let gone = v.iter().find(|c| c.path == "gone.ts").unwrap();
+        assert_eq!((gone.code, gone.also), ('A', Some('D')));
+        let staged = v.iter().find(|c| c.path == "staged.ts").unwrap();
+        assert_eq!((staged.check_state(), staged.discardable()), (CheckState::On, false));
+        let work = v.iter().find(|c| c.path == "work.ts").unwrap();
+        assert_eq!((work.check_state(), work.discardable()), (CheckState::Off, true));
+    }
+
+    #[test]
+    fn staged_plus_modified_in_a_real_repo() {
+        let dir = tmp_repo("both");
+        std::fs::write(dir.join("a.ts"), "1\n").unwrap();
+        git_run(&dir, &["add", "-A"]).unwrap();
+        commit(&dir, "init").unwrap();
+        std::fs::write(dir.join("a.ts"), "2\n").unwrap();
+        git_run(&dir, &["add", "a.ts"]).unwrap();
+        std::fs::write(dir.join("a.ts"), "3\n").unwrap();
+        let mut gp = GitPanel::new(&dir);
+        assert_eq!(gp.changes.len(), 1);
+        assert_eq!(gp.rows(), vec![Row::Header(Group::Staged), Row::File(0)], "a single row, no entry under Mudanças");
+        assert_eq!(gp.changes[0].check_state(), CheckState::Partial);
+        // The diff against HEAD shows the on-disk text.
+        let (old, new) = working_pair(&dir, &gp.changes[0]);
+        assert_eq!((old.as_str(), new.as_str()), ("1\n", "3\n"));
+        // Discard throws away the unstaged edit only; the staged version survives.
+        discard(&dir, &gp.changes[0].clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.ts")).unwrap(), "2\n");
+        gp.refresh();
+        assert_eq!(gp.changes[0].check_state(), CheckState::On);
+        assert!(discard(&dir, &gp.changes[0].clone()).is_err(), "fully staged: nothing to discard");
+        // Staging a partially staged file stages the rest.
+        std::fs::write(dir.join("a.ts"), "4\n").unwrap();
+        gp.refresh();
+        stage(&dir, &["a.ts".into()]).unwrap();
+        gp.refresh();
+        assert_eq!(gp.changes[0].check_state(), CheckState::On);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn panel_width_clamps() {
+        assert_eq!(clamp_panel_width(500, 1400), 500);
+        assert_eq!(clamp_panel_width(100, 1400), 280, "not narrower than the minimum");
+        assert_eq!(clamp_panel_width(5000, 1400), 840, "at most 60% of the window");
+        assert_eq!(clamp_panel_width(300, 400), 240, "tiny window: 60% of it");
+        assert_eq!(clamp_panel_width(10, 400), 200, "tiny window: the minimum shrinks to half");
+        assert!(clamp_panel_width(0, 100) >= 1);
+        assert_eq!(auto_panel_width(1000), 340);
+        assert_eq!(auto_panel_width(2000), 440);
+    }
+
+    #[test]
+    fn expanded_commit_files_are_scrolled_into_view() {
+        let mut gp = GitPanel::new(&std::env::temp_dir().join("lumen-gp-no-such-dir"));
+        gp.tab = Tab::History;
+        gp.commits = (0..20).map(|i| LogEntry { hash: format!("h{i}"), short: format!("s{i}"), author: "a".into(), ts: 0, subject: "x".into() }).collect();
+        gp.files = (0..4).map(|i| CommitFile { code: 'M', path: format!("f{i}.ts"), old: None }).collect();
+        gp.open_commit = Some(10);
+        let k = gp.rows().iter().position(|r| *r == Row::Commit(10)).unwrap();
+        assert_eq!(k, 10);
+        // Viewport 300px, scrolled to the top: commit 10 starts at 520.
+        gp.reveal_span(k, k + 4, 300);
+        let (top, bottom) = (10 * COMMIT_H, 11 * COMMIT_H + 4 * CFILE_H);
+        assert_eq!(gp.scroll[1], (bottom - 300) as f64, "the last file's bottom edge is visible");
+        assert!(gp.scroll[1] <= top as f64, "and the commit row itself too");
+        // Already visible: untouched.
+        let s = gp.scroll[1];
+        gp.reveal_span(k, k + 4, 300);
+        assert_eq!(gp.scroll[1], s);
+        // Scrolled past it: back up to the commit row.
+        gp.scroll[1] = 2000.0;
+        gp.reveal_span(k, k + 4, 300);
+        assert_eq!(gp.scroll[1], top as f64);
+        // A span taller than the viewport shows the commit row first.
+        gp.scroll[1] = 0.0;
+        gp.reveal_span(k, k + 4, 100);
+        assert_eq!(gp.scroll[1], top as f64);
+    }
+
+    #[test]
+    fn strip_and_chrome_heights_follow_the_state() {
+        let mut gp = GitPanel::new(&std::env::temp_dir().join("lumen-gp-no-such-dir"));
+        assert_eq!(gp.strip_h(), 0);
+        assert_eq!(gp.chrome_h(), HEAD_H + BRANCH_H);
+        gp.sync_note = Some(("boom".into(), false, Instant::now()));
+        gp.note_lines = 2;
+        assert_eq!(gp.strip_h(), 2 * STRIP_LINE + 10, "errors stay and grow the strip with their lines");
+        gp.sync_note = Some(("ok".into(), true, Instant::now() - Duration::from_secs(30)));
+        assert_eq!(gp.strip_h(), 0, "old successes fade out");
+        gp.publish = Some(("origin".into(), "main".into()));
+        assert_eq!(gp.strip_h(), PROMPT_H);
+        assert_eq!(gp.chrome_h(), HEAD_H + BRANCH_H + PROMPT_H);
+    }
+
+    #[test]
+    fn panel_knows_ahead_and_behind_of_a_real_clone() {
+        let base = tmp_repo("syncpanel");
+        let (remote, work) = (base.join("remote.git"), base.join("work"));
+        git_run(&base, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]).unwrap();
+        git_run(&base, &["init", "-q", "-b", "main", work.to_str().unwrap()]).unwrap();
+        for a in [&["config", "user.email", "t@t"][..], &["config", "user.name", "T"], &["config", "commit.gpgsign", "false"]] {
+            git_run(&work, a).unwrap();
+        }
+        git_run(&work, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+        std::fs::write(work.join("a.txt"), "1\n").unwrap();
+        git_run(&work, &["add", "."]).unwrap();
+        git_run(&work, &["commit", "-q", "-m", "one"]).unwrap();
+        let gp = GitPanel::new(&work);
+        assert_eq!(gp.sync, SyncInfo::default(), "no upstream: counts are hidden and Push asks to publish");
+        git_run(&work, &["push", "-q", "-u", "origin", "main"]).unwrap();
+        std::fs::write(work.join("a.txt"), "2\n").unwrap();
+        git_run(&work, &["commit", "-qam", "two"]).unwrap();
+        let gp = GitPanel::new(&work);
+        assert_eq!((gp.sync.upstream.as_deref(), gp.sync.ahead, gp.sync.behind), (Some("origin/main"), 1, 0));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn modifier_keys_are_recognised() {
+        assert!(is_modifier_key(&Key::Named(NamedKey::Control)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Shift)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::Enter)));
+        assert!(!is_modifier_key(&Key::Character("a".into())));
     }
 }

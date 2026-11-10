@@ -38,10 +38,148 @@ pub enum EditKind {
     Other,
 }
 
+/// How an edit moved the lines of the text (what folds, wrap rows and other panes follow).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EditShape {
+    /// Ordinary replacement of `removed` chars by `inserted` chars.
+    Splice,
+    /// Two adjacent blocks of whole lines exchanged places (move line up/down): the first block
+    /// has `a_lines` lines / `a_chars` chars (without its trailing break), the second `b_lines` /
+    /// `b_chars`, `eol` is the length of the line break between them.
+    Swap { a_lines: usize, b_lines: usize, a_chars: usize, b_chars: usize, eol: usize },
+}
+
+/// One recorded text change, in the coordinates it happened in (edits are applied in order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditRec {
+    pub at: usize,
+    pub removed: usize,
+    pub inserted: usize,
+    /// Line and column of `at` (before the edit; the text before `at` never changes).
+    pub line: usize,
+    pub col: usize,
+    /// Line breaks removed / inserted.
+    pub rem_lines: usize,
+    pub ins_lines: usize,
+    /// Nothing but the line break follows the edit point on its line.
+    pub tail_empty: bool,
+    pub shape: EditShape,
+}
+
+/// Line-level effect of an edit: `after` is the last line that keeps its place; lines
+/// `after+1 ..= after+n` disappear (`Remove`) or `n` new lines appear right after it (`Insert`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LineOp {
+    Remove { after: isize, n: usize },
+    Insert { after: isize, n: usize },
+    Swap { first: usize, a_lines: usize, b_lines: usize },
+}
+
+impl EditRec {
+    /// Line operations, in the order they apply. The line a cut/paste at column 0 leaves behind is
+    /// the one that held the text after the edit, so a header the user pushes down with Enter keeps
+    /// its fold; a mid-line edit (or one that leaves nothing of the line after it) keeps the line it
+    /// started in.
+    pub fn line_ops(&self) -> Vec<LineOp> {
+        if let EditShape::Swap { a_lines, b_lines, .. } = self.shape {
+            return vec![LineOp::Swap { first: self.line, a_lines, b_lines }];
+        }
+        let after = if self.col > 0 || self.tail_empty { self.line as isize } else { self.line as isize - 1 };
+        let mut v = Vec::new();
+        if self.rem_lines > 0 {
+            v.push(LineOp::Remove { after, n: self.rem_lines });
+        }
+        if self.ins_lines > 0 {
+            v.push(LineOp::Insert { after, n: self.ins_lines });
+        }
+        v
+    }
+
+    /// Where char position `p` (before the edit) ends up. Positions inside removed text collapse
+    /// to the edit point; a position exactly at an insertion stays before the new text.
+    pub fn map_pos(&self, p: usize) -> usize {
+        match self.shape {
+            EditShape::Splice => {
+                if p <= self.at {
+                    p
+                } else if p >= self.at + self.removed {
+                    p + self.inserted - self.removed
+                } else {
+                    self.at
+                }
+            }
+            EditShape::Swap { a_chars, b_chars, eol, .. } => {
+                let a0 = self.at;
+                let b0 = a0 + a_chars + eol;
+                if p < a0 || p > b0 + b_chars {
+                    p
+                } else if p < a0 + a_chars {
+                    p + b_chars + eol // inside the first block: it now comes after the second
+                } else if p >= b0 {
+                    p - a_chars - eol
+                } else {
+                    a0 + b_chars + (p - (a0 + a_chars)) // in the break between them
+                }
+            }
+        }
+    }
+
+    /// Where line `l` (before the edit) is afterwards.
+    pub fn map_line(&self, l: usize) -> usize {
+        let mut l = l as isize;
+        for op in self.line_ops() {
+            l = match op {
+                LineOp::Remove { after, n } => {
+                    if l > after + n as isize {
+                        l - n as isize
+                    } else if l > after {
+                        after.max(0)
+                    } else {
+                        l
+                    }
+                }
+                LineOp::Insert { after, n } => {
+                    if l > after {
+                        l + n as isize
+                    } else {
+                        l
+                    }
+                }
+                LineOp::Swap { first, a_lines, b_lines } => {
+                    let u = l as usize;
+                    if u >= first && u < first + a_lines {
+                        (u + b_lines) as isize
+                    } else if u >= first + a_lines && u < first + a_lines + b_lines {
+                        (u - a_lines) as isize
+                    } else {
+                        l
+                    }
+                }
+            };
+        }
+        l.max(0) as usize
+    }
+}
+
+static NEXT_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 struct Edit {
     at: usize,
     removed: String,
     inserted: String,
+    shape: EditShape,
+}
+
+impl EditShape {
+    /// The shape of the edit that undoes this one.
+    fn reversed(self) -> EditShape {
+        match self {
+            EditShape::Splice => EditShape::Splice,
+            EditShape::Swap { a_lines, b_lines, a_chars, b_chars, eol } => {
+                EditShape::Swap { a_lines: b_lines, b_lines: a_lines, a_chars: b_chars, b_chars: a_chars, eol }
+            }
+        }
+    }
 }
 
 struct Node {
@@ -147,6 +285,16 @@ pub struct Buffer {
     saved_version: u64,
     dirty_line: Option<usize>,
     pub crlf: bool,
+    /// Unique id of this buffer (a reloaded document gets a new one).
+    gen_id: u64,
+    /// Edits not yet consumed by the document (`take_edits`).
+    pending: Vec<EditRec>,
+    /// Edits kept for other panes that show this text (only while `log_on`).
+    log: Vec<EditRec>,
+    log_base: u64,
+    log_on: bool,
+    /// Shape the next edit will be recorded with.
+    next_shape: Option<EditShape>,
 }
 
 fn is_break(c: char) -> bool {
@@ -168,6 +316,12 @@ impl Buffer {
             saved_version: 0,
             dirty_line: None,
             crlf,
+            gen_id: NEXT_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            pending: Vec::new(),
+            log: Vec::new(),
+            log_base: 0,
+            log_on: false,
+            next_shape: None,
         }
     }
 
@@ -262,12 +416,81 @@ impl Buffer {
         self.dirty_line = Some(self.dirty_line.map_or(line, |d| d.min(line)));
     }
 
+    /// Edits since the last call, oldest first.
+    pub fn take_edits(&mut self) -> Vec<EditRec> {
+        std::mem::take(&mut self.pending)
+    }
+
+    pub fn gen_id(&self) -> u64 {
+        self.gen_id
+    }
+
+    /// Start keeping every edit for panes that show this text.
+    pub fn log_start(&mut self) {
+        self.log_on = true;
+    }
+
+    /// Number of edits recorded so far (a pane remembers it to ask for what came later).
+    pub fn log_seq(&self) -> u64 {
+        self.log_base + self.log.len() as u64
+    }
+
+    /// Edits recorded after `seen`; `None` when they are no longer kept.
+    pub fn edits_since(&self, seen: u64) -> Option<&[EditRec]> {
+        let i = seen.checked_sub(self.log_base)? as usize;
+        self.log.get(i..)
+    }
+
+    /// Forget edits before `upto` (every pane has seen them); `None` stops logging altogether.
+    pub fn log_trim(&mut self, upto: Option<u64>) {
+        match upto {
+            Some(u) => {
+                let k = (u.saturating_sub(self.log_base) as usize).min(self.log.len());
+                self.log.drain(..k);
+                self.log_base += k as u64;
+            }
+            None => {
+                self.log_base += self.log.len() as u64;
+                self.log.clear();
+                self.log_on = false;
+            }
+        }
+    }
+
+    /// The next edit exchanges two blocks of whole lines (see [`EditShape::Swap`]).
+    pub fn tag_swap(&mut self, a_lines: usize, b_lines: usize, a_chars: usize, b_chars: usize, eol: usize) {
+        self.next_shape = Some(EditShape::Swap { a_lines, b_lines, a_chars, b_chars, eol });
+    }
+
+    /// Remove `n_rem` chars at `at`, insert `text`, and record what happened to the lines.
+    fn splice(&mut self, at: usize, n_rem: usize, text: &str, shape: EditShape) {
+        let line = self.rope.char_to_line(at);
+        let col = at - self.rope.line_to_char(line);
+        let n0 = self.rope.len_lines();
+        if n_rem > 0 {
+            self.rope.remove(at..at + n_rem);
+        }
+        let n1 = self.rope.len_lines();
+        let tail_empty = self.rope.get_char(at).is_none_or(is_break);
+        let n_ins = text.chars().count();
+        if n_ins > 0 {
+            self.rope.insert(at, text);
+        }
+        let n2 = self.rope.len_lines();
+        let rec = EditRec { at, removed: n_rem, inserted: n_ins, line, col, rem_lines: n0.saturating_sub(n1), ins_lines: n2.saturating_sub(n1), tail_empty, shape };
+        if self.log_on {
+            self.log.push(rec);
+        }
+        self.pending.push(rec);
+    }
+
     // ── editing ──
 
     /// Replace chars [start, end) with `text`, recording undo information.
     pub fn replace(&mut self, start: usize, end: usize, text: &str, kind: EditKind, before: Sel) {
         let (start, end) = (start.min(end), start.max(end).min(self.len_chars()));
         if start == end && text.is_empty() {
+            self.next_shape = None;
             return;
         }
         let removed = self.rope.slice(start..end).to_string();
@@ -283,16 +506,12 @@ impl Buffer {
         }
         self.open = true;
 
-        if start < end {
-            self.rope.remove(start..end);
-        }
-        if !text.is_empty() {
-            self.rope.insert(start, text);
-        }
+        let shape = self.next_shape.take().unwrap_or(EditShape::Splice);
+        self.splice(start, end - start, text, shape);
         self.counter += 1;
         self.version = self.counter;
         let g = self.hist.cur_group_mut().unwrap();
-        g.edits.push(Edit { at: start, removed, inserted: text.to_string() });
+        g.edits.push(Edit { at: start, removed, inserted: text.to_string(), shape });
         g.ver_after = self.version;
     }
 
@@ -366,35 +585,25 @@ impl Buffer {
 
     fn apply_reverse(&mut self, idx: usize) {
         for k in (0..self.hist.nodes[idx].group.edits.len()).rev() {
-            let (at, n, removed) = {
+            let (at, n, removed, shape) = {
                 let e = &self.hist.nodes[idx].group.edits[k];
-                (e.at, e.inserted.chars().count(), e.removed.clone())
+                (e.at, e.inserted.chars().count(), e.removed.clone(), e.shape.reversed())
             };
             let line = self.rope.char_to_line(at.min(self.len_chars()));
             self.mark(line);
-            if n > 0 {
-                self.rope.remove(at..at + n);
-            }
-            if !removed.is_empty() {
-                self.rope.insert(at, &removed);
-            }
+            self.splice(at, n, &removed, shape);
         }
     }
 
     fn apply_forward(&mut self, idx: usize) {
         for k in 0..self.hist.nodes[idx].group.edits.len() {
-            let (at, n, inserted) = {
+            let (at, n, inserted, shape) = {
                 let e = &self.hist.nodes[idx].group.edits[k];
-                (e.at, e.removed.chars().count(), e.inserted.clone())
+                (e.at, e.removed.chars().count(), e.inserted.clone(), e.shape)
             };
             let line = self.rope.char_to_line(at.min(self.len_chars()));
             self.mark(line);
-            if n > 0 {
-                self.rope.remove(at..at + n);
-            }
-            if !inserted.is_empty() {
-                self.rope.insert(at, &inserted);
-            }
+            self.splice(at, n, &inserted, shape);
         }
     }
 
@@ -479,5 +688,90 @@ impl Buffer {
 
     pub fn to_string(&self) -> String {
         self.rope.to_string()
+    }
+}
+
+#[cfg(test)]
+mod edit_log_tests {
+    use super::*;
+
+    fn rep(b: &mut Buffer, s: usize, e: usize, t: &str) {
+        b.replace(s, e, t, EditKind::Other, Sel::caret(0));
+    }
+
+    #[test]
+    fn records_describe_lines_and_positions() {
+        let mut b = Buffer::from_str("ab\ncd\nef");
+        rep(&mut b, 4, 4, "X\nY\n"); // in the middle of "cd"
+        let r = b.take_edits();
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].line, r[0].col, r[0].rem_lines, r[0].ins_lines), (1, 1, 0, 2));
+        assert_eq!(r[0].line_ops(), vec![LineOp::Insert { after: 1, n: 2 }]);
+        // removal across lines: from (0,1) to (2,1)
+        let mut b = Buffer::from_str("ab\ncd\nef");
+        rep(&mut b, 1, 7, "");
+        let r = b.take_edits();
+        assert_eq!((r[0].rem_lines, r[0].ins_lines), (2, 0));
+        assert_eq!(r[0].line_ops(), vec![LineOp::Remove { after: 0, n: 2 }]);
+        // at column 0 the line left behind is the one after the edit
+        let mut b = Buffer::from_str("ab\ncd\nef");
+        rep(&mut b, 3, 6, "");
+        let r = b.take_edits();
+        assert_eq!(r[0].line_ops(), vec![LineOp::Remove { after: 0, n: 1 }]);
+        rep(&mut b, 0, 0, "new\n");
+        let r = b.take_edits();
+        assert_eq!(r[0].line_ops(), vec![LineOp::Insert { after: -1, n: 1 }]);
+        assert!(b.take_edits().is_empty(), "drained");
+    }
+
+    #[test]
+    fn positions_and_lines_map_through_an_edit() {
+        let r = EditRec { at: 10, removed: 4, inserted: 1, line: 2, col: 0, rem_lines: 0, ins_lines: 0, tail_empty: false, shape: EditShape::Splice };
+        assert_eq!((r.map_pos(5), r.map_pos(10), r.map_pos(12), r.map_pos(14), r.map_pos(20)), (5, 10, 10, 11, 17));
+        let ins = EditRec { at: 3, removed: 0, inserted: 4, line: 0, col: 3, rem_lines: 0, ins_lines: 2, tail_empty: false, shape: EditShape::Splice };
+        assert_eq!((ins.map_line(0), ins.map_line(1), ins.map_line(5)), (0, 3, 7));
+        let del = EditRec { at: 0, removed: 6, inserted: 0, line: 0, col: 0, rem_lines: 2, ins_lines: 0, tail_empty: false, shape: EditShape::Splice };
+        assert_eq!((del.map_line(0), del.map_line(1), del.map_line(2), del.map_line(5)), (0, 0, 0, 3));
+    }
+
+    #[test]
+    fn swap_records_move_whole_lines_and_undo_reverses_them() {
+        let mut b = Buffer::from_str("aa\nbbb\nc\nd");
+        // swap line 0 (block A) with lines 1..=2 (block B)
+        b.tag_swap(1, 2, 2, 5, 1);
+        rep(&mut b, 0, 8, "bbb\nc\naa");
+        assert_eq!(b.to_string(), "bbb\nc\naa\nd");
+        let r = b.take_edits();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].line_ops(), vec![LineOp::Swap { first: 0, a_lines: 1, b_lines: 2 }]);
+        assert_eq!((r[0].map_line(0), r[0].map_line(1), r[0].map_line(2), r[0].map_line(3)), (2, 0, 1, 3));
+        // chars: "aa" (0..2) -> after "bbb\nc\n"; "bbb" -> start; the break after "aa" -> after "bbb\nc"
+        assert_eq!((r[0].map_pos(0), r[0].map_pos(1), r[0].map_pos(3), r[0].map_pos(5), r[0].map_pos(9)), (6, 7, 0, 2, 9));
+        b.undo();
+        assert_eq!(b.to_string(), "aa\nbbb\nc\nd");
+        let u = b.take_edits();
+        assert_eq!(u[0].line_ops(), vec![LineOp::Swap { first: 0, a_lines: 2, b_lines: 1 }], "undo swaps the blocks back");
+        assert_eq!(u[0].map_line(0), 1);
+        b.redo();
+        assert_eq!(b.take_edits()[0].line_ops(), vec![LineOp::Swap { first: 0, a_lines: 1, b_lines: 2 }]);
+    }
+
+    #[test]
+    fn log_is_kept_only_while_asked_and_trims() {
+        let mut b = Buffer::from_str("x");
+        rep(&mut b, 0, 0, "a");
+        assert_eq!(b.log_seq(), 0, "nothing is logged until a pane asks");
+        b.log_start();
+        rep(&mut b, 0, 0, "b");
+        rep(&mut b, 0, 0, "c");
+        assert_eq!(b.log_seq(), 2);
+        assert_eq!(b.edits_since(1).map(|r| r.len()), Some(1));
+        b.log_trim(Some(1));
+        assert!(b.edits_since(0).is_none());
+        assert_eq!(b.edits_since(1).map(|r| r.len()), Some(1));
+        b.log_trim(None);
+        assert!(b.edits_since(1).is_none());
+        rep(&mut b, 0, 0, "d");
+        assert_eq!(b.log_seq(), 2, "logging stopped");
     }
 }

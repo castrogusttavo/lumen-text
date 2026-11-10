@@ -595,7 +595,8 @@ impl App {
 
     // ───────────── actions ─────────────
 
-    /// Close everything of the current project and open `path` as the new one.
+    /// Open `path` as the project. With unsaved tabs or a running debug session it asks first
+    /// (Salvar tudo / Descartar / Cancelar) instead of refusing.
     pub fn switch_project(&mut self, path: PathBuf) {
         let path = path.canonicalize().unwrap_or(path);
         if !path.is_dir() {
@@ -604,13 +605,15 @@ impl App {
         if path == self.root {
             return self.say("esse já é o projeto aberto");
         }
-        if let Some(d) = self.docs.iter().find(|d| d.buf.is_dirty()) {
-            let n = d.name.clone();
-            return self.say(format!("{n} tem alterações não salvas — salve ou feche antes de trocar de projeto"));
+        let names: Vec<String> = self.docs.iter().filter(|d| d.buf.is_dirty()).map(|d| d.name.clone()).collect();
+        if !names.is_empty() || self.dbg.is_some() {
+            return self.ask_unsaved(crate::app_unsaved::Pending::SwitchProject(path), names, self.dbg.is_some());
         }
-        if self.dbg.is_some() {
-            return self.say("pare a depuração antes de trocar de projeto");
-        }
+        self.switch_project_now(path);
+    }
+
+    /// Close everything of the current project and open `path` as the new one (no questions).
+    pub fn switch_project_now(&mut self, path: PathBuf) {
         self.save_session();
         remember_project(&self.root);
         while !self.docs.is_empty() {
@@ -698,11 +701,27 @@ pub enum StatusBtn {
     Terminal,
     Debug,
     Git,
-    /// Read-outs (not clickable): they only exist for tooltips.
+    /// Memory read-out (tooltip only).
     Ram,
+    /// Cursor position, indentation and language: clickable (go to line, pickers).
     Position,
     Indent,
     Language,
+}
+
+/// Is it drawn as an icon button (as opposed to a text read-out)?
+fn is_status_button(k: StatusBtn) -> bool {
+    matches!(k, StatusBtn::Terminal | StatusBtn::Debug | StatusBtn::Git)
+}
+
+/// Space between two neighbouring right-hand items: the buttons carry their own padding, the
+/// read-outs are separated by a wider gap, the memory figure sits a bit closer to the buttons.
+fn status_gap(a: StatusBtn, b: StatusBtn) -> i32 {
+    match (is_status_button(a), is_status_button(b)) {
+        (true, true) => 0,
+        _ if (a == StatusBtn::Ram && is_status_button(b)) || (b == StatusBtn::Ram && is_status_button(a)) => 12,
+        _ => 20,
+    }
 }
 
 impl App {
@@ -735,6 +754,7 @@ impl App {
     pub fn draw_status(&mut self, cv: &mut Canvas) {
         let c = self.theme.chrome;
         let r = self.layout.status;
+        cv.fill(r, c.status_bg);
         cv.fill(Rect::new(r.x, r.y, r.w, 1), c.border);
         self.layout.status_btns.clear();
         self.layout.status_info.clear();
@@ -771,78 +791,81 @@ impl App {
             }
         }
 
-        // Right group, laid out from the right edge: memory, then the buttons, then the info.
-        let mut right_min = r.right() - 10;
-        let short = self.config.ram_display == "short";
-        let mut ram_x = r.right() - 16;
-        if v_ram {
-            let memtxt = self.memory_text();
-            let mw = if short { RAM_ICON_W } else { self.tx.ui_width(&memtxt, false) };
-            ram_x = r.right() - 16 - mw;
-            if short {
-                self.tx.icon(cv, "hugeicons/cpu", ram_x, r.y + (r.h - 14) / 2, 14, dim, r);
-                let mb = memory_mb(&memtxt);
-                let dot = if mb < 400.0 { c.git_added } else if mb < 900.0 { c.warning } else { c.error };
-                cv.fill_round(Rect::new(ram_x + 14 + 4, r.y + (r.h - 5) / 2, 5, 5), 2, dot.with_alpha(0xc8));
-            } else {
-                self.tx.draw_ui(cv, ram_x, y, &memtxt, dim, r, false);
-            }
-            self.layout.status_info.push((Rect::new(ram_x - 4, r.y + 3, mw + 8, r.h - 6), StatusBtn::Ram));
-            right_min = ram_x - 12;
-        }
+        // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
+        // (cursor position, indentation, language: clickable) and the memory figure, in any order.
         let changed = self.git_status.len();
         let git_label = if changed > 0 { changed.to_string() } else { String::new() };
-        let mut group_w = 0;
-        for (on, label) in [(v_term, ""), (v_dbg, ""), (v_git, git_label.as_str())] {
-            if on {
-                group_w += self.status_btn_width(label);
-            }
-        }
-        if group_w > 0 {
-            let mut bx = right_min - group_w;
-            let group_x = bx;
-            let term_on = self.panel.open && self.panel.tab == crate::app_panel::PanelTab::Terminal;
-            let dbg_on = self.panel.open && self.panel.tab == crate::app_panel::PanelTab::Debug;
-            if v_term {
-                bx = self.status_btn(cv, bx, "ui/terminal", "", if term_on { c.accent_text } else { dim }, term_on, StatusBtn::Terminal);
-            }
-            if v_dbg {
-                bx = self.status_btn(cv, bx, "ui/debug", "", if dbg_on || self.dbg.is_some() { c.accent_text } else { dim }, dbg_on, StatusBtn::Debug);
-            }
-            if v_git {
-                let git_on = self.gitpanel.is_some();
-                let _ = self.status_btn(cv, bx, "ui/git_graph", &git_label, if changed > 0 || git_on { c.accent_text } else { dim }, git_on, StatusBtn::Git);
-            }
-            right_min = group_x;
-        }
-
-        // Cursor position, indentation and language, just left of the right group.
-        let mut pieces: Vec<(StatusBtn, String)> = Vec::new();
-        if let Some(d) = self.docs.get(self.active) {
+        let short = self.config.ram_display == "short";
+        let memtxt = if v_ram { self.memory_text() } else { String::new() };
+        let doc_texts: Option<(String, String, String)> = self.docs.get(self.active).map(|d| {
             let (l, col) = d.buf.line_col(d.ed.head());
             let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
             let sel = if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
-            if v_pos {
-                pieces.push((StatusBtn::Position, format!("{sel}Ln {}, Col {}", l + 1, vc)));
-            }
-            if v_indent {
-                pieces.push((StatusBtn::Indent, if d.ed.indent.contains('\t') { "Tab".to_string() } else { format!("Espaços: {}", d.ed.indent.len()) }));
-            }
-            if v_lang {
-                pieces.push((StatusBtn::Language, d.lang.unwrap_or("texto").to_string()));
-            }
+            (format!("{sel}Ln {}, Col {}", l + 1, vc), if d.ed.indent.contains('\t') { "Tab".to_string() } else { format!("Espaços: {}", d.ed.indent.len()) }, d.lang.unwrap_or("texto").to_string())
+        });
+        let mut items: Vec<(StatusBtn, i32)> = Vec::new();
+        for id in self.config.status_order.clone() {
+            let item = match id.as_str() {
+                "position" if v_pos => doc_texts.as_ref().map(|t| (StatusBtn::Position, self.tx.ui_width(&t.0, false))),
+                "indent" if v_indent => doc_texts.as_ref().map(|t| (StatusBtn::Indent, self.tx.ui_width(&t.1, false))),
+                "language" if v_lang => doc_texts.as_ref().map(|t| (StatusBtn::Language, self.tx.ui_width(&t.2, false))),
+                "terminal" if v_term => Some((StatusBtn::Terminal, self.status_btn_width(""))),
+                "debug" if v_dbg => Some((StatusBtn::Debug, self.status_btn_width(""))),
+                "git" if v_git => Some((StatusBtn::Git, self.status_btn_width(&git_label))),
+                "ram" if v_ram => Some((StatusBtn::Ram, if short { RAM_ICON_W } else { self.tx.ui_width(&memtxt, false) })),
+                _ => None,
+            };
+            items.extend(item);
         }
-        if !pieces.is_empty() {
-            const GAP: i32 = 20;
-            let widths: Vec<i32> = pieces.iter().map(|(_, t)| self.tx.ui_width(t, false)).collect();
-            let total = widths.iter().sum::<i32>() + GAP * (pieces.len() as i32 - 1);
-            let edge = if right_min < r.right() - 10 { right_min - 20 } else { r.right() - 16 };
-            let mut ix = edge - total;
+        let kinds: Vec<StatusBtn> = items.iter().map(|i| i.0).collect();
+        let total: i32 = items.iter().map(|i| i.1).sum::<i32>() + (1..kinds.len()).map(|k| status_gap(kinds[k - 1], kinds[k])).sum::<i32>();
+        let mut right_min = r.right() - 10;
+        if let Some(&last) = kinds.last() {
+            let mut ix = r.right() - if is_status_button(last) { 10 } else { 16 } - total;
             right_min = ix;
-            for ((kind, text), w) in pieces.iter().zip(&widths) {
-                self.tx.draw_ui(cv, ix, y, text, dim, r, false);
-                self.layout.status_info.push((Rect::new(ix - 4, r.y + 3, w + 8, r.h - 6), *kind));
-                ix += w + GAP;
+            let term_on = self.panel.open && self.panel.tab == crate::app_panel::PanelTab::Terminal;
+            let dbg_on = self.panel.open && self.panel.tab == crate::app_panel::PanelTab::Debug;
+            for (k, &(kind, w)) in items.iter().enumerate() {
+                match kind {
+                    StatusBtn::Terminal => {
+                        self.status_btn(cv, ix, "ui/terminal", "", if term_on { c.accent_text } else { dim }, term_on, kind);
+                    }
+                    StatusBtn::Debug => {
+                        self.status_btn(cv, ix, "ui/debug", "", if dbg_on || self.dbg.is_some() { c.accent_text } else { dim }, dbg_on, kind);
+                    }
+                    StatusBtn::Git => {
+                        let git_on = self.gitpanel.is_some();
+                        self.status_btn(cv, ix, "ui/git_graph", &git_label, if changed > 0 || git_on { c.accent_text } else { dim }, git_on, kind);
+                    }
+                    StatusBtn::Ram => {
+                        if short {
+                            self.tx.icon(cv, "hugeicons/cpu", ix, r.y + (r.h - 14) / 2, 14, dim, r);
+                            let mb = memory_mb(&memtxt);
+                            let dot = if mb < 400.0 { c.git_added } else if mb < 900.0 { c.warning } else { c.error };
+                            cv.fill_round(Rect::new(ix + 14 + 4, r.y + (r.h - 5) / 2, 5, 5), 2, dot.with_alpha(0xc8));
+                        } else {
+                            self.tx.draw_ui(cv, ix, y, &memtxt, dim, r, false);
+                        }
+                        self.layout.status_info.push((Rect::new(ix - 4, r.y + 3, w + 8, r.h - 6), kind));
+                    }
+                    StatusBtn::Position | StatusBtn::Indent | StatusBtn::Language => {
+                        let t = doc_texts.as_ref().map(|t| match kind {
+                            StatusBtn::Position => &t.0,
+                            StatusBtn::Indent => &t.1,
+                            _ => &t.2,
+                        });
+                        let b = Rect::new(ix - 4, r.y + 3, w + 8, r.h - 6);
+                        if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
+                            cv.fill_round(b, 6, c.list_hover_bg);
+                        }
+                        if let Some(t) = t {
+                            self.tx.draw_ui(cv, ix, y, t, dim, r, false);
+                        }
+                        self.layout.status_btns.push((b, kind));
+                    }
+                    StatusBtn::Sidebar | StatusBtn::Search | StatusBtn::Problems => {}
+                }
+                ix += w + kinds.get(k + 1).map_or(0, |&n| status_gap(kind, n));
             }
         }
 
@@ -905,9 +928,140 @@ impl App {
                 }
             }
             StatusBtn::Git => self.git_button(),
-            StatusBtn::Ram | StatusBtn::Position | StatusBtn::Indent | StatusBtn::Language => {}
+            StatusBtn::Position => self.open_goto_line(),
+            StatusBtn::Indent => self.open_indent_picker(),
+            StatusBtn::Language => self.open_language_picker(),
+            StatusBtn::Ram => {}
         }
         true
+    }
+}
+
+// ───────────── indentation / language of the current document ─────────────
+
+/// Entries of the indentation picker: (label, spec).
+pub const INDENT_CHOICES: &[(&str, &str)] = &[("Espaços: 2", "2"), ("Espaços: 4", "4"), ("Espaços: 8", "8"), ("Tabulação", "tab")];
+
+/// "2" / "4" / "8" -> that many spaces, "tab" -> a tab; anything else -> `None`.
+pub fn indent_from_spec(spec: &str) -> Option<String> {
+    match spec {
+        "tab" => Some("\t".to_string()),
+        n => n.parse::<usize>().ok().filter(|n| (1..=8).contains(n)).map(|n| " ".repeat(n)),
+    }
+}
+
+/// The spec an indent string corresponds to (inverse of [`indent_from_spec`]).
+pub fn indent_spec(indent: &str) -> String {
+    if indent.contains('\t') { "tab".to_string() } else { indent.len().to_string() }
+}
+
+/// Line comment prefix for a language id ("" = none: toggling comments does nothing).
+pub fn comment_for_lang(lang: Option<&str>) -> &'static str {
+    match lang {
+        Some("python" | "shellscript" | "toml" | "yaml" | "ruby" | "dockerfile" | "makefile" | "perl" | "r" | "powershell" | "properties" | "ini" | "nix" | "elixir" | "julia") => "#",
+        Some("lua" | "sql" | "haskell" | "ada" | "plsql") => "--",
+        Some("css" | "scss" | "less" | "html" | "markdown" | "json" | "xml" | "jsonc") => "",
+        _ => "//",
+    }
+}
+
+/// (id, display name) of every language with a grammar, sorted by name.
+pub fn language_choices(assets: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(assets.join("language-manifest.json")) else { return Vec::new() };
+    let Ok(m) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
+    let mut v: Vec<(String, String)> = m["languages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| {
+            let id = l["id"].as_str()?;
+            Some((id.to_string(), l["displayName"].as_str().unwrap_or(id).to_string()))
+        })
+        .collect();
+    v.sort_by_key(|(_, name)| name.to_lowercase());
+    v
+}
+
+/// `Doc::lang` wants a `&'static str`: ids picked at runtime are interned (leaked once each; there
+/// are only a few hundred possible ones).
+fn static_lang(id: &str) -> &'static str {
+    static SEEN: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(s) = seen.iter().find(|s| **s == id) {
+        return s;
+    }
+    let s: &'static str = Box::leak(id.to_string().into_boxed_str());
+    seen.push(s);
+    s
+}
+
+impl App {
+    /// Bottom bar "Espaços: 4": choose how the current document indents.
+    pub fn open_indent_picker(&mut self) {
+        use crate::app_overlay::{Action, Item};
+        let Some(d) = self.docs.get(self.active) else { return };
+        let cur = indent_spec(&d.ed.indent);
+        let items: Vec<Item> = INDENT_CHOICES
+            .iter()
+            .map(|(label, spec)| Item { label: label.to_string(), detail: if *spec == cur { "atual".into() } else { String::new() }, action: Action::SetIndent(spec.to_string()) })
+            .collect();
+        let sel = INDENT_CHOICES.iter().position(|(_, s)| *s == cur).unwrap_or(0);
+        self.overlay = Overlay::Picker(crate::app_overlay::choice_picker("Indentação do arquivo", items, sel));
+    }
+
+    /// Bottom bar language name: choose the language (and so the highlighting) of the document.
+    pub fn open_language_picker(&mut self) {
+        use crate::app_overlay::{Action, Item};
+        let Some(d) = self.docs.get(self.active) else { return };
+        let cur = d.lang;
+        let mut items = vec![Item { label: "Texto simples".into(), detail: if cur.is_none() { "atual".into() } else { String::new() }, action: Action::SetLang(None) }];
+        let mut sel = 0;
+        for (id, name) in language_choices(&self.assets) {
+            if Some(id.as_str()) == cur {
+                sel = items.len();
+            }
+            let detail = if Some(id.as_str()) == cur { format!("{id} · atual") } else { id.clone() };
+            items.push(Item { label: name, detail, action: Action::SetLang(Some(id)) });
+        }
+        self.overlay = Overlay::Picker(crate::app_overlay::choice_picker("Linguagem do arquivo (digite para filtrar)", items, sel));
+    }
+
+    /// Apply a choice of the indentation picker to the active document.
+    pub fn set_doc_indent(&mut self, spec: &str) {
+        let (Some(indent), Some(d)) = (indent_from_spec(spec), self.docs.get_mut(self.active)) else { return };
+        d.ed.indent = indent;
+        self.say(format!("indentação: {}", if spec == "tab" { "tabulação".to_string() } else { format!("{spec} espaços") }));
+    }
+
+    /// Switch the active document to language `id` (`None` = plain text): new grammar, comment
+    /// prefix and JSX handling. The choice lasts while the document stays open.
+    pub fn set_doc_language(&mut self, id: Option<String>) {
+        if self.docs.get(self.active).is_none() {
+            return;
+        }
+        let lang = id.as_deref().map(static_lang);
+        let mut note = None;
+        let hl = lang.and_then(|l| {
+            let tk = crate::textmate::Registry::new(&self.assets).ok().and_then(|reg| reg.scope_for_language(l)).and_then(|scope| {
+                if let Some(t) = self.tokenizers.get(&scope) {
+                    return Some(t.clone());
+                }
+                let t = crate::highlight::make_tokenizer(&self.assets, &scope)?;
+                self.tokenizers.insert(scope, t.clone());
+                Some(t)
+            });
+            if tk.is_none() {
+                note = Some(format!("sem gramática para {l}"));
+            }
+            tk.map(crate::highlight::Highlighter::new)
+        });
+        let d = &mut self.docs[self.active];
+        d.lang = lang;
+        d.hl = hl;
+        d.ed.comment = comment_for_lang(lang).to_string();
+        d.ed.jsx = matches!(lang, Some("tsx" | "jsx" | "html" | "vue" | "svelte"));
+        d.sem.clear();
+        self.say(note.unwrap_or_else(|| format!("linguagem: {}", lang.unwrap_or("texto simples"))));
     }
 }
 
@@ -1049,5 +1203,52 @@ mod tests {
         let main = b.iter().find(|b| b.name == "main").unwrap();
         assert!(main.current && main.author == "Tester" && main.subject == "primeiro commit");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn indent_specs_roundtrip() {
+        assert_eq!(indent_from_spec("2").as_deref(), Some("  "));
+        assert_eq!(indent_from_spec("8").as_deref(), Some("        "));
+        assert_eq!(indent_from_spec("tab").as_deref(), Some("\t"));
+        assert_eq!(indent_from_spec("0"), None);
+        assert_eq!(indent_from_spec("x"), None);
+        for (_, spec) in INDENT_CHOICES {
+            assert_eq!(indent_spec(&indent_from_spec(spec).unwrap()), *spec);
+        }
+    }
+
+    #[test]
+    fn comment_prefix_follows_the_chosen_language() {
+        assert_eq!(comment_for_lang(Some("python")), "#");
+        assert_eq!(comment_for_lang(Some("sql")), "--");
+        assert_eq!(comment_for_lang(Some("css")), "");
+        assert_eq!(comment_for_lang(Some("rust")), "//");
+        assert_eq!(comment_for_lang(None), "//");
+    }
+
+    #[test]
+    fn language_list_comes_from_the_manifest_sorted_by_name() {
+        let v = language_choices(&Path::new(env!("CARGO_MANIFEST_DIR")).join("assets"));
+        assert!(v.len() > 50, "{}", v.len());
+        assert!(v.iter().any(|(id, name)| id == "typescript" && name == "TypeScript"));
+        assert!(v.windows(2).all(|w| w[0].1.to_lowercase() <= w[1].1.to_lowercase()));
+        assert!(language_choices(Path::new("/nonexistent")).is_empty());
+    }
+
+    #[test]
+    fn interned_language_ids_are_stable() {
+        let a = static_lang("some-lang");
+        let b = static_lang("some-lang");
+        assert!(std::ptr::eq(a, b));
+        assert_eq!(a, "some-lang");
+    }
+
+    #[test]
+    fn right_group_gaps() {
+        assert_eq!(status_gap(StatusBtn::Terminal, StatusBtn::Git), 0, "buttons carry their own padding");
+        assert_eq!(status_gap(StatusBtn::Position, StatusBtn::Indent), 20);
+        assert_eq!(status_gap(StatusBtn::Git, StatusBtn::Ram), 12);
+        assert_eq!(status_gap(StatusBtn::Ram, StatusBtn::Language), 20);
+        assert_eq!(status_gap(StatusBtn::Language, StatusBtn::Terminal), 20);
     }
 }

@@ -89,6 +89,7 @@ pub fn default_settings() -> Vec<SettingDef> {
         d("font_size", "Editor", "Tamanho da fonte", "Tamanho do texto do código em pixels (8 a 40). Ctrl + roda do mouse ajusta temporariamente.", Number { min: 8.0, max: 40.0, step: 1.0 }),
         // --- not in config.rs yet (see PENDING_KEYS) ---
         d("minimap", "Editor", "Minimapa", "Mostra a miniatura do arquivo na borda direita do editor.", Bool),
+        d("minimap_style", "Editor", "Estilo do minimapa", "Sutil é mais estreito e de baixo contraste; Normal é a aparência original.", Choice(&["subtle", "normal"])),
         d("word_wrap", "Editor", "Quebra de linha", "Quebra linhas longas na largura da janela em vez de rolar na horizontal.", Bool),
         d("sticky_scroll", "Editor", "Rolagem fixa", "Mantém os escopos (função, classe) visíveis no topo enquanto você rola.", Bool),
         d("indent_guides", "Editor", "Guias de indentação", "Desenha linhas verticais finas nos níveis de indentação.", Bool),
@@ -98,6 +99,7 @@ pub fn default_settings() -> Vec<SettingDef> {
         d("theme", "Aparência", "Tema", "Tema de cores usado no modo fixo.", Choice(&[])),
         d("theme_light", "Aparência", "Tema claro", "Tema usado quando o sistema está no modo claro (aparência: sistema).", Choice(&[])),
         d("theme_dark", "Aparência", "Tema escuro", "Tema usado quando o sistema está no modo escuro (aparência: sistema).", Choice(&[])),
+        d("theme_chrome", "Aparência", "Cores da interface", "Derivadas mantém o visual calmo e plano de sempre; Do tema usa a barra lateral, as abas e a barra inferior do próprio tema quando o texto continua legível (o resto cai no visual derivado).", Choice(&["derived", "theme"])),
         d("ui_scale", "Aparência", "Escala da interface", "Escala de telas hi-DPI (0,5 a 4). 0 = automático, usa a escala do sistema (também aceita LUMEN_SCALE).", Number { min: 0.0, max: 4.0, step: 0.25 }),
         d("auto_import", "TypeScript", "Importação automática", "Adiciona imports ausentes automaticamente ao aceitar uma sugestão.", Bool),
         d("lsp_narrow", "TypeScript", "Modo enxuto", "Limita o servidor de linguagem ao essencial para gastar menos memória e CPU.", Bool),
@@ -115,6 +117,15 @@ pub fn default_settings() -> Vec<SettingDef> {
         d("status_debug", "Barra inferior", "Depuração", "Botão que abre o painel de depuração.", Bool),
         d("status_git", "Barra inferior", "Git", "Botão do painel Git com a contagem de arquivos alterados.", Bool),
         d("status_ram", "Barra inferior", "Memória", "Uso de memória do editor e dos servidores de linguagem.", Bool),
+        // Order of the right-hand items: a stepper per item with its slot (1 = leftmost); - moves it
+        // left, + moves it right. Hidden items keep their slot.
+        d("status_pos_position", "Barra inferior", "Ordem: Linha e coluna", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_indent", "Barra inferior", "Ordem: Indentação", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_language", "Barra inferior", "Ordem: Linguagem", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_terminal", "Barra inferior", "Ordem: Terminal", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_debug", "Barra inferior", "Ordem: Depuração", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_git", "Barra inferior", "Ordem: Git", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_ram", "Barra inferior", "Ordem: Memória", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
         d("ram_display", "Barra inferior", "Formato da memória", "Longa mostra os números (\"RAM 13 MB + tsgo 65 MB\"); curta mostra só um ícone de chip, com os valores no tooltip.", Choice(&["long", "short"])),
     ]
 }
@@ -124,12 +135,14 @@ pub fn default_settings() -> Vec<SettingDef> {
 pub fn default_values() -> Value {
     json!({
         "format_on_save": false, "auto_import": false, "font_size": 14, "lsp_narrow": true,
-        "code_lens": false, "inlay_hints": false, "appearance": "fixed", "theme_light": "github-light-default",
+        "code_lens": false, "inlay_hints": false, "appearance": "fixed", "theme_chrome": "derived", "theme_light": "github-light-default",
         "theme_dark": "github-dark-default", "tsgo_source": "auto",
-        "minimap": true, "word_wrap": false, "sticky_scroll": true, "indent_guides": true, "ui_scale": 0,
+        "minimap": true, "minimap_style": "subtle", "word_wrap": false, "sticky_scroll": true, "indent_guides": true, "ui_scale": 0,
         "breadcrumbs": true, "git_blame": true, "ram_display": "long",
         "status_search": true, "status_problems": true, "status_position": true, "status_indent": true, "status_language": true,
         "status_terminal": true, "status_debug": true, "status_git": true, "status_ram": true,
+        "status_pos_position": 1, "status_pos_indent": 2, "status_pos_language": 3, "status_pos_terminal": 4,
+        "status_pos_debug": 5, "status_pos_git": 6, "status_pos_ram": 7,
     })
 }
 
@@ -142,6 +155,10 @@ fn choice_label(s: &str) -> String {
         "bundled" => "Embutido".into(),
         "long" => "Longa".into(),
         "short" => "Curta".into(),
+        "derived" => "Derivadas".into(),
+        "theme" => "Do tema".into(),
+        "subtle" => "Sutil".into(),
+        "normal" => "Normal".into(),
         o => o.to_string(),
     }
 }
@@ -237,6 +254,13 @@ impl SettingsPage {
 
     pub fn values(&self) -> Value {
         Value::Object(self.values.clone())
+    }
+
+    /// Replace the displayed values (after the app changed several at once, e.g. item order).
+    pub fn set_values(&mut self, values: Value) {
+        if let Value::Object(o) = values {
+            self.values = o;
+        }
     }
 
     /// Sections in definition order, without duplicates.
@@ -710,8 +734,25 @@ pub struct KeybindsPage {
     view_h: i32,
 }
 
-/// Display parts of a normalized combo: "ctrl+shift+p" -> ["ctrl","shift","p"]; "ctrl++" -> ["ctrl","+"].
+/// Display parts of a normalized combo: "ctrl+shift+p" -> ["ctrl","shift","p"]; "ctrl++" -> ["ctrl","+"];
+/// a chord keeps both strokes with a "›" between them ("ctrl+k r" -> ["ctrl","k","›","r"]) and an
+/// explorer-only key starts with "explorer" ("explorer:a" -> ["explorer","a"]).
 pub fn combo_parts(combo: &str) -> Vec<String> {
+    if let Some(rest) = combo.strip_prefix(keymap::EXPLORER) {
+        let mut v = vec!["explorer".to_string()];
+        v.extend(combo_parts(rest));
+        return v;
+    }
+    if combo.contains(' ') {
+        let mut v = Vec::new();
+        for (i, stroke) in combo.split(' ').filter(|s| !s.is_empty()).enumerate() {
+            if i > 0 {
+                v.push("›".to_string());
+            }
+            v.extend(combo_parts(stroke));
+        }
+        return v;
+    }
     let mut rest = combo;
     let mut out = Vec::new();
     loop {
@@ -745,6 +786,7 @@ pub fn combo_chips(combo: &str) -> Vec<String> {
                 "ctrl" => "Ctrl".into(),
                 "shift" => "Shift".into(),
                 "alt" => "Alt".into(),
+                "explorer" => "Explorador".into(),
                 "up" => "↑".into(),
                 "down" => "↓".into(),
                 "left" => "←".into(),
@@ -804,6 +846,24 @@ impl KeybindsPage {
         &self.user
     }
 
+    /// Register extra built-in combos (aliases such as `ctrl+y` for Redo): they count as defaults
+    /// for ownership, conflicts, the "modified" mark and keybindings.json, but the row's main
+    /// default stays the one it was created with.
+    pub fn add_default_aliases(&mut self, aliases: impl IntoIterator<Item = (String, String)>) {
+        for (combo, id) in aliases {
+            self.defaults.entry(keymap::normalize(&combo)).or_insert(id);
+        }
+        self.refilter();
+    }
+
+    /// Every built-in combo of a command, main one first.
+    fn defaults_of(&self, id: &str) -> Vec<String> {
+        let main = self.default_of(id).map(str::to_string);
+        let mut v: Vec<String> = self.defaults.iter().filter(|(_, i)| i.as_str() == id).map(|(c, _)| c.clone()).collect();
+        v.sort_by_key(|c| (Some(c) != main.as_ref(), c.clone()));
+        v
+    }
+
     /// The command id that owns `combo` right now (user override first, "none" frees it).
     pub fn owner_of(&self, combo: &str) -> Option<&str> {
         match self.user.get(combo) {
@@ -837,8 +897,7 @@ impl KeybindsPage {
     }
 
     pub fn is_modified(&self, id: &str) -> bool {
-        let want: Vec<String> = self.default_of(id).map(str::to_string).into_iter().collect();
-        self.bindings_of(id) != want
+        self.bindings_of(id) != self.defaults_of(id)
     }
 
     fn label_of(&self, id: &str) -> String {
@@ -1001,9 +1060,9 @@ impl KeybindsPage {
         let id = self.commands[i].id.clone();
         let mut evs = Vec::new();
         let mut combos: Vec<String> = self.user.iter().filter(|(_, v)| **v == id).map(|(k, _)| k.clone()).collect();
-        if let Some(d) = self.default_of(&id) {
-            if self.user.contains_key(d) {
-                combos.push(d.to_string());
+        for d in self.defaults_of(&id) {
+            if self.user.contains_key(&d) {
+                combos.push(d);
             }
         }
         combos.sort();
@@ -2022,6 +2081,28 @@ mod tests {
         p.visible().iter().map(|&i| p.defs[i].key).collect()
     }
 
+    #[test]
+    fn default_aliases_count_as_defaults() {
+        let rows = vec![
+            CommandRow { id: "Redo".into(), label: "Refazer".into(), default: Some("ctrl+shift+z".into()) },
+            CommandRow { id: "Save".into(), label: "Salvar".into(), default: Some("ctrl+s".into()) },
+        ];
+        let mut p = KeybindsPage::new(rows, HashMap::new());
+        p.add_default_aliases([("ctrl+y".to_string(), "Redo".to_string()), ("Ctrl+K S".to_string(), "Save".to_string())]);
+        assert_eq!(p.bindings_of("Redo"), vec!["ctrl+shift+z", "ctrl+y"], "main default first");
+        assert_eq!(p.bindings_of("Save"), vec!["ctrl+s", "ctrl+k s"]);
+        assert!(!p.is_modified("Redo"), "an alias is not a modification");
+        assert_eq!(p.owner_of("ctrl+y"), Some("Redo"));
+        // Removing the alias disables it explicitly and marks the row as modified; reset undoes it.
+        let ev = p.remove_binding("Redo", "ctrl+y");
+        assert!(matches!(ev, Some(Event::Bind { ref combo, ref command_id }) if combo == "ctrl+y" && command_id == "none"));
+        assert!(p.is_modified("Redo"));
+        assert_eq!(p.to_json(), r#"{"ctrl+y":"none"}"#);
+        p.reset_row(0);
+        assert!(!p.is_modified("Redo"));
+        assert_eq!(p.to_json(), "{}");
+    }
+
     // --- defaults / model ---
 
     #[test]
@@ -2065,6 +2146,28 @@ mod tests {
     }
 
     #[test]
+    fn bottom_bar_order_has_one_stepper_per_right_hand_item() {
+        let defs = default_settings();
+        let vals = default_values();
+        assert_eq!(crate::config::STATUS_RIGHT.len(), 7);
+        for (slot, id) in crate::config::STATUS_RIGHT.iter().enumerate() {
+            let key = format!("status_pos_{id}");
+            let def = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("missing {key}"));
+            assert!(matches!(def.kind, SettingKind::Number { min, max, step } if min == 1.0 && max == 7.0 && step == 1.0));
+            assert_eq!(vals[&key], json!(slot + 1), "{key} default slot");
+        }
+    }
+
+    #[test]
+    fn set_values_replaces_what_the_rows_show() {
+        let mut p = page_with(json!({"status_pos_git": 6}));
+        let def = p.defs.iter().position(|d| d.key == "status_pos_git").unwrap();
+        assert_eq!(p.current(def), json!(6));
+        p.set_values(json!({"status_pos_git": 2}));
+        assert_eq!(p.current(def), json!(2));
+    }
+
+    #[test]
     fn sections_in_order_and_visible_by_section() {
         let mut p = page_with(json!({}));
         assert_eq!(p.sections(), vec!["Geral", "Editor", "Aparência", "TypeScript", "Git", "Barra inferior"]);
@@ -2079,7 +2182,7 @@ mod tests {
     fn search_filters_label_and_help_case_insensitive_across_sections() {
         let mut m = modal();
         typing(&mut m, "MINIMAPA");
-        assert_eq!(keys_of(&m.settings), vec!["minimap"]);
+        assert_eq!(keys_of(&m.settings), vec!["minimap", "minimap_style"]);
         m.settings.search = TextField::with("servidor");
         let keys = keys_of(&m.settings);
         assert!(keys.contains(&"format_on_save") && keys.contains(&"lsp_narrow") && keys.contains(&"code_lens"), "{keys:?}");
@@ -2313,6 +2416,9 @@ mod tests {
         assert_eq!(combo_chips("ctrl++"), vec!["Ctrl", "+"]);
         assert_eq!(combo_chips("ctrl+pageup"), vec!["Ctrl", "PgUp"]);
         assert_eq!(combo_parts("ctrl+shift+alt+x"), vec!["ctrl", "shift", "alt", "x"]);
+        assert_eq!(combo_chips("ctrl+k r"), vec!["Ctrl", "K", "›", "R"]);
+        assert_eq!(combo_chips("explorer:shift+a"), vec!["Explorador", "Shift", "A"]);
+        assert_eq!(combo_chips("explorer:delete"), vec!["Explorador", "Del"]);
     }
 
     #[test]

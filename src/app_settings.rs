@@ -21,16 +21,20 @@ impl App {
         let c = &self.config;
         json!({
             "format_on_save": c.format_on_save, "auto_import": c.auto_import, "font_size": c.font_size,
-            "lsp_narrow": c.lsp_narrow, "code_lens": c.code_lens, "inlay_hints": c.inlay_hints, "appearance": c.appearance,
+            "lsp_narrow": c.lsp_narrow, "code_lens": c.code_lens, "inlay_hints": c.inlay_hints, "appearance": c.appearance, "theme_chrome": c.theme_chrome,
             "theme": c.theme.clone().unwrap_or_else(|| self.theme.name.clone()),
             "theme_light": c.theme_light, "theme_dark": c.theme_dark, "tsgo_source": c.tsgo_source,
-            "minimap": c.minimap, "word_wrap": c.word_wrap, "sticky_scroll": c.sticky_scroll, "indent_guides": c.indent_guides,
+            "minimap": c.minimap, "minimap_style": c.minimap_style, "word_wrap": c.word_wrap, "sticky_scroll": c.sticky_scroll, "indent_guides": c.indent_guides,
             "ui_scale": c.ui_scale,
             "breadcrumbs": c.breadcrumbs, "git_blame": c.git_blame, "ram_display": c.ram_display,
             "status_search": c.status_visible("search"), "status_problems": c.status_visible("problems"),
             "status_position": c.status_visible("position"), "status_indent": c.status_visible("indent"),
             "status_language": c.status_visible("language"), "status_terminal": c.status_visible("terminal"),
             "status_debug": c.status_visible("debug"), "status_git": c.status_visible("git"), "status_ram": c.status_visible("ram"),
+            "status_pos_position": c.status_slot("position").map_or(1, |s| s + 1), "status_pos_indent": c.status_slot("indent").map_or(2, |s| s + 1),
+            "status_pos_language": c.status_slot("language").map_or(3, |s| s + 1), "status_pos_terminal": c.status_slot("terminal").map_or(4, |s| s + 1),
+            "status_pos_debug": c.status_slot("debug").map_or(5, |s| s + 1), "status_pos_git": c.status_slot("git").map_or(6, |s| s + 1),
+            "status_pos_ram": c.status_slot("ram").map_or(7, |s| s + 1),
         })
     }
 
@@ -50,7 +54,11 @@ impl App {
             })
             .collect();
         let user = self.keymap.entries();
-        self.overlay = Overlay::Settings(Box::new(Modal::new(sp, KeybindsPage::new(rows, user), page)));
+        let mut kb = KeybindsPage::new(rows, user);
+        // Aliases (`ctrl+y` for Redo, `ctrl+k s` for Save, ...): every default row but a command's first.
+        let aliases = keymap::DEFAULTS.iter().filter(|(c, id)| keymap::default_combo(id) != Some(*c)).map(|(c, id)| (c.to_string(), id.to_string()));
+        kb.add_default_aliases(aliases);
+        self.overlay = Overlay::Settings(Box::new(Modal::new(sp, kb, page)));
     }
 
     fn window_rect(&self) -> Rect {
@@ -132,6 +140,26 @@ impl App {
         self.say(if on { "git blame: ligado" } else { "git blame: desligado" });
     }
 
+    /// Load the current theme again (same file, same name) so a change of `theme_chrome` shows
+    /// right away. `LUMEN_THEME` keeps winning, as it does at startup.
+    fn reload_theme(&mut self) {
+        let path = std::env::var_os("LUMEN_THEME").map(std::path::PathBuf::from).unwrap_or_else(|| {
+            let name = self.config.resolve_theme(if self.config.appearance == "system" { crate::config::detect_dark() } else { None });
+            self.theme_path(&name)
+        });
+        match crate::theme::Theme::load(&path) {
+            Ok(t) => {
+                self.theme = t;
+                for d in &mut self.docs {
+                    if let Some(h) = d.hl.as_mut() {
+                        h.theme_changed();
+                    }
+                }
+            }
+            Err(e) => self.say(format!("tema inválido: {e}")),
+        }
+    }
+
     fn apply_setting(&mut self, key: &str, v: &Value) {
         let b = v.as_bool();
         let s = v.as_str().map(str::to_string);
@@ -160,6 +188,11 @@ impl App {
                 self.config.appearance = s.unwrap_or_else(|| "fixed".into());
                 self.follow_system_theme();
             }
+            "theme_chrome" => {
+                self.config.theme_chrome = if s.as_deref() == Some("theme") { "theme".into() } else { "derived".into() };
+                crate::theme::set_theme_chrome(self.config.own_chrome());
+                self.reload_theme();
+            }
             "theme" => {
                 if let Some(n) = s {
                     self.config.appearance = "fixed".into();
@@ -186,11 +219,16 @@ impl App {
                     d.minimap = self.config.minimap;
                 }
             }
+            "minimap_style" => {
+                self.config.minimap_style = if s.as_deref() == Some("normal") { "normal".into() } else { "subtle".into() };
+                crate::minimap::set_style(crate::minimap::Style::from_name(&self.config.minimap_style));
+            }
             "word_wrap" => {
                 self.config.word_wrap = b.unwrap_or(false);
                 for d in &mut self.docs {
                     d.set_word_wrap(self.config.word_wrap);
                 }
+                self.split_wrap_all(self.config.word_wrap);
             }
             "sticky_scroll" => {
                 self.config.sticky_scroll = b.unwrap_or(true);
@@ -214,6 +252,23 @@ impl App {
                 }
             }
             "ram_display" => self.config.ram_display = if s.as_deref() == Some("short") { "short".into() } else { "long".into() },
+            k if k.starts_with("status_pos_") => {
+                // Stepper of an item's slot in the right-hand group: moves it there, live.
+                let slot = (v.as_f64().unwrap_or(1.0).round().max(1.0) as usize) - 1;
+                self.config.move_status_to(&k["status_pos_".len()..], slot);
+                self.tooltip = None;
+                // The other items shifted: refresh every stepper of the open modal.
+                let vals = self.config_values();
+                if let Overlay::Settings(m) = &mut self.overlay {
+                    let mut merged = m.settings.values();
+                    if let (Some(dst), Some(src)) = (merged.as_object_mut(), vals.as_object()) {
+                        for (key, val) in src.iter().filter(|(key, _)| key.starts_with("status_pos_")) {
+                            dst.insert(key.clone(), val.clone());
+                        }
+                    }
+                    m.settings.set_values(merged);
+                }
+            }
             k if k.starts_with("status_") => {
                 // One switch per bottom bar item; the mandatory one has none (and ignores `false`).
                 self.config.set_status_item(&k["status_".len()..], b.unwrap_or(true));

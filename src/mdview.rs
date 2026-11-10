@@ -13,24 +13,36 @@
 //! [`MdView::source_line_at_y`] is its inverse. Both interpolate inside long blocks (paragraphs,
 //! code blocks, lists, tables) and across the blank lines between blocks, and are monotonic.
 //!
+//! The document is cut at blank lines into *segments* (see [`split`]); each segment is parsed and
+//! laid out on its own and cached under the hash of its text, so a keystroke only re-parses and
+//! re-lays out the segment it landed in (the other segments are reused as they are and placed by
+//! y offset). Layouts are cached per width / font size.
+//!
 //! Supported: ATX/setext headings (H1-H6, hairline under H1/H2), paragraphs with word wrap,
 //! **bold** (semibold face), *emphasis* (the UI family has no italic face: emphasis is drawn in the
 //! text colour mixed toward the accent), ~~strikethrough~~ (line through), `inline code` (monospace
-//! chip), links (accent + underline, hit-testable with [`MdView::link_at`]), images (bordered
-//! placeholder with alt text and URL, nothing is decoded), bullet / ordered / nested / task lists,
-//! block quotes, thematic breaks, fenced and indented code blocks (monospace, never wrapped, clipped
-//! horizontally, language label), GFM tables (content-sized columns, ellipsized cells, alignment),
+//! chip), links (accent + underline, hit-testable with [`MdView::link_at`]), images (local
+//! files are decoded: png, jpg, gif, webp, svg, see `mdimg`; remote URLs keep a bordered placeholder
+//! with alt text and URL), bullet / ordered / nested / task lists (a click on a checkbox toggles the
+//! source, see [`MdView::check_at`]), footnotes (numbered by first reference, collected at the end),
+//! math (`$..$` as a chip, `$$..$$` as a block, monospace source text, no LaTeX engine), block quotes, thematic breaks, fenced and indented code blocks (monospace, never wrapped, clipped
+//! horizontally, language label, TextMate syntax colors when a highlighter is given to
+//! [`MdView::draw_with`]), GFM tables (content-sized columns, ellipsized cells, alignment),
 //! hard and soft breaks, and `<img>` / `<br>` / `<a href>` found in raw HTML (other tags are
 //! stripped; HTML comments are dropped).
-//! Not supported: footnotes, math, definition lists, metadata blocks, admonition quotes, real
-//! italics, syntax highlighting inside code blocks, inline images in the middle of a text line
-//! (an image ends the paragraph text before it; consecutive images share a row).
+//! Not supported: definition lists, metadata blocks, admonition quotes, real italics, inline images
+//! in the middle of a text line (an image ends the paragraph text before it; consecutive images
+//! share a row), animated GIF/WebP (first frame only), SVG text / CSS classes / filters / gradients
+//! (a gradient paints its first stop color), LaTeX typesetting.
 #![allow(dead_code)]
 
+use crate::mdimg::{ImgStore, Tex};
 use crate::theme::{Rgba, Theme};
 use crate::ui::{Canvas, Rect, TextCtx, font_size, line_h};
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use std::collections::HashMap;
+use pulldown_cmark::{Alignment, BrokenLink, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::rc::Rc;
 
 // ---------------------------------------------------------------------------------------------
 // constants
@@ -56,6 +68,8 @@ const F_S: u8 = 4;
 const F_CODE: u8 = 8;
 const F_LINK: u8 = 16;
 const F_DIM: u8 = 32;
+/// Inline math: drawn as a code chip, tinted with the accent.
+const F_MATH: u8 = 64;
 
 // ---------------------------------------------------------------------------------------------
 // slugs
@@ -77,7 +91,11 @@ pub fn slugify(heading: &str) -> String {
 /// [`slugify`] with GitHub's duplicate handling: the first `foo` stays `foo`, the next ones become
 /// `foo-1`, `foo-2`, ... `seen` carries the state across the headings of one document.
 pub fn slugify_unique(heading: &str, seen: &mut HashMap<String, usize>) -> String {
-    let base = slugify(heading);
+    dedupe_slug(slugify(heading), seen)
+}
+
+/// The duplicate handling of [`slugify_unique`] for an already slugified `base`.
+fn dedupe_slug(base: String, seen: &mut HashMap<String, usize>) -> String {
     let Some(count) = seen.get(&base).copied() else {
         seen.insert(base.clone(), 1);
         return base;
@@ -104,6 +122,8 @@ enum Inl {
     Text { text: String, flags: u8, link: u32 },
     Soft,
     Hard,
+    /// `[^label]`: shown as `[n]`, `n` being the order of first reference in the document.
+    FootRef(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -111,11 +131,15 @@ struct Img {
     alt: String,
     url: String,
     link: u32,
+    /// `width` / `height` attributes of a raw HTML `<img>`, in px.
+    size: (Option<i32>, Option<i32>),
 }
 
 #[derive(Clone, Debug)]
 struct LItem {
     task: Option<bool>,
+    /// Byte offset (inside the segment) of the `[` of the task marker.
+    task_off: usize,
     blocks: Vec<Block>,
 }
 
@@ -129,6 +153,10 @@ enum Kind {
     List { start: Option<u64>, items: Vec<LItem>, loose: bool },
     Table { aligns: Vec<Alignment>, head: Vec<Vec<Inl>>, rows: Vec<Vec<Vec<Inl>>> },
     Images(Vec<Img>),
+    /// `$$ ... $$`.
+    Math(String),
+    /// `[^label]: ...`, moved to the end of the document when laid out.
+    FootDef { label: String, blocks: Vec<Block> },
 }
 
 /// A block with its 0-based source line range (inclusive).
@@ -137,6 +165,236 @@ struct Block {
     kind: Kind,
     line: usize,
     end: usize,
+}
+
+// ---------------------------------------------------------------------------------------------
+// shared tables
+
+/// Link targets of the whole document, interned so that the ids stored in cached segments stay
+/// valid when other segments change. Ids are 1-based (0 = no link).
+#[derive(Default)]
+struct Urls {
+    list: Vec<String>,
+    map: HashMap<String, u32>,
+}
+
+impl Urls {
+    fn id(&mut self, url: &str) -> u32 {
+        if let Some(&i) = self.map.get(url) {
+            return i;
+        }
+        self.list.push(url.to_string());
+        let i = self.list.len() as u32;
+        self.map.insert(url.to_string(), i);
+        i
+    }
+    fn get(&self, id: u32) -> Option<&String> {
+        self.list.get((id as usize).checked_sub(1)?)
+    }
+}
+
+/// 64-bit hash of `bytes` (8 bytes per step), mixed with `seed`.
+fn fxhash(bytes: &[u8], seed: u64) -> u64 {
+    const K: u64 = 0x517c_c1b7_2722_0a95;
+    let mut h = (seed ^ bytes.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let mut it = bytes.chunks_exact(8);
+    for c in &mut it {
+        h = (h.rotate_left(5) ^ u64::from_le_bytes(c.try_into().unwrap())).wrapping_mul(K);
+    }
+    for &b in it.remainder() {
+        h = (h.rotate_left(5) ^ b as u64).wrapping_mul(K);
+    }
+    (h ^ (h >> 32)).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+}
+
+/// Document-wide parse context: reference-style link targets and footnote labels, found by [`split`].
+/// A segment is parsed with these, so its cache key includes their hash.
+#[derive(Default)]
+struct Ctx {
+    refs: HashMap<String, String>,
+    foot: HashSet<String>,
+    hash: u64,
+}
+
+fn norm_label(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+// ---------------------------------------------------------------------------------------------
+// segmenting
+
+/// A run of source lines that parses on its own: `[b0, b1)` bytes, `nl` lines from line `l0`.
+#[derive(Clone, Copy, Debug)]
+struct SegSpan {
+    b0: usize,
+    b1: usize,
+    l0: usize,
+    nl: usize,
+}
+
+struct Split {
+    segs: Vec<SegSpan>,
+    ctx: Ctx,
+    /// Number of lines (`\n` count + 1, like [`LineIndex`]).
+    lines: usize,
+}
+
+/// `(columns, bytes)` of leading blanks (a tab goes to the next multiple of 4).
+fn indent_of(line: &str) -> (usize, usize) {
+    let (mut cols, mut n) = (0, 0);
+    for b in line.bytes() {
+        match b {
+            b' ' => cols += 1,
+            b'\t' => cols = (cols / 4 + 1) * 4,
+            _ => break,
+        }
+        n += 1;
+    }
+    (cols, n)
+}
+
+fn is_list_marker(rest: &str) -> bool {
+    let b = rest.as_bytes();
+    match b.first() {
+        Some(b'-' | b'+' | b'*') => b.get(1).is_none_or(|c| *c == b' ' || *c == b'\t'),
+        Some(c) if c.is_ascii_digit() => {
+            let d = b.iter().take_while(|c| c.is_ascii_digit()).count();
+            d <= 9 && matches!(b.get(d), Some(b'.' | b')')) && b.get(d + 1).is_none_or(|c| *c == b' ' || *c == b'\t')
+        }
+        _ => false,
+    }
+}
+
+/// Opening code fence: (char, run length) of ```` ``` ```` / `~~~` (info string of a backtick fence
+/// cannot hold a backtick).
+fn fence_open(rest: &str) -> Option<(u8, usize)> {
+    let c = *rest.as_bytes().first().filter(|c| **c == b'`' || **c == b'~')?;
+    let n = rest.bytes().take_while(|b| *b == c).count();
+    (n >= 3 && !(c == b'`' && rest[n..].contains('`'))).then_some((c, n))
+}
+
+fn fence_close(line: &str, c: u8, n: usize) -> bool {
+    let t = line.trim_start();
+    let k = t.bytes().take_while(|b| *b == c).count();
+    k >= n && t[k..].trim().is_empty()
+}
+
+/// Cut `text` into segments at blank lines outside code fences and raw HTML blocks that must stay
+/// together. Merging is always safe (a merged segment parses exactly as the document would), so
+/// the rules lean towards it: a line indented two columns or more continues the segment, and a
+/// list marker continues a segment that starts with a list.
+fn split(text: &str) -> Split {
+    struct Cur {
+        b0: usize,
+        l0: usize,
+        b1: usize,
+        l1: usize,
+        list: bool,
+    }
+    let mut segs: Vec<SegSpan> = vec![];
+    let mut ctx = Ctx::default();
+    let mut cur: Option<Cur> = None;
+    let mut blank_pending = false;
+    let mut fence: Option<(u8, usize)> = None;
+    let mut raw: Option<&'static str> = None;
+    let (mut off, mut ln) = (0usize, 0usize);
+    let close = |c: Cur, segs: &mut Vec<SegSpan>| segs.push(SegSpan { b0: c.b0, b1: c.b1, l0: c.l0, nl: c.l1 - c.l0 + 1 });
+    for line in text.split_inclusive('\n') {
+        let len = line.len();
+        let content = line.trim_end_matches(['\n', '\r']);
+        let blank = content.bytes().all(|b| b == b' ' || b == b'\t');
+        if let Some((c, n)) = fence {
+            if fence_close(content, c, n) {
+                fence = None;
+            }
+            if let Some(c) = cur.as_mut() {
+                (c.b1, c.l1) = (off + len, ln);
+            }
+        } else if let Some(end) = raw {
+            if content.to_ascii_lowercase().contains(end) {
+                raw = None;
+            }
+            if let Some(c) = cur.as_mut() {
+                (c.b1, c.l1) = (off + len, ln);
+            }
+        } else if blank {
+            blank_pending = cur.is_some();
+        } else {
+            // Fast path: a plain line that continues the current segment (most lines).
+            if !blank_pending {
+                if let Some(c) = cur.as_mut() {
+                    let first = content.bytes().find(|b| *b != b' ' && *b != b'\t');
+                    if !matches!(first, Some(b'`' | b'~' | b'<' | b'[')) {
+                        (c.b1, c.l1) = (off + len, ln);
+                        off += len;
+                        ln += 1;
+                        continue;
+                    }
+                }
+            }
+            let (cols, nb) = indent_of(content);
+            let rest = &content[nb..];
+            let merge = cols >= 2 || cur.as_ref().is_some_and(|c| c.list && is_list_marker(rest));
+            // `[^a]: ..` directly after another definition is a new one (the old footnote syntax
+            // would take it for a continuation line).
+            let foot_def = cols <= 3 && rest.starts_with("[^") && rest.contains("]:");
+            if cur.is_none() || (blank_pending && !merge) || foot_def {
+                if let Some(c) = cur.take() {
+                    close(c, &mut segs);
+                }
+                cur = Some(Cur { b0: off, l0: ln, b1: off, l1: ln, list: cols <= 3 && is_list_marker(rest) });
+            }
+            blank_pending = false;
+            if let Some(c) = cur.as_mut() {
+                (c.b1, c.l1) = (off + len, ln);
+            }
+            if let Some(f) = fence_open(rest) {
+                fence = Some(f);
+            } else if cols <= 3 && rest.starts_with('<') {
+                let l = rest.to_ascii_lowercase();
+                raw = if l.starts_with("<!--") && !l.contains("-->") {
+                    Some("-->")
+                } else {
+                    [("<pre", "</pre>"), ("<script", "</script>"), ("<style", "</style>"), ("<textarea", "</textarea>")].iter().find(|(o, e)| l.starts_with(o) && !l.contains(e)).map(|(_, e)| *e)
+                };
+            } else if cols <= 3 && rest.starts_with('[') {
+                if let Some(e) = rest.find("]:") {
+                    let label = &rest[1..e];
+                    if let Some(f) = label.strip_prefix('^') {
+                        ctx.foot.insert(f.trim().to_lowercase());
+                    } else if !label.is_empty() {
+                        let url = rest[e + 2..].split_whitespace().next().unwrap_or("").trim_matches(['<', '>']);
+                        if !url.is_empty() {
+                            ctx.refs.entry(norm_label(label)).or_insert_with(|| url.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        off += len;
+        ln += 1;
+    }
+    if let Some(c) = cur.take() {
+        close(c, &mut segs);
+    }
+    // Hash of the document-wide context: when empty, segments hash by their text alone.
+    if !ctx.refs.is_empty() || !ctx.foot.is_empty() {
+        let mut keys: Vec<(&String, &String)> = ctx.refs.iter().collect();
+        keys.sort();
+        let mut h = 1u64;
+        for (k, v) in keys {
+            h = fxhash(k.as_bytes(), h);
+            h = fxhash(v.as_bytes(), h);
+        }
+        let mut f: Vec<&String> = ctx.foot.iter().collect();
+        f.sort();
+        for k in f {
+            h = fxhash(k.as_bytes(), h ^ 0xf007);
+        }
+        ctx.hash = h;
+    }
+    let lines = text.bytes().filter(|b| *b == b'\n').count() + 1;
+    Split { segs, ctx, lines }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -165,13 +423,15 @@ impl LineIndex {
 enum Cont {
     Root(Vec<Block>),
     Quote { blocks: Vec<Block>, l: (usize, usize) },
-    Item { blocks: Vec<Block>, task: Option<bool> },
+    Item { blocks: Vec<Block>, task: Option<bool>, task_off: usize },
+    Foot { blocks: Vec<Block>, label: String, l: (usize, usize) },
     List { start: Option<u64>, items: Vec<LItem>, loose: bool, l: (usize, usize) },
 }
 
 enum Seg {
     Spans(Vec<Inl>),
     Img(Img),
+    Math(String),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -201,7 +461,11 @@ struct TableB {
 
 struct Builder<'a> {
     idx: &'a LineIndex,
-    urls: Vec<String>,
+    urls: &'a mut Urls,
+    /// Footnote labels (lowercase) defined somewhere in the document.
+    known: &'a HashSet<String>,
+    /// Footnote references met in this segment, in order.
+    refs: Vec<String>,
     stack: Vec<Cont>,
     inl: Option<InlCtx>,
     strong: u32,
@@ -212,12 +476,12 @@ struct Builder<'a> {
     table: Option<TableB>,
     html: Option<(String, (usize, usize))>,
     image: Option<(String, String, u32)>,
-    seen: HashMap<String, usize>,
 }
 
 fn blank(spans: &[Inl]) -> bool {
     spans.iter().all(|s| match s {
         Inl::Text { text, .. } => text.trim().is_empty(),
+        Inl::FootRef(_) => false,
         _ => true,
     })
 }
@@ -228,6 +492,7 @@ fn plain(spans: &[Inl]) -> String {
         match i {
             Inl::Text { text, .. } => s.push_str(text),
             Inl::Soft | Inl::Hard => s.push(' '),
+            Inl::FootRef(_) => {}
         }
     }
     s
@@ -255,7 +520,7 @@ impl<'a> Builder<'a> {
     fn push_block(&mut self, b: Block) {
         match self.stack.last_mut() {
             Some(Cont::Root(v)) => v.push(b),
-            Some(Cont::Quote { blocks, .. }) | Some(Cont::Item { blocks, .. }) => blocks.push(b),
+            Some(Cont::Quote { blocks, .. }) | Some(Cont::Item { blocks, .. }) | Some(Cont::Foot { blocks, .. }) => blocks.push(b),
             _ => {}
         }
     }
@@ -316,7 +581,7 @@ impl<'a> Builder<'a> {
                 }
             }
             IK::Head(level) => {
-                let slug = slugify_unique(&plain(&ic.spans), &mut self.seen);
+                let slug = slugify(&plain(&ic.spans));
                 let b = Block { kind: Kind::Heading { level, inl: ic.spans, slug }, line: l.0, end: l.1 };
                 self.push_block(b);
             }
@@ -330,6 +595,12 @@ impl<'a> Builder<'a> {
                 for seg in ic.segs {
                     match seg {
                         Seg::Img(i) => imgs.push(i),
+                        Seg::Math(m) => {
+                            if !imgs.is_empty() {
+                                out.push(mk(Kind::Images(std::mem::take(&mut imgs))));
+                            }
+                            out.push(mk(Kind::Math(m)));
+                        }
                         Seg::Spans(s) => {
                             if blank(&s) {
                                 continue;
@@ -352,8 +623,7 @@ impl<'a> Builder<'a> {
     }
 
     fn url_index(&mut self, url: &str) -> u32 {
-        self.urls.push(url.to_string());
-        self.urls.len() as u32
+        self.urls.id(url)
     }
 
     fn html_block(&mut self, raw: &str, l: (usize, usize)) {
@@ -374,7 +644,8 @@ impl<'a> Builder<'a> {
             let i = from + i;
             let end = s[i..].find('>').map_or(s.len(), |e| i + e + 1);
             let tag = &s[i..end];
-            imgs.push(Img { alt: attr(tag, "alt").unwrap_or_default(), url: attr(tag, "src").unwrap_or_default(), link });
+            let dim = |n: &str| attr(tag, n).and_then(|v| v.trim().trim_end_matches("px").trim().parse::<f32>().ok()).filter(|v| *v >= 1.0).map(|v| v as i32);
+            imgs.push(Img { alt: attr(tag, "alt").unwrap_or_default(), url: attr(tag, "src").unwrap_or_default(), link, size: (dim("width"), dim("height")) });
             from = end;
         }
         let text = strip_tags(&s);
@@ -404,6 +675,55 @@ impl<'a> Builder<'a> {
                         ic.end = ic.end.max(range.end);
                     }
                     self.push_span(&c, F_CODE);
+                }
+            }
+            Event::InlineMath(m) => {
+                if let Some((alt, _, _)) = self.image.as_mut() {
+                    alt.push_str(&m);
+                } else {
+                    if self.inl.is_none() {
+                        self.start_inline(IK::Para, range.start, range.end, true);
+                    }
+                    if let Some(ic) = self.inl.as_mut() {
+                        ic.end = ic.end.max(range.end);
+                    }
+                    self.push_span(m.trim(), F_CODE | F_MATH);
+                }
+            }
+            Event::DisplayMath(m) => {
+                if self.inl.is_none() {
+                    self.start_inline(IK::Para, range.start, range.end, true);
+                }
+                let para = self.inl.as_ref().is_some_and(|i| i.kind == IK::Para);
+                if let Some(ic) = self.inl.as_mut() {
+                    ic.end = ic.end.max(range.end);
+                    if para {
+                        if !ic.spans.is_empty() {
+                            let s = std::mem::take(&mut ic.spans);
+                            ic.segs.push(Seg::Spans(s));
+                        }
+                        ic.segs.push(Seg::Math(m.trim().to_string()));
+                    }
+                }
+                if !para {
+                    self.push_span(m.trim(), F_CODE | F_MATH);
+                }
+            }
+            Event::FootnoteReference(label) => {
+                let known = self.known.contains(&label.trim().to_lowercase());
+                if self.inl.is_none() {
+                    self.start_inline(IK::Para, range.start, range.end, true);
+                }
+                if let Some(ic) = self.inl.as_mut() {
+                    ic.end = ic.end.max(range.end);
+                }
+                if known {
+                    self.refs.push(label.trim().to_lowercase());
+                    if let Some(ic) = self.inl.as_mut() {
+                        ic.spans.push(Inl::FootRef(label.trim().to_lowercase()));
+                    }
+                } else {
+                    self.push_span(&format!("[^{label}]"), 0);
                 }
             }
             Event::SoftBreak => {
@@ -437,8 +757,9 @@ impl<'a> Builder<'a> {
                 self.push_block(Block { kind: Kind::Rule, line: l.0, end: l.1 });
             }
             Event::TaskListMarker(done) => {
-                if let Some(Cont::Item { task, .. }) = self.stack.last_mut() {
+                if let Some(Cont::Item { task, task_off, .. }) = self.stack.last_mut() {
                     *task = Some(done);
+                    *task_off = range.start;
                 }
             }
             _ => {}
@@ -484,7 +805,11 @@ impl<'a> Builder<'a> {
             }
             Tag::Item => {
                 self.close_implicit();
-                self.stack.push(Cont::Item { blocks: vec![], task: None });
+                self.stack.push(Cont::Item { blocks: vec![], task: None, task_off: 0 });
+            }
+            Tag::FootnoteDefinition(label) => {
+                self.close_implicit();
+                self.stack.push(Cont::Foot { blocks: vec![], label: label.trim().to_lowercase(), l });
             }
             Tag::Table(aligns) => {
                 self.close_implicit();
@@ -541,10 +866,16 @@ impl<'a> Builder<'a> {
             }
             TagEnd::Item => {
                 self.close_implicit();
-                if let Some(Cont::Item { blocks, task }) = self.stack.pop() {
+                if let Some(Cont::Item { blocks, task, task_off }) = self.stack.pop() {
                     if let Some(Cont::List { items, .. }) = self.stack.last_mut() {
-                        items.push(LItem { task, blocks });
+                        items.push(LItem { task, task_off, blocks });
                     }
+                }
+            }
+            TagEnd::FootnoteDefinition => {
+                self.close_implicit();
+                if let Some(Cont::Foot { blocks, label, l }) = self.stack.pop() {
+                    self.push_block(Block { kind: Kind::FootDef { label, blocks }, line: l.0, end: l.1 });
                 }
             }
             TagEnd::TableHead => {
@@ -578,7 +909,7 @@ impl<'a> Builder<'a> {
                                 let s = std::mem::take(&mut ic.spans);
                                 ic.segs.push(Seg::Spans(s));
                             }
-                            ic.segs.push(Seg::Img(Img { alt, url, link }));
+                            ic.segs.push(Seg::Img(Img { alt, url, link, size: (None, None) }));
                         }
                     } else {
                         let label = if alt.is_empty() { "image".to_string() } else { alt };
@@ -654,7 +985,11 @@ enum Op {
     Stroke { r: Rect, col: Col },
     Bullet { cx: i32, cy: i32, level: u8 },
     Check { x: i32, y: i32, done: bool },
-    Code { r: Rect, lang: String, lines: Vec<String>, lh: i32, top: i32 },
+    /// Code block (`math` = a `$$` block: centered, tinted). `key` identifies lang + text for the
+    /// highlight cache.
+    Code { r: Rect, lang: String, lines: Vec<String>, lh: i32, top: i32, key: u64, math: bool },
+    /// A local image drawn at `r` (logical px); `id` is its [`ImgStore`] id.
+    Image { r: Rect, id: u32 },
 }
 
 #[derive(Debug)]
@@ -681,19 +1016,104 @@ struct LinkHit {
     link: u32,
 }
 
-struct Layout {
-    key: (i32, u32, u32, u64),
+/// A task checkbox: its hit box and the byte offset of its `[` (inside the segment).
+#[derive(Clone, Copy, Debug)]
+struct CheckHit {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    off: usize,
+}
+
+/// Cache key of a laid-out segment: width, code font size, cell width, footnote numbering, image base.
+type SegKey = (i32, u32, u32, u64, u32);
+
+/// One segment laid out on its own: ops and hit boxes with y relative to the segment's top (x is
+/// absolute: the text column is baked in).
+struct SegLay {
+    key: SegKey,
     ops: Vec<DrawOp>,
     /// Running max of `y1` over `ops` (sorted by `y0`), to find the first visible op by bisection.
     pmax: Vec<i32>,
     height: i32,
+    /// Anchors with lines relative to the segment's first line.
     anchors: Vec<Anchor>,
     links: Vec<LinkHit>,
+    checks: Vec<CheckHit>,
+    /// `(name, y, exact)`: headings carry their base slug (deduplicated when flattened), footnotes
+    /// an exact `fn-label`.
+    heads: Vec<(String, i32, bool)>,
     max_link_h: i32,
-    heads: Vec<(String, i32)>,
+    first_before: i32,
+    last_after: i32,
+    /// Nothing to show (blank, only definitions): takes no space and no gap.
+    empty: bool,
+}
+
+/// The whole document: segments stacked, with everything hit-testing and line mapping need
+/// flattened into absolute coordinates.
+struct Layout {
+    key: (i32, u32, u32, u64, u32),
+    height: i32,
+    /// The segments that take space, in document order (nothing is copied out of them: line
+    /// mapping and hit-testing look into the segment that owns the line / point).
+    segs: Vec<SegRef>,
     /// Left edge and width of the text column.
     col_x: i32,
     col_w: i32,
+}
+
+/// Where one non-empty segment sits: index into `MdView::order`, first source line, line count
+/// and y range.
+#[derive(Clone, Copy, Debug)]
+struct SegRef {
+    ix: usize,
+    l0: i64,
+    nl: i64,
+    y0: i32,
+    y1: i32,
+}
+
+/// Cheap hasher for keys that already are hashes.
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8)) ^ b as u64;
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
+}
+
+type KeyMap<V> = HashMap<u64, V, std::hash::BuildHasherDefault<IdHasher>>;
+type KeySet = HashSet<u64, std::hash::BuildHasherDefault<IdHasher>>;
+
+/// Parsed (and maybe laid out) segment, shared by every identical piece of source.
+struct SegData {
+    blocks: Vec<Block>,
+    /// Footnote labels referenced, in order.
+    refs: Vec<String>,
+    lay: Option<SegLay>,
+    used: u64,
+}
+
+/// A segment of the current text and where it sits.
+#[derive(Clone, Copy, Debug)]
+struct Placed {
+    key: u64,
+    l0: usize,
+    nl: usize,
+    b0: usize,
+    y0: i32,
+    y1: i32,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -864,10 +1284,15 @@ struct St {
 struct Lay<'a> {
     tx: &'a mut TextCtx,
     m: &'a mut Measure,
+    urls: &'a mut Urls,
+    imgs: &'a mut ImgStore,
+    /// Footnote label -> number.
+    fnum: &'a HashMap<String, usize>,
     ops: Vec<DrawOp>,
     anchors: Vec<Anchor>,
     links: Vec<LinkHit>,
-    heads: Vec<(String, i32)>,
+    checks: Vec<CheckHit>,
+    heads: Vec<(String, i32, bool)>,
 }
 
 fn before(b: &Block) -> i32 {
@@ -939,6 +1364,13 @@ impl Lay<'_> {
                             f.chunk_w += w;
                         }
                     }
+                }
+                Inl::FootRef(label) => {
+                    let text = format!("[{}]", self.fnum.get(label).copied().unwrap_or(0));
+                    let link = self.urls.id(&format!("#fn-{label}"));
+                    let w = self.m.w(self.tx, &text, bold_base, si);
+                    f.chunk.push(Atom { text, flags: F_LINK, link, w });
+                    f.chunk_w += w;
                 }
                 Inl::Soft => {
                     f.flush(self.m, self.tx);
@@ -1036,6 +1468,9 @@ impl Lay<'_> {
     fn blocks(&mut self, bl: &[Block], x: i32, w: i32, mut y: i32, st: St) -> i32 {
         let mut prev: Option<&Block> = None;
         for b in bl {
+            if matches!(b.kind, Kind::FootDef { .. }) {
+                continue; // collected at the end of the document
+            }
             if let Some(p) = prev {
                 y += st.tight.unwrap_or_else(|| after(p).max(before(b)));
             }
@@ -1052,7 +1487,7 @@ impl Lay<'_> {
                 let si = (*level - 1) as usize;
                 let lines = self.flow(inl, w, si, true, true);
                 let n = lines.len().max(1) as i32;
-                self.heads.push((slug.clone(), y));
+                self.heads.push((slug.clone(), y, false));
                 let base = F_B | if *level == 6 || st.dim { F_DIM } else { 0 };
                 self.emit(lines, x, y, si, base);
                 let mut h = n * LH[si];
@@ -1076,9 +1511,22 @@ impl Lay<'_> {
                 let top = if lang.is_empty() { 12 } else { 18 };
                 let h = top + lines.len() as i32 * lh + 12;
                 let r = Rect::new(x, y, w, h);
-                self.op(y, y + h, Op::Code { r, lang: lang.clone(), lines, lh, top });
+                let key = fxhash(text.as_bytes(), fxhash(lang.as_bytes(), 3));
+                self.op(y, y + h, Op::Code { r, lang: lang.clone(), lines, lh, top, key, math: false });
                 self.anchor(b, y, y + h);
                 y + h
+            }
+            Kind::Math(text) => {
+                let lh = line_h() as i32;
+                let lines: Vec<String> = text.split('\n').map(|l| l.trim_end_matches('\r').replace('\t', "    ")).collect();
+                let h = 18 + lines.len() as i32 * lh + 12;
+                self.op(y, y + h, Op::Code { r: Rect::new(x, y, w, h), lang: "math".into(), lines, lh, top: 18, key: 0, math: true });
+                self.anchor(b, y, y + h);
+                y + h
+            }
+            Kind::FootDef { .. } => {
+                self.anchor(b, y, y);
+                y
             }
             Kind::Rule => {
                 self.fill(Rect::new(x, y, w, 1), Col::Border, 0);
@@ -1121,6 +1569,7 @@ impl Lay<'_> {
             let mid = iy + LH[BODY] / 2;
             if let Some(done) = it.task {
                 self.op(iy + 4, iy + 18, Op::Check { x: x + indent - 22, y: iy + 4, done });
+                self.checks.push(CheckHit { x: x + indent - 26, y: iy, w: 22, h: LH[BODY], off: it.task_off });
             } else if start.is_some() {
                 let f = F_DIM;
                 self.op(iy, iy + LH[BODY], Op::Text { x: x + indent - 8 - lws[i], w: lws[i], text: labels[i].clone(), flags: f, si: BODY as u8, lh: LH[BODY] });
@@ -1191,8 +1640,40 @@ impl Lay<'_> {
     fn images(&mut self, b: &Block, imgs: &[Img], x: i32, w: i32, y: i32) -> i32 {
         const H: i32 = 46;
         const GAP: i32 = 8;
-        let (mut cx, mut cy) = (0, y);
+        let (mut cx, mut cy, mut row_h) = (0, y, 0);
         for im in imgs {
+            let real = self.imgs.resolve(&im.url).and_then(|id| self.imgs.size(id).map(|s| (id, s)));
+            if let Some((id, (nw, nh))) = real {
+                let (nw, nh) = (nw as i32, nh as i32);
+                let (mut dw, mut dh) = match im.size {
+                    (Some(a), Some(b)) => (a, b),
+                    (Some(a), None) => (a, (nh as f32 * a as f32 / nw as f32).round() as i32),
+                    (None, Some(b)) => ((nw as f32 * b as f32 / nh as f32).round() as i32, b),
+                    _ => (nw, nh),
+                };
+                if dw > w {
+                    dh = (dh as f32 * w as f32 / dw as f32).round() as i32;
+                    dw = w;
+                }
+                if dh > 720 {
+                    dw = (dw as f32 * 720.0 / dh as f32).round() as i32;
+                    dh = 720;
+                }
+                let (dw, dh) = (dw.max(1), dh.max(1));
+                if cx > 0 && cx + dw > w {
+                    cx = 0;
+                    cy += row_h + GAP;
+                    row_h = 0;
+                }
+                let r = Rect::new(x + cx, cy, dw, dh);
+                self.op(cy, cy + dh, Op::Image { r, id });
+                if im.link != 0 {
+                    self.links.push(LinkHit { x: r.x, y: cy, w: dw, h: dh, link: im.link });
+                }
+                cx += dw + GAP;
+                row_h = row_h.max(dh);
+                continue;
+            }
             let label = if !im.alt.trim().is_empty() {
                 im.alt.trim().to_string()
             } else {
@@ -1203,7 +1684,8 @@ impl Lay<'_> {
             let bw = (lw.max(uw) + 56).clamp(170, w);
             if cx > 0 && cx + bw > w {
                 cx = 0;
-                cy += H + GAP;
+                cy += row_h + GAP;
+                row_h = 0;
             }
             let r = Rect::new(x + cx, cy, bw, H);
             self.op(cy, cy + H, Op::Card { r, rad: 6, fill: Col::Widget, border: Col::Border });
@@ -1220,10 +1702,32 @@ impl Lay<'_> {
                 self.links.push(LinkHit { x: r.x, y: cy, w: bw, h: H, link: im.link });
             }
             cx += bw + GAP;
+            row_h = row_h.max(H);
         }
-        let y1 = cy + H;
+        let y1 = cy + row_h;
         self.anchor(b, y, y1);
         y1
+    }
+
+    /// The footnotes collected at the end of the document: a rule, then `n.` and the definition's
+    /// blocks for each label, in reference order. Registers `fn-label` anchors.
+    fn foot_section(&mut self, defs: &[(usize, &str, &[Block])], x: i32, w: i32, y: i32) -> i32 {
+        self.fill(Rect::new(x, y, w, 1), Col::Border, 0);
+        let mut y = y + 14;
+        for (n, label, blocks) in defs {
+            let num = format!("{n}.");
+            let lw = self.m.w(self.tx, &num, false, BODY).ceil() as i32;
+            let indent = (lw + 12).max(26);
+            let iy = y;
+            self.heads.push((format!("fn-{label}"), iy, true));
+            let mut ey = self.blocks(blocks, x + indent, w - indent, iy, St { depth: 1, tight: Some(4), dim: false });
+            if blocks.is_empty() {
+                ey = iy + LH[BODY];
+            }
+            self.op(iy, iy + LH[BODY], Op::Text { x: x + indent - 8 - lw, w: lw, text: num, flags: F_DIM, si: BODY as u8, lh: LH[BODY] });
+            y = ey + 6;
+        }
+        y
     }
 }
 
@@ -1329,6 +1833,16 @@ impl Pal {
             bg,
         }
     }
+    /// Chip behind inline math: the page tinted with the accent, as long as `text` reads on it.
+    fn math_chip(&self, text: Rgba) -> Rgba {
+        let c = self.bg.mix(self.accent, 0.13);
+        if text.contrast(c) >= 4.5 { c } else { self.input }
+    }
+    /// Fill of a `$$` block.
+    fn math_block(&self) -> Rgba {
+        let c = self.widget.mix(self.accent, 0.07);
+        if self.fg.contrast(c) >= 4.5 { c } else { self.widget }
+    }
     fn get(&self, c: Col) -> Rgba {
         match c {
             Col::Fg => self.fg,
@@ -1347,17 +1861,37 @@ impl Pal {
 // ---------------------------------------------------------------------------------------------
 // public view
 
-/// Markdown preview state: the parsed document plus the cached layout for the last width.
+/// Colored runs of every line of a code block: `(byte start, byte end, color, style flags)`.
+pub type HlLines = Vec<Vec<(usize, usize, Rgba, u8)>>;
+/// Syntax highlighter for fenced code: `(language, text)` -> runs per line (`None` = no grammar).
+pub type HlFn<'a> = dyn FnMut(&str, &str) -> Option<HlLines> + 'a;
+
+/// Code blocks longer than this stay plain (tokenizing them would stall a frame).
+const HL_MAX_LINES: usize = 800;
+
+/// Markdown preview state: the segments of the document with their parsed blocks and cached
+/// layouts, and the flattened layout for the last width.
 pub struct MdView {
     text: String,
-    blocks: Vec<Block>,
-    urls: Vec<String>,
+    ctx: Ctx,
+    order: Vec<Placed>,
+    cache: KeyMap<SegData>,
+    urls: Urls,
+    imgs: ImgStore,
+    /// Bumped when the directory images are resolved against changes.
+    base_gen: u32,
     line_count: usize,
     version: u64,
     measure: Measure,
     lay: Option<Layout>,
     layouts: u32,
+    seg_layouts: u32,
+    parses: u32,
     last_layout_ms: f64,
+    /// The footnote section (laid out again with every flatten; it is short).
+    foot: Option<(SegLay, Placed)>,
+    hl: HashMap<u64, Option<Rc<HlLines>>>,
+    hl_theme: u64,
 }
 
 impl Default for MdView {
@@ -1366,13 +1900,129 @@ impl Default for MdView {
     }
 }
 
+/// Parse one segment: its blocks (lines relative to the segment) and the footnote labels it refers to.
+fn parse_seg(text: &str, ctx: &Ctx, urls: &mut Urls) -> (Vec<Block>, Vec<String>) {
+    let idx = LineIndex::new(text);
+    let mut opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_MATH;
+    if !ctx.foot.is_empty() {
+        opts |= Options::ENABLE_OLD_FOOTNOTES;
+    }
+    let mut b = Builder { idx: &idx, urls, known: &ctx.foot, refs: vec![], stack: vec![Cont::Root(vec![])], inl: None, strong: 0, em: 0, strike: 0, links: vec![], code: None, table: None, html: None, image: None };
+    let refs = &ctx.refs;
+    let cb = move |bl: BrokenLink| refs.get(&norm_label(&bl.reference)).map(|u| (CowStr::from(u.clone()), CowStr::from(String::new())));
+    for (ev, range) in Parser::new_with_broken_link_callback(text, opts, Some(cb)).into_offset_iter() {
+        b.event(ev, range);
+    }
+    b.close_implicit();
+    while b.stack.len() > 1 {
+        // unbalanced input cannot happen with pulldown-cmark, but never lose content
+        match b.stack.pop() {
+            Some(Cont::Quote { blocks, l }) => b.push_block(Block { kind: Kind::Quote(blocks), line: l.0, end: l.1 }),
+            Some(Cont::Foot { blocks, label, l }) => b.push_block(Block { kind: Kind::FootDef { label, blocks }, line: l.0, end: l.1 }),
+            _ => {}
+        }
+    }
+    let Some(Cont::Root(blocks)) = b.stack.pop() else { unreachable!() };
+    (blocks, b.refs)
+}
+
+/// Cut `lay` out of what a [`Lay`] collected.
+fn seg_lay(key: SegKey, lay: Lay, y_end: i32, blocks: &[Block]) -> SegLay {
+    let mut ops = lay.ops;
+    ops.sort_by_key(|o| o.y0);
+    let mut pmax = Vec::with_capacity(ops.len());
+    let mut m = i32::MIN;
+    for o in &ops {
+        m = m.max(o.y1);
+        pmax.push(m);
+    }
+    let shown: Vec<&Block> = blocks.iter().filter(|b| !matches!(b.kind, Kind::FootDef { .. })).collect();
+    let mut links = lay.links;
+    links.sort_by_key(|l| l.y);
+    let max_link_h = links.iter().map(|l| l.h).max().unwrap_or(0);
+    let mut checks = lay.checks;
+    checks.sort_by_key(|c| c.y);
+    SegLay {
+        key,
+        pmax,
+        height: y_end,
+        anchors: lay.anchors,
+        links,
+        checks,
+        heads: lay.heads,
+        max_link_h,
+        first_before: shown.first().map_or(0, |b| before(b)),
+        last_after: shown.last().map_or(0, |b| after(b)),
+        empty: ops.is_empty() && y_end <= 0 && shown.is_empty(),
+        ops,
+    }
+}
+
+/// y inside a segment (relative) of its relative source line `ll`, from its anchors; `nl` / `h`
+/// are the segment's line count and height (the edges of the blank stretches at either end).
+fn y_in_seg(a: &[Anchor], nl: i64, h: i32, ll: i64) -> i32 {
+    let i = a.partition_point(|p| p.l1 < ll);
+    if let Some(p) = a.get(i).filter(|p| p.l0 <= ll) {
+        let n = (p.l1 - p.l0 + 1) as f64;
+        return p.y0 + (((ll - p.l0) as f64 / n) * (p.y1 - p.y0) as f64).round() as i32;
+    }
+    let (ql, qy) = i.checked_sub(1).map_or((-1, 0), |k| (a[k].l1, a[k].y1));
+    let (pl, py) = a.get(i).map_or((nl, h), |p| (p.l0, p.y0));
+    let m = (pl - ql - 1).max(1) as f64;
+    qy + ((((ll - ql - 1) as f64) / m) * (py - qy) as f64).round() as i32
+}
+
+/// Source line (relative to the segment) at relative y `yl`: inverse of [`y_in_seg`].
+fn line_in_seg(a: &[Anchor], nl: i64, h: i32, yl: i32) -> i64 {
+    let i = a.partition_point(|p| p.y1 <= yl);
+    if let Some(p) = a.get(i).filter(|p| p.y0 <= yl) {
+        let n = (p.l1 - p.l0 + 1) as f64;
+        let hh = (p.y1 - p.y0).max(1) as f64;
+        return (p.l0 + (((yl - p.y0) as f64 + 0.5) / hh * n).floor() as i64).min(p.l1);
+    }
+    let (ql, qy) = i.checked_sub(1).map_or((-1, 0), |k| (a[k].l1, a[k].y1));
+    let (pl, py) = a.get(i).map_or((nl, h), |p| (p.l0, p.y0));
+    gap_line(ql, qy, pl, py, yl)
+}
+
+/// Line at `y` inside the blank stretch between line `ql` (ending at `qy`) and line `pl` (starting at `py`).
+fn gap_line(ql: i64, qy: i32, pl: i64, py: i32, y: i32) -> i64 {
+    let n = pl - ql - 1;
+    if n <= 0 {
+        return pl;
+    }
+    let span = (py - qy).max(1) as f64;
+    let frac = (y - qy) as f64 / span;
+    (ql + 1 + (frac * n as f64 + 0.5 / span * n as f64).floor() as i64).min(pl - 1)
+}
+
 impl MdView {
     pub fn new() -> Self {
-        MdView { text: String::new(), blocks: vec![], urls: vec![], line_count: 1, version: 0, measure: Measure::default(), lay: None, layouts: 0, last_layout_ms: 0.0 }
+        MdView {
+            text: String::new(),
+            ctx: Ctx::default(),
+            order: vec![],
+            cache: KeyMap::default(),
+            urls: Urls::default(),
+            imgs: ImgStore::new(),
+            base_gen: 0,
+            line_count: 1,
+            version: 0,
+            measure: Measure::default(),
+            lay: None,
+            layouts: 0,
+            seg_layouts: 0,
+            parses: 0,
+            last_layout_ms: 0.0,
+            foot: None,
+            hl: HashMap::new(),
+            hl_theme: 0,
+        }
     }
 
-    /// Replace the document. A no-op when the text is unchanged; otherwise re-parses (the layout is
-    /// rebuilt lazily on the next `draw` / `ensure_layout`).
+    /// Replace the document. A no-op when the text is unchanged. Otherwise the text is cut into
+    /// segments and only the ones never seen before are parsed (the layout is rebuilt lazily on
+    /// the next `draw` / `ensure_layout`, and only for those segments).
     pub fn set_text(&mut self, text: &str) {
         if self.version > 0 && self.text == text {
             return;
@@ -1380,38 +2030,25 @@ impl MdView {
         self.text.clear();
         self.text.push_str(text);
         self.version += 1;
-        let idx = LineIndex::new(text);
-        self.line_count = idx.starts.len();
-        let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-        let mut b = Builder {
-            idx: &idx,
-            urls: vec![],
-            stack: vec![Cont::Root(vec![])],
-            inl: None,
-            strong: 0,
-            em: 0,
-            strike: 0,
-            links: vec![],
-            code: None,
-            table: None,
-            html: None,
-            image: None,
-            seen: HashMap::new(),
-        };
-        for (ev, range) in Parser::new_ext(text, opts).into_offset_iter() {
-            b.event(ev, range);
-        }
-        b.close_implicit();
-        while b.stack.len() > 1 {
-            // unbalanced input cannot happen with pulldown-cmark, but never lose content
-            match b.stack.pop() {
-                Some(Cont::Quote { blocks, l }) => b.push_block(Block { kind: Kind::Quote(blocks), line: l.0, end: l.1 }),
-                _ => {}
+        let sp = split(&self.text);
+        self.line_count = sp.lines;
+        self.ctx = sp.ctx;
+        self.order.clear();
+        self.order.reserve(sp.segs.len());
+        for s in &sp.segs {
+            let key = fxhash(&self.text.as_bytes()[s.b0..s.b1], self.ctx.hash);
+            if !self.cache.contains_key(&key) {
+                let (blocks, refs) = parse_seg(&self.text[s.b0..s.b1], &self.ctx, &mut self.urls);
+                self.cache.insert(key, SegData { blocks, refs, lay: None, used: 0 });
+                self.parses += 1;
             }
+            self.order.push(Placed { key, l0: s.l0, nl: s.nl, b0: s.b0, y0: 0, y1: 0 });
         }
-        let Some(Cont::Root(blocks)) = b.stack.pop() else { unreachable!() };
-        self.urls = b.urls;
-        self.blocks = blocks;
+        // Segments that left the document (one per keystroke) are dropped in batches.
+        if self.cache.len() > self.order.len() + 48 {
+            let live: KeySet = self.order.iter().map(|p| p.key).collect();
+            self.cache.retain(|k, _| live.contains(k));
+        }
         self.lay = None;
     }
 
@@ -1424,152 +2061,286 @@ impl MdView {
         self.layouts
     }
 
+    /// Segments parsed so far / segments laid out so far (an edit should add one of each).
+    pub fn work_counts(&self) -> (u32, u32) {
+        (self.parses, self.seg_layouts)
+    }
+
     /// Wall time of the last layout in milliseconds.
     pub fn last_layout_ms(&self) -> f64 {
         self.last_layout_ms
     }
 
+    /// Directory relative image paths are resolved against (the document's folder).
+    pub fn set_base_dir(&mut self, dir: Option<&Path>) {
+        if self.imgs.set_base(dir) {
+            self.base_gen += 1;
+            self.lay = None;
+        }
+    }
+
+    /// Images are still being decoded: keep drawing so they show up.
+    pub fn pending(&self) -> bool {
+        self.imgs.pending()
+    }
+
+    /// Footnote numbers (by first reference, then the definitions nobody references) and the
+    /// definitions in that order.
+    fn footnotes(&self) -> (HashMap<String, usize>, Vec<(String, Vec<Block>)>) {
+        let mut defs: Vec<(String, &Vec<Block>)> = vec![];
+        let mut num: HashMap<String, usize> = HashMap::new();
+        if !self.ctx.foot.is_empty() {
+            for p in &self.order {
+                let Some(sd) = self.cache.get(&p.key) else { continue };
+                for l in &sd.refs {
+                    let n = num.len() + 1;
+                    num.entry(l.clone()).or_insert(n);
+                }
+                for b in &sd.blocks {
+                    if let Kind::FootDef { label, blocks } = &b.kind {
+                        if !defs.iter().any(|(l, _)| l == label) {
+                            defs.push((label.clone(), blocks));
+                        }
+                    }
+                }
+            }
+            for (l, _) in &defs {
+                let n = num.len() + 1;
+                num.entry(l.clone()).or_insert(n);
+            }
+        }
+        let mut out: Vec<(String, Vec<Block>)> = defs.into_iter().map(|(l, b)| (l, b.clone())).collect();
+        out.sort_by_key(|(l, _)| num.get(l).copied().unwrap_or(usize::MAX));
+        (num, out)
+    }
+
     /// Lay the document out for a pane `width` px wide (no-op when the layout for the current
-    /// text / width / code font size is already there). `draw` calls this itself.
+    /// text / width / code font size is already there). `draw` calls this itself. Only segments
+    /// whose cached layout does not match are laid out again.
     pub fn ensure_layout(&mut self, tx: &mut TextCtx, width: i32) {
-        let key = (width, font_size().to_bits(), tx.cell_w.to_bits(), self.version);
+        let key = (width, font_size().to_bits(), tx.cell_w.to_bits(), self.version, self.base_gen);
         if self.lay.as_ref().is_some_and(|l| l.key == key) {
             return;
         }
         let t0 = std::time::Instant::now();
         let col_w = (width - 2 * PAD).min(MAX_COL).max(40);
         let col_x = ((width - col_w) / 2).max(PAD.min(width / 2));
-        let mut lay = Lay { tx, m: &mut self.measure, ops: vec![], anchors: vec![], links: vec![], heads: vec![] };
-        let y_end = lay.blocks(&self.blocks, col_x, col_w, PAD, St { dim: false, depth: 0, tight: None });
-        let height = y_end.max(PAD) + PAD;
-        let mut ops = lay.ops;
-        ops.sort_by_key(|o| o.y0);
-        let mut pmax = Vec::with_capacity(ops.len());
-        let mut m = i32::MIN;
-        for o in &ops {
-            m = m.max(o.y1);
-            pmax.push(m);
+        let (fnum, defs) = self.footnotes();
+        let mut segs: Vec<SegRef> = Vec::with_capacity(self.order.len());
+        let mut y = PAD;
+        let mut prev_after: Option<i32> = None;
+        let base_gen = self.base_gen;
+        for (ix, p) in self.order.iter_mut().enumerate() {
+            let Some(sd) = self.cache.get_mut(&p.key) else { continue };
+            let mut fh = 0u64;
+            for l in &sd.refs {
+                fh = fh.wrapping_mul(31).wrapping_add(fnum.get(l).copied().unwrap_or(0) as u64 + 1);
+            }
+            let skey: SegKey = (width, key.1, key.2, fh, base_gen);
+            if sd.lay.as_ref().is_none_or(|l| l.key != skey) {
+                let mut lay = Lay { tx: &mut *tx, m: &mut self.measure, urls: &mut self.urls, imgs: &mut self.imgs, fnum: &fnum, ops: vec![], anchors: vec![], links: vec![], checks: vec![], heads: vec![] };
+                let y_end = lay.blocks(&sd.blocks, col_x, col_w, 0, St { dim: false, depth: 0, tight: None });
+                sd.lay = Some(seg_lay(skey, lay, y_end, &sd.blocks));
+                self.seg_layouts += 1;
+            }
+            let Some(l) = sd.lay.as_ref() else { continue };
+            if l.empty {
+                p.y0 = y;
+                p.y1 = y;
+                continue;
+            }
+            if let Some(a) = prev_after {
+                y += a.max(l.first_before);
+            }
+            p.y0 = y;
+            p.y1 = y + l.height;
+            y = p.y1;
+            prev_after = Some(l.last_after);
+            segs.push(SegRef { ix, l0: p.l0 as i64, nl: p.nl as i64, y0: p.y0, y1: p.y1 });
         }
-        let mut anchors = vec![Anchor { l0: -1, l1: -1, y0: 0, y1: 0 }];
-        anchors.extend(lay.anchors);
-        let n = self.line_count as i64;
-        anchors.push(Anchor { l0: n, l1: n, y0: height, y1: height });
-        let mut links = lay.links;
-        links.sort_by_key(|l| l.y);
-        let max_link_h = links.iter().map(|l| l.h).max().unwrap_or(0);
-        self.lay = Some(Layout { key, ops, pmax, height, anchors, links, max_link_h, heads: lay.heads, col_x, col_w });
+        // Footnotes go after the last segment.
+        self.foot = None;
+        if !defs.is_empty() {
+            let gap = prev_after.unwrap_or(0).max(24);
+            let top = y + gap;
+            let list: Vec<(usize, &str, &[Block])> = defs.iter().map(|(l, b)| (fnum.get(l).copied().unwrap_or(0), l.as_str(), b.as_slice())).collect();
+            let mut lay = Lay { tx: &mut *tx, m: &mut self.measure, urls: &mut self.urls, imgs: &mut self.imgs, fnum: &fnum, ops: vec![], anchors: vec![], links: vec![], checks: vec![], heads: vec![] };
+            let y_end = lay.foot_section(&list, col_x, col_w, 0);
+            let sl = seg_lay((width, key.1, key.2, 0, base_gen), lay, y_end, &[]);
+            y = top + sl.height;
+            self.foot = Some((sl, Placed { key: 0, l0: 0, nl: 0, b0: 0, y0: top, y1: y }));
+        }
+        let height = y.max(PAD) + PAD;
+        self.lay = Some(Layout { key, height, segs, col_x, col_w });
         self.layouts += 1;
         self.last_layout_ms = t0.elapsed().as_secs_f64() * 1000.0;
     }
 
     /// Paint the preview into `rect` (clipped to it): background, then the part of the document
-    /// starting at content y = `scroll_px`.
+    /// starting at content y = `scroll_px`. Code blocks are plain monospace; see [`draw_with`](Self::draw_with).
     pub fn draw(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, scroll_px: f64) {
+        self.draw_with(cv, tx, theme, rect, scroll_px, None);
+    }
+
+    /// [`draw`](Self::draw) with a syntax highlighter for fenced code blocks. It is asked lazily,
+    /// once per block that comes into view, and the result is cached per theme.
+    pub fn draw_with(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, scroll_px: f64, mut hl: Option<&mut HlFn>) {
         let pal = Pal::new(theme);
         let rect = rect.intersect(&cv.bounds());
         if rect.w <= 0 || rect.h <= 0 {
             return;
         }
         cv.fill_clip(rect, pal.bg, rect);
+        self.imgs.poll();
         self.ensure_layout(tx, rect.w);
-        let Some(lay) = self.lay.as_ref() else { return };
+        let theme_key = fxhash(theme.name.as_bytes(), ((theme.background.0 as u64) << 40) | ((theme.background.1 as u64) << 32) | ((theme.foreground.0 as u64) << 24) | ((theme.foreground.1 as u64) << 16) | theme.foreground.2 as u64);
+        if self.hl_theme != theme_key {
+            self.hl.clear();
+            self.hl_theme = theme_key;
+        }
+        let MdView { order, cache, urls: _, imgs, lay, hl: hl_cache, foot, .. } = self;
+        let Some(lay) = lay.as_ref() else { return };
         let sc = scroll_px.floor() as i32;
         let (top, bot) = (sc, sc + rect.h);
-        let start = lay.pmax.partition_point(|&m| m <= top);
-        let (ox, oy) = (rect.x, rect.y - sc);
         let clip = rect;
-        let tr = |r: Rect| Rect::new(r.x + ox, r.y + oy, r.w, r.h);
-        for d in &lay.ops[start..] {
-            if d.y0 >= bot {
+        let ox = rect.x;
+        let first = order.partition_point(|p| p.y1 <= top);
+        let mut segs: Vec<(&SegLay, i32)> = vec![];
+        for p in &order[first..] {
+            if p.y0 >= bot {
                 break;
             }
-            if d.y1 <= top {
-                continue;
+            if let Some(l) = cache.get(&p.key).and_then(|d| d.lay.as_ref()) {
+                segs.push((l, p.y0));
             }
-            match &d.op {
-                Op::Text { x, w, text, flags, si, lh } => {
-                    let size = SIZES[*si as usize];
-                    let (sx, sy) = (x + ox, d.y0 + oy);
-                    let base = if flags & F_DIM != 0 { pal.dim } else { pal.fg };
-                    let mut color = base;
-                    if flags & F_I != 0 {
-                        color = color.mix(pal.accent, 0.45);
-                    }
-                    if flags & F_LINK != 0 {
-                        color = pal.accent;
-                    }
-                    if flags & F_CODE != 0 {
-                        let ch = (*lh - 2).min(line_h() as i32 + 2);
-                        let chip = Rect::new(sx, sy + (*lh - ch) / 2, *w, ch);
-                        round_clip(cv, chip, 4, pal.input, clip);
-                        let cl = line_h() as i32;
-                        tx.draw_line(cv, sx + CHIP_PAD, sy + (*lh - cl) / 2, text, color, clip);
-                    } else {
-                        let off = (*lh - (size * 1.4).round() as i32) / 2;
-                        tx.draw_ui_sized(cv, sx, sy + off, text, color, clip, flags & F_B != 0, size);
-                    }
-                    if flags & F_S != 0 {
-                        cv.fill_clip(Rect::new(sx, sy + *lh / 2 + 1, *w, 1), color, clip);
-                    }
-                    if flags & F_LINK != 0 && flags & F_CODE == 0 {
-                        let uy = sy + *lh / 2 + (size * 0.4).round() as i32 + 2;
-                        cv.fill_clip(Rect::new(sx, uy, *w, 1), color.with_alpha(170), clip);
-                    }
+        }
+        if let Some((l, p)) = foot.as_ref() {
+            if p.y0 < bot && p.y1 > top {
+                segs.push((l, p.y0));
+            }
+        }
+        let _ = lay;
+        for (sl, base) in segs {
+            let (ltop, lbot) = (top - base, bot - base);
+            let start = sl.pmax.partition_point(|&m| m <= ltop);
+            let oy = rect.y - sc + base;
+            let tr = |r: Rect| Rect::new(r.x + ox, r.y + oy, r.w, r.h);
+            for d in &sl.ops[start..] {
+                if d.y0 >= lbot {
+                    break;
                 }
-                Op::Fill { r, col, rad } => round_clip(cv, tr(*r), *rad, pal.get(*col), clip),
-                Op::Card { r, rad, fill, border } => card_clip(cv, tr(*r), *rad, pal.get(*fill), pal.get(*border), clip),
-                Op::Stroke { r, col } => stroke_clip(cv, tr(*r), pal.get(*col), clip),
-                Op::Bullet { cx, cy, level } => {
-                    let (cx, cy) = (cx + ox, cy + oy);
-                    let c = pal.fg.mix(pal.bg, 0.15);
-                    match level {
-                        0 => round_clip(cv, Rect::new(cx - 3, cy - 3, 6, 6), 3, c, clip),
-                        1 => {
-                            round_clip(cv, Rect::new(cx - 3, cy - 3, 6, 6), 3, c, clip);
-                            round_clip(cv, Rect::new(cx - 2, cy - 2, 4, 4), 2, pal.bg, clip);
-                        }
-                        _ => cv.fill_clip(Rect::new(cx - 2, cy - 2, 5, 5), c, clip),
-                    }
+                if d.y1 <= ltop {
+                    continue;
                 }
-                Op::Check { x, y, done } => {
-                    let r = Rect::new(x + ox, y + oy, 14, 14);
-                    if *done {
-                        round_clip(cv, r, 3, pal.accent, clip);
-                        check_mark(cv, r.x, r.y, pal.bg, clip);
-                    } else {
-                        card_clip(cv, r, 3, pal.bg, pal.dim, clip);
-                    }
-                }
-                Op::Code { r, lang, lines, lh, top: ctop } => {
-                    let sr = tr(*r);
-                    card_clip(cv, sr, 6, pal.widget, pal.border, clip);
-                    if !lang.is_empty() {
-                        let lw = tx.ui_width_sized(lang, false, SIZES[TINY]);
-                        tx.draw_ui_sized(cv, sr.right() - lw - 10, sr.y + 3, lang, pal.dim, clip.intersect(&sr), false, SIZES[TINY]);
-                    }
-                    let inner = Rect::new(sr.x + 1, sr.y + 1, sr.w - 2, sr.h - 2).intersect(&clip);
-                    let first = ((top - sr.y - ctop) / lh).max(0) as usize;
-                    let max_chars = ((sr.w as f32) / tx.cell_w.max(1.0)) as usize + 2;
-                    for (i, line) in lines.iter().enumerate().skip(first) {
-                        let ly = sr.y + ctop + i as i32 * lh;
-                        if ly >= clip.bottom() {
-                            break;
+                match &d.op {
+                    Op::Text { x, w, text, flags, si, lh } => {
+                        let size = SIZES[*si as usize];
+                        let (sx, sy) = (x + ox, d.y0 + oy);
+                        let base_col = if flags & F_DIM != 0 { pal.dim } else { pal.fg };
+                        let mut color = base_col;
+                        if flags & F_I != 0 {
+                            color = color.mix(pal.accent, 0.45);
                         }
-                        if line.is_empty() {
-                            continue;
+                        if flags & F_LINK != 0 {
+                            color = pal.accent;
                         }
-                        let s: String;
-                        let shown = if line.len() > max_chars {
-                            s = line.chars().take(max_chars).collect();
-                            s.as_str()
+                        if flags & F_CODE != 0 {
+                            let ch = (*lh - 2).min(line_h() as i32 + 2);
+                            let chip = Rect::new(sx, sy + (*lh - ch) / 2, *w, ch);
+                            let fill = if flags & F_MATH != 0 { pal.math_chip(color) } else { pal.input };
+                            round_clip(cv, chip, 4, fill, clip);
+                            let cl = line_h() as i32;
+                            tx.draw_line(cv, sx + CHIP_PAD, sy + (*lh - cl) / 2, text, color, clip);
                         } else {
-                            line.as_str()
-                        };
-                        tx.draw_line(cv, sr.x + 14, ly, shown, pal.fg, inner);
+                            let off = (*lh - (size * 1.4).round() as i32) / 2;
+                            tx.draw_ui_sized(cv, sx, sy + off, text, color, clip, flags & F_B != 0, size);
+                        }
+                        if flags & F_S != 0 {
+                            cv.fill_clip(Rect::new(sx, sy + *lh / 2 + 1, *w, 1), color, clip);
+                        }
+                        if flags & F_LINK != 0 && flags & F_CODE == 0 {
+                            let uy = sy + *lh / 2 + (size * 0.4).round() as i32 + 2;
+                            cv.fill_clip(Rect::new(sx, uy, *w, 1), color.with_alpha(170), clip);
+                        }
+                    }
+                    Op::Fill { r, col, rad } => round_clip(cv, tr(*r), *rad, pal.get(*col), clip),
+                    Op::Card { r, rad, fill, border } => card_clip(cv, tr(*r), *rad, pal.get(*fill), pal.get(*border), clip),
+                    Op::Stroke { r, col } => stroke_clip(cv, tr(*r), pal.get(*col), clip),
+                    Op::Bullet { cx, cy, level } => {
+                        let (cx, cy) = (cx + ox, cy + oy);
+                        let c = pal.fg.mix(pal.bg, 0.15);
+                        match level {
+                            0 => round_clip(cv, Rect::new(cx - 3, cy - 3, 6, 6), 3, c, clip),
+                            1 => {
+                                round_clip(cv, Rect::new(cx - 3, cy - 3, 6, 6), 3, c, clip);
+                                round_clip(cv, Rect::new(cx - 2, cy - 2, 4, 4), 2, pal.bg, clip);
+                            }
+                            _ => cv.fill_clip(Rect::new(cx - 2, cy - 2, 5, 5), c, clip),
+                        }
+                    }
+                    Op::Check { x, y, done } => {
+                        let r = Rect::new(x + ox, y + oy, 14, 14);
+                        if *done {
+                            round_clip(cv, r, 3, pal.accent, clip);
+                            check_mark(cv, r.x, r.y, pal.bg, clip);
+                        } else {
+                            card_clip(cv, r, 3, pal.bg, pal.dim, clip);
+                        }
+                    }
+                    Op::Image { r, id } => {
+                        let sr = tr(*r);
+                        let dev = cv.to_dev(sr);
+                        match imgs.texture(*id, dev.w.max(1) as u32, dev.h.max(1) as u32) {
+                            Tex::Ready(p) => {
+                                let dclip = cv.to_dev(clip);
+                                crate::mdimg::blit(cv, dev.x, dev.y, &p, dclip);
+                            }
+                            Tex::Pending => card_clip(cv, sr, 4, pal.widget, pal.border, clip),
+                            Tex::Failed => {
+                                card_clip(cv, sr, 4, pal.widget, pal.border, clip);
+                                tx.draw_ui_sized(cv, sr.x + 8, sr.y + 6, "imagem indisponível", pal.dim, clip.intersect(&sr), false, SIZES[TINY]);
+                            }
+                        }
+                    }
+                    Op::Code { r, lang, lines, lh, top: ctop, key, math } => {
+                        let sr = tr(*r);
+                        let fill = if *math { pal.math_block() } else { pal.widget };
+                        card_clip(cv, sr, 6, fill, pal.border, clip);
+                        if *math {
+                            round_clip(cv, Rect::new(sr.x + 1, sr.y + 6, 3, sr.h - 12), 1, pal.accent, clip);
+                        }
+                        if !lang.is_empty() {
+                            let lw = tx.ui_width_sized(lang, false, SIZES[TINY]);
+                            tx.draw_ui_sized(cv, sr.right() - lw - 10, sr.y + 3, lang, pal.dim, clip.intersect(&sr), false, SIZES[TINY]);
+                        }
+                        let inner = Rect::new(sr.x + 1, sr.y + 1, sr.w - 2, sr.h - 2).intersect(&clip);
+                        let first = ((clip.y - sr.y - ctop) / lh).max(0) as usize;
+                        let max_chars = ((sr.w as f32) / tx.cell_w.max(1.0)) as usize + 2;
+                        let colored = if !*math && !lang.is_empty() && lines.len() <= HL_MAX_LINES { hl_lines(hl_cache, *key, lang, lines, &mut hl, fill, pal.bg) } else { None };
+                        for (i, line) in lines.iter().enumerate().skip(first) {
+                            let ly = sr.y + ctop + i as i32 * lh;
+                            if ly >= clip.bottom() {
+                                break;
+                            }
+                            if line.is_empty() {
+                                continue;
+                            }
+                            let shown: String = if line.len() > max_chars { line.chars().take(max_chars).collect() } else { line.clone() };
+                            let sw = code_w(tx, &shown);
+                            let lx = if *math { sr.x + ((sr.w as f32 - sw) / 2.0).max(14.0) as i32 } else { sr.x + 14 };
+                            match colored.as_ref().and_then(|c| c.get(i)) {
+                                Some(runs) if !runs.is_empty() => {
+                                    let pieces = pieces_of(&shown, runs, pal.fg);
+                                    tx.draw_styled(cv, lx, ly, &pieces, inner);
+                                }
+                                _ => tx.draw_line(cv, lx, ly, &shown, pal.fg, inner),
+                            }
+                        }
                     }
                 }
             }
         }
+        imgs.trim();
     }
 
     /// Total height of the laid-out document in px (0 before the first layout).
@@ -1582,44 +2353,53 @@ impl MdView {
     /// `None` until the first layout.
     pub fn y_for_source_line(&self, line: usize) -> Option<i32> {
         let lay = self.lay.as_ref()?;
-        let a = &lay.anchors;
+        let n = self.line_count as i64;
         let line = line as i64;
-        let i = a.partition_point(|p| p.l1 < line);
-        let Some(p) = a.get(i) else { return Some(lay.height) };
-        if p.l0 <= line {
-            let n = (p.l1 - p.l0 + 1) as f64;
-            let frac = (line - p.l0) as f64 / n;
-            return Some(p.y0 + (frac * (p.y1 - p.y0) as f64).round() as i32);
+        if line >= n {
+            return Some(lay.height);
         }
-        let q = &a[i.saturating_sub(1)];
-        let n = (p.l0 - q.l1 - 1).max(1) as f64;
-        let frac = (line - q.l1 - 1) as f64 / n;
-        Some(q.y1 + (frac * (p.y0 - q.y1) as f64).round() as i32)
+        let i = lay.segs.partition_point(|s| s.l0 <= line);
+        // The edges of the blank stretch `line` falls in (a segment's last line and the next one's first).
+        let (ql, qy) = match i.checked_sub(1).map(|k| lay.segs[k]) {
+            Some(s) if line < s.l0 + s.nl => {
+                let a = &self.seg_lay_of(&s)?.anchors;
+                return Some(s.y0 + y_in_seg(a, s.nl, s.y1 - s.y0, line - s.l0));
+            }
+            Some(s) => (s.l0 + s.nl - 1, s.y1),
+            None => (-1, 0),
+        };
+        let (pl, py) = lay.segs.get(i).map_or((n, lay.height), |t| (t.l0, t.y0));
+        let m = (pl - ql - 1).max(1) as f64;
+        let frac = (line - ql - 1) as f64 / m;
+        Some(qy + (frac * (py - qy) as f64).round() as i32)
+    }
+
+    fn seg_lay_of(&self, s: &SegRef) -> Option<&SegLay> {
+        self.cache.get(&self.order.get(s.ix)?.key)?.lay.as_ref()
     }
 
     /// 0-based source line shown at content y (inverse of [`y_for_source_line`](Self::y_for_source_line)).
     pub fn source_line_at_y(&self, y: i32) -> usize {
         let Some(lay) = self.lay.as_ref() else { return 0 };
-        let a = &lay.anchors;
-        let last = (self.line_count as i64 - 1).max(0);
+        let n = self.line_count as i64;
+        let last = (n - 1).max(0);
         if y >= lay.height {
             return last as usize;
         }
         let y = y.max(0);
-        let i = a.partition_point(|p| p.y1 <= y);
-        let Some(p) = a.get(i) else { return last as usize };
-        let line = if p.y0 <= y {
-            let n = (p.l1 - p.l0 + 1) as f64;
-            let h = (p.y1 - p.y0).max(1) as f64;
-            (p.l0 + (((y - p.y0) as f64 + 0.5) / h * n).floor() as i64).min(p.l1)
-        } else {
-            let q = &a[i.saturating_sub(1)];
-            let n = p.l0 - q.l1 - 1;
-            if n <= 0 {
-                p.l0
-            } else {
-                let frac = (y - q.y1) as f64 / (p.y0 - q.y1).max(1) as f64;
-                (q.l1 + 1 + (frac * n as f64 + 0.5 / (p.y0 - q.y1).max(1) as f64 * n as f64).floor() as i64).min(p.l0 - 1)
+        let i = lay.segs.partition_point(|s| s.y1 <= y);
+        let (ql, qy) = match i.checked_sub(1).map(|k| lay.segs[k]) {
+            Some(s) => (s.l0 + s.nl - 1, s.y1),
+            None => (-1, 0),
+        };
+        let line = match lay.segs.get(i) {
+            Some(s) if s.y0 <= y => {
+                let Some(l) = self.seg_lay_of(s) else { return last as usize };
+                s.l0 + line_in_seg(&l.anchors, s.nl, s.y1 - s.y0, y - s.y0)
+            }
+            next => {
+                let (pl, py) = next.map_or((n, lay.height), |t| (t.l0, t.y0));
+                gap_line(ql, qy, pl, py, y)
             }
         };
         line.clamp(0, last) as usize
@@ -1634,23 +2414,153 @@ impl MdView {
         let lay = self.lay.as_ref()?;
         let cx = x - rect.x as f64;
         let cy = y - rect.y as f64 + scroll_px.floor();
-        let from = lay.links.partition_point(|l| ((l.y + lay.max_link_h) as f64) <= cy);
-        for l in &lay.links[from..] {
+        let (sl, base) = self.seg_at_y(lay, cy as i32)?;
+        let cy = cy - base as f64;
+        let from = sl.links.partition_point(|l| ((l.y + sl.max_link_h) as f64) <= cy);
+        for l in &sl.links[from..] {
             if l.y as f64 > cy {
                 break;
             }
             if cx >= l.x as f64 && cx < (l.x + l.w) as f64 && cy < (l.y + l.h) as f64 {
-                return self.urls.get(l.link as usize - 1).cloned();
+                return self.urls.get(l.link).cloned();
             }
         }
         None
     }
 
-    /// `(github-style slug, content y)` of every heading in document order (duplicates get
-    /// `-1`, `-2`, ... suffixes), for `#section` links.
-    pub fn heading_anchors(&self) -> Vec<(String, i32)> {
-        self.lay.as_ref().map_or_else(Vec::new, |l| l.heads.clone())
+    /// The laid-out segment (or the footnote section) covering content y, and its top.
+    fn seg_at_y(&self, lay: &Layout, y: i32) -> Option<(&SegLay, i32)> {
+        if let Some((l, p)) = self.foot.as_ref() {
+            if y >= p.y0 && y < p.y1 {
+                return Some((l, p.y0));
+            }
+        }
+        let s = lay.segs.get(lay.segs.partition_point(|s| s.y1 <= y)).filter(|s| s.y0 <= y)?;
+        Some((self.seg_lay_of(s)?, s.y0))
     }
+
+    /// The task checkbox under the pointer: the byte offset in the document text of the `[` of its
+    /// `[ ]` / `[x]` marker (so the caller can flip the character at `offset + 1`).
+    pub fn check_at(&self, x: f64, y: f64, rect: Rect, scroll_px: f64) -> Option<usize> {
+        if !rect.contains(x, y) {
+            return None;
+        }
+        let lay = self.lay.as_ref()?;
+        let cx = x - rect.x as f64;
+        let cy = y - rect.y as f64 + scroll_px.floor();
+        let s = *lay.segs.get(lay.segs.partition_point(|s| s.y1 <= cy as i32)).filter(|s| s.y0 <= cy as i32)?;
+        let sl = self.seg_lay_of(&s)?;
+        let cy = cy - s.y0 as f64;
+        let b0 = self.order.get(s.ix)?.b0;
+        sl.checks.iter().find(|c| cx >= c.x as f64 && cx < (c.x + c.w) as f64 && cy >= c.y as f64 && cy < (c.y + c.h) as f64).map(|c| c.off + b0)
+    }
+
+    /// `(github-style slug, content y)` of every heading in document order (duplicates get
+    /// `-1`, `-2`, ... suffixes), for `#section` links. Footnote definitions are `fn-<label>`.
+    /// Built on demand (a link click), not on every layout.
+    pub fn heading_anchors(&self) -> Vec<(String, i32)> {
+        let Some(lay) = self.lay.as_ref() else { return vec![] };
+        let mut seen = HashMap::new();
+        let mut out = vec![];
+        let mut add = |l: &SegLay, base: i32| {
+            for (n, hy, exact) in &l.heads {
+                out.push((if *exact { n.clone() } else { dedupe_slug(n.clone(), &mut seen) }, hy + base));
+            }
+        };
+        for s in &lay.segs {
+            if let Some(l) = self.seg_lay_of(s) {
+                if !l.heads.is_empty() {
+                    add(l, s.y0);
+                }
+            }
+        }
+        if let Some((l, p)) = self.foot.as_ref() {
+            add(l, p.y0);
+        }
+        out
+    }
+
+    /// Blocks of the whole document with absolute source lines (tests).
+    #[cfg(test)]
+    fn blocks(&self) -> Vec<Block> {
+        fn shift(b: &Block, d: usize) -> Block {
+            let kind = match &b.kind {
+                Kind::Quote(v) => Kind::Quote(v.iter().map(|x| shift(x, d)).collect()),
+                Kind::List { start, items, loose } => Kind::List { start: *start, loose: *loose, items: items.iter().map(|i| LItem { task: i.task, task_off: i.task_off, blocks: i.blocks.iter().map(|x| shift(x, d)).collect() }).collect() },
+                Kind::FootDef { label, blocks } => Kind::FootDef { label: label.clone(), blocks: blocks.iter().map(|x| shift(x, d)).collect() },
+                k => k.clone(),
+            };
+            Block { kind, line: b.line + d, end: b.end + d }
+        }
+        self.order.iter().filter_map(|p| self.cache.get(&p.key).map(|d| (p, d))).flat_map(|(p, d)| d.blocks.iter().map(move |b| shift(b, p.l0))).collect()
+    }
+
+    /// Link boxes with absolute y, in document order (tests).
+    #[cfg(test)]
+    fn all_links(&self) -> Vec<LinkHit> {
+        let Some(lay) = self.lay.as_ref() else { return vec![] };
+        let mut v: Vec<LinkHit> = lay.segs.iter().filter_map(|s| self.seg_lay_of(s).map(|l| (s, l))).flat_map(|(s, l)| l.links.iter().map(move |k| LinkHit { y: k.y + s.y0, ..*k })).collect();
+        if let Some((l, p)) = self.foot.as_ref() {
+            v.extend(l.links.iter().map(|k| LinkHit { y: k.y + p.y0, ..*k }));
+        }
+        v
+    }
+
+    /// Checkboxes with absolute y and source offsets (tests).
+    #[cfg(test)]
+    fn all_checks(&self) -> Vec<CheckHit> {
+        let Some(lay) = self.lay.as_ref() else { return vec![] };
+        lay.segs.iter().filter_map(|s| self.seg_lay_of(s).map(|l| (s, l))).flat_map(|(s, l)| l.checks.iter().map(move |c| CheckHit { y: c.y + s.y0, off: c.off + self.order[s.ix].b0, ..*c })).collect()
+    }
+
+    /// Draw ops of the whole document, in layout order (tests).
+    #[cfg(test)]
+    fn ops(&self) -> Vec<&DrawOp> {
+        self.order.iter().filter_map(|p| self.cache.get(&p.key)).filter_map(|d| d.lay.as_ref()).chain(self.foot.iter().map(|(l, _)| l)).flat_map(|l| l.ops.iter()).collect()
+    }
+}
+
+/// Colored runs of a code block, asked from the host once and cached. Colors that would not read
+/// on the block's own background are nudged (the theme's tokens are checked against the editor's).
+fn hl_lines(cache: &mut HashMap<u64, Option<Rc<HlLines>>>, key: u64, lang: &str, lines: &[String], host: &mut Option<&mut HlFn>, fill: Rgba, bg: Rgba) -> Option<Rc<HlLines>> {
+    if let Some(v) = cache.get(&key) {
+        return v.clone();
+    }
+    let h = host.as_mut()?;
+    let mut res = h(lang, &lines.join("\n"));
+    if let Some(runs) = res.as_mut() {
+        for line in runs.iter_mut() {
+            for r in line.iter_mut() {
+                if r.2.contrast(fill) < 4.5 {
+                    r.2 = r.2.readable_on(&[fill, bg], 4.5);
+                }
+            }
+        }
+    }
+    let res = res.map(Rc::new);
+    cache.insert(key, res.clone());
+    res
+}
+
+/// Pieces to draw for `line` (already cut to what is visible) from highlighter `runs`.
+fn pieces_of(line: &str, runs: &[(usize, usize, Rgba, u8)], fg: Rgba) -> Vec<(String, Rgba, u8)> {
+    let mut out: Vec<(String, Rgba, u8)> = vec![];
+    let mut at = 0;
+    for &(s, e, c, f) in runs {
+        let (s, e) = (s.min(line.len()), e.min(line.len()));
+        if s >= e || s < at || !line.is_char_boundary(s) || !line.is_char_boundary(e) {
+            continue;
+        }
+        if s > at {
+            out.push((line[at..s].to_string(), fg, 0));
+        }
+        out.push((line[s..e].to_string(), c, f));
+        at = e;
+    }
+    if at < line.len() {
+        out.push((line[at..].to_string(), fg, 0));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1725,7 +2635,7 @@ after it.
         (v, tx)
     }
     fn kinds(v: &MdView) -> Vec<&'static str> {
-        v.blocks
+        v.blocks()
             .iter()
             .map(|b| match &b.kind {
                 Kind::Heading { .. } => "h",
@@ -1736,6 +2646,8 @@ after it.
                 Kind::List { .. } => "list",
                 Kind::Table { .. } => "table",
                 Kind::Images(_) => "img",
+                Kind::Math(_) => "math",
+                Kind::FootDef { .. } => "foot",
             })
             .collect()
     }
@@ -1758,21 +2670,23 @@ after it.
     #[test]
     fn heading_levels_and_source_lines() {
         let v = view(README);
-        let Kind::Heading { level, .. } = &v.blocks[0].kind else { panic!() };
+        let bl = v.blocks();
+        let Kind::Heading { level, .. } = &bl[0].kind else { panic!() };
         assert_eq!(*level, 1);
-        assert_eq!((v.blocks[0].line, v.blocks[0].end), (0, 0));
-        let code = v.blocks.iter().find(|b| matches!(b.kind, Kind::Code { .. })).unwrap();
+        assert_eq!((bl[0].line, bl[0].end), (0, 0));
+        let code = bl.iter().find(|b| matches!(b.kind, Kind::Code { .. })).unwrap();
         let src_line = README.lines().position(|l| l.starts_with("```rust")).unwrap();
         assert_eq!(code.line, src_line);
         assert_eq!(code.end, src_line + 4);
-        let hs: Vec<u8> = v.blocks.iter().filter_map(|b| if let Kind::Heading { level, .. } = &b.kind { Some(*level) } else { None }).collect();
+        let hs: Vec<u8> = bl.iter().filter_map(|b| if let Kind::Heading { level, .. } = &b.kind { Some(*level) } else { None }).collect();
         assert_eq!(hs, [1, 2, 3, 2]);
     }
 
     #[test]
     fn paragraph_ranges_cover_wrapped_source_lines() {
         let v = view(README);
-        let p = &v.blocks[2];
+        let bl = v.blocks();
+        let p = &bl[2];
         let start = README.lines().position(|l| l.starts_with("A *fast*")).unwrap();
         assert_eq!((p.line, p.end), (start, start + 1));
     }
@@ -1780,7 +2694,8 @@ after it.
     #[test]
     fn inline_styles_are_recorded() {
         let v = view("a *em* **st** ~~del~~ `co` [ln](http://u) z");
-        let Kind::Para(inl) = &v.blocks[0].kind else { panic!() };
+        let bl = v.blocks();
+        let Kind::Para(inl) = &bl[0].kind else { panic!() };
         let f = |t: &str| {
             inl.iter().find_map(|i| match i {
                 Inl::Text { text, flags, link } if text == t => Some((*flags, *link)),
@@ -1792,13 +2707,14 @@ after it.
         assert_eq!(f("del").unwrap().0, F_S);
         assert_eq!(f("co").unwrap().0, F_CODE);
         assert_eq!(f("ln").unwrap(), (F_LINK, 1));
-        assert_eq!(v.urls, ["http://u"]);
+        assert_eq!(v.urls.list, ["http://u"]);
     }
 
     #[test]
     fn nested_emphasis_combines_flags() {
         let v = view("***both*** and **bold *inner* text**");
-        let Kind::Para(inl) = &v.blocks[0].kind else { panic!() };
+        let bl = v.blocks();
+        let Kind::Para(inl) = &bl[0].kind else { panic!() };
         assert!(inl.iter().any(|i| matches!(i, Inl::Text { text, flags, .. } if text == "both" && *flags == F_B | F_I)));
         assert!(inl.iter().any(|i| matches!(i, Inl::Text { text, flags, .. } if text == "inner" && *flags == F_B | F_I)));
     }
@@ -1806,7 +2722,8 @@ after it.
     #[test]
     fn tight_list_items_get_implicit_paragraphs_and_nest() {
         let v = view("- one\n- two\n  - sub a\n  - sub b\n    - deep\n- three\n");
-        let Kind::List { items, loose, start } = &v.blocks[0].kind else { panic!() };
+        let bl = v.blocks();
+        let Kind::List { items, loose, start } = &bl[0].kind else { panic!() };
         assert!(!loose && start.is_none());
         assert_eq!(items.len(), 3);
         assert!(matches!(items[0].blocks[0].kind, Kind::Para(_)));
@@ -1820,7 +2737,8 @@ after it.
     #[test]
     fn loose_and_ordered_lists() {
         let v = view("3. a\n\n4. b\n\n5. c\n");
-        let Kind::List { items, loose, start } = &v.blocks[0].kind else { panic!() };
+        let bl = v.blocks();
+        let Kind::List { items, loose, start } = &bl[0].kind else { panic!() };
         assert!(*loose);
         assert_eq!(*start, Some(3));
         assert_eq!(items.len(), 3);
@@ -1829,24 +2747,27 @@ after it.
     #[test]
     fn task_lists() {
         let v = view("- [ ] todo\n- [x] done\n- plain\n");
-        let Kind::List { items, .. } = &v.blocks[0].kind else { panic!() };
+        let bl = v.blocks();
+        let Kind::List { items, .. } = &bl[0].kind else { panic!() };
         assert_eq!(items.iter().map(|i| i.task).collect::<Vec<_>>(), [Some(false), Some(true), None]);
     }
 
     #[test]
     fn code_blocks_fenced_and_indented() {
         let v = view("```js {1}\nlet a = 1;\n\nlet b;\n```\n\n    indented\n    code\n");
-        let Kind::Code { lang, text } = &v.blocks[0].kind else { panic!() };
+        let bl = v.blocks();
+        let Kind::Code { lang, text } = &bl[0].kind else { panic!() };
         assert_eq!(lang, "js");
         assert_eq!(text, "let a = 1;\n\nlet b;");
-        let Kind::Code { lang, text } = &v.blocks[1].kind else { panic!() };
+        let Kind::Code { lang, text } = &bl[1].kind else { panic!() };
         assert_eq!((lang.as_str(), text.as_str()), ("", "indented\ncode"));
     }
 
     #[test]
     fn table_is_parsed_with_alignment() {
         let v = view(README);
-        let Some(Kind::Table { aligns, head, rows }) = v.blocks.iter().find_map(|b| if let Kind::Table { .. } = &b.kind { Some(b.kind.clone()) } else { None }) else { panic!() };
+        let bl = v.blocks();
+        let Some(Kind::Table { aligns, head, rows }) = bl.iter().find_map(|b| if let Kind::Table { .. } = &b.kind { Some(b.kind.clone()) } else { None }) else { panic!() };
         assert_eq!(aligns, [Alignment::Left, Alignment::Center, Alignment::Right]);
         assert_eq!(head.len(), 3);
         assert_eq!(rows.len(), 2);
@@ -1856,10 +2777,11 @@ after it.
     #[test]
     fn images_become_boxes_and_keep_links() {
         let v = view("[![CI](a.svg)](http://ci) ![](b.png)\n\ntext ![inline](c.png) tail\n");
-        let Kind::Images(im) = &v.blocks[0].kind else { panic!() };
+        let bl = v.blocks();
+        let Kind::Images(im) = &bl[0].kind else { panic!() };
         assert_eq!(im.len(), 2);
         assert_eq!(im[0].alt, "CI");
-        assert_eq!(v.urls[im[0].link as usize - 1], "http://ci");
+        assert_eq!(v.urls.list[im[0].link as usize - 1], "http://ci");
         assert_eq!(im[1].link, 0);
         assert_eq!(kinds(&v), ["img", "p", "img", "p"]);
     }
@@ -1867,16 +2789,18 @@ after it.
     #[test]
     fn raw_html_img_and_comments() {
         let v = view("<!-- hidden -->\n\n<p align=\"center\"><a href=\"http://h\"><img src=\"x/logo.png\" alt=\"Logo\"></a></p>\n\nafter <br> br\n");
-        let Kind::Images(im) = &v.blocks[0].kind else { panic!("{:?}", kinds(&v)) };
+        let bl = v.blocks();
+        let Kind::Images(im) = &bl[0].kind else { panic!("{:?}", kinds(&v)) };
         assert_eq!((im[0].alt.as_str(), im[0].url.as_str()), ("Logo", "x/logo.png"));
-        assert_eq!(v.urls[im[0].link as usize - 1], "http://h");
-        assert_eq!(v.blocks.len(), 2);
+        assert_eq!(v.urls.list[im[0].link as usize - 1], "http://h");
+        assert_eq!(bl.len(), 2);
     }
 
     #[test]
     fn hard_and_soft_breaks() {
         let v = view("a  \nb\nc\\\nd");
-        let Kind::Para(inl) = &v.blocks[0].kind else { panic!() };
+        let bl = v.blocks();
+        let Kind::Para(inl) = &bl[0].kind else { panic!() };
         assert_eq!(inl.iter().filter(|i| **i == Inl::Hard).count(), 2);
         assert_eq!(inl.iter().filter(|i| **i == Inl::Soft).count(), 1);
     }
@@ -1968,12 +2892,12 @@ after it.
     fn list_nesting_indents_text() {
         let (v, _) = laid("- a\n  - b\n    - c\n", 800);
         let lay = v.lay.as_ref().unwrap();
-        let xs: Vec<i32> = lay.ops.iter().filter_map(|o| if let Op::Text { x, text, .. } = &o.op { Some((text.as_str(), *x)) } else { None }).map(|(_, x)| x).collect();
+        let xs: Vec<i32> = v.ops().into_iter().filter_map(|o| if let Op::Text { x, text, .. } = &o.op { Some((text.as_str(), *x)) } else { None }).map(|(_, x)| x).collect();
         assert_eq!(xs.len(), 3);
         assert_eq!(xs[1] - xs[0], LIST_BULLET_INDENT);
         assert_eq!(xs[2] - xs[1], LIST_BULLET_INDENT);
         // three bullets of increasing depth, hanging to the left of their text
-        let bullets: Vec<(i32, u8)> = lay.ops.iter().filter_map(|o| if let Op::Bullet { cx, level, .. } = o.op { Some((cx, level)) } else { None }).collect();
+        let bullets: Vec<(i32, u8)> = v.ops().into_iter().filter_map(|o| if let Op::Bullet { cx, level, .. } = o.op { Some((cx, level)) } else { None }).collect();
         assert_eq!(bullets.iter().map(|b| b.1).collect::<Vec<_>>(), [0, 1, 2]);
         assert!(bullets.iter().zip(&xs).all(|(b, x)| b.0 < *x));
     }
@@ -1984,7 +2908,7 @@ after it.
         let (v, _) = laid(&items, 800);
         let (v1, _) = laid("1. item\n2. item\n", 800);
         let x = |v: &MdView| {
-            v.lay.as_ref().unwrap().ops.iter().filter_map(|o| if let Op::Text { x, text, .. } = &o.op { (text == "item").then_some(*x) } else { None }).next().unwrap()
+            v.ops().into_iter().filter_map(|o| if let Op::Text { x, text, .. } = &o.op { (text == "item").then_some(*x) } else { None }).next().unwrap()
         };
         assert!(x(&v) > x(&v1));
     }
@@ -1994,11 +2918,11 @@ after it.
         let src = "| a | long header here |\n|---|---|\n| short | x |\n| much longer cell text | y |\n";
         let (v, _) = laid(src, 900);
         let lay = v.lay.as_ref().unwrap();
-        let verts: Vec<i32> = lay.ops.iter().filter_map(|o| if let Op::Fill { r, .. } = &o.op { (r.w == 1 && r.h == 3 * ROW_H).then_some(r.x) } else { None }).collect();
+        let verts: Vec<i32> = v.ops().into_iter().filter_map(|o| if let Op::Fill { r, .. } = &o.op { (r.w == 1 && r.h == 3 * ROW_H).then_some(r.x) } else { None }).collect();
         assert_eq!(verts.len(), 1, "one inner column rule");
         let first = verts[0] - lay.col_x;
         assert!(first > 100, "first column sized by 'much longer cell text', got {first}");
-        let stroke = lay.ops.iter().find_map(|o| if let Op::Stroke { r, .. } = &o.op { Some(*r) } else { None }).unwrap();
+        let stroke = v.ops().into_iter().find_map(|o| if let Op::Stroke { r, .. } = &o.op { Some(*r) } else { None }).unwrap();
         assert!(stroke.w < 900 - 2 * PAD);
         assert_eq!(stroke.h, 3 * ROW_H);
     }
@@ -2008,9 +2932,9 @@ after it.
         let src = "| a | b |\n|---|---|\n| aaaaaaaa bbbbbbbb cccccccc dddddddd eeeeeeee | zzzzzzzz yyyyyyyy xxxxxxxx wwwwwwww |\n";
         let (v, _) = laid(src, 260);
         let lay = v.lay.as_ref().unwrap();
-        let stroke = lay.ops.iter().find_map(|o| if let Op::Stroke { r, .. } = &o.op { Some(*r) } else { None }).unwrap();
+        let stroke = v.ops().into_iter().find_map(|o| if let Op::Stroke { r, .. } = &o.op { Some(*r) } else { None }).unwrap();
         assert!(stroke.w <= 260 - 2 * PAD + 2, "table width {}", stroke.w);
-        assert!(lay.ops.iter().any(|o| matches!(&o.op, Op::Text { text, .. } if text.ends_with("..."))));
+        assert!(v.ops().into_iter().any(|o| matches!(&o.op, Op::Text { text, .. } if text.ends_with("..."))));
     }
 
     #[test]
@@ -2081,7 +3005,7 @@ after it.
         v.ensure_layout(&mut tx, 800);
         let rect = Rect::new(100, 50, 800, 400);
         let lay = v.lay.as_ref().unwrap();
-        let hit = lay.links[0];
+        let hit = v.all_links()[0];
         let (px, py) = (rect.x as f64 + (hit.x + hit.w / 2) as f64, rect.y as f64 + (hit.y + hit.h / 2) as f64);
         assert_eq!(v.link_at(px, py, rect, 0.0).as_deref(), Some("https://example.com/a"));
         // scrolled down by 7px the same content point sits 7px higher
@@ -2100,7 +3024,7 @@ after it.
         let mut v = view("[![CI](a.svg)](http://ci)\n");
         v.ensure_layout(&mut tx, 800);
         let rect = Rect::new(0, 0, 800, 300);
-        let h = v.lay.as_ref().unwrap().links[0];
+        let h = v.all_links()[0];
         assert_eq!(v.link_at((h.x + 5) as f64, (h.y + 5) as f64, rect, 0.0).as_deref(), Some("http://ci"));
     }
 
@@ -2256,6 +3180,364 @@ after it.
         let warm = v.last_layout_ms();
         eprintln!("[mdview] varied prose {} KB: layout cold {cold:.0} ms, relayout warm {warm:.0} ms, height {} px", src.len() / 1024, v.content_height());
         assert!(warm < 1000.0);
+    }
+
+
+    // ---- incremental layout, footnotes, math, tasks, images, highlighting ----
+
+    fn unit(i: usize) -> String {
+        format!("## Section {i}\n\nParagraph {i} with **bold** text, a [link](https://x.io/{i}) and `code {i}` plus some more words to wrap around the line a few times over.\n\n- item one {i}\n- item two {i}\n\n```rust\nlet x = {i};\n```\n\n| a | b |\n|---|---|\n| {i} | y |\n\n")
+    }
+
+    fn doc_of(units: usize) -> String {
+        (0..units).map(unit).collect()
+    }
+
+    #[test]
+    fn split_cuts_at_blank_lines_but_keeps_fences_lists_and_indents_together() {
+        let t = "# T\n\npara one\nstill\n\n```rust\nlet a;\n\nlet b;\n```\n\n- a\n\n- b\n\n  cont\n\nnext para\n\n    code\n\n<!-- a\n\nb -->\n\nlast\n";
+        let sp = split(t);
+        let segs: Vec<&str> = sp.segs.iter().map(|s| &t[s.b0..s.b1]).collect();
+        assert_eq!(segs, ["# T\n", "para one\nstill\n", "```rust\nlet a;\n\nlet b;\n```\n", "- a\n\n- b\n\n  cont\n", "next para\n\n    code\n", "<!-- a\n\nb -->\n", "last\n"]);
+        for s in &sp.segs {
+            assert_eq!(t[..s.b0].matches('\n').count(), s.l0, "first line of {:?}", &t[s.b0..s.b1]);
+            assert_eq!(t[s.b0..s.b1].trim_end_matches('\n').matches('\n').count() + 1, s.nl);
+        }
+        assert_eq!(sp.lines, t.matches('\n').count() + 1);
+    }
+
+    #[test]
+    fn split_finds_reference_and_footnote_definitions() {
+        let sp = split("[ref]: https://a.dev/x \"t\"\n\n[^n]: note\n\n```\n[hidden]: nope\n```\n");
+        assert_eq!(sp.ctx.refs.get("ref").map(String::as_str), Some("https://a.dev/x"));
+        assert!(sp.ctx.foot.contains("n"));
+        assert!(!sp.ctx.refs.contains_key("hidden"), "definitions inside a fence do not count");
+    }
+
+    /// Everything hit-testing and scroll sync can see must be the same for an incrementally edited
+    /// view and one built from scratch.
+    fn assert_same_layout(a: &MdView, b: &MdView, what: &str) {
+        assert_eq!(a.content_height(), b.content_height(), "{what}: height");
+        assert_eq!(a.heading_anchors(), b.heading_anchors(), "{what}: headings");
+        for l in (0..a.line_count).step_by(3) {
+            assert_eq!(a.y_for_source_line(l), b.y_for_source_line(l), "{what}: line {l}");
+        }
+        assert_eq!(a.all_links().len(), b.all_links().len(), "{what}: links");
+        for y in (0..a.content_height()).step_by(7) {
+            assert_eq!(a.source_line_at_y(y), b.source_line_at_y(y), "{what}: y {y}");
+        }
+    }
+
+    #[test]
+    fn an_edit_reparses_and_relays_out_one_segment_and_matches_a_fresh_layout() {
+        let mut tx = TextCtx::new(None);
+        let src = doc_of(300);
+        let mut v = MdView::new();
+        v.set_text(&src);
+        v.ensure_layout(&mut tx, 800);
+        let (p0, l0) = v.work_counts();
+        assert!(p0 >= 1000 && l0 >= 1000, "cold: {p0} parsed, {l0} laid out");
+        let edits: Vec<(&str, Box<dyn Fn(&str) -> String>)> = vec![
+            ("typing in a paragraph", Box::new(|s| s.replacen("Paragraph 150 with", "Paragraph 150 X with", 1))),
+            ("making a paragraph longer", Box::new(|s| s.replacen("Paragraph 77 with", &format!("Paragraph 77 {} with", "wrap ".repeat(60)), 1))),
+            ("editing a heading", Box::new(|s| s.replacen("## Section 200", "## Section two hundred", 1))),
+            ("splitting a segment with a blank line", Box::new(|s| s.replacen("- item one 40\n- item two 40", "- item one 40\n\nmiddle text\n\n- item two 40", 1))),
+            ("joining two segments", Box::new(|s| s.replacen("## Section 9\n\nParagraph 9", "## Section 9\nParagraph 9", 1))),
+        ];
+        for (what, f) in edits {
+            let new = f(&v.text);
+            assert_ne!(new, v.text, "{what}: the edit applies");
+            let (p, l) = v.work_counts();
+            v.set_text(&new);
+            v.ensure_layout(&mut tx, 800);
+            let (p2, l2) = v.work_counts();
+            assert!(p2 - p <= 3 && l2 - l <= 3, "{what}: {} parsed, {} laid out", p2 - p, l2 - l);
+            let mut fresh = MdView::new();
+            fresh.set_text(&new);
+            fresh.ensure_layout(&mut tx, 800);
+            assert_same_layout(&v, &fresh, what);
+        }
+    }
+
+    #[test]
+    fn a_width_change_lays_out_again_but_does_not_reparse() {
+        let mut tx = TextCtx::new(None);
+        let mut v = MdView::new();
+        v.set_text(&doc_of(20));
+        v.ensure_layout(&mut tx, 800);
+        let (p, l) = v.work_counts();
+        v.ensure_layout(&mut tx, 500);
+        let (p2, l2) = v.work_counts();
+        assert_eq!(p2, p);
+        assert!(l2 > l);
+        v.ensure_layout(&mut tx, 800);
+        assert_eq!(v.work_counts().1, l2 + (l2 - l), "going back re-lays out (one cache slot per segment)");
+    }
+
+    /// Median and worst time of one keystroke (rope -> string, `set_text`, draw) in a document of
+    /// `units` sections, edited in the middle.
+    fn typing_bench(units: usize, label: &str) -> (f64, f64) {
+        let mut tx = TextCtx::new(None);
+        let t = theme();
+        let src = doc_of(units);
+        let mut v = MdView::new();
+        let t0 = std::time::Instant::now();
+        v.set_text(&src);
+        v.ensure_layout(&mut tx, 900);
+        let cold = t0.elapsed().as_secs_f64() * 1000.0;
+        let mut rope = ropey::Rope::from_str(&src);
+        let mid = units / 2;
+        let at = rope.byte_to_char(src.find(&format!("Paragraph {mid} with")).unwrap() + 14);
+        let (w, h) = (900, 700);
+        let mut px = vec![0u32; (w * h) as usize];
+        let rect = Rect::new(0, 0, w, h);
+        let scroll = v.y_for_source_line(mid * 17).unwrap() as f64;
+        let mut times = vec![];
+        for i in 0..40 {
+            let t0 = std::time::Instant::now();
+            rope.insert(at + i, "x");
+            let text = rope.to_string(); // what the app does with the buffer on every keystroke
+            v.set_text(&text);
+            let mut cv = Canvas { px: &mut px, w, h };
+            v.draw(&mut cv, &mut tx, &t, rect, scroll);
+            times.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let (median, worst) = (times[times.len() / 2], times[times.len() - 1]);
+        eprintln!("[mdview] {label} ({} KB, {} lines): cold {cold:.0} ms; per keystroke median {median:.1} ms, worst {worst:.1} ms", src.len() / 1024, v.line_count);
+        drop((v, rope, src, px));
+        // Give the memory back: `perf::memory_100k_buffer_and_tokenizer` measures the whole test process.
+        unsafe { libc::malloc_trim(0) };
+        (median, worst)
+    }
+
+    #[test]
+    fn typing_in_a_large_document_stays_under_16ms() {
+        // 200 KB here (the full 2 MB run below is ignored by default: it inflates the process
+        // memory that `perf::memory_100k_buffer_and_tokenizer` measures when tests run in parallel).
+        let (median, _) = typing_bench(850, "200 KB");
+        if !cfg!(debug_assertions) {
+            assert!(median < 16.0, "median keystroke {median:.1} ms");
+        }
+    }
+
+    /// `cargo test --release typing_in_a_2mb -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn typing_in_a_2mb_document_stays_under_16ms() {
+        let (median, _) = typing_bench(9500, "2 MB");
+        assert!(median < 16.0, "median keystroke {median:.1} ms");
+    }
+
+    #[test]
+    fn footnotes_are_numbered_by_first_reference_and_collected_at_the_end() {
+        let src = "A[^b] and B[^a] again[^b], unknown[^zz].\n\n[^a]: Alpha note.\n[^b]: Beta note.\n\nTail.\n";
+        let (v, _) = laid(src, 800);
+        let texts: Vec<String> = v.ops().iter().filter_map(|o| if let Op::Text { text, .. } = &o.op { Some(text.clone()) } else { None }).collect();
+        let all = texts.join("|");
+        assert!(all.contains("[1]") && all.contains("[2]"), "{all}");
+        assert!(all.contains("[^zz]"), "an undefined reference stays literal: {all}");
+        let pos = |s: &str| texts.iter().position(|t| t.contains(s)).unwrap_or_else(|| panic!("{s} not in {all}"));
+        assert!(pos("Beta note") < pos("Alpha note"), "definitions follow the numbering: {all}");
+        assert!(pos("Tail") < pos("Beta note"), "footnotes come after the body: {all}");
+        let names: Vec<String> = v.heading_anchors().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["fn-b", "fn-a"]);
+        // the reference links to its definition
+        assert!(v.all_links().iter().any(|l| v.urls.get(l.link).is_some_and(|u| u == "#fn-b")));
+        assert_eq!(v.blocks().iter().filter(|b| matches!(b.kind, Kind::FootDef { .. })).count(), 2);
+    }
+
+    #[test]
+    fn math_inline_and_display() {
+        let src = "Euler $e^{i\\pi}+1=0$ costs $5 and $6.\n\n$$\n\\int_0^1 x\\,dx\n$$\n\ntail\n";
+        let v = view(src);
+        let bl = v.blocks();
+        assert_eq!(kinds(&v), ["p", "math", "p"]);
+        let Kind::Para(inl) = &bl[0].kind else { panic!() };
+        let math: Vec<&str> = inl.iter().filter_map(|i| if let Inl::Text { text, flags, .. } = i { (flags & F_MATH != 0).then_some(text.as_str()) } else { None }).collect();
+        assert_eq!(math, ["e^{i\\pi}+1=0"], "only the formula is math, the dollar amounts are text");
+        let Kind::Math(m) = &bl[1].kind else { panic!() };
+        assert_eq!(m, "\\int_0^1 x\\,dx");
+        let (v, _) = laid(src, 800);
+        assert!(v.ops().iter().any(|o| matches!(&o.op, Op::Code { math: true, .. })));
+    }
+
+    #[test]
+    fn task_checkboxes_report_the_source_offset_of_their_bracket() {
+        let src = "para\n\n- [ ] one\n- [x] two\n\n  - [ ] nested\n";
+        let mut tx = TextCtx::new(None);
+        let mut v = view(src);
+        v.ensure_layout(&mut tx, 800);
+        let rect = Rect::new(20, 30, 800, 400);
+        let checks = v.all_checks();
+        assert_eq!(checks.len(), 3);
+        let offs: Vec<usize> = checks.iter().map(|c| c.off).collect();
+        let at = |s: &str| src.find(s).unwrap();
+        assert_eq!(offs, [at("[ ] one"), at("[x] two"), at("[ ] nested")]);
+        for c in checks.clone() {
+            let (px, py) = (rect.x as f64 + c.x as f64 + 6.0, rect.y as f64 + c.y as f64 + 8.0);
+            assert_eq!(v.check_at(px, py, rect, 0.0), Some(c.off));
+            assert_eq!(v.check_at(px + 60.0, py, rect, 0.0), None, "text next to the box is not a hit");
+            assert_eq!(v.check_at(px, py - 200.0 + 1.0, rect, 0.0).filter(|o| *o == c.off), None);
+        }
+        // a click through a scrolled view
+        let c = checks[0];
+        assert_eq!(v.check_at(rect.x as f64 + c.x as f64 + 6.0, rect.y as f64 + c.y as f64 + 8.0 - 5.0, rect, 5.0), Some(c.off));
+    }
+
+    #[test]
+    fn task_flip_swaps_the_mark() {
+        use crate::buffer::Buffer;
+        let b = Buffer::from_str("- [ ] a\n- [X] b\n- [-] c\n");
+        assert_eq!(crate::app_md::task_flip(&b, 2), Some((3, "x")));
+        assert_eq!(crate::app_md::task_flip(&b, 10), Some((11, " ")));
+        assert_eq!(crate::app_md::task_flip(&b, 18), None);
+        assert_eq!(crate::app_md::task_flip(&b, 0), None);
+    }
+
+    fn png_file(name: &str, w: u32, h: u32, rgba: [u8; 4]) -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-md-images");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut wr = enc.write_header().unwrap();
+            wr.write_image_data(&rgba.repeat((w * h) as usize)).unwrap();
+        }
+        std::fs::write(dir.join(name), out).unwrap();
+        dir
+    }
+
+    #[test]
+    fn local_images_are_drawn_and_remote_ones_stay_placeholders() {
+        let dir = png_file("md-red.png", 64, 32, [255, 0, 0, 255]);
+        let src = "![local](md-red.png)\n\n![remote](https://x.io/a.png)\n\n![gone](missing.png)\n\n<img src=\"md-red.png\" width=\"20\">\n";
+        let mut tx = TextCtx::new(None);
+        let t = theme();
+        let mut v = view(src);
+        v.set_base_dir(Some(&dir));
+        v.ensure_layout(&mut tx, 800);
+        let imgs: Vec<Rect> = v.ops().iter().filter_map(|o| if let Op::Image { r, .. } = &o.op { Some(*r) } else { None }).collect();
+        assert_eq!(imgs.len(), 2, "only the two local files are images");
+        assert_eq!((imgs[0].w, imgs[0].h), (64, 32), "natural size");
+        assert_eq!((imgs[1].w, imgs[1].h), (20, 10), "width attribute keeps the ratio");
+        assert_eq!(v.ops().iter().filter(|o| matches!(&o.op, Op::Card { .. })).count(), 2, "remote + missing keep the card");
+        // the pixels arrive from a worker thread
+        let (w, h) = (900, 500);
+        let mut px = vec![0u32; (w * h) as usize];
+        let t0 = std::time::Instant::now();
+        loop {
+            let mut cv = Canvas { px: &mut px, w, h };
+            v.draw(&mut cv, &mut tx, &t, Rect::new(0, 0, w, h), 0.0);
+            if !v.pending() || t0.elapsed().as_secs() > 10 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mut cv = Canvas { px: &mut px, w, h };
+        v.draw(&mut cv, &mut tx, &t, Rect::new(0, 0, w, h), 0.0);
+        let red = px.iter().filter(|p| **p == 0x00ff0000).count();
+        assert!(red >= 64 * 32 + 20 * 10 - 20, "{red} red pixels");
+    }
+
+    #[test]
+    fn fenced_code_asks_the_highlighter_once_per_block_and_paints_its_colors() {
+        let mut tx = TextCtx::new(None);
+        let t = theme();
+        let src = "```ts\nconst a = 1;\n```\n\n```\nplain\n```\n\n```ts\nconst a = 1;\n```\n";
+        let mut v = view(src);
+        let (w, h) = (700, 400);
+        let mut px = vec![0u32; (w * h) as usize];
+        let calls = std::cell::Cell::new(0);
+        let mut hl = |lang: &str, text: &str| -> Option<HlLines> {
+            calls.set(calls.get() + 1);
+            assert_eq!(lang, "ts");
+            Some(text.split('\n').map(|l| vec![(0, l.len().min(5), Rgba(255, 0, 255, 255), 0u8), (l.len().min(5), l.len(), t.foreground, 0u8)]).collect())
+        };
+        for _ in 0..3 {
+            let mut cv = Canvas { px: &mut px, w, h };
+            v.draw_with(&mut cv, &mut tx, &t, Rect::new(0, 0, w, h), 0.0, Some(&mut hl));
+        }
+        assert_eq!(calls.get(), 1, "identical blocks share one result, and redraws reuse it");
+        assert!(px.iter().filter(|p| **p == 0x00ff00ff).count() > 20, "the colored run reaches the canvas");
+        // another theme asks again
+        let other = Theme::load(&assets().join("themes/github-light.json")).unwrap();
+        let mut cv = Canvas { px: &mut px, w, h };
+        v.draw_with(&mut cv, &mut tx, &other, Rect::new(0, 0, w, h), 0.0, Some(&mut hl));
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn real_tokenizer_colors_a_fenced_block_like_the_editor() {
+        let t = theme();
+        let tk = crate::highlight::make_tokenizer(&assets(), "source.ts").unwrap();
+        let runs = crate::highlight::highlight_text(&tk, &t, "const a = 1;");
+        assert!(runs[0].iter().any(|r| r.2 != t.foreground), "keywords are colored: {:?}", runs[0]);
+        assert_eq!(crate::app_md::scope_of(&assets(), "ts").as_deref(), Some("source.ts"));
+        assert_eq!(crate::app_md::scope_of(&assets(), "bash").as_deref(), Some("source.shell"));
+        assert_eq!(crate::app_md::scope_of(&assets(), "RS").as_deref(), Some("source.rust"));
+        assert_eq!(crate::app_md::scope_of(&assets(), "no-such-lang"), None);
+    }
+
+    #[test]
+    fn reference_style_links_resolve_across_segments() {
+        let v = view("see [the docs][d] and [d]\n\n[d]: https://example.com/docs\n");
+        let bl = v.blocks();
+        let Kind::Para(inl) = &bl[0].kind else { panic!() };
+        assert_eq!(inl.iter().filter(|i| matches!(i, Inl::Text { link, .. } if *link != 0)).count(), 2);
+        assert_eq!(v.urls.list, ["https://example.com/docs"]);
+    }
+
+    #[test]
+    #[ignore]
+    fn profile_keystroke() {
+        let mut tx = TextCtx::new(None);
+        let t = theme();
+        let src = doc_of(9500);
+        let mut v = MdView::new();
+        v.set_text(&src);
+        v.ensure_layout(&mut tx, 900);
+        let mut rope = ropey::Rope::from_str(&src);
+        let at = rope.byte_to_char(src.find("Paragraph 4700 with").unwrap() + 14);
+        let (w, h) = (900, 700);
+        let mut px = vec![0u32; (w * h) as usize];
+        let scroll = v.y_for_source_line(4700 * 17).unwrap() as f64;
+        let ms = |t0: std::time::Instant| t0.elapsed().as_secs_f64() * 1000.0;
+        for i in 0..8 {
+            rope.insert(at + i, "x");
+            let t0 = std::time::Instant::now();
+            let text = rope.to_string();
+            let a = ms(t0);
+            let t0 = std::time::Instant::now();
+            let sp = split(&text);
+            let b = ms(t0);
+            let t0 = std::time::Instant::now();
+            let mut hh = 0u64;
+            for s in &sp.segs {
+                hh ^= fxhash(&text.as_bytes()[s.b0..s.b1], 0);
+            }
+            let c = ms(t0);
+            let t0 = std::time::Instant::now();
+            v.set_text(&text);
+            let d = ms(t0);
+            let t0 = std::time::Instant::now();
+            v.ensure_layout(&mut tx, 900);
+            let e = ms(t0);
+            let t0 = std::time::Instant::now();
+            let mut cv = Canvas { px: &mut px, w, h };
+            v.draw(&mut cv, &mut tx, &t, Rect::new(0, 0, w, h), scroll);
+            let f = ms(t0);
+            let t0 = std::time::Instant::now();
+            let mut cv = Canvas { px: &mut px, w, h };
+            v.draw(&mut cv, &mut tx, &t, Rect::new(0, 0, w, h), scroll);
+            let g = ms(t0);
+            let t0 = std::time::Instant::now();
+            let _ = tx.ui_width_sized(&format!("wordx{i}y"), false, 14.0 * 8.0);
+            let k = ms(t0);
+            eprintln!("to_string {a:.1}  split {b:.1}  hash {c:.1} ({hh})  set_text(all) {d:.1}  ensure_layout {e:.1}  draw {f:.1} draw2 {g:.1} width_new_word {k:.1} work {:?}", v.work_counts());
+        }
     }
 
     #[test]

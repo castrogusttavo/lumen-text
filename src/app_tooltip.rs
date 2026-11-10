@@ -1,18 +1,22 @@
-//! Hover tooltips for the buttons of the top and bottom bars.
+//! Hover tooltips: top and bottom bar buttons, tabs (full path, close button), sidebar rows whose
+//! name is cut off, bottom panel tabs and the Git panel buttons.
 //!
 //! The state is just "which target is under the pointer and since when" ([`Tooltip`]); the
 //! rect, the text and the position are resolved again on every draw, so a resize, a changed
 //! label or a shortcut remapped in `keybindings.json` shows up at once. After the pointer rests
-//! on a target for [`TOOLTIP_DELAY`] a small rounded card appears (above the target in the bottom
-//! bar, below it in the top bar, always inside the window). Leaving the target, clicking or
+//! on a target for [`TOOLTIP_DELAY`] a small rounded card fades in (above the target in the bottom
+//! bar, below it elsewhere, always inside the window). Leaving the target, clicking or
 //! pressing a key closes it; moving straight to a neighbouring target shows its tooltip with no
 //! new delay. To give another group of buttons a tooltip: add a [`TipKey`] variant, return it
 //! from [`App::tip_target`] and describe it in [`App::tip_text`].
 
 use crate::{
-    app::App,
+    app::{App, ROW_H, SidebarMode, TAB_H},
+    app_gitpanel::{Group, Hit, Tab as GitTab},
     app_overlay::Overlay,
+    app_panel::PanelTab,
     app_topbar::{MenuKind, StatusBtn},
+    theme::Rgba,
     ui::{Canvas, Rect},
 };
 use std::{
@@ -21,6 +25,8 @@ use std::{
 };
 
 pub const TOOLTIP_DELAY: Duration = Duration::from_millis(450);
+/// Length of the fade-in.
+pub const FADE: Duration = Duration::from_millis(120);
 const PAD_X: i32 = 10;
 const PAD_Y: i32 = 6;
 const LINE: i32 = 18;
@@ -32,6 +38,14 @@ const WIN_M: i32 = 6;
 pub enum TipKey {
     Top(MenuKind),
     Status(StatusBtn),
+    /// A document tab (index into `App::docs`) and its close button.
+    Tab(usize),
+    TabClose(usize),
+    /// A row of the file tree (index into `Tree::rows`).
+    SideRow(usize),
+    PanelTab(PanelTab),
+    /// A button or row of the Git panel.
+    Git(Hit),
 }
 
 /// Pointer-rest state (the text is resolved while drawing).
@@ -40,6 +54,8 @@ pub struct Tooltip {
     pub key: TipKey,
     pub since: Instant,
     pub shown: bool,
+    /// When the card became visible (the fade-in runs from here).
+    pub shown_at: Option<Instant>,
     /// Closed by a click or a key press; stays closed until the pointer leaves the target.
     pub dismissed: bool,
 }
@@ -95,6 +111,30 @@ pub fn place(anchor: Rect, w: i32, h: i32, below: bool, win: (i32, i32)) -> (i32
     (x, y.clamp(WIN_M, (win.1 - h - WIN_M).max(WIN_M)))
 }
 
+/// Git panel hit targets that get a tooltip (buttons, tabs and file rows; not the message box).
+fn git_tip_wanted(h: Hit) -> bool {
+    matches!(h, Hit::Refresh | Hit::Close | Hit::Tab(_) | Hit::Check(_) | Hit::Discard(_) | Hit::ConfirmDiscard(_) | Hit::Row(_) | Hit::CommitBtn | Hit::Opt | Hit::Fetch | Hit::Pull | Hit::Push | Hit::Amend | Hit::JobCancel)
+}
+
+/// Opacity (0..=1) of the card `elapsed` after it appeared.
+pub fn fade_alpha(elapsed: Duration) -> f32 {
+    (elapsed.as_secs_f32() / FADE.as_secs_f32()).clamp(0.0, 1.0)
+}
+
+fn faded(c: Rgba, a: f32) -> Rgba {
+    Rgba(c.0, c.1, c.2, (c.3 as f32 * a) as u8)
+}
+
+/// Index of the tree row under a pointer at `y`, for a list whose first row starts at `top`, scrolled
+/// `scroll` px, with `rows` rows of height `row_h`; `None` outside the rows.
+pub fn sidebar_row_at(scroll: f64, top: i32, y: i32, row_h: i32, rows: usize) -> Option<usize> {
+    if y < top || row_h <= 0 {
+        return None;
+    }
+    let k = ((scroll.max(0.0) + (y - top) as f64) / row_h as f64).floor() as usize;
+    (k < rows).then_some(k)
+}
+
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -105,16 +145,47 @@ impl App {
     }
 
     /// The target under the pointer, its rect and whether the card goes below it.
-    pub fn tip_target(&self) -> Option<(TipKey, Rect, bool)> {
+    pub fn tip_target(&mut self) -> Option<(TipKey, Rect, bool)> {
         let (x, y) = self.mouse;
-        let l = &self.layout;
         if !self.overlay.is_none() || self.dragging || self.dragging_minimap || self.drag_bar.is_some() {
             return None;
         }
+        let l = &self.layout;
         if let Some((r, k)) = l.top_btns.iter().find(|(r, k)| r.contains(x, y) && *k != MenuKind::Browse) {
             return Some((TipKey::Top(*k), *r, true));
         }
-        l.status_btns.iter().chain(l.status_info.iter()).find(|(r, _)| r.contains(x, y)).map(|(r, k)| (TipKey::Status(*k), *r, false))
+        if let Some((r, k)) = l.status_btns.iter().chain(l.status_info.iter()).find(|(r, _)| r.contains(x, y)) {
+            return Some((TipKey::Status(*k), *r, false));
+        }
+        if let Some((tab, close, i)) = l.tabs.iter().find(|(r, _, _)| r.contains(x, y)).copied() {
+            return Some(if close.contains(x, y) { (TipKey::TabClose(i), close, true) } else { (TipKey::Tab(i), tab, true) });
+        }
+        if let Some((r, t)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
+            return Some((TipKey::PanelTab(*t), *r, false));
+        }
+        if let Some(gp) = &self.gitpanel {
+            if self.gitpanel_rect().contains(x, y) {
+                return gp.hit_at(x, y).filter(|h| git_tip_wanted(*h)).and_then(|h| gp.hits.iter().rev().find(|(_, k)| *k == h).map(|(r, _)| (TipKey::Git(h), *r, true)));
+            }
+        }
+        let side = self.layout.sidebar;
+        if self.sidebar_open && self.sidebar_mode == SidebarMode::Files && side.contains(x, y) && x < (side.right() - 15) as f64 {
+            let top = side.y + TAB_H;
+            let k = sidebar_row_at(self.tree.scroll, top, y as i32, ROW_H, self.tree.rows.len())?;
+            // Only rows whose name does not fit (the tooltip is how to read the rest).
+            let (name, depth) = {
+                let row = &self.tree.rows[k];
+                (row.name.clone(), row.depth)
+            };
+            let text_x = side.x + 18 + depth as i32 * 14 + 38 - self.tree.hscroll as i32;
+            let end = text_x + self.tx.ui_width(&name, false);
+            if end > side.right() - 24 || text_x < side.x {
+                let first = (self.tree.scroll / ROW_H as f64).floor().max(0.0) as usize;
+                let ry = top - (self.tree.scroll as i32 % ROW_H) + (k - first) as i32 * ROW_H;
+                return Some((TipKey::SideRow(k), Rect::new(side.x + 8, ry + 1, side.w - 17, ROW_H - 2), true));
+            }
+        }
+        None
     }
 
     /// The words for a target.
@@ -123,6 +194,28 @@ impl App {
         match key {
             TipKey::Top(MenuKind::Branch) => t("Trocar de branch", None, self.branch.clone()),
             TipKey::Top(_) => t("Trocar de projeto", None, Some(crate::app_topbar::tilde(&self.root))),
+            TipKey::Tab(i) => match self.docs.get(i) {
+                Some(d) => {
+                    let path = d.path().map_or_else(|| "Arquivo ainda não salvo".to_string(), crate::app_topbar::tilde);
+                    TipText { title: d.name.clone(), keys: d.buf.is_dirty().then(|| "não salvo".to_string()), detail: Some(path) }
+                }
+                None => TipText::default(),
+            },
+            TipKey::TabClose(i) => {
+                let dirty = self.docs.get(i).is_some_and(|d| d.buf.is_dirty());
+                t("Fechar", self.shortcut_text("CloseTab"), dirty.then(|| "Há alterações não salvas".to_string()))
+            }
+            TipKey::SideRow(k) => match self.tree.rows.get(k) {
+                Some(r) => {
+                    let rel = self.rel(&r.path);
+                    TipText { title: r.name.clone(), keys: None, detail: (rel != r.name).then_some(rel) }
+                }
+                None => TipText::default(),
+            },
+            TipKey::PanelTab(PanelTab::Output) => t("Saída", None, Some("Resultado de tarefas e testes".into())),
+            TipKey::PanelTab(PanelTab::Terminal) => t("Terminal", self.shortcut_text("OpenTerminal"), None),
+            TipKey::PanelTab(PanelTab::Debug) => t("Depurar", None, Some("Pilha, variáveis e saída".into())),
+            TipKey::Git(h) => self.git_tip_text(h),
             TipKey::Status(k) => match k {
                 StatusBtn::Sidebar => t("Alternar sidebar", self.shortcut_text("ToggleSidebar"), None),
                 StatusBtn::Search => t("Buscar no projeto", self.shortcut_text("ProjectSearch"), None),
@@ -143,14 +236,54 @@ impl App {
                     let full = self.memory_text();
                     t("Memória em uso", None, Some(full))
                 }
-                StatusBtn::Position => t("Posição do cursor", None, self.shortcut_text("GotoLine").map(|k| format!("Ir para linha  {k}"))),
+                StatusBtn::Position => t("Ir para linha…", self.shortcut_text("GotoLine"), Some("Posição do cursor".into())),
                 StatusBtn::Indent => {
                     let d = self.docs.get(self.active);
-                    let detail = d.map(|d| if d.ed.indent.contains('\t') { "Tabulação".to_string() } else { plural(d.ed.indent.len(), "espaço", "espaços") });
-                    t("Indentação", None, detail)
+                    let now = d.map(|d| if d.ed.indent.contains('\t') { "Tabulação".to_string() } else { plural(d.ed.indent.len(), "espaço", "espaços") });
+                    t("Mudar indentação…", None, now.map(|n| format!("Atual: {n}")))
                 }
-                StatusBtn::Language => t("Linguagem do arquivo", None, self.docs.get(self.active).map(|d| d.lang.unwrap_or("texto").to_string())),
+                StatusBtn::Language => t("Mudar linguagem…", None, self.docs.get(self.active).map(|d| format!("Atual: {}", d.lang.unwrap_or("texto")))),
             },
+        }
+    }
+
+    fn git_tip_text(&self, h: Hit) -> TipText {
+        let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText { title: title.to_string(), keys, detail };
+        let change = |i: usize| self.gitpanel.as_ref().and_then(|gp| gp.changes.get(i));
+        match h {
+            Hit::Refresh => t("Atualizar", None, Some("Relê o status e o histórico do git".into())),
+            Hit::Close => t("Fechar painel Git", self.shortcut_text("GitPanel"), None),
+            Hit::Tab(GitTab::Changes) => t("Alterações", None, Some("Arquivos modificados, novos e no stage".into())),
+            Hit::Tab(GitTab::History) => t("Histórico", None, Some("Commits recentes".into())),
+            Hit::Check(i) => match change(i) {
+                Some(c) if c.group == Group::Staged => t("Tirar do stage", None, Some(c.path.clone())),
+                Some(c) => t("Colocar no stage", None, Some(c.path.clone())),
+                None => TipText::default(),
+            },
+            Hit::Discard(i) => t("Descartar alterações", None, change(i).map(|c| c.path.clone())),
+            Hit::ConfirmDiscard(i) => t("Clique para descartar de vez", None, change(i).map(|c| c.path.clone())),
+            Hit::Row(i) => match change(i) {
+                Some(c) => TipText { title: c.path.rsplit('/').next().unwrap_or(&c.path).to_string(), keys: None, detail: Some(c.path.clone()) },
+                None => TipText::default(),
+            },
+            Hit::CommitBtn => t("Commit", Some("Ctrl+Enter".into()), Some("Grava o que está no stage".into())),
+            Hit::Opt => t("Incluir tudo se nada no stage", None, Some("Sem nada no stage, o commit leva todas as alterações".into())),
+            Hit::Fetch => t("Buscar (fetch)", None, Some("Baixa as novidades do remoto sem alterar seus arquivos".into())),
+            Hit::Pull => {
+                let n = self.gitpanel.as_ref().map_or(0, |g| g.sync.behind);
+                t("Pull", None, Some(if n > 0 { format!("{n} commit(s) novos no remoto") } else { "Traz e integra os commits do remoto".to_string() }))
+            }
+            Hit::Push => {
+                let g = self.gitpanel.as_ref().map(|g| (g.sync.upstream.clone(), g.sync.ahead));
+                t("Push", None, Some(match g {
+                    Some((None, _)) => "Branch sem upstream: pergunta antes de publicar".to_string(),
+                    Some((Some(u), n)) => format!("{n} commit(s) a enviar para {u}"),
+                    None => String::new(),
+                }))
+            }
+            Hit::Amend => t("Emendar o último commit", None, Some("Reescreve o commit anterior com a mensagem e o que está no stage".into())),
+            Hit::JobCancel => t("Cancelar a operação", None, None),
+            _ => TipText::default(),
         }
     }
 
@@ -167,7 +300,9 @@ impl App {
             old => {
                 // Neighbour to neighbour: no second delay, like native toolbars.
                 let warm = old.as_ref().is_some_and(|t| t.shown && !t.dismissed);
-                *old = Some(Tooltip { key, since: Instant::now(), shown: warm, dismissed: false });
+                let now = Instant::now();
+                // A warm card appears at full opacity at once.
+                *old = Some(Tooltip { key, since: now, shown: warm, shown_at: warm.then(|| now - FADE), dismissed: false });
                 self.request_redraw();
             }
         }
@@ -179,6 +314,7 @@ impl App {
             if !t.dismissed || t.shown {
                 t.dismissed = true;
                 t.shown = false;
+                t.shown_at = None;
                 self.request_redraw();
             }
         }
@@ -191,16 +327,25 @@ impl App {
         }
     }
 
-    /// Timer: show the card once the pointer has rested long enough.
+    /// Timer: show the card once the pointer has rested long enough, then drive the fade-in.
     pub fn tooltip_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
         let Some(t) = &mut self.tooltip else { return };
-        if t.shown || t.dismissed {
+        if t.dismissed {
+            return;
+        }
+        if t.shown {
+            if t.shown_at.is_some_and(|s| now.saturating_duration_since(s) < FADE) {
+                self.request_redraw();
+                want(now + Duration::from_millis(16));
+            }
             return;
         }
         let due = t.since + TOOLTIP_DELAY;
         if due <= now {
             t.shown = true;
+            t.shown_at = Some(now);
             self.request_redraw();
+            want(now + Duration::from_millis(16));
         } else {
             want(due);
         }
@@ -218,6 +363,10 @@ impl App {
             return;
         }
         let text = self.tip_text(key);
+        if text.title.is_empty() {
+            return;
+        }
+        let alpha = self.tooltip.as_ref().and_then(|t| t.shown_at).map_or(1.0, |s| fade_alpha(s.elapsed()));
         let c = self.theme.chrome;
         let tw = self.tx.ui_width(&text.title, false);
         let kw = text.keys.as_ref().map_or(0, |k| self.tx.ui_width(k, false) + 14);
@@ -227,14 +376,16 @@ impl App {
         let h = 2 * PAD_Y + lines * LINE + (lines - 1) * 2;
         let (x, y) = place(anchor, w, h, below, (self.size.0 as i32, self.size.1 as i32));
         let r = Rect::new(x, y, w, h);
-        cv.shadow(r, 8);
-        cv.card(r, 8, c.widget_bg, c.border);
-        self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y, &text.title, c.tab_active_fg, r, false);
+        if alpha > 0.6 {
+            cv.shadow(r, 8);
+        }
+        cv.card(r, 8, faded(c.widget_bg, alpha), faded(c.border, alpha));
+        self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y, &text.title, faded(c.tab_active_fg, alpha), r, false);
         if let Some(k) = &text.keys {
-            self.tx.draw_ui(cv, r.x + PAD_X + tw + 14, r.y + PAD_Y, k, c.tab_inactive_fg, r, false);
+            self.tx.draw_ui(cv, r.x + PAD_X + tw + 14, r.y + PAD_Y, k, faded(c.tab_inactive_fg, alpha), r, false);
         }
         if let Some(d) = &text.detail {
-            self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y + LINE + 2, d, c.tab_inactive_fg, r, false);
+            self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y + LINE + 2, d, faded(c.tab_inactive_fg, alpha), r, false);
         }
     }
 }
@@ -307,5 +458,33 @@ mod tests {
     fn plural_forms() {
         assert_eq!(plural(1, "arquivo alterado", "arquivos alterados"), "1 arquivo alterado");
         assert_eq!(plural(3, "arquivo alterado", "arquivos alterados"), "3 arquivos alterados");
+    }
+
+    #[test]
+    fn fade_runs_from_transparent_to_opaque() {
+        assert_eq!(fade_alpha(Duration::ZERO), 0.0);
+        assert!((fade_alpha(FADE / 2) - 0.5).abs() < 1e-3);
+        assert_eq!(fade_alpha(FADE), 1.0);
+        assert_eq!(fade_alpha(FADE * 10), 1.0);
+        assert_eq!(faded(Rgba(1, 2, 3, 200), 0.0).3, 0);
+        assert_eq!(faded(Rgba(1, 2, 3, 200), 1.0), Rgba(1, 2, 3, 200));
+    }
+
+    #[test]
+    fn sidebar_rows_follow_the_scroll() {
+        // Rows of 28 px starting at y = 100, scrolled by 40 px: row 1 spans y 88..116 and row 2 starts at 116.
+        assert_eq!(sidebar_row_at(0.0, 100, 99, 28, 10), None, "above the list");
+        assert_eq!(sidebar_row_at(0.0, 100, 100, 28, 10), Some(0));
+        assert_eq!(sidebar_row_at(0.0, 100, 128, 28, 10), Some(1));
+        assert_eq!(sidebar_row_at(40.0, 100, 100, 28, 10), Some(1));
+        assert_eq!(sidebar_row_at(40.0, 100, 115, 28, 10), Some(1));
+        assert_eq!(sidebar_row_at(40.0, 100, 116, 28, 10), Some(2));
+        assert_eq!(sidebar_row_at(0.0, 100, 100 + 28 * 3, 28, 3), None, "below the last row");
+    }
+
+    #[test]
+    fn git_panel_tooltips_skip_the_message_box_and_commit_rows() {
+        assert!(git_tip_wanted(Hit::Refresh) && git_tip_wanted(Hit::Close) && git_tip_wanted(Hit::Discard(2)));
+        assert!(!git_tip_wanted(Hit::Msg) && !git_tip_wanted(Hit::Commit(0)) && !git_tip_wanted(Hit::CFile(1)));
     }
 }

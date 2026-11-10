@@ -4,14 +4,18 @@
 //! A value of "none" disables a built-in shortcut.
 //! The built-in shortcuts live in [`DEFAULTS`] (one table, combo -> `Cmd` id); `lookup` asks the
 //! user's file first and the defaults second.
+//!
+//! Combo syntax: `ctrl+shift+p` (plain), `ctrl+k r` (a chord: two strokes separated by a space)
+//! and `explorer:a` (only while the file explorer has the focus; no modifiers needed).
 
 use std::{collections::HashMap, path::Path};
 use winit::keyboard::{Key, NamedKey};
 
 /// Built-in shortcuts: normalized combo -> `Cmd` variant name. Single source of truth for the
-/// key dispatch (`App::handle_key`) and for the "default" column of the shortcuts modal. Only
-/// plain combos live here: chords (`Ctrl+K R`) and explorer-only keys stay in code. Tests check
-/// it against `COMMANDS` (every id exists, no duplicate combos, the palette text agrees).
+/// key dispatch (`App::handle_key`) and for the "default" column of the shortcuts modal.
+/// A command's first row is its main default (shown in the palette and the modal); later rows
+/// are aliases (`ctrl+y` for Redo, `ctrl+k s` for Save). Tests check it against `COMMANDS` (every
+/// id exists, no duplicate combos, the palette text agrees with the main default).
 pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+s", "Save"),
     ("ctrl+w", "CloseTab"),
@@ -53,6 +57,8 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+\\", "SplitRight"),
     ("ctrl+1", "FocusLeftPane"),
     ("ctrl+2", "FocusRightPane"),
+    ("ctrl+3", "FocusPane3"),
+    ("ctrl+4", "FocusPane4"),
     ("f5", "DebugStart"),
     ("shift+f5", "DebugStop"),
     ("f9", "ToggleBreakpoint"),
@@ -61,11 +67,46 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("shift+f11", "StepOut"),
     ("shift+alt+right", "ExpandSelection"),
     ("shift+alt+left", "ShrinkSelection"),
+    // Chords: `Ctrl+K` then a letter.
+    ("ctrl+k r", "RepeatTask"),
+    ("ctrl+k x", "StopTask"),
+    ("ctrl+k f", "TestFile"),
+    ("ctrl+k t", "TestAtCursor"),
+    ("ctrl+k i", "ShowHover"),
+    ("ctrl+k \\", "SplitDown"),
+    ("ctrl+k right", "FocusOtherPane"),
+    ("ctrl+k left", "FocusPrevPane"),
+    ("ctrl+k shift+right", "MoveToNextPane"),
+    ("ctrl+k shift+left", "MoveToPrevPane"),
+    ("ctrl+k shift+w", "ClosePane"),
+    // Aliases of commands that already have a main combo above.
+    ("ctrl+y", "Redo"),
+    ("ctrl+k s", "Save"),
+    ("ctrl+k w", "CloseTab"),
+    // Only while the file explorer has the focus.
+    ("explorer:a", "NewFile"),
+    ("explorer:shift+a", "NewDir"),
+    ("explorer:f2", "RenamePath"),
+    ("explorer:delete", "DeletePath"),
 ];
+
+/// Commands whose `Ctrl+<letter>` default also fires with Shift held (`Ctrl+Shift+W` closes the
+/// tab, `Ctrl+Shift+Q` quits, ...). An exact `Ctrl+Shift+<letter>` row or user binding still wins,
+/// which is why `Ctrl+Shift+G` opens the Git panel while `Ctrl+G` goes to a line.
+pub const SHIFT_TOLERANT: &[&str] = &["Save", "CloseTab", "Quit", "GotoLine", "ToggleOutput", "Replace", "ToggleSidebar", "WorkspaceSymbols"];
+
+/// Prefix that scopes a combo to the file explorer.
+pub const EXPLORER: &str = "explorer:";
 
 /// Built-in combo of a command id (first entry of [`DEFAULTS`]).
 pub fn default_combo(id: &str) -> Option<&'static str> {
     DEFAULTS.iter().find(|(_, i)| *i == id).map(|(c, _)| *c)
+}
+
+/// Every built-in combo of a command id, main one first.
+#[cfg(test)]
+pub fn default_combos(id: &str) -> Vec<&'static str> {
+    DEFAULTS.iter().filter(|(_, i)| *i == id).map(|(c, _)| *c).collect()
 }
 
 /// Record `combo -> id` in a keybindings map and disable the command's other built-in combos
@@ -104,6 +145,18 @@ pub fn combo(ctrl: bool, shift: bool, alt: bool, key: &str) -> String {
 
 /// Normalize a user-written combination ("Shift+Ctrl+T" -> "ctrl+shift+t").
 pub fn normalize(text: &str) -> String {
+    let text = text.trim();
+    if let Some(rest) = text.get(..EXPLORER.len()).filter(|p| p.eq_ignore_ascii_case(EXPLORER)).map(|_| &text[EXPLORER.len()..]) {
+        return format!("{EXPLORER}{}", normalize(rest));
+    }
+    // A chord: each stroke is normalized on its own ("Ctrl+K  R" -> "ctrl+k r").
+    if text.contains(char::is_whitespace) {
+        return text.split_whitespace().map(normalize).collect::<Vec<_>>().join(" ");
+    }
+    normalize_stroke(text)
+}
+
+fn normalize_stroke(text: &str) -> String {
     let (mut ctrl, mut shift, mut alt) = (false, false, false);
     let mut key = String::new();
     let parts: Vec<&str> = text.split('+').collect();
@@ -124,6 +177,10 @@ pub fn normalize(text: &str) -> String {
         }
     }
     combo(ctrl, shift, alt, &key)
+}
+
+fn is_fkey(n: &str) -> bool {
+    n.len() > 1 && n.starts_with('f') && n[1..].chars().all(|c| c.is_ascii_digit())
 }
 
 pub fn key_name(k: &Key) -> Option<String> {
@@ -171,9 +228,20 @@ impl Keymap {
         crate::config::default_path().map(|p| Keymap::load_from(&p.with_file_name("keybindings.json"))).unwrap_or_default()
     }
 
+    /// First hit for `cands` (in order): the user's file, then the built-in table.
+    fn resolve(&self, cands: &[String]) -> Option<&str> {
+        if let Some(v) = cands.iter().find_map(|c| self.map.get(c)) {
+            return Some(v.as_str());
+        }
+        cands.iter().find_map(|c| DEFAULTS.iter().find(|(k, _)| k == c).map(|(_, id)| *id))
+    }
+
     /// Command id bound to this combination: the user's file first (`"none"` means disabled),
-    /// then [`DEFAULTS`]. Shifted symbol keys also try their base key (Ctrl+Shift+= types "+",
-    /// Ctrl+Shift+[ types "{"), so the table only needs the unshifted spelling.
+    /// then [`DEFAULTS`]. Forgiving matches, tried after the exact combo:
+    /// - shifted symbol keys also try their base key (Ctrl+Shift+= types "+", Ctrl+Shift+[ types
+    ///   "{"), so the table only needs the unshifted spelling;
+    /// - F-keys with extra Ctrl/Alt fire the plain F-key command (`Ctrl+F5` = `F5`);
+    /// - `Ctrl+Shift+<letter>` fires the `Ctrl+<letter>` command when it is in [`SHIFT_TOLERANT`].
     pub fn lookup(&self, ctrl: bool, shift: bool, alt: bool, key: &Key) -> Option<&str> {
         let name = key_name(key)?;
         let mut cands = vec![combo(ctrl, shift, alt, &name)];
@@ -182,12 +250,52 @@ impl Keymap {
             "_" => cands.push(combo(ctrl, false, alt, "-")),
             "{" => cands.push(combo(ctrl, shift, alt, "[")),
             "}" => cands.push(combo(ctrl, shift, alt, "]")),
+            n if is_fkey(n) && (ctrl || alt) => {
+                cands.push(combo(false, shift, false, n));
+                if shift {
+                    cands.push(combo(false, false, false, n));
+                }
+            }
             _ => {}
         }
-        if let Some(v) = cands.iter().find_map(|c| self.map.get(c)) {
-            return Some(v.as_str());
+        if let Some(id) = self.resolve(&cands) {
+            return Some(id);
         }
-        cands.iter().find_map(|c| DEFAULTS.iter().find(|(k, _)| k == c).map(|(_, id)| *id))
+        if ctrl && shift && !alt && name.chars().count() == 1 {
+            let base = combo(true, false, false, &name);
+            let (_, id) = DEFAULTS.iter().find(|(k, _)| *k == base)?;
+            if SHIFT_TOLERANT.contains(id) {
+                return Some(self.map.get(&base).map_or(*id, String::as_str));
+            }
+        }
+        None
+    }
+
+    /// Does `prefix` (a normalized first stroke such as "ctrl+k") start any chord?
+    pub fn is_chord_prefix(&self, prefix: &str) -> bool {
+        let p = format!("{prefix} ");
+        self.map.keys().any(|k| k.starts_with(&p)) || DEFAULTS.iter().any(|(k, _)| k.starts_with(&p))
+    }
+
+    /// The normalized first stroke of a chord for this key press, when it starts one.
+    pub fn chord_start(&self, ctrl: bool, shift: bool, alt: bool, key: &Key) -> Option<String> {
+        let c = combo(ctrl, shift, alt, &key_name(key)?);
+        self.is_chord_prefix(&c).then_some(c)
+    }
+
+    /// Command bound to the second stroke of a chord that began with `prefix`. The second stroke
+    /// may be typed with or without the modifiers still held (`Ctrl+K R` and `Ctrl+K Ctrl+R`).
+    pub fn lookup_chord(&self, prefix: &str, ctrl: bool, shift: bool, alt: bool, key: &Key) -> Option<&str> {
+        let name = key_name(key)?;
+        let mut cands = vec![format!("{prefix} {}", combo(ctrl, shift, alt, &name))];
+        cands.push(format!("{prefix} {name}"));
+        self.resolve(&cands)
+    }
+
+    /// Command bound to a key while the file explorer has the focus (`explorer:` rows).
+    pub fn lookup_explorer(&self, ctrl: bool, shift: bool, alt: bool, key: &Key) -> Option<&str> {
+        let name = key_name(key)?;
+        self.resolve(&[format!("{EXPLORER}{}", combo(ctrl, shift, alt, &name))])
     }
 
     /// Copy of the user's combo → command-id table.
@@ -225,34 +333,149 @@ mod tests {
         Key::Character(s.into())
     }
 
+    /// Combo a palette hint stands for: "Ctrl+K R" is a chord, "A (explorador)" an explorer key.
+    fn palette_combo(text: &str) -> String {
+        match text.strip_suffix(" (explorador)") {
+            Some(t) => format!("{EXPLORER}{}", normalize(t)),
+            None => normalize(text),
+        }
+    }
+
     #[test]
     fn defaults_point_to_existing_commands() {
         use crate::app_overlay::{COMMANDS, Cmd};
         for (combo, id) in DEFAULTS {
-            let cmd = Cmd::from_id(id).unwrap_or_else(|| panic!("default {combo} -> unknown command {id}"));
+            Cmd::from_id(id).unwrap_or_else(|| panic!("default {combo} -> unknown command {id}"));
             assert_eq!(normalize(combo), *combo, "default {combo} is not normalized");
-            // The palette text agrees with the table.
-            let (_, text, _) = COMMANDS.iter().find(|(_, _, c)| *c == cmd).unwrap();
-            assert_eq!(normalize(text), *combo, "{id}: palette says {text}");
         }
-        // And the other way round: every plain combo shown in the palette is a default.
+        // The palette text agrees with the command's main (first) default, and every shortcut the
+        // palette shows is in the table (plain combos, chords and explorer keys alike).
         for (label, text, cmd) in COMMANDS {
-            if text.is_empty() || text.contains(' ') {
-                continue; // no shortcut, a chord (Ctrl+K R) or explorer-only keys
-            }
             let id = format!("{cmd:?}");
-            assert_eq!(default_combo(&id), Some(normalize(text).as_str()), "{label}: {text} missing in keymap::DEFAULTS");
+            if text.is_empty() {
+                continue;
+            }
+            assert_eq!(default_combo(&id), Some(palette_combo(text).as_str()), "{label}: {text} disagrees with keymap::DEFAULTS");
+        }
+        // Every default of a command that has a palette hint is its main one or an alias of it.
+        for (combo, id) in DEFAULTS {
+            let cmd = Cmd::from_id(id).unwrap();
+            assert!(COMMANDS.iter().any(|(_, _, c)| *c == cmd), "{combo}: {id} is not in the palette");
         }
     }
 
     #[test]
     fn defaults_have_no_duplicates() {
         let mut seen = std::collections::HashSet::new();
-        let mut ids = std::collections::HashSet::new();
-        for (combo, id) in DEFAULTS {
+        for (combo, _) in DEFAULTS {
             assert!(seen.insert(*combo), "duplicate combo {combo}");
-            assert!(ids.insert(*id), "command {id} has two default combos");
         }
+        // A chord prefix must not also be a plain command.
+        for (combo, id) in DEFAULTS {
+            if let Some((first, _)) = combo.split_once(' ') {
+                assert!(DEFAULTS.iter().all(|(c, _)| *c != first), "{combo} ({id}): its prefix {first} is a command too");
+            }
+        }
+        for id in SHIFT_TOLERANT {
+            assert!(default_combo(id).is_some(), "{id} in SHIFT_TOLERANT has no default");
+        }
+    }
+
+    #[test]
+    fn normalizes_chords_and_explorer_keys() {
+        assert_eq!(normalize("Ctrl+K  R"), "ctrl+k r");
+        assert_eq!(normalize("Ctrl+K Ctrl+Shift+T"), "ctrl+k ctrl+shift+t");
+        assert_eq!(normalize("Explorer:Shift+A"), "explorer:shift+a");
+        assert_eq!(normalize("explorer:Delete"), "explorer:delete");
+    }
+
+    #[test]
+    fn chords_resolve_through_the_table() {
+        let k = Keymap::default();
+        assert_eq!(k.chord_start(true, false, false, &ch("k")).as_deref(), Some("ctrl+k"));
+        assert_eq!(k.chord_start(true, false, false, &ch("j")), None);
+        assert_eq!(k.lookup(true, false, false, &ch("k")), None, "the prefix alone is not a command");
+        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("r")), Some("RepeatTask"));
+        assert_eq!(k.lookup_chord("ctrl+k", true, false, false, &ch("r")), Some("RepeatTask"), "Ctrl still held");
+        assert_eq!(k.lookup_chord("ctrl+k", false, true, false, &ch("R")), Some("RepeatTask"), "Shift is ignored by the fallback");
+        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("s")), Some("Save"));
+        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("w")), Some("CloseTab"));
+        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("i")), Some("ShowHover"));
+        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("z")), None);
+        // The user can rebind, disable and add chords.
+        let k = Keymap::from_json(r#"{"Ctrl+K R": "none", "ctrl+k g": "GotoLine", "ctrl+q q": "Quit"}"#);
+        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("r")), Some("none"));
+        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("g")), Some("GotoLine"));
+        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("x")), Some("StopTask"));
+        assert!(k.is_chord_prefix("ctrl+q"));
+    }
+
+    #[test]
+    fn explorer_keys_are_scoped() {
+        let k = Keymap::default();
+        assert_eq!(k.lookup_explorer(false, false, false, &ch("a")), Some("NewFile"));
+        assert_eq!(k.lookup_explorer(false, true, false, &ch("A")), Some("NewDir"));
+        assert_eq!(k.lookup_explorer(false, false, false, &Key::Named(NamedKey::F2)), Some("RenamePath"));
+        assert_eq!(k.lookup_explorer(false, false, false, &Key::Named(NamedKey::Delete)), Some("DeletePath"));
+        assert_eq!(k.lookup_explorer(true, false, false, &ch("a")), None);
+        // Never leak into the global table: a plain "a" in the editor is just typing.
+        assert_eq!(k.lookup(false, false, false, &ch("a")), None);
+        assert_eq!(k.lookup(false, false, false, &Key::Named(NamedKey::F2)), Some("Rename"));
+        let k = Keymap::from_json(r#"{"explorer:a": "none", "explorer:n": "NewFile"}"#);
+        assert_eq!(k.lookup_explorer(false, false, false, &ch("a")), Some("none"));
+        assert_eq!(k.lookup_explorer(false, false, false, &ch("n")), Some("NewFile"));
+    }
+
+    #[test]
+    fn ctrl_y_redoes_and_redo_aliases_are_rebound_together() {
+        let k = Keymap::default();
+        assert_eq!(k.lookup(true, false, false, &ch("y")), Some("Redo"));
+        assert_eq!(default_combos("Redo"), vec!["ctrl+shift+z", "ctrl+y"]);
+        let mut m = HashMap::new();
+        bind_in(&mut m, "ctrl+alt+z", "Redo");
+        assert_eq!(m.get("ctrl+y").map(String::as_str), Some("none"), "the alias goes away with the main default");
+        assert_eq!(m.get("ctrl+shift+z").map(String::as_str), Some("none"));
+    }
+
+    #[test]
+    fn shift_variants_of_ctrl_letters_fire() {
+        let k = Keymap::default();
+        assert_eq!(k.lookup(true, true, false, &ch("W")), Some("CloseTab"));
+        assert_eq!(k.lookup(true, true, false, &ch("Q")), Some("Quit"));
+        assert_eq!(k.lookup(true, true, false, &ch("J")), Some("ToggleOutput"));
+        assert_eq!(k.lookup(true, true, false, &ch("H")), Some("Replace"));
+        assert_eq!(k.lookup(true, true, false, &ch("S")), Some("Save"));
+        // An exact Ctrl+Shift row wins over the tolerant fallback.
+        assert_eq!(k.lookup(true, true, false, &ch("G")), Some("GitPanel"));
+        assert_eq!(k.lookup(true, false, false, &ch("g")), Some("GotoLine"));
+        assert_eq!(k.lookup(true, true, false, &ch("Z")), Some("Redo"));
+        // Commands outside the list keep their exact combo.
+        assert_eq!(k.lookup(true, true, false, &ch("Y")), None);
+        assert_eq!(k.lookup(true, true, false, &ch("D")), None);
+        assert_eq!(k.lookup(true, true, true, &ch("W")), None, "Alt as well: no guessing");
+        // A user binding on the plain combo ("none") also covers the Shift variant.
+        let k = Keymap::from_json(r#"{"ctrl+w": "none"}"#);
+        assert_eq!(k.lookup(true, true, false, &ch("W")), Some("none"));
+        // ...and an exact user binding on the Shift variant wins.
+        let k = Keymap::from_json(r#"{"ctrl+shift+w": "ToggleSidebar"}"#);
+        assert_eq!(k.lookup(true, true, false, &ch("W")), Some("ToggleSidebar"));
+    }
+
+    #[test]
+    fn fkeys_with_extra_modifiers_fire() {
+        let k = Keymap::default();
+        let f5 = Key::Named(NamedKey::F5);
+        assert_eq!(k.lookup(false, false, false, &f5), Some("DebugStart"));
+        assert_eq!(k.lookup(true, false, false, &f5), Some("DebugStart"), "Ctrl+F5");
+        assert_eq!(k.lookup(false, false, true, &f5), Some("DebugStart"), "Alt+F5");
+        assert_eq!(k.lookup(false, true, false, &f5), Some("DebugStop"), "Shift+F5 keeps its own row");
+        assert_eq!(k.lookup(true, true, false, &f5), Some("DebugStop"), "Ctrl+Shift+F5 -> Shift+F5");
+        assert_eq!(k.lookup(true, false, false, &Key::Named(NamedKey::F12)), Some("GotoDefinition"));
+        assert_eq!(k.lookup(true, false, false, &Key::Named(NamedKey::F7)), None);
+        // A user row for the exact combo is preferred.
+        let k = Keymap::from_json(r#"{"ctrl+f5": "RepeatTask"}"#);
+        assert_eq!(k.lookup(true, false, false, &f5), Some("RepeatTask"));
+        assert_eq!(k.lookup(false, false, false, &f5), Some("DebugStart"));
     }
 
     #[test]

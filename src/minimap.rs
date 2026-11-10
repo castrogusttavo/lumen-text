@@ -3,6 +3,64 @@
 
 use crate::theme::Rgba;
 use crate::ui::{Canvas, Rect};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// How loud the minimap is (`minimap_style` in config.json).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Style {
+    /// The original look: 92 px wide, 25 % bars, solid 2 px rows.
+    Normal,
+    /// Default: narrower (64 px), 14 % bars as 1 px lines and a fainter viewport band.
+    Subtle,
+}
+
+impl Style {
+    pub fn from_name(s: &str) -> Style {
+        if s == "normal" { Style::Normal } else { Style::Subtle }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Style::Normal => "normal",
+            Style::Subtle => "subtle",
+        }
+    }
+
+    /// Strip width in px.
+    pub fn width(self) -> i32 {
+        match self {
+            Style::Normal => 92,
+            Style::Subtle => 64,
+        }
+    }
+
+    /// Alpha of the code bars.
+    fn bar_alpha(self) -> u8 {
+        match self {
+            Style::Normal => 64,
+            Style::Subtle => 36,
+        }
+    }
+
+    /// Alpha of the band that marks the visible lines.
+    fn viewport_alpha(self) -> u8 {
+        match self {
+            Style::Normal => 22,
+            Style::Subtle => 14,
+        }
+    }
+}
+
+static SUBTLE: AtomicBool = AtomicBool::new(true);
+
+/// The style every editor draws with (set from the config at start-up and by the settings modal).
+pub fn style() -> Style {
+    if SUBTLE.load(Ordering::Relaxed) { Style::Subtle } else { Style::Normal }
+}
+
+pub fn set_style(s: Style) {
+    SUBTLE.store(s == Style::Subtle, Ordering::Relaxed);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LineInfo {
@@ -124,12 +182,59 @@ pub fn draw(
     bg: Rgba,
     viewport_tint: Rgba,
 ) {
+    draw_styled(cv, l, infos, line_count, first_visible, last_visible, bg, viewport_tint, Style::Normal)
+}
+
+pub fn draw_styled(
+    cv: &mut Canvas,
+    l: &Layout,
+    infos: &mut dyn FnMut(usize) -> LineInfo,
+    line_count: usize,
+    first_visible: usize,
+    last_visible: usize,
+    bg: Rgba,
+    viewport_tint: Rgba,
+    style: Style,
+) {
+    let first = first_visible.min(line_count.saturating_sub(1));
+    let last = last_visible.max(first).min(line_count.saturating_sub(1));
+    draw_rows(cv, l, infos, line_count, first as f64, (last + 1 - first) as f64, bg, viewport_tint, style)
+}
+
+/// Where the viewport marker goes: the `rows` visual rows that start at fractional row `top`, out
+/// of `total` rows (the unit of the minimap is the visual row, so with word wrap and folds the
+/// marker still covers exactly what the editor shows). At least 2 px tall, never outside the strip.
+pub fn viewport_rect(l: &Layout, total: usize, top: f64, rows: f64) -> Rect {
+    let r = l.rect;
+    let t = top.clamp(0.0, total as f64);
+    let b = (top + rows).clamp(t, total as f64);
+    let y0 = (r.y as f64 + t * l.line_px as f64).round() as i32;
+    let y1 = ((r.y as f64 + b * l.line_px as f64).round() as i32).max(y0 + 2);
+    Rect::new(r.x, y0, r.w, y1 - y0).intersect(&r)
+}
+
+/// Like [`draw_styled`] with a unit of one visual row: `line_count` rows, `infos(i)` describes row
+/// `i`, and the viewport starts at fractional row `vp_top` and spans `vp_rows` rows.
+pub fn draw_rows(
+    cv: &mut Canvas,
+    l: &Layout,
+    infos: &mut dyn FnMut(usize) -> LineInfo,
+    line_count: usize,
+    vp_top: f64,
+    vp_rows: f64,
+    bg: Rgba,
+    viewport_tint: Rgba,
+    style: Style,
+) {
     let r = l.rect;
     cv.fill_exact(r, bg.with_alpha(255), r);
     if line_count == 0 || r.w <= 0 || r.h <= 0 {
         return;
     }
-    let bar_h = (l.line_px.round() as i32).max(1);
+    let mut bar_h = (l.line_px.round() as i32).max(1);
+    if style == Style::Subtle && l.line_px >= 2.0 {
+        bar_h = (bar_h / 2).max(1); // hairlines with a gap between rows
+    }
     let max_cols = l.max_cols.min((r.w as f32 / l.char_px) as usize);
     let mut bar = |cv: &mut Canvas, y: i32, info: &LineInfo| {
         if info.blank || info.len_cols == 0 {
@@ -142,7 +247,7 @@ pub fn draw(
         }
         let px0 = r.x + (x0 as f32 * l.char_px) as i32;
         let px1 = r.x + (x1 as f32 * l.char_px).ceil() as i32;
-        cv.fill_exact(Rect::new(px0, y, px1 - px0, bar_h), info.color.with_alpha(64), r);
+        cv.fill_exact(Rect::new(px0, y, px1 - px0, bar_h), info.color.with_alpha(style.bar_alpha()), r);
     };
     if l.line_px >= 1.0 {
         let n_fit = ((r.h as f32 / l.line_px).ceil() as usize).min(line_count);
@@ -174,15 +279,11 @@ pub fn draw(
         }
     }
     // Viewport
-    let first = first_visible.min(line_count - 1);
-    let last = last_visible.max(first).min(line_count - 1);
-    let y0 = line_to_y(l, first).floor() as i32;
-    let y1 = (line_to_y(l, last + 1).ceil() as i32).max(y0 + 2);
-    let vp = Rect::new(r.x, y0, r.w, y1 - y0).intersect(&r);
+    let vp = viewport_rect(l, line_count, vp_top, vp_rows);
     if vp.h <= 0 {
         return;
     }
-    cv.fill_exact(vp, viewport_tint.with_alpha(22), r);
+    cv.fill_exact(vp, viewport_tint.with_alpha(style.viewport_alpha()), r);
     let edge = viewport_tint.mix(Rgba(255, 255, 255, 255), 0.5).with_alpha(0);
     cv.fill_clip(Rect::new(vp.x, vp.y, vp.w, 1), edge, r);
     cv.fill_clip(Rect::new(vp.x, vp.bottom() - 1, vp.w, 1), edge, r);
@@ -376,6 +477,48 @@ mod tests {
         assert_ne!(at(29), outside); // bottom edge, line 15 -> y 30
         assert_eq!(at(30), outside);
     }
+    #[test]
+    fn style_names_and_widths() {
+        assert_eq!(Style::from_name("normal"), Style::Normal);
+        assert_eq!(Style::from_name("subtle"), Style::Subtle);
+        assert_eq!(Style::from_name("whatever"), Style::Subtle, "unknown values fall back to the default");
+        assert_eq!(Style::from_name(Style::Normal.name()), Style::Normal);
+        assert!(Style::Subtle.width() < Style::Normal.width());
+        assert!(Style::Subtle.bar_alpha() < Style::Normal.bar_alpha());
+        assert!(Style::Subtle.viewport_alpha() < Style::Normal.viewport_alpha());
+    }
+
+    /// Sum over the strip of how far each pixel is from the background (a rough "ink" measure).
+    fn ink(style: Style) -> u64 {
+        let (w, h) = (200, 100);
+        let mut px = vec![0u32; (w * h) as usize];
+        let l = layout_for(Rect::new(0, 0, 200, 100), style.width(), 40);
+        let mut cv = Canvas { px: &mut px, w, h };
+        let mut cb = |_| info(2, 60);
+        draw_styled(&mut cv, &l, &mut cb, 40, 0, 4, BG, Rgba(120, 120, 255, 255), style);
+        px.iter().map(|&p| ((p >> 16) & 255) as u64 + ((p >> 8) & 255) as u64 + (p & 255) as u64).sum()
+    }
+
+    #[test]
+    fn subtle_style_draws_less_than_normal() {
+        let (n, s) = (ink(Style::Normal), ink(Style::Subtle));
+        assert!(n > 0 && s > 0);
+        assert!(s * 2 < n, "subtle {s} should be well under half of normal {n}");
+    }
+
+    #[test]
+    fn subtle_bars_are_one_pixel_lines() {
+        let (w, h) = (100, 40);
+        let mut px = vec![0u32; (w * h) as usize];
+        let l = layout_for(Rect::new(0, 0, 100, 40), Style::Subtle.width(), 10);
+        let mut cv = Canvas { px: &mut px, w, h };
+        let mut cb = |_| info(0, 30);
+        draw_styled(&mut cv, &l, &mut cb, 10, 9, 9, BG, Rgba(0, 0, 255, 255), Style::Subtle);
+        let at = |y: i32| px[(y * w + l.rect.x + 10) as usize];
+        assert_ne!(at(0), at(1), "row 0 is a 1 px line followed by a gap");
+        assert_eq!(at(1), at(3));
+    }
+
     #[test]
     fn drag_centers_and_clamps() {
         let l = layout_for(Rect::new(0, 0, 200, 400), 90, 100);

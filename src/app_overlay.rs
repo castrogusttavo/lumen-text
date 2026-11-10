@@ -33,6 +33,7 @@ pub enum Cmd {
     GotoSymbol,
     Format,
     Rename,
+    ShowHover,
     GotoDefinition,
     GotoTypeDefinition,
     GotoImplementation,
@@ -69,10 +70,17 @@ pub enum Cmd {
     GitFileHistory,
     MarkdownPreview,
     SplitRight,
+    SplitDown,
     CloseSplit,
+    ClosePane,
     FocusOtherPane,
+    FocusPrevPane,
     FocusLeftPane,
     FocusRightPane,
+    FocusPane3,
+    FocusPane4,
+    MoveToNextPane,
+    MoveToPrevPane,
     ConflictOurs,
     ConflictTheirs,
     ConflictBoth,
@@ -151,6 +159,7 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Ir para: Próximo problema", "F8", Cmd::NextDiagnostic),
     ("Ir para: Problema anterior", "Shift+F8", Cmd::PrevDiagnostic),
     ("Código: Renomear símbolo", "F2", Cmd::Rename),
+    ("Código: Mostrar informações (hover) no cursor", "Ctrl+K I", Cmd::ShowHover),
     ("Código: Formatar documento", "Shift+Alt+F", Cmd::Format),
     ("Código: Ações rápidas", "Ctrl+.", Cmd::CodeActions),
     ("Código: Alternar comentário", "Ctrl+/", Cmd::ToggleComment),
@@ -184,10 +193,17 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Git: Histórico do arquivo", "", Cmd::GitFileHistory),
     ("Markdown: Abrir leitor ao lado", "Ctrl+Shift+V", Cmd::MarkdownPreview),
     ("Visualizar: Dividir editor à direita", "Ctrl+\\", Cmd::SplitRight),
-    ("Visualizar: Fechar painel dividido", "", Cmd::CloseSplit),
-    ("Visualizar: Focar outro painel", "", Cmd::FocusOtherPane),
-    ("Visualizar: Focar painel esquerdo", "Ctrl+1", Cmd::FocusLeftPane),
-    ("Visualizar: Focar painel direito", "Ctrl+2", Cmd::FocusRightPane),
+    ("Visualizar: Dividir editor abaixo", "Ctrl+K \\", Cmd::SplitDown),
+    ("Visualizar: Fechar painel dividido (unir todos)", "", Cmd::CloseSplit),
+    ("Visualizar: Fechar painel focado", "Ctrl+K Shift+W", Cmd::ClosePane),
+    ("Visualizar: Focar próximo painel", "Ctrl+K Right", Cmd::FocusOtherPane),
+    ("Visualizar: Focar painel anterior", "Ctrl+K Left", Cmd::FocusPrevPane),
+    ("Visualizar: Focar painel 1", "Ctrl+1", Cmd::FocusLeftPane),
+    ("Visualizar: Focar painel 2", "Ctrl+2", Cmd::FocusRightPane),
+    ("Visualizar: Focar painel 3", "Ctrl+3", Cmd::FocusPane3),
+    ("Visualizar: Focar painel 4", "Ctrl+4", Cmd::FocusPane4),
+    ("Visualizar: Mover aba para o próximo painel", "Ctrl+K Shift+Right", Cmd::MoveToNextPane),
+    ("Visualizar: Mover aba para o painel anterior", "Ctrl+K Shift+Left", Cmd::MoveToPrevPane),
     ("Git: Conflito — aceitar atual", "", Cmd::ConflictOurs),
     ("Git: Conflito — aceitar entrada", "", Cmd::ConflictTheirs),
     ("Git: Conflito — aceitar ambos", "", Cmd::ConflictBoth),
@@ -239,6 +255,10 @@ pub enum Action {
     Open(PathBuf, Option<(usize, usize)>),
     Cmd(Cmd),
     Goto(usize),
+    /// Bottom bar pickers: indentation of the current document (see `app_topbar::indent_from_spec`).
+    SetIndent(String),
+    /// Language of the current document (`None` = plain text).
+    SetLang(Option<String>),
     WorkspaceEdit(Value),
     Run(String),
     Theme(String),
@@ -264,6 +284,8 @@ pub enum PickKind {
     CodeActions,
     WorkspaceSymbols,
     Themes,
+    /// Short list of choices opened from the bottom bar (indentation, language).
+    Choice,
 }
 
 pub struct Picker {
@@ -330,6 +352,14 @@ const PICKER_ROWS: usize = 10;
 const ROW: i32 = 34;
 const INPUT_H: i32 = 54;
 
+/// A picker over a short list of choices with row `sel` highlighted (and scrolled into view).
+pub fn choice_picker(title: &str, items: Vec<Item>, sel: usize) -> Picker {
+    let mut p = Picker::new(PickKind::Choice, title, items);
+    p.sel = sel.min(p.filtered.len().saturating_sub(1));
+    p.keep_visible();
+    p
+}
+
 impl Picker {
     fn new(kind: PickKind, title: &str, items: Vec<Item>) -> Self {
         let mut p = Picker {
@@ -349,7 +379,7 @@ impl Picker {
 
     pub fn refilter(&mut self) {
         let q = self.field.text.trim().to_string();
-        let filter = matches!(self.kind, PickKind::QuickOpen | PickKind::Commands | PickKind::Symbols | PickKind::CodeActions | PickKind::Themes);
+        let filter = matches!(self.kind, PickKind::QuickOpen | PickKind::Commands | PickKind::Symbols | PickKind::CodeActions | PickKind::Themes | PickKind::Choice);
         if !filter || q.is_empty() {
             self.filtered = (0..self.items.len().min(2000)).map(|i| (i, Vec::new())).collect();
         } else {
@@ -737,6 +767,7 @@ impl App {
             Cmd::GotoSymbol => self.open_symbols(),
             Cmd::Format => self.format_document(),
             Cmd::Rename => self.start_rename(),
+            Cmd::ShowHover => self.request_hover_at_cursor(),
             Cmd::GotoDefinition => self.goto_definition(crate::lsp::DefKind::Definition),
             Cmd::GotoTypeDefinition => self.goto_definition(crate::lsp::DefKind::TypeDefinition),
             Cmd::GotoImplementation => self.goto_definition(crate::lsp::DefKind::Implementation),
@@ -786,10 +817,17 @@ impl App {
             Cmd::GitFileHistory => self.open_file_history(),
             Cmd::MarkdownPreview => self.toggle_md_reader(),
             Cmd::SplitRight => self.split_right(),
+            Cmd::SplitDown => self.split_down(),
             Cmd::CloseSplit => self.split_close(),
-            Cmd::FocusOtherPane => self.focus_other_pane(),
-            Cmd::FocusLeftPane => self.focus_pane(false),
-            Cmd::FocusRightPane => self.focus_pane(true),
+            Cmd::ClosePane => self.close_focused_pane(),
+            Cmd::FocusOtherPane => self.focus_next_pane(1),
+            Cmd::FocusPrevPane => self.focus_next_pane(-1),
+            Cmd::FocusLeftPane => self.focus_pane_n(0),
+            Cmd::FocusRightPane => self.focus_pane_n(1),
+            Cmd::FocusPane3 => self.focus_pane_n(2),
+            Cmd::FocusPane4 => self.focus_pane_n(3),
+            Cmd::MoveToNextPane => self.move_to_pane(1),
+            Cmd::MoveToPrevPane => self.move_to_pane(-1),
             Cmd::ConflictOurs => self.resolve_conflict(crate::gitx::Pick::Ours),
             Cmd::ConflictTheirs => self.resolve_conflict(crate::gitx::Pick::Theirs),
             Cmd::ConflictBoth => self.resolve_conflict(crate::gitx::Pick::Both),
@@ -819,6 +857,7 @@ impl App {
             }
             Cmd::ProjectMenu => self.open_topmenu_cmd(crate::app_topbar::MenuKind::Project),
             Cmd::BranchMenu => self.open_topmenu_cmd(crate::app_topbar::MenuKind::Branch),
+            Cmd::ToggleWordWrap if self.split.is_some() => self.split_toggle_wrap(),
             Cmd::ToggleWordWrap => {
                 self.config.word_wrap = !self.config.word_wrap;
                 self.config.save();
@@ -914,6 +953,19 @@ impl App {
         }
         self.request_redraw();
         false
+    }
+
+    /// Run the command a keybinding names (`"none"` does nothing; an unknown id says so).
+    pub fn run_bound(&mut self, id: &str) -> bool {
+        match Cmd::from_id(id) {
+            Some(c) => self.run_key_cmd(c),
+            None => {
+                if id != "none" {
+                    self.say(format!("atalho aponta para um comando desconhecido: {id}"));
+                }
+                false
+            }
+        }
     }
 
     pub fn reload_active(&mut self) {
@@ -1152,6 +1204,8 @@ impl App {
                     d.reveal = true;
                 }
             }
+            Action::SetIndent(spec) => self.set_doc_indent(&spec),
+            Action::SetLang(id) => self.set_doc_language(id),
             Action::WorkspaceEdit(v) => {
                 if v.get("__resolve").is_some() {
                     self.resolve_code_action(&v["__resolve"]);
@@ -1593,7 +1647,7 @@ impl App {
                         cv.fill_round(rr, 10, c.list_active_bg);
                     }
                     let avail = rr.w - 28;
-                    let detail_w = if matches!(p.kind, PickKind::Commands | PickKind::Themes) && !it.detail.is_empty() { self.tx.ui_width(&it.detail, false) + 20 } else { 0 };
+                    let detail_w = if matches!(p.kind, PickKind::Commands | PickKind::Themes | PickKind::Choice) && !it.detail.is_empty() { self.tx.ui_width(&it.detail, false) + 20 } else { 0 };
                     // Label, shortened from the left when it does not fit (paths), matches highlighted.
                     let label: Vec<char> = it.label.chars().collect();
                     let mut skip = 0;

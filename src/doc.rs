@@ -446,8 +446,9 @@ impl Doc {
 
     pub fn minimap_scroll_to(&mut self, y: f64) {
         if let Some(l) = &self.minimap_layout {
-            let top = crate::minimap::drag_to_top_line(l, y, self.buf.line_count(), self.visible_lines() as usize);
-            self.scroll_direct(self.row_of_line(top) as f64 - self.target);
+            // The minimap is drawn by visual rows (wrap and folds included), so its unit is a row.
+            let top = crate::minimap::drag_to_top_line(l, y, self.total_rows(), self.visible_lines() as usize);
+            self.scroll_direct(top as f64 - self.target);
         }
     }
 
@@ -755,7 +756,7 @@ impl Doc {
     pub fn draw(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, o: &DrawOpts) -> bool {
         // The minimap takes a strip at the right; everything else lays out in what remains.
         let full = rect;
-        let mm_w = if self.minimap && rect.w > 560 { 92 } else { 0 };
+        let mm_w = if self.minimap && rect.w > 560 { crate::minimap::style().width() } else { 0 };
         let rect = Rect::new(rect.x, rect.y, rect.w - mm_w, rect.h);
         self.rect = rect;
         self.cell_w = tx.cell_w;
@@ -1268,7 +1269,7 @@ impl Doc {
                 let indent_of = |l: usize| self.buf.line(l).chars().take_while(|c| *c == ' ' || *c == '\t').count();
                 let mut cur_indent = indent_of(first);
                 let mut l = first;
-                while l > 0 && heads.len() < 3 && cur_indent > 0 {
+                while l > 0 && heads.len() < STICKY_MAX && cur_indent > 0 {
                     l -= 1;
                     let t = self.buf.line(l);
                     if t.trim().is_empty() {
@@ -1285,10 +1286,17 @@ impl Doc {
                 heads.reverse();
             }
             heads.dedup();
-            let heads: Vec<usize> = heads.into_iter().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
+            let heads = sticky_pick(&heads, STICKY_MAX);
+            // Whole-line snapping: at rest the band ends on a row boundary of the text underneath,
+            // so no line is left half hidden below it (while scrolling it stays put and the text
+            // glides under it).
+            let at_rest = !self.animating && !self.sb_drag;
+            let band_h = sticky_band_h(heads.len(), lh, -y_off, at_rest);
+            if band_h > 0 {
+                cv.fill(Rect::new(rect.x, rect.y, rect.w, band_h), theme.background);
+            }
             for (k, l) in heads.iter().enumerate() {
                 let y = rect.y + k as i32 * lh;
-                cv.fill(Rect::new(rect.x, y, rect.w, lh), theme.background);
                 let num = format!("{:>digits$}", l + 1, digits = self.gutter_digits());
                 tx.draw_line(cv, rect.x + cell_w.round() as i32, y, &num, theme.line_number, Rect::new(rect.x, y, gutter_w, lh));
                 let mut pieces = Vec::new();
@@ -1301,9 +1309,8 @@ impl Doc {
                 }
                 tx.draw_styled(cv, body_x, y, &pieces, Rect::new(body.x, y, body.w, lh));
             }
-            if !heads.is_empty() {
-                let y = rect.y + heads.len() as i32 * lh;
-                cv.fill(Rect::new(rect.x, y - 1, rect.w, 1), c.border);
+            if band_h > 0 {
+                cv.fill(Rect::new(rect.x, rect.y + band_h - 1, rect.w, 1), c.border);
             }
         }
 
@@ -1329,15 +1336,25 @@ impl Doc {
 
         // Minimap.
         if mm_w > 0 {
-            let l = crate::minimap::layout_for(full, mm_w, self.buf.line_count());
+            // One minimap row per visual row, so word wrap and folds show as the editor shows them.
+            let total = self.total_rows();
+            let l = crate::minimap::layout_for(full, mm_w, total);
             let (bg, fgc) = (theme.background, theme.foreground);
+            let wrap_view = live && self.view.cols > 0;
             let mut infos = |i: usize| {
-                let text = self.buf.line(i);
-                let sp = vlines.binary_search(&i).ok().and_then(|k| line_spans.get(k)).and_then(|s| s.as_ref());
+                let (line, sub) = if live { self.view.map.line_at_row(i) } else { (i, 0) };
+                let mut text = self.buf.line(line);
+                if sub > 0 && wrap_view {
+                    let breaks = self.view.breaks(&text);
+                    let (c0, c1) = row_range_of(&breaks, sub, text.chars().count());
+                    text = text.chars().skip(c0).take(c1 - c0).collect();
+                }
+                let sp = if sub == 0 { vlines.binary_search(&line).ok().and_then(|k| line_spans.get(k)).and_then(|s| s.as_ref()) } else { None };
                 let sp3: Option<Vec<(usize, usize, Rgba)>> = sp.map(|s| s.iter().map(|&(a, b, c, _)| (a, b, c)).collect());
                 crate::minimap::line_info(&text, sp3.as_deref(), fgc, tab_w)
             };
-            crate::minimap::draw(cv, &l, &mut infos, self.buf.line_count(), first, last.saturating_sub(1), bg, c.accent);
+            let vis_rows = rect.h as f64 / lh_f as f64;
+            crate::minimap::draw_rows(cv, &l, &mut infos, total, self.top, vis_rows, bg, c.accent, crate::minimap::style());
             cv.fill(Rect::new(l.rect.x, l.rect.y, 1, l.rect.h), c.border);
             self.minimap_layout = Some(l);
         } else {
@@ -1369,6 +1386,26 @@ impl Doc {
 
         pending || self.animating || self.caret_animating
     }
+}
+
+/// Most sticky scroll headers pinned at the top of the editor.
+pub const STICKY_MAX: usize = 2;
+
+/// The `max` innermost headers (they arrive outermost first), in the same order.
+pub fn sticky_pick(heads: &[usize], max: usize) -> Vec<usize> {
+    heads[heads.len().saturating_sub(max)..].to_vec()
+}
+
+/// Height in px of the sticky band for `n` headers of `lh` px each, when the text underneath is
+/// scrolled `frac` px (0 <= frac < lh) past a row boundary. At rest the band is stretched down to
+/// the next row boundary, so the line beneath it is never cut in half; while the text moves
+/// (`at_rest == false`) it stays at exactly `n` lines (it would otherwise saw up and down).
+pub fn sticky_band_h(n: usize, lh: i32, frac: i32, at_rest: bool) -> i32 {
+    let base = n as i32 * lh;
+    if n == 0 || !at_rest || frac <= 0 || lh <= 0 {
+        return base;
+    }
+    base + (lh - frac.min(lh))
 }
 
 /// One visual row of the viewport: chars `c0..c1` (bytes `b0..b1`) of line `line`; `sub` is the
@@ -1538,5 +1575,30 @@ mod tests {
         assert_eq!(d.lsp_pos(2), (0, 3));
         assert_eq!(d.from_lsp_pos(0, 3), 2);
         assert_eq!(d.from_lsp_pos(1, 1), 5);
+    }
+
+    #[test]
+    fn sticky_keeps_the_two_innermost_headers() {
+        assert_eq!(sticky_pick(&[1, 5, 9], STICKY_MAX), vec![5, 9]);
+        assert_eq!(sticky_pick(&[4], STICKY_MAX), vec![4]);
+        assert!(sticky_pick(&[], STICKY_MAX).is_empty());
+    }
+
+    #[test]
+    fn sticky_band_snaps_to_the_row_grid_at_rest() {
+        let lh = 22;
+        // Aligned text, or nothing pinned: exactly n lines.
+        assert_eq!(sticky_band_h(2, lh, 0, true), 44);
+        assert_eq!(sticky_band_h(0, lh, 7, true), 0);
+        // Rows start at k*lh - frac; the band ends on one of those boundaries.
+        for frac in 1..lh {
+            let h = sticky_band_h(2, lh, frac, true);
+            assert!(h >= 44 && h < 44 + lh);
+            assert_eq!((h + frac) % lh, 0, "frac {frac}: band end {h} is a row boundary");
+        }
+        // Fully scrolled to the next row: already aligned.
+        assert_eq!(sticky_band_h(2, lh, lh, true), 44);
+        // While the text glides the band keeps its size.
+        assert_eq!(sticky_band_h(2, lh, 9, false), 44);
     }
 }

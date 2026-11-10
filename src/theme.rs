@@ -4,7 +4,26 @@
 //! selector wins, ties go to the later rule in the file.
 
 use serde::Deserialize;
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+/// `theme_chrome = "theme"` in config.json: sidebar, tabs and status bar take the theme's own
+/// colors wherever they pass the contrast rules (see `Theme::load_mode`). Process-wide so that
+/// every `Theme::load` (startup, theme picker, system appearance) follows the setting.
+static THEME_CHROME: AtomicBool = AtomicBool::new(false);
+
+/// Choose between the derived minimal chrome (`false`, the default) and the theme's own.
+pub fn set_theme_chrome(own: bool) {
+    THEME_CHROME.store(own, Ordering::Relaxed);
+}
+
+pub fn theme_chrome() -> bool {
+    THEME_CHROME.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Rgba(pub u8, pub u8, pub u8, pub u8);
@@ -181,6 +200,15 @@ impl Theme {
     /// `fix = false` keeps the theme's own colors as authored (used by the accessibility report to
     /// show the "before" numbers); the app always loads with `fix = true`.
     pub fn load_with(path: &Path, fix: bool) -> Result<Self, String> {
+        Self::load_mode(path, fix, theme_chrome())
+    }
+
+    /// [`load_with`](Self::load_with) with the chrome mode given explicitly: `own_chrome = true`
+    /// lets the sidebar, tab bar, active tab and status bar keep the theme's own background (and
+    /// the theme's text colors for them) when every UI text color still reads on it (>= 4.5:1,
+    /// the same pairs the accessibility test checks). Each surface and each text color falls back
+    /// on its own to the derived minimal chrome when it would fail. Only meaningful with `fix`.
+    pub fn load_mode(path: &Path, fix: bool, own_chrome: bool) -> Result<Self, String> {
         let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
         let raw: RawTheme = serde_json::from_str(&text).map_err(|e| e.to_string())?;
 
@@ -255,7 +283,7 @@ impl Theme {
         };
         let accent_text = ok(accent_raw, 4.6);
         let sem = |key: &str, fb: Rgba| ok(ck(key, fb), 4.5);
-        let chrome = Chrome {
+        let mut chrome = Chrome {
             sidebar_bg: surfaces[1],
             sidebar_fg: soft(0xd0),
             tabbar_bg: background,
@@ -286,6 +314,10 @@ impl Theme {
             diff_add_word,
             diff_del_word,
         };
+        if own_chrome && fix {
+            let opt = |keys: &[&str]| keys.iter().find_map(|k| raw.colors.get(*k).and_then(|c| c.as_str()).and_then(Rgba::parse));
+            apply_theme_chrome(&mut chrome, background, line_highlight, foreground, opt);
+        }
 
         let mut rules = Vec::new();
         for r in &raw.token_colors {
@@ -341,6 +373,41 @@ impl Theme {
         }
         out
     }
+}
+
+/// Does `fg` (its own alpha painted over `bg`) read on `bg`?
+fn reads(fg: Rgba, bg: Rgba, min: f32) -> bool {
+    fg.over(bg).contrast(bg) + 0.005 >= min
+}
+
+/// Swap the derived chrome surfaces and chrome text colors for the theme's own where they pass.
+/// `opt` looks a VS Code color key up (first key present wins).
+fn apply_theme_chrome(c: &mut Chrome, background: Rgba, line_highlight: Rgba, foreground: Rgba, opt: impl Fn(&[&str]) -> Option<Rgba>) {
+    // Every UI text color has to keep reading on a surface for it to be adopted: the derived text
+    // colors are left alone (the editor keeps its look), the surface is what gives way.
+    let texts = |c: &Chrome| [c.tab_inactive_fg, c.tab_active_fg, c.status_fg, c.sidebar_fg, c.accent_text, foreground, c.error, c.warning, c.info, c.git_added, c.git_modified, c.git_deleted];
+    let fits = |c: &Chrome, bg: Rgba| texts(c).iter().all(|f| reads(*f, bg, 4.5));
+    let surface = |keys: &[&str]| opt(keys).map(|s| s.over(background));
+    if let Some(s) = surface(&["sideBar.background"]).filter(|s| fits(c, *s)) {
+        c.sidebar_bg = s;
+    }
+    if let Some(s) = surface(&["tab.activeBackground"]).filter(|s| fits(c, *s)) {
+        c.tab_active_bg = s;
+    }
+    if let Some(s) = surface(&["editorGroupHeader.tabsBackground", "tab.inactiveBackground"]).filter(|s| fits(c, *s)) {
+        c.tabbar_bg = s;
+        c.tab_inactive_bg = s;
+    }
+    if let Some(s) = surface(&["statusBar.background"]).filter(|s| fits(c, *s)) {
+        c.status_bg = s;
+    }
+    // The theme's own text colors, only when they read on every surface the app can put them on.
+    let surfaces = [background, c.sidebar_bg, c.tab_active_bg, c.widget_bg, c.list_active_bg, c.list_hover_bg, c.input_bg, line_highlight, c.tabbar_bg, c.tab_inactive_bg, c.status_bg];
+    let text = |keys: &[&str], cur: Rgba| opt(keys).map(|t| t.over(background)).filter(|t| surfaces.iter().all(|s| reads(*t, *s, 4.5))).unwrap_or(cur);
+    c.sidebar_fg = text(&["sideBar.foreground"], c.sidebar_fg);
+    c.tab_active_fg = text(&["tab.activeForeground"], c.tab_active_fg);
+    c.tab_inactive_fg = text(&["tab.inactiveForeground"], c.tab_inactive_fg);
+    c.status_fg = text(&["statusBar.foreground"], c.status_fg);
 }
 
 fn is_prefix(selector: &str, scope: &str) -> bool {
@@ -438,13 +505,17 @@ mod tests {
     }
 
     fn bundled_with(fix: bool) -> Vec<(String, Theme)> {
+        bundled_mode(fix, false)
+    }
+
+    fn bundled_mode(fix: bool, own_chrome: bool) -> Vec<(String, Theme)> {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/themes");
         let mut v: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .map(|p| (p.file_stem().unwrap().to_string_lossy().into_owned(), Theme::load_with(&p, fix).unwrap()))
+            .map(|p| (p.file_stem().unwrap().to_string_lossy().into_owned(), Theme::load_mode(&p, fix, own_chrome).unwrap()))
             .collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
@@ -457,7 +528,7 @@ mod tests {
         let c = t.chrome;
         let mut pair = |label: String, fg: Rgba, bg: Rgba, min: f32| out.push((label, fg.over(bg).contrast(bg), min));
         // Chrome text on every surface it can sit on.
-        let bgs = [("background", t.background), ("sidebar_bg", c.sidebar_bg), ("tab_active_bg", c.tab_active_bg), ("widget_bg", c.widget_bg), ("list_active_bg", c.list_active_bg), ("list_hover_bg", c.list_hover_bg), ("input_bg", c.input_bg), ("line_highlight", t.line_highlight)];
+        let bgs = [("background", t.background), ("sidebar_bg", c.sidebar_bg), ("tab_active_bg", c.tab_active_bg), ("widget_bg", c.widget_bg), ("list_active_bg", c.list_active_bg), ("list_hover_bg", c.list_hover_bg), ("input_bg", c.input_bg), ("line_highlight", t.line_highlight), ("tabbar_bg", c.tabbar_bg), ("tab_inactive_bg", c.tab_inactive_bg), ("status_bg", c.status_bg)];
         let fgs = [
             ("tab_inactive_fg", c.tab_inactive_fg),
             ("tab_active_fg", c.tab_active_fg),
@@ -516,6 +587,39 @@ mod tests {
             }
         }
         assert!(bad.is_empty(), "{} low-contrast pairs:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    #[test]
+    fn every_text_pair_meets_wcag_aa_with_the_themes_own_chrome() {
+        let mut bad = Vec::new();
+        for (name, t) in bundled_mode(true, true) {
+            for (label, r, min) in audit(&t) {
+                if r + 0.005 < min {
+                    bad.push(format!("{name}: {label} = {r:.2} (< {min})"));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{} low-contrast pairs:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    #[test]
+    fn own_chrome_adopts_theme_surfaces_that_pass_and_derived_is_the_default() {
+        let all_d = bundled_mode(true, false);
+        let all_t = bundled_mode(true, true);
+        let mut changed = 0;
+        let mut kept = 0;
+        for ((_, d), (_, t)) in all_d.iter().zip(all_t.iter()) {
+            // Derived chrome never moves the bars off the editor background.
+            assert_eq!(d.chrome.status_bg, d.background);
+            assert_eq!(d.chrome.tabbar_bg, d.background);
+            if t.chrome.sidebar_bg != d.chrome.sidebar_bg || t.chrome.tab_active_bg != d.chrome.tab_active_bg || t.chrome.tabbar_bg != d.chrome.tabbar_bg || t.chrome.status_bg != d.chrome.status_bg {
+                changed += 1;
+            } else {
+                kept += 1;
+            }
+        }
+        assert!(changed > 20, "only {changed} themes adopted their own chrome");
+        assert!(kept > 0, "every theme adopted its chrome: no fallback happens");
     }
 
     #[test]

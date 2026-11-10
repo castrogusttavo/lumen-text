@@ -6,7 +6,7 @@
 //! visual rows; with an inactive view a row is a line.
 
 use crate::{
-    buffer::Buffer,
+    buffer::{Buffer, EditRec, LineOp},
     doc::Doc,
     editor::{Editor, col_from_visual},
     rowmap::{FoldSet, RowMap, col_at, fold_regions_by_indent, locate, merge_regions, wrap_breaks},
@@ -15,6 +15,7 @@ use crate::{
 /// Extra gutter width reserved for the fold chevron.
 pub const FOLD_W: i32 = 12;
 
+#[derive(Clone)]
 pub struct ViewMap {
     /// User setting (Config.word_wrap).
     pub wrap: bool,
@@ -64,6 +65,11 @@ impl ViewMap {
         if self.cols == 0 { Vec::new() } else { wrap_breaks(text, self.cols, self.tab_w) }
     }
 
+    /// Line count the map and wrap rows were last made for.
+    pub fn tracked_lines(&self) -> usize {
+        self.lines
+    }
+
     /// Forget everything derived from the text (it was replaced wholesale).
     pub fn reset(&mut self) {
         self.map = RowMap::new(0);
@@ -79,6 +85,151 @@ impl ViewMap {
         } else {
             wrap_breaks(text, self.cols, self.tab_w).len() + 1
         }
+    }
+}
+
+impl ViewMap {
+    /// Recompute everything (exact wrap rows when wrapping, then the map).
+    pub fn rebuild(&mut self, buf: &Buffer) {
+        let n = buf.line_count();
+        self.lines = n;
+        if !self.active() {
+            self.map = RowMap::new(0);
+            self.wrap_rows = Vec::new();
+            self.wrap_valid = false;
+            return;
+        }
+        if self.cols > 0 && (!self.wrap_valid || self.wrap_rows.len() != n) {
+            let mut rows = Vec::with_capacity(n);
+            for i in 0..n {
+                rows.push(if self.folds.is_hidden(i) { 1 } else { self.rows_for(&buf.line(i)) as u32 });
+            }
+            self.wrap_rows = rows;
+            self.wrap_valid = true;
+        } else if self.cols == 0 {
+            self.wrap_rows = Vec::new();
+            self.wrap_valid = false;
+        }
+        self.remap(n);
+    }
+
+    /// Derive the `RowMap` from the cached wrap rows and the folds (`n` = line count of the text).
+    pub fn remap(&mut self, n: usize) {
+        self.lines = n;
+        if !self.active() {
+            self.map = RowMap::new(0);
+            return;
+        }
+        let wrap = self.cols > 0 && self.wrap_rows.len() == n;
+        let rows: Vec<usize> = (0..n)
+            .map(|i| if self.folds.is_hidden(i) { 0 } else if wrap { self.wrap_rows[i] as usize } else { 1 })
+            .collect();
+        let mut m = RowMap::new(n);
+        m.splice_lines(0, n, &rows);
+        self.map = m;
+    }
+
+    /// Follow one line-level operation of an edit in the cached wrap rows.
+    fn apply_line_op(&mut self, op: LineOp) {
+        let consistent = self.wrap_rows.len() == self.lines;
+        match op {
+            LineOp::Remove { after, n } => {
+                let at = ((after + 1).max(0) as usize).min(self.lines);
+                let k = n.min(self.lines - at);
+                if consistent {
+                    self.wrap_rows.drain(at..at + k);
+                }
+                self.lines -= k;
+            }
+            LineOp::Insert { after, n } => {
+                let at = ((after + 1).max(0) as usize).min(self.lines);
+                if consistent {
+                    self.wrap_rows.splice(at..at, std::iter::repeat_n(1u32, n));
+                }
+                self.lines += n;
+            }
+            LineOp::Swap { first, a_lines, b_lines } => {
+                let end = first + a_lines + b_lines;
+                if consistent && end <= self.wrap_rows.len() {
+                    self.wrap_rows[first..end].rotate_left(a_lines);
+                } else if end > self.lines {
+                    self.wrap_valid = false;
+                }
+            }
+        }
+        if !consistent && self.cols > 0 {
+            self.wrap_valid = false;
+        }
+    }
+
+    /// The text changed by `recs` (oldest first; `first` = lowest line touched): move the folds,
+    /// the wrap rows and the map along, so a region keeps hiding the same lines whatever happened
+    /// above it (also when the line count stayed the same, e.g. a line moved up or down).
+    pub fn on_edit(&mut self, recs: &[EditRec], first: usize, buf: &Buffer) {
+        let n = buf.line_count();
+        if !self.active() {
+            self.lines = n;
+            return;
+        }
+        let was_folds = !self.folds.is_empty();
+        let mut structural = false;
+        let mut lo = first.min(n - 1);
+        let mut hi = lo;
+        let mut ins_total = 0;
+        if recs.is_empty() {
+            // Nothing recorded: fall back to the line-count difference.
+            let delta = n as isize - self.lines as isize;
+            let op = if delta > 0 { Some(LineOp::Insert { after: first as isize, n: delta as usize }) } else if delta < 0 { Some(LineOp::Remove { after: first as isize, n: (-delta) as usize }) } else { None };
+            if let Some(op) = op {
+                structural = true;
+                self.folds.apply_op(op);
+                self.apply_line_op(op);
+            }
+        }
+        for r in recs {
+            lo = lo.min(r.line);
+            hi = hi.max(r.line + r.ins_lines);
+            ins_total += r.ins_lines;
+            for op in r.line_ops() {
+                structural = true;
+                self.folds.apply_op(op);
+                self.apply_line_op(op);
+            }
+        }
+        if recs.len() > 1 {
+            hi += ins_total;
+        }
+        if self.lines != n {
+            // The records do not add up (text replaced behind our back): start over.
+            self.wrap_valid = false;
+            self.folds.clip(n);
+            structural = true;
+        }
+        let lo = lo.min(n - 1);
+        let hi = hi.min(n - 1);
+        // Exact rows for the edited line(s).
+        if self.cols > 0 && self.wrap_valid && self.wrap_rows.len() == n {
+            for i in lo..=hi {
+                if !self.folds.is_hidden(i) {
+                    self.wrap_rows[i] = self.rows_for(&buf.line(i)) as u32;
+                }
+            }
+        } else if self.cols > 0 {
+            self.wrap_valid = false;
+        }
+        if !self.wrap_valid && self.cols > 0 {
+            self.rebuild(buf);
+        } else if structural || was_folds != !self.folds.is_empty() {
+            self.remap(n);
+        } else if self.cols > 0 && self.map.line_count() == n {
+            for i in lo..=hi {
+                if !self.folds.is_hidden(i) {
+                    let r = self.wrap_rows[i] as usize;
+                    self.map.update_line(i, r);
+                }
+            }
+        }
+        self.lines = n;
     }
 }
 
@@ -154,6 +305,7 @@ impl Doc {
     }
 
     /// First visual row of `line`.
+    #[allow(dead_code)]
     pub fn row_of_line(&self, line: usize) -> usize {
         if self.vm_live() { self.view.map.row_of(line) } else { line }
     }
@@ -248,43 +400,13 @@ impl Doc {
 
     /// Recompute everything (exact wrap rows when wrapping, then the map).
     fn view_rebuild(&mut self) {
-        let n = self.buf.line_count();
-        self.view.lines = n;
-        if !self.view.active() {
-            self.view.map = RowMap::new(0);
-            self.view.wrap_rows = Vec::new();
-            self.view.wrap_valid = false;
-            return;
-        }
-        if self.view.cols > 0 && (!self.view.wrap_valid || self.view.wrap_rows.len() != n) {
-            let mut rows = Vec::with_capacity(n);
-            for i in 0..n {
-                rows.push(if self.view.folds.is_hidden(i) { 1 } else { self.view.rows_for(&self.buf.line(i)) as u32 });
-            }
-            self.view.wrap_rows = rows;
-            self.view.wrap_valid = true;
-        } else if self.view.cols == 0 {
-            self.view.wrap_rows = Vec::new();
-            self.view.wrap_valid = false;
-        }
-        self.view_remap();
+        self.view.rebuild(&self.buf);
     }
 
     /// Derive the `RowMap` from the cached wrap rows and the folds.
     fn view_remap(&mut self) {
         let n = self.buf.line_count();
-        self.view.lines = n;
-        if !self.view.active() {
-            self.view.map = RowMap::new(0);
-            return;
-        }
-        let wrap = self.view.cols > 0 && self.view.wrap_rows.len() == n;
-        let rows: Vec<usize> = (0..n)
-            .map(|i| if self.view.folds.is_hidden(i) { 0 } else if wrap { self.view.wrap_rows[i] as usize } else { 1 })
-            .collect();
-        let mut m = RowMap::new(n);
-        m.splice_lines(0, n, &rows);
-        self.view.map = m;
+        self.view.remap(n);
     }
 
     /// Call after the folds changed; `anchor` is `top_pos()` taken BEFORE the change.
@@ -295,51 +417,8 @@ impl Doc {
 
     /// Text changed: first changed line `l`. Keeps folds, wrap rows and the map consistent.
     pub fn view_on_edit(&mut self, l: usize) {
-        let n = self.buf.line_count();
-        if !self.view.active() {
-            self.view.lines = n;
-            return;
-        }
-        let old = self.view.lines;
-        let delta = n as isize - old as isize;
-        let was_folds = !self.view.folds.is_empty();
-        if delta != 0 {
-            self.view.folds.adjust_for_edit(l, delta);
-            let wr = &mut self.view.wrap_rows;
-            if wr.len() == old {
-                let at = (l + 1).min(wr.len());
-                if delta > 0 {
-                    wr.splice(at..at, std::iter::repeat_n(1u32, delta as usize));
-                } else {
-                    let end = (at + (-delta) as usize).min(wr.len());
-                    wr.drain(at..end);
-                }
-            } else {
-                self.view.wrap_valid = false;
-            }
-        }
-        // Exact rows for the edited line(s).
-        if self.view.cols > 0 && self.view.wrap_valid && self.view.wrap_rows.len() == n {
-            let hi = (l + delta.max(0) as usize).min(n - 1);
-            for i in l.min(n - 1)..=hi {
-                if !self.view.folds.is_hidden(i) {
-                    self.view.wrap_rows[i] = self.view.rows_for(&self.buf.line(i)) as u32;
-                }
-            }
-        } else if self.view.cols > 0 {
-            self.view.wrap_valid = false;
-        }
-        if !self.view.wrap_valid && self.view.cols > 0 {
-            self.view_rebuild();
-        } else if delta != 0 || was_folds != !self.view.folds.is_empty() {
-            self.view_remap();
-        } else if self.view.map.line_count() == n && l < n {
-            let r = if self.view.cols > 0 { self.view.wrap_rows[l] as usize } else { 1 };
-            if !self.view.folds.is_hidden(l) {
-                self.view.map.update_line(l, r);
-            }
-        }
-        self.view.lines = n;
+        let recs = self.buf.take_edits();
+        self.view.on_edit(&recs, l, &self.buf);
     }
 
     /// Before scrolling to the caret: unfold what hides it and make its row count exact.
@@ -534,6 +613,78 @@ impl Doc {
             return false;
         }
         self.toggle_fold(line)
+    }
+
+    // ── line commands that respect folds ──
+
+    /// `l0..=l1` widened so that no folded region is cut in two (a folded header takes its hidden
+    /// lines with it).
+    pub fn fold_extend(&self, l0: usize, l1: usize) -> (usize, usize) {
+        let n = self.buf.line_count();
+        (l0, self.fold_end_from(l0, l1).min(n.saturating_sub(1)))
+    }
+
+    /// Last line of `l0..=l1` once every region starting inside it is included.
+    fn fold_end_from(&self, l0: usize, mut end: usize) -> usize {
+        loop {
+            let mut grew = false;
+            for &(s, e) in self.view.folds.regions() {
+                if s >= l0 && s <= end && e > end {
+                    end = e;
+                    grew = true;
+                }
+            }
+            if !grew {
+                return end;
+            }
+        }
+    }
+
+    /// The block of whole lines that Alt+Up / Alt+Down swaps with the selected block `x`: the
+    /// next visible line (with its hidden body when it is a fold header).
+    fn move_partner(&self, x: (usize, usize), down: bool) -> Option<(usize, usize)> {
+        let n = self.buf.line_count();
+        if down {
+            let y0 = x.1 + 1;
+            if y0 >= n {
+                return None;
+            }
+            Some((y0, self.fold_end_from(y0, y0).min(n - 1)))
+        } else {
+            let y1 = x.0.checked_sub(1)?;
+            let y0 = match self.view.folds.hidden_ranges().iter().find(|r| r.0 <= y1 && y1 <= r.1) {
+                Some(r) => r.0 - 1,
+                None => y1,
+            };
+            Some((y0, y1))
+        }
+    }
+
+    /// Alt+Up / Alt+Down: move the selected lines (a folded header moves with its body) past the
+    /// next visible line.
+    pub fn move_lines_cmd(&mut self, down: bool) {
+        let (l0, l1) = self.ed.selected_line_range(&self.buf);
+        let x = self.fold_extend(l0, l1);
+        if let Some(y) = self.move_partner(x, down) {
+            self.ed.move_block(&mut self.buf, down, x, y);
+        }
+    }
+
+    /// Ctrl+Shift+D: copy the selection, or the caret's line (with its hidden body when folded).
+    pub fn duplicate_cmd(&mut self) {
+        if !self.ed.sel.is_empty() {
+            return self.ed.duplicate(&mut self.buf);
+        }
+        let (l0, l1) = self.ed.selected_line_range(&self.buf);
+        let (l0, l1) = self.fold_extend(l0, l1);
+        self.ed.duplicate_lines(&mut self.buf, l0, l1);
+    }
+
+    /// Ctrl+Shift+K: delete the selected lines (a folded header goes with its hidden body).
+    pub fn delete_line_cmd(&mut self) {
+        let (l0, l1) = self.ed.selected_line_range(&self.buf);
+        let (l0, l1) = self.fold_extend(l0, l1);
+        self.ed.delete_lines(&mut self.buf, l0, l1);
     }
 
     // ── movement ──
@@ -806,6 +957,194 @@ mod tests {
         d.version += 1;
         assert!(!d.is_foldable(2) || d.view.lsp_ver == d.version);
         assert!(!d.fold_regions().contains(&(2, 3)));
+    }
+
+    // ── folds follow line commands and edits that keep the line count ──
+
+    fn folded(d: &mut Doc, line: usize) {
+        click(d, line, 0);
+        assert!(d.fold_at_cursor());
+        d.view_prepare(80);
+    }
+
+    #[test]
+    fn moving_a_line_past_a_folded_block_takes_the_fold_along() {
+        // 0 fn a() {  1 if x {  2 y();  3 }  4 z();  5 }  6 fn b() {  7 w();  8 }
+        let mut d = doc(&code());
+        folded(&mut d, 6);
+        let n = d.buf.line_count();
+        click(&mut d, 5, 0);
+        d.move_lines_cmd(true); // `}` (line 5) goes below fn b and its hidden body
+        d.sync_edits();
+        assert_eq!(d.buf.line_count(), n, "same number of lines");
+        assert_eq!(d.buf.line(5), "fn b() {");
+        assert_eq!(d.buf.line(7), "}");
+        assert_eq!(d.view.folds.regions(), &[(5, 6)], "the fold moved up with its header");
+        assert!(d.vm_live());
+        assert_eq!(d.total_rows(), n - 1);
+        assert_eq!(d.row_of_line(7), 6);
+        assert_eq!(d.caret_line(), 7, "the moved line keeps the caret");
+        // undo puts everything back, fold included
+        d.ed.undo(&mut d.buf);
+        d.sync_edits();
+        assert_eq!(d.view.folds.regions(), &[(6, 7)]);
+        assert_eq!(d.buf.line(6), "fn b() {");
+    }
+
+    #[test]
+    fn moving_a_folded_header_moves_its_hidden_lines_too() {
+        let mut d = doc(&code());
+        folded(&mut d, 6);
+        click(&mut d, 6, 0);
+        d.move_lines_cmd(false); // up past `}`
+        d.sync_edits();
+        assert_eq!(d.buf.line(5), "fn b() {");
+        assert_eq!(d.buf.line(6), "    w();", "the hidden body went along");
+        assert_eq!(d.buf.line(7), "}");
+        assert_eq!(d.view.folds.regions(), &[(5, 6)]);
+        assert_eq!(d.caret_line(), 5);
+        d.move_lines_cmd(true);
+        d.sync_edits();
+        assert_eq!(d.view.folds.regions(), &[(6, 7)]);
+        assert_eq!(d.caret_line(), 6);
+        // down past the last real line
+        d.move_lines_cmd(true);
+        d.sync_edits();
+        assert_eq!(d.view.folds.regions(), &[(7, 8)]);
+    }
+
+    #[test]
+    fn a_line_moved_across_a_fold_header_keeps_other_folds() {
+        let mut d = doc(&code());
+        click(&mut d, 2, 4);
+        d.fold_at_cursor(); // fold `if x {` (1..2)
+        folded(&mut d, 6); // and fn b (6..7)
+        assert_eq!(d.view.folds.regions(), &[(1, 2), (6, 7)]);
+        click(&mut d, 0, 0);
+        d.move_lines_cmd(true); // `fn a() {` swaps with the folded block (1..=2)
+        d.sync_edits();
+        assert_eq!(d.buf.line(0), "    if x {");
+        assert_eq!(d.buf.line(2), "fn a() {");
+        assert_eq!(d.view.folds.regions(), &[(0, 1), (6, 7)]);
+    }
+
+    #[test]
+    fn duplicating_and_deleting_a_folded_header_handles_the_whole_block() {
+        let mut d = doc(&code());
+        folded(&mut d, 6);
+        let n = d.buf.line_count();
+        click(&mut d, 6, 3);
+        d.duplicate_cmd();
+        d.sync_edits();
+        assert_eq!(d.buf.line_count(), n + 2, "the block is the header and its hidden line");
+        assert_eq!((d.buf.line(8), d.buf.line(9)), ("fn b() {".to_string(), "    w();".to_string()));
+        assert_eq!(d.view.folds.regions(), &[(6, 7)], "the original stays folded");
+        assert_eq!(d.caret_line(), 8, "the caret is on the copy");
+        // deleting the folded header removes its body with it, and no fold is left behind
+        click(&mut d, 6, 0);
+        d.delete_line_cmd();
+        d.sync_edits();
+        assert_eq!(d.buf.line_count(), n);
+        assert_eq!(d.buf.line(6), "fn b() {", "the copy is what is left");
+        assert!(d.view.folds.is_empty());
+    }
+
+    #[test]
+    fn newline_before_a_folded_header_pushes_the_fold_down() {
+        let mut d = doc(&code());
+        folded(&mut d, 6);
+        click(&mut d, 6, 0);
+        d.ed.newline(&mut d.buf);
+        d.sync_edits();
+        assert_eq!(d.view.folds.regions(), &[(7, 8)]);
+        assert_eq!(d.buf.line(7), "fn b() {");
+    }
+
+    #[test]
+    fn edits_that_keep_the_line_count_leave_folds_alone_unless_they_touch_the_header() {
+        let mut d = doc(&code());
+        folded(&mut d, 6); // fn b (6..7)
+        // replace lines 3..=4 by two other lines: same count, the fold below stays
+        let (s, e) = (d.buf.line_start(3), d.buf.pos(4, usize::MAX));
+        let before = d.ed.sel;
+        d.buf.replace(s, e, "fn q() {\n    r();", crate::buffer::EditKind::Other, before);
+        d.sync_edits();
+        assert_eq!(d.view.folds.regions(), &[(6, 7)]);
+        // a body line inserted at the start of the hidden line grows the region; it stays folded
+        let p = d.buf.line_start(7);
+        d.buf.replace(p, p, "    q();\n", crate::buffer::EditKind::Other, before);
+        d.sync_edits();
+        assert_eq!(d.view.folds.regions(), &[(6, 8)]);
+        // replacing the header together with the line above (equal count) drops that fold
+        let (s, e) = (d.buf.line_start(5), d.buf.pos(6, usize::MAX));
+        d.buf.replace(s, e, "}\nfn z() {", crate::buffer::EditKind::Other, before);
+        d.sync_edits();
+        assert!(d.view.folds.is_empty(), "the header line was rewritten");
+    }
+
+    #[test]
+    fn wrap_rows_and_map_stay_exact_across_line_moves() {
+        let long = "word ".repeat(30);
+        let mut d = doc(&format!("a\n{long}\nb\nc {long}\nd\n"));
+        d.set_word_wrap(true);
+        d.view_prepare(40);
+        click(&mut d, 1, 0);
+        d.move_lines_cmd(true); // the long line swaps with `b`
+        d.sync_edits();
+        click(&mut d, 3, 0);
+        d.move_lines_cmd(false);
+        d.sync_edits();
+        let mut fresh = d.view.clone();
+        fresh.wrap_valid = false;
+        fresh.rebuild(&d.buf);
+        for l in 0..d.buf.line_count() {
+            assert_eq!(d.view.map.rows_in(l), fresh.map.rows_in(l), "line {l}");
+            assert_eq!(d.view.map.row_of(l), fresh.map.row_of(l));
+        }
+        assert_eq!(d.total_rows(), fresh.map.total_rows());
+    }
+
+    #[test]
+    fn minimap_is_drawn_by_visual_rows_and_the_viewport_is_exact() {
+        use crate::minimap::{drag_to_top_line, layout_for, viewport_rect};
+        let long = "word ".repeat(30);
+        let mut text = String::new();
+        for i in 0..200 {
+            text.push_str(&format!("fn f{i}() {{\n    {long}\n}}\n"));
+        }
+        let mut d = doc(&text);
+        d.rect = crate::ui::Rect::new(0, 0, 800, 400);
+        d.set_word_wrap(true);
+        d.view_prepare(40);
+        let wrapped_rows = d.total_rows();
+        assert!(wrapped_rows > d.buf.line_count(), "wrapping adds rows");
+        for i in 0..100 {
+            click(&mut d, i * 3, 0);
+            d.fold_at_cursor();
+        }
+        d.view_prepare(40);
+        let total = d.total_rows();
+        assert!(total < wrapped_rows, "folds shrink the row count");
+        let l = layout_for(crate::ui::Rect::new(0, 0, 800, 400), 64, total);
+        let vis = d.visible_lines();
+        // scrolled to the end: the marker ends exactly where the content ends
+        d.scroll_direct(1e9);
+        let vp = viewport_rect(&l, total, d.top, vis);
+        let content_end = l.rect.y + (total as f64 * l.line_px as f64).round() as i32;
+        assert_eq!(vp.bottom(), content_end.min(l.rect.bottom()));
+        // scrolled to the start: it starts at the top
+        d.scroll_direct(-1e9);
+        let vp0 = viewport_rect(&l, total, d.top, vis);
+        assert_eq!(vp0.y, l.rect.y);
+        // its height is the visible share of the rows (rounded to the pixel)
+        let want = vis * l.line_px as f64;
+        assert!((vp0.h as f64 - want).abs() <= 1.5, "{} vs {want}", vp0.h);
+        // clicking the middle of the strip centers the viewport on the middle row
+        d.minimap_layout = Some(l);
+        d.minimap_scroll_to(l.rect.y as f64 + l.rect.h as f64 / 2.0);
+        let mid = (total as f64 / 2.0 - vis / 2.0).round();
+        assert!((d.top - mid).abs() <= 2.0, "top {} vs {mid}", d.top);
+        assert_eq!(drag_to_top_line(&l, l.rect.y as f64 + 1.0, total, vis as usize), 0);
     }
 
     #[test]
