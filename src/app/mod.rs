@@ -86,8 +86,6 @@ pub struct Gfx {
 pub struct Layout {
     pub topbar: Rect,
     pub top_btns: Vec<(Rect, crate::app_topbar::MenuKind)>,
-    /// The brand mark in the right corner of the top bar (click: About).
-    pub top_logo: Rect,
     pub status_btns: Vec<(Rect, crate::app_topbar::StatusBtn)>,
     /// Non-clickable bottom bar readouts (memory, position, indentation, language): tooltips only.
     pub status_info: Vec<(Rect, crate::app_topbar::StatusBtn)>,

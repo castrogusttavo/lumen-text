@@ -314,71 +314,6 @@ fn fit(tx: &mut crate::ui::TextCtx, text: &str, max: i32) -> String {
     "…".to_string()
 }
 
-/// Mark colour for a bar background: near-white on dark chrome, near-black on light chrome.
-pub fn mark_color(bg: crate::theme::Rgba) -> crate::theme::Rgba {
-    if bg.luminance() < 0.5 { crate::theme::Rgba(245, 245, 245, 255) } else { crate::theme::Rgba(17, 17, 17, 255) }
-}
-
-/// The logo mark (the three squares of assets/brand/mark.svg) rasterized at `px` x `px`, tinted
-/// `color`, straight alpha `0xAARRGGBB`. Vector-drawn at the target size so it is crisp at any scale.
-pub fn mark_pix(px: u32, color: crate::theme::Rgba) -> crate::mdimg::Pix {
-    use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Transform};
-    // Path coordinates are in the 1646 px artboard; the mark occupies 383..1263 x 381..1261.
-    const POLYS: [&[(f32, f32)]; 3] = [
-        &[
-            (856.846, 787.155),
-            (1195.31, 787.155),
-            (1195.31, 1193.31),
-            (789.154, 1193.31),
-            (789.154, 854.847),
-            (450.692, 854.847),
-            (450.692, 448.693),
-            (856.846, 448.693),
-        ],
-        &[
-            (924.539, 381.0),
-            (1059.92, 381.0),
-            (1059.92, 584.077),
-            (1263.0, 584.077),
-            (1263.0, 719.462),
-            (924.539, 719.462),
-        ],
-        &[
-            (721.461, 1261.0),
-            (586.076, 1261.0),
-            (586.076, 1057.92),
-            (382.999, 1057.92),
-            (382.999, 922.54),
-            (721.461, 922.54),
-        ],
-    ];
-    let mut pm = Pixmap::new(px, px).expect("mark pixmap");
-    let k = px as f32 / 880.0;
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(color.0, color.1, color.2, 255);
-    paint.anti_alias = true;
-    for poly in POLYS {
-        let mut pb = PathBuilder::new();
-        for (i, (x, y)) in poly.iter().enumerate() {
-            let (x, y) = ((x - 382.999) * k, (y - 381.0) * k);
-            if i == 0 { pb.move_to(x, y) } else { pb.line_to(x, y) }
-        }
-        pb.close();
-        if let Some(path) = pb.finish() {
-            pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
-        }
-    }
-    let out = pm
-        .pixels()
-        .iter()
-        .map(|p| {
-            let c = p.demultiply();
-            ((c.alpha() as u32) << 24) | ((c.red() as u32) << 16) | ((c.green() as u32) << 8) | c.blue() as u32
-        })
-        .collect();
-    crate::mdimg::Pix { w: px, h: px, px: out }
-}
-
 impl App {
     // ───────────── bar ─────────────
 
@@ -418,24 +353,12 @@ impl App {
             self.tx.icon(cv, "ui/chevron_down", r.right() - 22, bar.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, bar);
             self.layout.top_btns.push((r, MenuKind::Branch));
         }
-
-        // Brand mark in the right corner: light on dark chrome, dark on light chrome.
-        let side = 18;
-        let lr = Rect::new(bar.right() - 12 - side, bar.y + (bar.h - side) / 2, side, side);
-        let px = crate::ui::sc(side).max(1) as u32;
-        let pix = mark_pix(px, mark_color(c.sidebar_bg));
-        crate::mdimg::blit(cv, crate::ui::sc(lr.x), crate::ui::sc(lr.y), &pix, Rect::new(0, 0, cv.w, cv.h));
-        self.layout.top_logo = Rect::new(lr.x - 4, bar.y + 2, side + 8, bar.h - 4);
     }
 
     /// Mouse press on the bar. Returns true when it was inside the bar.
     pub fn topbar_click(&mut self, x: f64, y: f64) -> bool {
         if !self.layout.topbar.contains(x, y) {
             return false;
-        }
-        if self.layout.top_logo.contains(x, y) {
-            self.update_show_about();
-            return true;
         }
         if let Some((r, kind)) = self.layout.top_btns.iter().find(|(r, _)| r.contains(x, y)).copied() {
             self.open_topmenu(kind, r);
@@ -1541,21 +1464,6 @@ pub fn browse_menu(anchor: Rect, dir: PathBuf) -> TopMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn logo_mark_is_visible_and_contrasts_with_the_bar() {
-        use crate::theme::Rgba;
-        for bg in [Rgba(24, 24, 27, 255), Rgba(30, 30, 30, 255), Rgba(255, 255, 255, 255), Rgba(246, 246, 244, 255)] {
-            let col = mark_color(bg);
-            assert!(col.contrast(bg) >= 4.5, "mark on {bg:?}");
-            for px in [18, 27, 36] {
-                let p = mark_pix(px, col);
-                let solid = p.px.iter().filter(|v| (**v >> 24) == 255).count();
-                assert!(solid as f32 > (px * px) as f32 * 0.25, "mark has body at {px}px");
-                assert_eq!(p.px[0] >> 24, 0, "top-left corner is empty");
-            }
-        }
-    }
 
     const OUT: &str = "refs/heads/main\t*\tAna\t1700000000\tfix: algo\n\
                        refs/heads/feat/x\t \tBeto\t1699990000\tfeat: x\twith tab\n\

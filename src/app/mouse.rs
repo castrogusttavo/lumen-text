@@ -261,7 +261,6 @@ impl App {
             return CursorIcon::ColResize;
         }
         if l.top_btns.iter().any(|(r, _)| r.contains(x, y))
-            || l.top_logo.contains(x, y)
             || l.status_btns.iter().any(|(r, _)| r.contains(x, y))
             || l.tabs.iter().any(|(r, _, _)| r.contains(x, y))
             || l.sidebar_tabs.iter().any(|(r, _)| r.contains(x, y))

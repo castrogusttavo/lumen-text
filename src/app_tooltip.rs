@@ -39,8 +39,6 @@ const MAX_W: i32 = 460;
 /// What the pointer is resting on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TipKey {
-    /// The brand mark in the top bar corner.
-    Logo,
     Top(MenuKind),
     Status(StatusBtn),
     /// A document tab (index into `App::docs`) and its close button.
@@ -322,9 +320,6 @@ impl App {
             return None;
         }
         let l = &self.layout;
-        if l.top_logo.contains(x, y) {
-            return Some((TipKey::Logo, l.top_logo, true));
-        }
         if let Some((r, k)) = l.top_btns.iter().find(|(r, k)| r.contains(x, y) && *k != MenuKind::Browse) {
             return Some((TipKey::Top(*k), *r, true));
         }
@@ -408,7 +403,6 @@ impl App {
                 };
                 t(&label.unwrap_or_default(), None, act_hint(act).map(str::to_string))
             }
-            TipKey::Logo => t("Lumen", None, Some("About this version".to_string())),
             TipKey::Top(MenuKind::Branch) => t("Switch branch", None, self.branch.clone()),
             TipKey::Top(_) => t("Switch project", None, Some(crate::app_topbar::tilde(&self.root))),
             TipKey::Tab(i) => match self.docs.get(i) {
