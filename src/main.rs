@@ -201,6 +201,10 @@ fn main() -> ExitCode {
         instance::Role::Primary(rx) => rx,
     };
     std::thread::spawn(update::refresh_user_integration);
+    // Learn the user's shell PATH now so the first task or test run does not wait for it.
+    std::thread::spawn(|| {
+        tasks::login_path();
+    });
     let mut app = app::App::new(files, root, theme, wake, cfg.clone());
     if scale_arg.is_some() {
         app.dpi.forced = scale_arg;

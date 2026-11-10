@@ -25,6 +25,8 @@ const DETAIL_HEAD: i32 = 88;
 const MIN_PANEL_H: i32 = 340;
 const MAX_RAW: usize = 6000;
 const BAR_W: i32 = 11;
+/// Id of the placeholder shown when a run produced no tests at all (never a real test).
+const RUN_FAILED: &str = "run::failed";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Filter {
@@ -155,6 +157,18 @@ impl TestsState {
             p.remove_temp();
         }
         *self = TestsState::default();
+    }
+
+    /// Drop the "the run failed" placeholder; a new run replaces it.
+    fn drop_placeholder(&mut self) {
+        if self.idx.contains_key(RUN_FAILED) {
+            self.cases.retain(|c| c.id != RUN_FAILED);
+            self.idx = self.cases.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
+        }
+    }
+
+    fn real_failures(&self) -> Vec<Case> {
+        self.cases.iter().filter(|c| c.status == Status::Failed && c.id != RUN_FAILED).cloned().collect()
     }
 
     fn clear_cases(&mut self) {
@@ -381,7 +395,7 @@ impl App {
     }
 
     pub fn tests_run_failed(&mut self) {
-        if !self.tests.cases.iter().any(|c| c.status == Status::Failed) {
+        if self.tests.real_failures().is_empty() {
             return self.say("tests: nothing failed");
         }
         self.tests_start(Last::Failed);
@@ -415,6 +429,11 @@ impl App {
 
     pub fn tests_run_case(&mut self, id: &str) {
         let Some(c) = self.tests.case(id).cloned() else { return };
+        if c.id == RUN_FAILED {
+            // The placeholder is not a test: "run" repeats the whole last run.
+            let last = self.tests.last.clone().unwrap_or(Last::All);
+            return self.tests_start(last);
+        }
         let file = self.tests_case_rel(&c);
         self.tests_start(Last::Test { file, name: c.name.clone(), id: Some(c.id.clone()) });
     }
@@ -455,7 +474,9 @@ impl App {
             self.tests_open_panel();
             return self.say("no test runner found in this project (see test_command in the settings file)");
         };
-        let failed: Vec<Case> = self.tests.cases.iter().filter(|c| c.status == Status::Failed).cloned().collect();
+        let failed = self.tests.real_failures();
+        let last = if last == Last::Failed && failed.is_empty() { Last::All } else { last };
+        self.tests.drop_placeholder();
         let one = match &last {
             Last::Test { id: Some(id), .. } => self.tests.case(id).cloned(),
             _ => None,
@@ -502,7 +523,7 @@ impl App {
             }
             Last::Failed => {
                 for c in &mut self.tests.cases {
-                    if c.status == Status::Failed {
+                    if c.status == Status::Failed && c.id != RUN_FAILED {
                         c.status = Status::Running;
                     }
                 }
@@ -618,7 +639,7 @@ impl App {
             self.tests.upsert(Case {
                 group: "run".into(),
                 name: format!("The test run failed (exit code {code})"),
-                id: "run::failed".into(),
+                id: RUN_FAILED.into(),
                 status: Status::Failed,
                 message: msg,
                 ..Default::default()
@@ -1008,7 +1029,7 @@ impl App {
             "Failed",
             Some("ui/history_rerun"),
             Btn::Secondary,
-            !running && counts.failed > 0,
+            !running && self.tests.cases.iter().any(|c| c.status == Status::Failed && c.id != RUN_FAILED),
             Hit::RunFailed,
             body,
         ) + 8;
@@ -1645,6 +1666,17 @@ mod tests {
         );
         assert_eq!(wrap_line(&"x".repeat(20), 8).len(), 3);
         assert_eq!(wrap_line("a\tb", 20), vec!["a    b".to_string()]);
+    }
+
+    #[test]
+    fn the_failed_run_placeholder_is_never_a_test() {
+        let mut t = TestsState::default();
+        t.upsert(Case { id: RUN_FAILED.into(), status: Status::Failed, ..Default::default() });
+        t.upsert(Case { id: "a::b".into(), status: Status::Failed, ..Default::default() });
+        assert_eq!(t.real_failures().len(), 1);
+        t.drop_placeholder();
+        assert_eq!(t.cases.len(), 1);
+        assert!(t.case("a::b").is_some() && t.case(RUN_FAILED).is_none());
     }
 
     #[test]

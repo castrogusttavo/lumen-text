@@ -273,8 +273,60 @@ pub struct Running {
     pub pid: i32,
 }
 
+/// The `PATH` of the user's own shell. A launcher starts the editor with a bare `PATH`, so tools
+/// installed through nvm, corepack, cargo or pyenv (pnpm, node, ...) would not be found.
+pub fn login_path() -> Option<&'static str> {
+    static P: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let mut child = Command::new(shell)
+            .args(["-ilc", "printf '\\n%s\\n' \"$PATH\""])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut out = child.stdout.take()?;
+        let (tx, rx) = channel();
+        thread::spawn(move || {
+            let mut s = String::new();
+            let _ = std::io::Read::read_to_string(&mut out, &mut s);
+            let _ = tx.send(s);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(4)) {
+            Ok(s) => {
+                let _ = child.wait();
+                let cur = std::env::var("PATH").unwrap_or_default();
+                merge_path(&s, &cur)
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                None
+            }
+        }
+    })
+    .as_deref()
+}
+
+/// The last line of the shell's output that looks like a PATH, then whatever of `current` is missing.
+pub fn merge_path(shell_out: &str, current: &str) -> Option<String> {
+    let line =
+        shell_out.lines().rev().map(str::trim).find(|l| l.starts_with('/') && !l.contains(' ') || l.contains(":/"))?;
+    let mut parts: Vec<&str> = line.split(':').filter(|p| !p.is_empty()).collect();
+    for p in current.split(':').filter(|p| !p.is_empty()) {
+        if !parts.contains(&p) {
+            parts.push(p);
+        }
+    }
+    Some(parts.join(":"))
+}
+
 pub fn spawn(cmd: &str, cwd: &Path, wake: crate::lsp::Wake) -> std::io::Result<Running> {
     let mut c = Command::new("sh");
+    if let Some(p) = login_path() {
+        c.env("PATH", p);
+    }
     c.arg("-c")
         .arg(cmd)
         .current_dir(cwd)
@@ -359,6 +411,13 @@ mod tests {
         // Unknown CSI sequences are dropped, carriage returns ignored.
         let s3 = a.line("a\u{1b}[2Kb\r", D, DIM);
         assert_eq!(s3.iter().map(|x| x.0.as_str()).collect::<String>(), "ab");
+    }
+
+    #[test]
+    fn login_path_keeps_the_shell_order_and_adds_what_is_missing() {
+        let out = "motd noise\n\n/home/u/.nvm/bin:/usr/bin\n";
+        assert_eq!(merge_path(out, "/usr/bin:/opt/x").as_deref(), Some("/home/u/.nvm/bin:/usr/bin:/opt/x"));
+        assert_eq!(merge_path("nothing useful\n", "/usr/bin"), None);
     }
 
     #[test]
