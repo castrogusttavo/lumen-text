@@ -1,13 +1,18 @@
 # Icons
 
-- `ui/`, `file/`, `file_types.json`: rasterized alpha masks of Zed's icons (zed-industries/zed, `assets/icons`; the mapping
-  comes from `crates/theme/src/icon_theme.rs`). See `ZED_ICONS_LICENSES.txt` (parts derive from Lucide, ISC). The rest of the
-  Zed icons follow the Zed repository license — check compatibility before publishing this project.
-- `hugeicons/` (solid-rounded, the default for the platform UI: high contrast at 14-16 px) and `hugeicons_bulk/` (bulk-rounded, two-tone, for large decorative icons >= 20 px): masks derived from **HugeIcons Pro**, which this project's owner licenses. The Pro license
-  does not allow redistributing the icon set: do NOT publish these files in a public repository or package without
-  checking the license (regenerate them locally with `tools/hugeicons-to-svg.mjs` + `tools/gen-icons.py`).
+## Bundled icons (included in this repository)
 
-## HugeIcons Pro (not included in this repository)
+- `ui/`, `file/`, `file_types.json`: alpha masks rasterized from the icon set of
+  [Zed](https://github.com/zed-industries/zed) (`assets/icons`; the file-type mapping follows
+  `crates/theme/src/icon_theme.rs`). Several of these icons derive from [Lucide](https://lucide.dev) (ISC, see
+  `ZED_ICONS_LICENSES.txt`). They are used here by decision of the project maintainer; the upstream icon
+  artwork stays the property of its respective authors.
+- If you are a rights holder and want an icon removed or credited differently, please open an issue and it will be
+  handled promptly.
+
+The masks are generated from SVG by `tools/gen-icons.py` and tinted at runtime, so one file works in every theme.
+
+## HugeIcons Pro (optional, not included)
 
 `assets/icons/hugeicons/` and `assets/icons/hugeicons_bulk/` are git-ignored on purpose: HugeIcons Pro is a
 commercial set that may not be redistributed. A fresh clone works without them, because any missing
@@ -16,3 +21,5 @@ commercial set that may not be redistributed. A fresh clone works without them, 
 If you own a HugeIcons Pro license you can generate the masks locally with your own npm token:
 
     HUGEICONS_TOKEN=<your token> tools/setup-hugeicons.sh
+
+The generated files stay on your machine and must not be committed or redistributed.
