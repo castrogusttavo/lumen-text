@@ -365,13 +365,43 @@ impl Registry {
 
 // ───────────────────────────── finding executables ─────────────────────────────
 
+#[cfg(unix)]
 fn is_exec(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
+/// Windows has no exec bit: a file counts when it exists with an executable extension.
+#[cfg(not(unix))]
+fn is_exec(p: &Path) -> bool {
+    p.is_file()
+        && p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| ["exe", "cmd", "bat", "com"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// `dir/command`, plus the `.exe`/`.cmd`/... variants on Windows.
+fn candidates(dir: &Path, command: &str) -> Vec<PathBuf> {
+    let base = dir.join(command);
+    if cfg!(unix) {
+        return vec![base];
+    }
+    let mut v = vec![base.clone()];
+    for ext in ["exe", "cmd", "bat", "com"] {
+        let mut s = base.clone().into_os_string();
+        s.push(".");
+        s.push(ext);
+        v.push(PathBuf::from(s));
+    }
+    v
+}
+
+fn home_dir() -> Option<std::ffi::OsString> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+}
+
 fn expand_home(s: &str) -> PathBuf {
-    match (s.strip_prefix("~/"), std::env::var_os("HOME")) {
+    match (s.strip_prefix("~/"), home_dir()) {
         (Some(rest), Some(h)) => Path::new(&h).join(rest),
         _ => PathBuf::from(s),
     }
@@ -383,7 +413,7 @@ pub fn search_dirs(root: &Path) -> Vec<PathBuf> {
     if let Some(p) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&p));
     }
-    if let Some(h) = std::env::var_os("HOME") {
+    if let Some(h) = home_dir() {
         let h = PathBuf::from(h);
         for rel in [".local/share/lumen-text/lsp/bin", ".cargo/bin", ".local/bin", "go/bin"] {
             dirs.push(h.join(rel));
@@ -399,7 +429,7 @@ pub fn resolve_command(command: &str, root: &Path) -> Option<PathBuf> {
         let p = if p.is_relative() { root.join(p) } else { p };
         return is_exec(&p).then_some(p);
     }
-    search_dirs(root).into_iter().map(|d| d.join(command)).find(|p| is_exec(p))
+    search_dirs(root).into_iter().flat_map(|d| candidates(&d, command)).find(|p| is_exec(p))
 }
 
 /// Is `command` available when there is no particular project (status listings)?
