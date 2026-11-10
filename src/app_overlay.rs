@@ -6,7 +6,7 @@ use crate::{
     field::TextField,
     fuzzy::fuzzy,
     search::{self, Hit},
-    ui::{Canvas, line_h, Rect},
+    ui::{Canvas, Rect},
 };
 use regex::RegexBuilder;
 use serde_json::Value;
@@ -270,7 +270,6 @@ pub enum Action {
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),
-    None,
 }
 
 #[derive(Clone)]
@@ -307,17 +306,34 @@ pub struct Picker {
 }
 
 pub enum PromptKind {
-    Rename { line: usize, col: usize },
+    Rename {
+        line: usize,
+        col: usize,
+    },
     GotoLine,
-    NewFile { dir: PathBuf },
-    NewDir { dir: PathBuf },
-    RenamePath { from: PathBuf },
-    DeletePath { path: PathBuf },
-    GitDiscard { path: PathBuf },
+    NewFile {
+        dir: PathBuf,
+    },
+    NewDir {
+        dir: PathBuf,
+    },
+    RenamePath {
+        from: PathBuf,
+    },
+    DeletePath {
+        path: PathBuf,
+    },
+    GitDiscard {
+        path: PathBuf,
+    },
     GitCommit,
     /// "Save as" for an untitled document; `rest` (more documents to save) and `then` (the
     /// action that was waiting for the save) continue after it.
-    SaveAs { doc: usize, rest: Vec<usize>, then: Option<crate::app_unsaved::Pending> },
+    SaveAs {
+        doc: usize,
+        rest: Vec<usize>,
+        then: Option<crate::app_unsaved::Pending>,
+    },
 }
 
 pub struct Prompt {
@@ -388,7 +404,15 @@ impl Picker {
 
     pub fn refilter(&mut self) {
         let q = self.field.text.trim().to_string();
-        let filter = matches!(self.kind, PickKind::QuickOpen | PickKind::Commands | PickKind::Symbols | PickKind::CodeActions | PickKind::Themes | PickKind::Choice);
+        let filter = matches!(
+            self.kind,
+            PickKind::QuickOpen
+                | PickKind::Commands
+                | PickKind::Symbols
+                | PickKind::CodeActions
+                | PickKind::Themes
+                | PickKind::Choice
+        );
         if !filter || q.is_empty() {
             self.filtered = (0..self.items.len().min(2000)).map(|i| (i, Vec::new())).collect();
         } else {
@@ -460,7 +484,10 @@ impl App {
     }
 
     pub fn open_commands(&mut self) {
-        let items = COMMANDS.iter().map(|(n, k, c)| Item { label: n.to_string(), detail: k.to_string(), action: Action::Cmd(*c) }).collect();
+        let items = COMMANDS
+            .iter()
+            .map(|(n, k, c)| Item { label: n.to_string(), detail: k.to_string(), action: Action::Cmd(*c) })
+            .collect();
         self.overlay = Overlay::Picker(Picker::new(PickKind::Commands, "Commands", items));
     }
 
@@ -494,7 +521,9 @@ impl App {
     /// Bundled themes plus the user's (`~/.config/lumen-text/themes`, incl. converted Zed themes).
     pub fn theme_names(&self) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(self.assets.join("themes"))
-            .map(|rd| rd.flatten().filter_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().into_owned())).collect())
+            .map(|rd| {
+                rd.flatten().filter_map(|e| e.path().file_stem().map(|s| s.to_string_lossy().into_owned())).collect()
+            })
             .unwrap_or_default();
         names.extend(crate::zedtheme::list_user_themes().into_iter().map(|(n, _)| n));
         names.sort_by_key(|n| n.to_lowercase());
@@ -517,13 +546,18 @@ impl App {
 
     pub fn open_theme_picker(&mut self) {
         self.import_zed_themes();
-        let user: std::collections::HashSet<String> = crate::zedtheme::list_user_themes().into_iter().map(|(n, _)| n).collect();
+        let user: std::collections::HashSet<String> =
+            crate::zedtheme::list_user_themes().into_iter().map(|(n, _)| n).collect();
         let current = self.theme.name.clone();
         let names = self.theme_names();
         let sel = names.iter().position(|n| *n == current).unwrap_or(0);
         let items = names
             .into_iter()
-            .map(|n| Item { detail: if user.contains(&n) { "your theme".into() } else { String::new() }, label: n.clone(), action: Action::Theme(n) })
+            .map(|n| Item {
+                detail: if user.contains(&n) { "your theme".into() } else { String::new() },
+                label: n.clone(),
+                action: Action::Theme(n),
+            })
             .collect();
         self.theme_orig = Some(current);
         let mut p = Picker::new(PickKind::Themes, "Choose theme (arrow keys to preview)", items);
@@ -537,19 +571,19 @@ impl App {
         if p.kind != PickKind::Themes {
             return;
         }
-        if let Some(Item { action: Action::Theme(n), .. }) = p.selected() {
-            if n != self.theme.name {
-                self.set_theme_inner(&n, false);
-            }
+        if let Some(Item { action: Action::Theme(n), .. }) = p.selected()
+            && n != self.theme.name
+        {
+            self.set_theme_inner(&n, false);
         }
     }
 
     /// Esc / click outside the theme picker: put the original theme back.
     pub fn restore_theme_preview(&mut self) {
-        if let Some(orig) = self.theme_orig.take() {
-            if orig != self.theme.name {
-                self.set_theme_inner(&orig, false);
-            }
+        if let Some(orig) = self.theme_orig.take()
+            && orig != self.theme.name
+        {
+            self.set_theme_inner(&orig, false);
         }
     }
 
@@ -578,11 +612,19 @@ impl App {
                     let diags: Vec<crate::doc::Diag> = msgs
                         .iter()
                         .map(|m| {
-                            let a = d.from_lsp_pos(m.line.saturating_sub(1), m.col.saturating_sub(1));
-                            let b = d.from_lsp_pos(m.end_line.saturating_sub(1), m.end_col.saturating_sub(1));
+                            let a = d.pos_from_lsp(m.line.saturating_sub(1), m.col.saturating_sub(1));
+                            let b = d.pos_from_lsp(m.end_line.saturating_sub(1), m.end_col.saturating_sub(1));
                             let (sl, sc) = d.buf.line_col(a);
                             let (el, ec) = d.buf.line_col(b.max(a));
-                            crate::doc::Diag { sl, sc, el, ec, severity: if m.severity >= 2 { 1 } else { 2 }, message: format!("{} (eslint)", m.message), code: m.rule.clone() }
+                            crate::doc::Diag {
+                                sl,
+                                sc,
+                                el,
+                                ec,
+                                severity: if m.severity >= 2 { 1 } else { 2 },
+                                message: format!("{} (eslint)", m.message),
+                                code: m.rule.clone(),
+                            }
                         })
                         .collect();
                     d.set_eslint_diags(diags);
@@ -620,7 +662,12 @@ impl App {
 
     pub fn open_undo_branches(&mut self) {
         let Some(d) = self.docs.get(self.active) else { return };
-        let items: Vec<Item> = d.buf.undo_branches().into_iter().map(|(n, desc)| Item { label: desc, detail: String::new(), action: Action::UndoBranch(n) }).collect();
+        let items: Vec<Item> = d
+            .buf
+            .undo_branches()
+            .into_iter()
+            .map(|(n, desc)| Item { label: desc, detail: String::new(), action: Action::UndoBranch(n) })
+            .collect();
         if items.is_empty() {
             return self.say("no alternative branches from here (use Ctrl+Z and edit to create one)");
         }
@@ -656,7 +703,8 @@ impl App {
         if self.with_server_pub().is_none() {
             return self.say("project symbols need the language server (open a TS/JS file)");
         }
-        self.overlay = Overlay::Picker(Picker::new(PickKind::WorkspaceSymbols, "Symbol in project (type to search)", Vec::new()));
+        self.overlay =
+            Overlay::Picker(Picker::new(PickKind::WorkspaceSymbols, "Symbol in project (type to search)", Vec::new()));
     }
 
     pub fn open_problems(&mut self) {
@@ -683,11 +731,19 @@ impl App {
         if self.docs.is_empty() {
             return;
         }
-        self.overlay = Overlay::Prompt(Prompt { kind: PromptKind::GotoLine, title: "Go to line (line[:column])".into(), field: TextField::default() });
+        self.overlay = Overlay::Prompt(Prompt {
+            kind: PromptKind::GotoLine,
+            title: "Go to line (line[:column])".into(),
+            field: TextField::default(),
+        });
     }
 
     pub fn open_prompt_rename(&mut self, name: &str, line: usize, col: usize) {
-        self.overlay = Overlay::Prompt(Prompt { kind: PromptKind::Rename { line, col }, title: "New symbol name".into(), field: TextField::with(name) });
+        self.overlay = Overlay::Prompt(Prompt {
+            kind: PromptKind::Rename { line, col },
+            title: "New symbol name".into(),
+            field: TextField::with(name),
+        });
     }
 
     pub fn start_search(&mut self) {
@@ -708,7 +764,8 @@ impl App {
         if query.is_empty() {
             return;
         }
-        let (root, generation, tx, wake) = (self.root.clone(), self.search_gen.clone(), self.search_tx.clone(), self.wake());
+        let (root, generation, tx, wake) =
+            (self.root.clone(), self.search_gen.clone(), self.search_tx.clone(), self.wake());
         thread::spawn(move || search::search(&root, &query, case, regex, generation, my_gen, tx, || wake()));
     }
 
@@ -739,11 +796,11 @@ impl App {
                 action: Action::Open(h.path.clone(), Some((h.line, h.col))),
             })
             .collect();
-        if let Overlay::Picker(p) = &mut self.overlay {
-            if p.kind == PickKind::ProjectSearch {
-                p.items.extend(items);
-                p.refilter();
-            }
+        if let Overlay::Picker(p) = &mut self.overlay
+            && p.kind == PickKind::ProjectSearch
+        {
+            p.items.extend(items);
+            p.refilter();
         }
     }
 
@@ -851,7 +908,13 @@ impl App {
             Cmd::NavForward => self.navigate(false),
             Cmd::OpenTerminal => self.toggle_terminal_focus(),
             Cmd::CloseTerminal => self.close_terminal(),
-            Cmd::DebugStart | Cmd::DebugStop | Cmd::ToggleBreakpoint | Cmd::ClearBreakpoints | Cmd::StepOver | Cmd::StepInto | Cmd::StepOut => self.run_debug_cmd(c),
+            Cmd::DebugStart
+            | Cmd::DebugStop
+            | Cmd::ToggleBreakpoint
+            | Cmd::ClearBreakpoints
+            | Cmd::StepOver
+            | Cmd::StepInto
+            | Cmd::StepOut => self.run_debug_cmd(c),
             Cmd::CreateTheme => self.create_custom_theme(),
             Cmd::ImportZedThemes => {
                 let n = self.import_zed_themes();
@@ -919,7 +982,11 @@ impl App {
             Cmd::ToggleGitBlame => self.toggle_git_blame(),
             Cmd::ToggleOutline => {
                 self.sidebar_open = true;
-                self.sidebar_mode = if self.sidebar_mode == crate::app::SidebarMode::Files { crate::app::SidebarMode::Outline } else { crate::app::SidebarMode::Files };
+                self.sidebar_mode = if self.sidebar_mode == crate::app::SidebarMode::Files {
+                    crate::app::SidebarMode::Outline
+                } else {
+                    crate::app::SidebarMode::Files
+                };
                 self.tree.scroll = 0.0;
             }
             Cmd::ExpandSelection => self.expand_selection(),
@@ -927,7 +994,8 @@ impl App {
             Cmd::IncomingCalls => self.call_hierarchy(true),
             Cmd::OutgoingCalls => self.call_hierarchy(false),
             Cmd::FollowSystemTheme => {
-                self.config.appearance = if self.config.appearance == "system" { "fixed".into() } else { "system".into() };
+                self.config.appearance =
+                    if self.config.appearance == "system" { "fixed".into() } else { "system".into() };
                 self.config.save();
                 let on = self.config.appearance == "system";
                 self.say(if on { "theme: following the system" } else { "theme: fixed" });
@@ -1022,21 +1090,19 @@ impl App {
             Nothing,
         }
         let mut paste: Option<String> = None;
-        if ctrl {
-            if let Key::Character(c) = &key {
-                match c.to_lowercase().as_str() {
-                    "v" => paste = Some(self.clip.get()),
-                    "a" => {
-                        match &mut self.overlay {
-                            Overlay::Picker(p) => p.field.select_all(),
-                            Overlay::Prompt(p) => p.field.select_all(),
-                            _ => {}
-                        }
-                        self.request_redraw();
-                        return false;
+        if ctrl && let Key::Character(c) = &key {
+            match c.to_lowercase().as_str() {
+                "v" => paste = Some(self.clip.get()),
+                "a" => {
+                    match &mut self.overlay {
+                        Overlay::Picker(p) => p.field.select_all(),
+                        Overlay::Prompt(p) => p.field.select_all(),
+                        _ => {}
                     }
-                    _ => {}
+                    self.request_redraw();
+                    return false;
                 }
+                _ => {}
             }
         }
 
@@ -1079,7 +1145,11 @@ impl App {
                 if ch { Next::Changed } else { Next::Nothing }
             }
             Key::Named(NamedKey::Delete) => {
-                if field.delete() { Next::Changed } else { Next::Nothing }
+                if field.delete() {
+                    Next::Changed
+                } else {
+                    Next::Nothing
+                }
             }
             Key::Named(NamedKey::ArrowLeft) => {
                 field.left();
@@ -1099,11 +1169,7 @@ impl App {
             }
             Key::Character(c) if alt && (c.as_str() == "c" || c.as_str() == "r") => {
                 if let Overlay::Picker(p) = &mut self.overlay {
-                    if c.as_str() == "c" {
-                        p.case = !p.case
-                    } else {
-                        p.regex = !p.regex
-                    }
+                    if c.as_str() == "c" { p.case = !p.case } else { p.regex = !p.regex }
                 }
                 Next::Changed
             }
@@ -1237,15 +1303,14 @@ impl App {
             }
             Action::GitShow(path, commit, subject) => self.open_diff_commit(&path, &commit, &subject),
             Action::UndoBranch(n) => {
-                if let Some(d) = self.docs.get_mut(self.active) {
-                    if let Some(sel) = d.buf.redo_branch(n) {
-                        d.ed.sel = sel;
-                        d.ed.clear_extra();
-                        d.reveal = true;
-                    }
+                if let Some(d) = self.docs.get_mut(self.active)
+                    && let Some(sel) = d.buf.redo_branch(n)
+                {
+                    d.ed.sel = sel;
+                    d.ed.clear_extra();
+                    d.reveal = true;
                 }
             }
-            Action::None => {}
         }
     }
 
@@ -1278,7 +1343,11 @@ impl App {
             return true;
         }
         let r = self.picker_rect();
-        if x < r.x as f64 || x > r.right() as f64 || y < r.y as f64 || y > (r.y + INPUT_H + PICKER_ROWS as i32 * ROW + 12) as f64 {
+        if x < r.x as f64
+            || x > r.right() as f64
+            || y < r.y as f64
+            || y > (r.y + INPUT_H + PICKER_ROWS as i32 * ROW + 12) as f64
+        {
             self.overlay = Overlay::None;
             self.restore_theme_preview();
         }
@@ -1380,9 +1449,10 @@ impl App {
         }
         if query_changed {
             let head = d.ed.sel.start();
-            f.current = f.matches.iter().position(|&(a, _)| a >= head).or(if f.matches.is_empty() { None } else { Some(0) });
+            f.current =
+                f.matches.iter().position(|&(a, _)| a >= head).or(if f.matches.is_empty() { None } else { Some(0) });
         } else if let Some(c) = f.current {
-            f.current = Some(c.min(f.matches.len().saturating_sub(1))).filter(|_| !f.matches.is_empty());
+            f.current = if f.matches.is_empty() { None } else { Some(c.min(f.matches.len() - 1)) };
         }
     }
 
@@ -1394,7 +1464,13 @@ impl App {
         }
         let n = f.matches.len();
         let cur = match f.current {
-            Some(c) => if forward { (c + 1) % n } else { (c + n - 1) % n },
+            Some(c) => {
+                if forward {
+                    (c + 1) % n
+                } else {
+                    (c + n - 1) % n
+                }
+            }
             None => 0,
         };
         f.current = Some(cur);
@@ -1451,19 +1527,17 @@ impl App {
         let alt = self.mods.alt_key();
         let key = ev.key.clone();
         let mut paste = None;
-        if ctrl {
-            if let Key::Character(c) = &key {
-                match c.to_lowercase().as_str() {
-                    "v" => paste = Some(self.clip.get()),
-                    "a" => {
-                        if let Some(f) = self.find.as_mut() {
-                            if f.in_replace { f.replace.select_all() } else { f.field.select_all() }
-                        }
-                        return false;
+        if ctrl && let Key::Character(c) = &key {
+            match c.to_lowercase().as_str() {
+                "v" => paste = Some(self.clip.get()),
+                "a" => {
+                    if let Some(f) = self.find.as_mut() {
+                        if f.in_replace { f.replace.select_all() } else { f.field.select_all() }
                     }
-                    "f" | "h" => return false, // handled globally (re-focus)
-                    _ => {}
+                    return false;
                 }
+                "f" | "h" => return false, // handled globally (re-focus)
+                _ => {}
             }
         }
         if let Key::Named(NamedKey::Enter) = &key {
@@ -1507,7 +1581,11 @@ impl App {
                 let field = if f.in_replace { &mut f.replace } else { &mut f.field };
                 match &key {
                     Key::Named(NamedKey::Backspace) => {
-                        if ctrl { field.delete_word() } else { field.backspace() };
+                        if ctrl {
+                            field.delete_word()
+                        } else {
+                            field.backspace()
+                        };
                     }
                     Key::Named(NamedKey::Delete) => {
                         field.delete();
@@ -1531,15 +1609,14 @@ impl App {
                 // Typing in the search field jumps to the first match from the cursor.
                 self.refresh_find();
                 let jump = self.find.as_ref().is_some_and(|f| !f.in_replace);
-                if jump {
-                    if let Some(f) = self.find.as_ref() {
-                        if let Some(c) = f.current {
-                            let (a, b) = f.matches[c];
-                            if let Some(d) = self.docs.get_mut(self.active) {
-                                d.ed.sel = crate::buffer::Sel { anchor: a, head: b };
-                                d.reveal = true;
-                            }
-                        }
+                if jump
+                    && let Some(f) = self.find.as_ref()
+                    && let Some(c) = f.current
+                {
+                    let (a, b) = f.matches[c];
+                    if let Some(d) = self.docs.get_mut(self.active) {
+                        d.ed.sel = crate::buffer::Sel { anchor: a, head: b };
+                        d.reveal = true;
                     }
                 }
             }
@@ -1562,7 +1639,15 @@ impl App {
         let fg = self.theme.foreground;
         let dim = c.tab_inactive_fg;
         let field_w = w - 168;
-        let mut field = |cv: &mut Canvas, tx: &mut crate::ui::TextCtx, y: i32, text: &str, hint: &str, cursor: usize, focus: bool, bad: bool, selall: bool| {
+        let field = |cv: &mut Canvas,
+                     tx: &mut crate::ui::TextCtx,
+                     y: i32,
+                     text: &str,
+                     hint: &str,
+                     cursor: usize,
+                     focus: bool,
+                     bad: bool,
+                     selall: bool| {
             let b = Rect::new(r.x + 8, y, field_w, 28);
             cv.card(b, 7, c.input_bg, if focus { c.accent } else { c.border });
             let (shown, col) = if text.is_empty() { (hint, dim) } else { (text, if bad { c.error } else { fg }) };
@@ -1577,9 +1662,25 @@ impl App {
                 cv.fill_clip(Rect::new(x, b.y + 6, 1, 16), fg, b);
             }
         };
-        field(cv, &mut self.tx, r.y + 7, &f.field.text, "Search", f.field.cursor, f.focused && !f.in_replace, !f.valid, f.field.sel_all);
+        field(
+            cv,
+            &mut self.tx,
+            r.y + 7,
+            &f.field.text,
+            "Search",
+            f.field.cursor,
+            f.focused && !f.in_replace,
+            !f.valid,
+            f.field.sel_all,
+        );
         let count = match (f.matches.len(), f.current) {
-            (0, _) => if f.field.text.is_empty() { String::new() } else { "no results".to_string() },
+            (0, _) => {
+                if f.field.text.is_empty() {
+                    String::new()
+                } else {
+                    "no results".to_string()
+                }
+            }
             (n, Some(c)) => format!("{} de {}", c + 1, n),
             (n, None) => format!("{n}"),
         };
@@ -1592,7 +1693,17 @@ impl App {
         x += 26;
         self.tx.draw_ui(cv, x, ty, &count, dim, r, false);
         if f.show_replace {
-            field(cv, &mut self.tx, r.y + 43, &f.replace.text, "Substituir", f.replace.cursor, f.focused && f.in_replace, false, f.replace.sel_all);
+            field(
+                cv,
+                &mut self.tx,
+                r.y + 43,
+                &f.replace.text,
+                "Substituir",
+                f.replace.cursor,
+                f.focused && f.in_replace,
+                false,
+                f.replace.sel_all,
+            );
             self.tx.draw_ui(cv, r.x + 8 + field_w + 10, r.y + 43 + 5, "Enter · Ctrl+Alt+Enter all", dim, r, false);
         }
     }
@@ -1636,10 +1747,15 @@ impl App {
                 cv.card(r, 16, c.widget_bg, c.border);
                 // Input row.
                 self.tx.icon(cv, "hugeicons/search", r.x + 18, r.y + (INPUT_H - 16) / 2, 16, dim, r);
-                let (shown_text, col) = if p.field.text.is_empty() { (p.title.as_str(), dim) } else { (p.field.text.as_str(), fg) };
+                let (shown_text, col) =
+                    if p.field.text.is_empty() { (p.title.as_str(), dim) } else { (p.field.text.as_str(), fg) };
                 if p.field.sel_all {
                     let w = self.tx.ui_width(&p.field.text, false);
-                    cv.fill_round(Rect::new(r.x + 44, r.y + (INPUT_H - 24) / 2, w + 4, 24), 4, c.accent.with_alpha(0x50));
+                    cv.fill_round(
+                        Rect::new(r.x + 44, r.y + (INPUT_H - 24) / 2, w + 4, 24),
+                        4,
+                        c.accent.with_alpha(0x50),
+                    );
                 }
                 self.tx.draw_ui(cv, r.x + 46, r.y + (INPUT_H - 18) / 2, shown_text, col, r, false);
                 if p.kind == PickKind::ProjectSearch {
@@ -1657,7 +1773,9 @@ impl App {
                 // px, one more row shows at the bottom and everything is clipped to the list.
                 let off = self.region_off(crate::scrollreg::Reg::Picker, ROW);
                 let lclip = Rect::new(r.x, r.y + INPUT_H, r.w, list_h);
-                for (k, (idx, pos)) in p.filtered.iter().enumerate().skip(p.scroll).take(PICKER_ROWS + (off > 0) as usize) {
+                for (k, (idx, pos)) in
+                    p.filtered.iter().enumerate().skip(p.scroll).take(PICKER_ROWS + (off > 0) as usize)
+                {
                     let it = &p.items[*idx];
                     let y = r.y + INPUT_H + 6 + (k - p.scroll) as i32 * ROW - off;
                     let row_full = Rect::new(r.x + 8, y, r.w - 16, ROW);
@@ -1666,25 +1784,45 @@ impl App {
                         cv.fill_round_clip(row_full, 10, c.list_active_bg, lclip);
                     }
                     let avail = rr.w - 28;
-                    let detail_w = if matches!(p.kind, PickKind::Commands | PickKind::Themes | PickKind::Choice) && !it.detail.is_empty() { self.tx.ui_width(&it.detail, false) + 20 } else { 0 };
+                    let detail_w = if matches!(p.kind, PickKind::Commands | PickKind::Themes | PickKind::Choice)
+                        && !it.detail.is_empty()
+                    {
+                        self.tx.ui_width(&it.detail, false) + 20
+                    } else {
+                        0
+                    };
                     // Label, shortened from the left when it does not fit (paths), matches highlighted.
                     let label: Vec<char> = it.label.chars().collect();
                     let mut skip = 0;
-                    let budget = avail - detail_w - if p.kind == PickKind::QuickOpen || p.kind == PickKind::Locations || p.kind == PickKind::ProjectSearch { 0 } else { 0 };
-                    let max_label = if it.detail.is_empty() || p.kind == PickKind::Commands { budget } else { budget * 3 / 5 };
-                    while skip < label.len() && self.tx.ui_width(&label[skip..].iter().collect::<String>(), false) > max_label {
+                    let budget = avail - detail_w;
+                    let max_label =
+                        if it.detail.is_empty() || p.kind == PickKind::Commands { budget } else { budget * 3 / 5 };
+                    while skip < label.len()
+                        && self.tx.ui_width(&label[skip..].iter().collect::<String>(), false) > max_label
+                    {
                         skip += (label.len() - skip).div_ceil(8).max(1);
                     }
-                    let dir_end = if p.kind == PickKind::QuickOpen { label.iter().rposition(|ch| *ch == '/').map_or(0, |i| i + 1) } else { 0 };
+                    let dir_end = if p.kind == PickKind::QuickOpen {
+                        label.iter().rposition(|ch| *ch == '/').map_or(0, |i| i + 1)
+                    } else {
+                        0
+                    };
                     // Match colour: the accent when it has a hue of its own, else the plain text colour.
-                    let chroma = c.accent_text.0.max(c.accent_text.1).max(c.accent_text.2) - c.accent_text.0.min(c.accent_text.1).min(c.accent_text.2);
+                    let chroma = c.accent_text.0.max(c.accent_text.1).max(c.accent_text.2)
+                        - c.accent_text.0.min(c.accent_text.1).min(c.accent_text.2);
                     let mcol = if chroma >= 40 { c.accent_text } else { fg };
                     let mut pieces: Vec<(String, crate::theme::Rgba)> = Vec::new();
                     if skip > 0 {
                         pieces.push(("…".to_string(), dim));
                     }
                     for (i, ch) in label.iter().enumerate().skip(skip) {
-                        let col = if pos.contains(&i) { mcol } else if i < dir_end { dim } else { fg };
+                        let col = if pos.contains(&i) {
+                            mcol
+                        } else if i < dir_end {
+                            dim
+                        } else {
+                            fg
+                        };
                         match pieces.last_mut() {
                             Some((s, pc)) if *pc == col => s.push(*ch),
                             _ => pieces.push((ch.to_string(), col)),
@@ -1694,7 +1832,7 @@ impl App {
                     self.tx.draw_ui_pieces(cv, rr.x + 14, ly, &pieces, rr, false);
                     // Matched letters: an underline in the text colour on top of the accent colour, so
                     // they stand out on the selected / hovered row without relying on colour alone.
-                    let mut i = skip.max(0);
+                    let mut i = skip;
                     while i < label.len() {
                         if !pos.contains(&i) {
                             i += 1;
@@ -1704,7 +1842,9 @@ impl App {
                         while j < label.len() && pos.contains(&j) {
                             j += 1;
                         }
-                        let pre: String = std::iter::repeat_n('…', (skip > 0) as usize).chain(label[skip..i].iter().copied()).collect();
+                        let pre: String = std::iter::repeat_n('…', (skip > 0) as usize)
+                            .chain(label[skip..i].iter().copied())
+                            .collect();
                         let run: String = label[i..j].iter().collect();
                         let x0 = rr.x + 14 + self.tx.ui_width(&pre, false);
                         cv.fill_clip(Rect::new(x0, ly + 17, self.tx.ui_width(&run, false), 1), mcol, rr);
@@ -1715,7 +1855,8 @@ impl App {
                             let dx = rr.right() - detail_w + 8;
                             self.tx.draw_ui(cv, dx, ly, &it.detail, dim, rr, false);
                         } else {
-                            let used = self.tx.ui_width(&pieces.iter().map(|(s, _)| s.as_str()).collect::<String>(), false);
+                            let used =
+                                self.tx.ui_width(&pieces.iter().map(|(s, _)| s.as_str()).collect::<String>(), false);
                             let dx = rr.x + 14 + used + 16;
                             let room = rr.right() - dx - 10;
                             let mut det = it.detail.clone();
@@ -1729,16 +1870,30 @@ impl App {
                 }
                 self.layout.overlay_rows = rows;
                 if p.filtered.len() > PICKER_ROWS {
-                    picker_bar = Some((Rect::new(r.x, r.y + INPUT_H, r.w, list_h), p.filtered.len() as f64, p.scroll as f64));
+                    picker_bar =
+                        Some((Rect::new(r.x, r.y + INPUT_H, r.w, list_h), p.filtered.len() as f64, p.scroll as f64));
                 }
                 if p.filtered.is_empty() {
-                    let msg = if p.kind == PickKind::ProjectSearch && p.field.text.is_empty() { "Type to search the project" } else { "No results" };
+                    let msg = if p.kind == PickKind::ProjectSearch && p.field.text.is_empty() {
+                        "Type to search the project"
+                    } else {
+                        "No results"
+                    };
                     self.tx.draw_ui(cv, r.x + 16, r.y + INPUT_H + 10, msg, dim, r, false);
                 }
             }
         }
         if let Some((area, total, pos)) = picker_bar {
-            self.region_bar(cv, crate::scrollreg::Reg::Picker, area.inset(0), total, PICKER_ROWS as f64, pos, ROW as f64, true);
+            self.region_bar(
+                cv,
+                crate::scrollreg::Reg::Picker,
+                area.inset(0),
+                total,
+                PICKER_ROWS as f64,
+                pos,
+                ROW as f64,
+                true,
+            );
         }
     }
 }

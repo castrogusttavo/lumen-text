@@ -81,7 +81,10 @@ impl App {
         let user = self.keymap.entries();
         let mut kb = KeybindsPage::new(rows, user);
         // Aliases (`ctrl+y` for Redo, `ctrl+k s` for Save, ...): every default row but a command's first.
-        let aliases = keymap::DEFAULTS.iter().filter(|(c, id)| keymap::default_combo(id) != Some(*c)).map(|(c, id)| (c.to_string(), id.to_string()));
+        let aliases = keymap::DEFAULTS
+            .iter()
+            .filter(|(c, id)| keymap::default_combo(id) != Some(*c))
+            .map(|(c, id)| (c.to_string(), id.to_string()));
         kb.add_default_aliases(aliases);
         self.overlay = Overlay::Settings(Box::new(Modal::new(sp, kb, page)));
     }
@@ -175,7 +178,11 @@ impl App {
     /// right away. `LUMEN_THEME` keeps winning, as it does at startup.
     fn reload_theme(&mut self) {
         let path = std::env::var_os("LUMEN_THEME").map(std::path::PathBuf::from).unwrap_or_else(|| {
-            let name = self.config.resolve_theme(if self.config.appearance == "system" { crate::config::detect_dark() } else { None });
+            let name = self.config.resolve_theme(if self.config.appearance == "system" {
+                crate::config::detect_dark()
+            } else {
+                None
+            });
             self.theme_path(&name)
         });
         match crate::theme::Theme::load(&path) {
@@ -204,7 +211,11 @@ impl App {
             "lsp_narrow" => self.config.lsp_narrow = b.unwrap_or(true),
             "code_lens_refs" | "code_lens_impls" => {
                 let on = b.unwrap_or(true);
-                if key == "code_lens_refs" { self.config.code_lens_refs = on } else { self.config.code_lens_impls = on }
+                if key == "code_lens_refs" {
+                    self.config.code_lens_refs = on
+                } else {
+                    self.config.code_lens_impls = on
+                }
                 for d in &mut self.docs {
                     d.lens_refs = self.config.code_lens_refs;
                     d.lens_impls = self.config.code_lens_impls;
@@ -225,7 +236,11 @@ impl App {
             }
             "inlay_hints_params" | "inlay_hints_types" => {
                 let on = b.unwrap_or(true);
-                if key == "inlay_hints_params" { self.config.inlay_hints_params = on } else { self.config.inlay_hints_types = on }
+                if key == "inlay_hints_params" {
+                    self.config.inlay_hints_params = on
+                } else {
+                    self.config.inlay_hints_types = on
+                }
                 self.refresh_inlay_hints();
             }
             "font_size" => {
@@ -237,7 +252,8 @@ impl App {
                 self.follow_system_theme();
             }
             "theme_chrome" => {
-                self.config.theme_chrome = if s.as_deref() == Some("theme") { "theme".into() } else { "derived".into() };
+                self.config.theme_chrome =
+                    if s.as_deref() == Some("theme") { "theme".into() } else { "derived".into() };
                 crate::theme::set_theme_chrome(self.config.own_chrome());
                 self.reload_theme();
             }
@@ -249,7 +265,11 @@ impl App {
             }
             "theme_light" | "theme_dark" => {
                 if let Some(n) = s {
-                    if key == "theme_light" { self.config.theme_light = n } else { self.config.theme_dark = n }
+                    if key == "theme_light" {
+                        self.config.theme_light = n
+                    } else {
+                        self.config.theme_dark = n
+                    }
                     self.follow_system_theme();
                 }
             }
@@ -268,7 +288,8 @@ impl App {
                 }
             }
             "minimap_style" => {
-                self.config.minimap_style = if s.as_deref() == Some("normal") { "normal".into() } else { "subtle".into() };
+                self.config.minimap_style =
+                    if s.as_deref() == Some("normal") { "normal".into() } else { "subtle".into() };
                 crate::minimap::set_style(crate::minimap::Style::from_name(&self.config.minimap_style));
             }
             "word_wrap" => {
@@ -299,7 +320,9 @@ impl App {
                     }
                 }
             }
-            "ram_display" => self.config.ram_display = if s.as_deref() == Some("short") { "short".into() } else { "long".into() },
+            "ram_display" => {
+                self.config.ram_display = if s.as_deref() == Some("short") { "short".into() } else { "long".into() }
+            }
             k if k.starts_with("status_pos_") => {
                 // Stepper of an item's position among the visible ones of its group: each step moves
                 // it past one visible neighbour (hidden items are hopped over), live.
@@ -325,7 +348,9 @@ impl App {
                 self.config.tab_width = n;
                 self.set_default_tab_width(n);
             }
-            "git_pull_strategy" => self.config.git_pull_strategy = crate::config::clean_pull_strategy(s.as_deref().unwrap_or("")),
+            "git_pull_strategy" => {
+                self.config.git_pull_strategy = crate::config::clean_pull_strategy(s.as_deref().unwrap_or(""))
+            }
             _ => return,
         }
         self.config.save();

@@ -158,7 +158,12 @@ fn parse_combo(tok: &str) -> Option<(ModifiersState, KeyIn)> {
     let mut mods = ModifiersState::empty();
     let mut parts: Vec<&str> = tok.split('+').collect();
     // A literal '+' key ends with "++" and splits into an empty last part.
-    let last = if tok.ends_with("++") || tok == "+" { parts.truncate(parts.len().saturating_sub(2)); "+".to_string() } else { parts.pop()?.to_string() };
+    let last = if tok.ends_with("++") || tok == "+" {
+        parts.truncate(parts.len().saturating_sub(2));
+        "+".to_string()
+    } else {
+        parts.pop()?.to_string()
+    };
     for m in parts {
         match m {
             "ctrl" => mods |= ModifiersState::CONTROL,

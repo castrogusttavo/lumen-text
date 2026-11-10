@@ -7,9 +7,8 @@ use crate::{
     buffer::{Buffer, EditKind},
     clipboard::Clipboard,
     doc::{Doc, DrawOpts},
-    editor::visual_col,
     git,
-    highlight::{SharedTokenizer, make_tokenizer, language_for, comment_prefix, Highlighter},
+    highlight::{Highlighter, SharedTokenizer, comment_prefix, language_for, make_tokenizer},
     lsp::Lsp,
     mem,
     search::Hit,
@@ -225,7 +224,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(files: Vec<(PathBuf, Option<(usize, usize)>)>, root: PathBuf, theme: Theme, wake_fn: crate::lsp::Wake, config: crate::config::Config) -> Self {
+    pub fn new(
+        files: Vec<(PathBuf, Option<(usize, usize)>)>,
+        root: PathBuf,
+        theme: Theme,
+        wake_fn: crate::lsp::Wake,
+        config: crate::config::Config,
+    ) -> Self {
         let mut tx = TextCtx::new(None);
         crate::minimap::set_style(crate::minimap::Style::from_name(&config.minimap_style));
         crate::editor::set_default_tab_w(config.tab_width);
@@ -437,12 +442,12 @@ impl App {
             self.docs.len() - 1
         };
         self.activate(idx);
-        if let Some((line, col)) = at {
-            if let Some(d) = self.docs.get_mut(idx) {
-                let p = d.buf.pos(line, col);
-                d.ed.click(&mut d.buf, p, false);
-                d.reveal = true;
-            }
+        if let Some((line, col)) = at
+            && let Some(d) = self.docs.get_mut(idx)
+        {
+            let p = d.buf.pos(line, col);
+            d.ed.click(&mut d.buf, p, false);
+            d.reveal = true;
         }
         self.tree.reveal(&path);
         Some(idx)
@@ -477,7 +482,9 @@ impl App {
 
     pub fn navigate(&mut self, back: bool) {
         let target = if back { self.nav_back.pop() } else { self.nav_fwd.pop() };
-        let Some((path, at)) = target else { return self.say(if back { "no previous position" } else { "no next position" }) };
+        let Some((path, at)) = target else {
+            return self.say(if back { "no previous position" } else { "no next position" });
+        };
         if let Some(h) = self.here() {
             if back { self.nav_fwd.push(h) } else { self.nav_back.push(h) }
         }
@@ -667,7 +674,9 @@ impl App {
             }
             self.docs[i].eslint_due = None;
             let Some(path) = self.docs[i].path().map(Path::to_path_buf) else { continue };
-            if !matches!(self.docs[i].lang, Some("typescript" | "tsx" | "javascript" | "jsx")) || self.eslint_busy.contains(&path) {
+            if !matches!(self.docs[i].lang, Some("typescript" | "tsx" | "javascript" | "jsx"))
+                || self.eslint_busy.contains(&path)
+            {
                 continue;
             }
             let Some((root, bin)) = crate::eslint::detect(&path) else { continue };
@@ -744,7 +753,11 @@ impl App {
         let base = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))?;
-        let h = self.root.to_string_lossy().bytes().fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
+        let h = self
+            .root
+            .to_string_lossy()
+            .bytes()
+            .fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
         Some(base.join("lumen-text").join(format!("session-{h:016x}.json")))
     }
 
@@ -837,7 +850,8 @@ impl App {
         let card_h = (avail - CARD_M - panel_h - gap).max(0);
         self.layout.card = Rect::new(sb + CARD_M, TOP_H + TAB_H + bread_h, (w - sb - 2 * CARD_M - rw).max(0), card_h);
         self.layout.editor = self.layout.card;
-        self.layout.panel = Rect::new(sb + CARD_M, TOP_H + TAB_H + bread_h + card_h + gap, (w - sb - 2 * CARD_M - rw).max(0), panel_h);
+        self.layout.panel =
+            Rect::new(sb + CARD_M, TOP_H + TAB_H + bread_h + card_h + gap, (w - sb - 2 * CARD_M - rw).max(0), panel_h);
         self.layout.status = Rect::new(0, h - STATUS_H, w, STATUS_H);
         self.split_layout();
     }
@@ -897,10 +911,21 @@ impl App {
         busy |= self.draw_split_other(cv, dt);
         if let Some(d) = self.docs.get_mut(self.active) {
             d.cell_w = self.tx.cell_w;
-            busy |= d.draw(cv, &mut self.tx, &self.theme, editor, &DrawOpts { dt, find: &find_ranges, find_cur, focused: true });
+            busy |= d.draw(
+                cv,
+                &mut self.tx,
+                &self.theme,
+                editor,
+                &DrawOpts { dt, find: &find_ranges, find_cur, focused: true },
+            );
         } else {
             cv.fill(editor, self.theme.background);
-            let hint = [("Ctrl+P", "open file"), ("Ctrl+Shift+P", "commands"), ("Ctrl+Shift+F", "search in project"), ("Ctrl+B", "show/hide the sidebar")];
+            let hint = [
+                ("Ctrl+P", "open file"),
+                ("Ctrl+Shift+P", "commands"),
+                ("Ctrl+Shift+F", "search in project"),
+                ("Ctrl+B", "show/hide the sidebar"),
+            ];
             let x = editor.x + editor.w / 2 - 150;
             let mut y = editor.y + editor.h / 2 - 56;
             for (k, v) in hint {
@@ -947,7 +972,10 @@ impl App {
         let mut geo: Vec<(usize, i32, i32)> = Vec::with_capacity(order.len());
         let mut x = 6;
         for &i in &order {
-            let w = self.tx.ui_width(&self.docs[i].name, false) + 34 + 34 + 11 * pane_docs.iter().filter(|p| p.0 == i).count() as i32;
+            let w = self.tx.ui_width(&self.docs[i].name, false)
+                + 34
+                + 34
+                + 11 * pane_docs.iter().filter(|p| p.0 == i).count() as i32;
             geo.push((i, x, w));
             x += w;
         }
@@ -1007,12 +1035,24 @@ impl App {
             // Split editor: an underline and the pane number for every pane that shows this tab, in
             // the accent color for the focused pane and gray for the others.
             for (k, &(_, focused)) in pane_docs.iter().enumerate().filter(|(_, p)| p.0 == i) {
-                let (col, label) = if focused { (c.accent, c.accent_text) } else { (c.tab_inactive_fg.with_alpha(0x80), c.tab_inactive_fg) };
+                let (col, label) = if focused {
+                    (c.accent, c.accent_text)
+                } else {
+                    (c.tab_inactive_fg.with_alpha(0x80), c.tab_inactive_fg)
+                };
                 let seg = (r.w - 28) / pane_docs.iter().filter(|p| p.0 == i).count() as i32;
                 let nth = pane_docs.iter().take(k).filter(|p| p.0 == i).count() as i32;
                 cv.fill_clip(Rect::new(r.x + 14 + nth * seg, bar.bottom() - 5, (seg - 2).max(4), 2), col, strip);
                 let name_w = self.tx.ui_width(&d.name, active);
-                self.tx.draw_ui(cv, r.x + lead + name_w + 6 + nth * 11, ty + 1, &(k + 1).to_string(), label, strip, focused);
+                self.tx.draw_ui(
+                    cv,
+                    r.x + lead + name_w + 6 + nth * 11,
+                    ty + 1,
+                    &(k + 1).to_string(),
+                    label,
+                    strip,
+                    focused,
+                );
             }
             self.layout.tabs.push((r.intersect(&strip), close.intersect(&strip), i));
         }
@@ -1020,12 +1060,20 @@ impl App {
         let bg = self.theme.chrome.tabbar_bg;
         if self.tabs_scroll > 0.5 {
             for k in 0..14 {
-                cv.fill_clip(Rect::new(strip.x + k, bar.y, 1, bar.h), bg.with_alpha((0xd0 - k * 14).max(0) as u8), strip);
+                cv.fill_clip(
+                    Rect::new(strip.x + k, bar.y, 1, bar.h),
+                    bg.with_alpha((0xd0 - k * 14).max(0) as u8),
+                    strip,
+                );
             }
         }
         if self.tabs_scroll < self.tabs_max - 0.5 {
             for k in 0..14 {
-                cv.fill_clip(Rect::new(strip.right() - 1 - k, bar.y, 1, bar.h), bg.with_alpha((0xd0 - k * 14).max(0) as u8), strip);
+                cv.fill_clip(
+                    Rect::new(strip.right() - 1 - k, bar.y, 1, bar.h),
+                    bg.with_alpha((0xd0 - k * 14).max(0) as u8),
+                    strip,
+                );
             }
         }
     }
@@ -1038,7 +1086,15 @@ impl App {
         self.layout.sidebar_tabs.clear();
         self.sidebar_bar = None;
         // One quiet title: the structure outline moved to the command palette.
-        self.tx.draw_ui(cv, r.x + 16, r.y + (TAB_H - 18) / 2 + 2, if self.sidebar_mode == SidebarMode::Outline { "Outline" } else { "Files" }, c.tab_inactive_fg, r, true);
+        self.tx.draw_ui(
+            cv,
+            r.x + 16,
+            r.y + (TAB_H - 18) / 2 + 2,
+            if self.sidebar_mode == SidebarMode::Outline { "Outline" } else { "Files" },
+            c.tab_inactive_fg,
+            r,
+            true,
+        );
         if self.sidebar_mode == SidebarMode::Outline {
             self.draw_outline(cv);
             return self.draw_sidebar_bar(cv);
@@ -1114,7 +1170,15 @@ impl App {
         let body = Rect::new(r.x, top, r.w - 1, r.h - TAB_H);
         let Some(d) = self.docs.get(self.active) else { return };
         if d.symbols.is_empty() {
-            self.tx.draw_ui(cv, r.x + 18, top + 10, "No outline (needs the TS/JS server)", c.tab_inactive_fg, body, false);
+            self.tx.draw_ui(
+                cv,
+                r.x + 18,
+                top + 10,
+                "No outline (needs the TS/JS server)",
+                c.tab_inactive_fg,
+                body,
+                false,
+            );
             return;
         }
         let (cur_line, _) = d.buf.line_col(d.ed.head());
@@ -1131,7 +1195,23 @@ impl App {
                 cv.fill_round(body.intersect(&rr), 7, c.list_hover_bg);
             }
             let x = r.x + hx + 18 + s.depth as i32 * 14;
-            let letter = match s.kind { 5 => "C", 6 => "m", 7 => "p", 8 => "f", 9 => "c", 10 => "E", 11 => "I", 12 => "ƒ", 13 => "v", 14 => "k", 2 => "M", 22 => "e", 23 => "S", 26 => "T", _ => "·" };
+            let letter = match s.kind {
+                5 => "C",
+                6 => "m",
+                7 => "p",
+                8 => "f",
+                9 => "c",
+                10 => "E",
+                11 => "I",
+                12 => "ƒ",
+                13 => "v",
+                14 => "k",
+                2 => "M",
+                22 => "e",
+                23 => "S",
+                26 => "T",
+                _ => "·",
+            };
             self.tx.draw_ui(cv, x, y + (ROW_H - 18) / 2, letter, c.accent_text, body, true);
             self.tx.draw_ui(cv, x + 18, y + (ROW_H - 18) / 2, &s.name, c.sidebar_fg, body, false);
         }
@@ -1148,7 +1228,8 @@ impl App {
         let (dim, fg) = (c.tab_inactive_fg, c.tab_active_fg);
         let rel = d.path().map(|p| self.rel(p)).unwrap_or_else(|| d.name.clone());
         let (line, _) = d.buf.line_col(d.ed.head());
-        let mut chain: Vec<(String, usize, usize)> = d.symbol_chain(line).iter().map(|s| (s.name.clone(), s.sel_l, s.sel_c)).collect();
+        let mut chain: Vec<(String, usize, usize)> =
+            d.symbol_chain(line).iter().map(|s| (s.name.clone(), s.sel_l, s.sel_c)).collect();
         if chain.is_empty() && d.buf.line_count() > crate::bigfile::BIG_LINES {
             // Big file with no (or a trimmed) outline: derive the chain from indentation.
             chain = d.big.chain(&d.buf, line, d.version).into_iter().map(|s| (s.name, s.sel_l, s.sel_c)).collect();
@@ -1161,7 +1242,9 @@ impl App {
             let w = self.tx.ui_width(p, false);
             let last = i + 1 == parts.len();
             self.tx.draw_ui(cv, x, y, p, if last && chain.is_empty() { fg } else { dim }, r, false);
-            self.layout.crumbs.push((Rect::new(x - 3, r.y, w + 6, r.h), Crumb::Path(self.root.join(parts[..=i].join("/")))));
+            self.layout
+                .crumbs
+                .push((Rect::new(x - 3, r.y, w + 6, r.h), Crumb::Path(self.root.join(parts[..=i].join("/")))));
             x += w;
             if !last || !chain.is_empty() {
                 self.tx.draw_ui(cv, x + 6, y, ">", dim.with_alpha(0x90), r, false);
@@ -1187,7 +1270,9 @@ impl App {
     }
 
     fn crumb_click(&mut self, x: f64, y: f64) -> bool {
-        let Some((_, cr)) = self.layout.crumbs.iter().find(|(r, _)| r.contains(x, y)).cloned() else { return self.layout.bread.contains(x, y) };
+        let Some((_, cr)) = self.layout.crumbs.iter().find(|(r, _)| r.contains(x, y)).cloned() else {
+            return self.layout.bread.contains(x, y);
+        };
         match cr {
             Crumb::Path(p) => {
                 self.sidebar_open = true;
@@ -1198,7 +1283,7 @@ impl App {
             Crumb::Sym(l, c) => {
                 self.push_nav();
                 if let Some(d) = self.docs.get_mut(self.active) {
-                    let p = d.from_lsp_pos(l, c);
+                    let p = d.pos_from_lsp(l, c);
                     d.ed.click(&mut d.buf, p, false);
                     d.reveal = true;
                 }
@@ -1285,13 +1370,14 @@ impl App {
         if self.md_mouse_down(x, y, button) {
             return self.request_redraw();
         }
-        if let Some(b) = self.sidebar_bar {
-            if self.sidebar_open && b.track.contains(x, y) {
-                let grab = if b.thumb.contains(x, y) { y - b.thumb.y as f64 } else { b.thumb.h as f64 / 2.0 };
-                self.drag_bar = Some((1, grab));
-                self.sidebar_scroll_to(y, grab);
-                return self.request_redraw();
-            }
+        if let Some(b) = self.sidebar_bar
+            && self.sidebar_open
+            && b.track.contains(x, y)
+        {
+            let grab = if b.thumb.contains(x, y) { y - b.thumb.y as f64 } else { b.thumb.h as f64 / 2.0 };
+            self.drag_bar = Some((1, grab));
+            self.sidebar_scroll_to(y, grab);
+            return self.request_redraw();
         }
         if self.sidebar_open && self.layout.sidebar.contains(x, y) {
             self.focus = Focus::Sidebar;
@@ -1309,7 +1395,7 @@ impl App {
                     if let Some(s) = self.docs.get(self.active).and_then(|d| d.symbols.get(i)).cloned() {
                         self.push_nav();
                         let d = &mut self.docs[self.active];
-                        let p = d.from_lsp_pos(s.sel_l, s.sel_c);
+                        let p = d.pos_from_lsp(s.sel_l, s.sel_c);
                         d.ed.click(&mut d.buf, p, false);
                         d.reveal = true;
                         self.focus = Focus::Editor;
@@ -1357,33 +1443,34 @@ impl App {
         }
         let ctrl = self.mods.control_key();
         let near = (x - self.last_click_pos.0).abs() < 5.0 && (y - self.last_click_pos.1).abs() < 5.0;
-        self.clicks = if near && self.last_click.elapsed() < Duration::from_millis(400) { self.clicks % 3 + 1 } else { 1 };
+        self.clicks =
+            if near && self.last_click.elapsed() < Duration::from_millis(400) { self.clicks % 3 + 1 } else { 1 };
         self.last_click = Instant::now();
         self.last_click_pos = (x, y);
         if self.hbar_press(x, y) {
             return self.request_redraw();
         }
-        if let Some(b) = self.docs[self.active].sb {
-            if b.track.contains(x, y) {
-                let grab = if b.thumb.contains(x, y) { y - b.thumb.y as f64 } else { b.thumb.h as f64 / 2.0 };
-                self.drag_bar = Some((0, grab));
-                self.docs[self.active].sb_drag = true;
-                self.docs[self.active].scrollbar_drag(y, grab);
-                return self.request_redraw();
-            }
+        if let Some(b) = self.docs[self.active].sb
+            && b.track.contains(x, y)
+        {
+            let grab = if b.thumb.contains(x, y) { y - b.thumb.y as f64 } else { b.thumb.h as f64 / 2.0 };
+            self.drag_bar = Some((0, grab));
+            self.docs[self.active].sb_drag = true;
+            self.docs[self.active].scrollbar_drag(y, grab);
+            return self.request_redraw();
         }
-        if let Some(l) = self.docs[self.active].minimap_layout.as_ref() {
-            if l.rect.contains(x, y) {
-                self.dragging_minimap = true;
-                self.docs[self.active].minimap_scroll_to(y);
-                return self.request_redraw();
-            }
+        if let Some(l) = self.docs[self.active].minimap_layout.as_ref()
+            && l.rect.contains(x, y)
+        {
+            self.dragging_minimap = true;
+            self.docs[self.active].minimap_scroll_to(y);
+            return self.request_redraw();
         }
         // Code lens text: jump to the symbol and list its references / implementations.
         if let Some(idx) = self.docs[self.active].lens_hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, i)| *i) {
             let lens = self.docs[self.active].lenses[idx].clone();
             let d = &mut self.docs[self.active];
-            let p = d.from_lsp_pos(lens.line, lens.col);
+            let p = d.pos_from_lsp(lens.line, lens.col);
             d.ed.click(&mut d.buf, p, false);
             if lens.title.as_deref().is_some_and(|t| t.contains("implementation")) {
                 self.goto_definition(crate::lsp::DefKind::Implementation);
@@ -1450,10 +1537,18 @@ impl App {
             return CursorIcon::Default;
         }
         if let Overlay::TopMenu(m) = &self.overlay {
-            return if m.rows.iter().any(|(r, _)| r.contains(x, y)) { CursorIcon::Pointer } else { CursorIcon::Default };
+            return if m.rows.iter().any(|(r, _)| r.contains(x, y)) {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            };
         }
         if !self.overlay.is_none() {
-            return if l.overlay_rows.iter().any(|(r, _)| r.contains(x, y)) { CursorIcon::Pointer } else { CursorIcon::Default };
+            return if l.overlay_rows.iter().any(|(r, _)| r.contains(x, y)) {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            };
         }
         if let Some(c) = self.hover_cursor(x, y) {
             return c;
@@ -1461,7 +1556,11 @@ impl App {
         if let Some(c) = self.gitpanel_cursor(x, y) {
             return c;
         }
-        if self.drag_bar.is_some() || self.over_hbar(x, y) || self.sidebar_bar.is_some_and(|b| b.track.contains(x, y)) || self.docs.get(self.active).and_then(|d| d.sb).is_some_and(|b| b.track.contains(x, y)) {
+        if self.drag_bar.is_some()
+            || self.over_hbar(x, y)
+            || self.sidebar_bar.is_some_and(|b| b.track.contains(x, y))
+            || self.docs.get(self.active).and_then(|d| d.sb).is_some_and(|b| b.track.contains(x, y))
+        {
             return CursorIcon::Default;
         }
         if let Some(c) = self.split_cursor(x, y) {
@@ -1482,23 +1581,39 @@ impl App {
         }
         if l.sidebar.contains(x, y) {
             let rel = y - (l.sidebar.y + TAB_H) as f64 + self.tree.scroll;
-            let rows = if self.sidebar_mode == SidebarMode::Outline { self.docs.get(self.active).map_or(0, |d| d.symbols.len()) } else { self.tree.rows.len() };
-            return if y >= (l.sidebar.y + TAB_H) as f64 && rel >= 0.0 && ((rel / ROW_H as f64) as usize) < rows { CursorIcon::Pointer } else { CursorIcon::Default };
+            let rows = if self.sidebar_mode == SidebarMode::Outline {
+                self.docs.get(self.active).map_or(0, |d| d.symbols.len())
+            } else {
+                self.tree.rows.len()
+            };
+            return if y >= (l.sidebar.y + TAB_H) as f64 && rel >= 0.0 && ((rel / ROW_H as f64) as usize) < rows {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            };
         }
-        if let Some(d) = self.docs.get(self.active) {
-            if let Some(m) = d.minimap_layout.as_ref() {
-                if m.rect.contains(x, y) {
-                    return CursorIcon::Pointer;
-                }
-            }
+        if let Some(d) = self.docs.get(self.active)
+            && let Some(m) = d.minimap_layout.as_ref()
+            && m.rect.contains(x, y)
+        {
+            return CursorIcon::Pointer;
         }
         if l.editor.contains(x, y) || self.split_in_other(x, y) {
-            if self.mods.control_key() && self.docs.get(self.active).is_some_and(|d| d.hit_at(x, y).1.is_some_and(|h| d.hint_link(h).is_some())) {
+            if self.mods.control_key()
+                && self
+                    .docs
+                    .get(self.active)
+                    .is_some_and(|d| d.hit_at(x, y).1.is_some_and(|h| d.hint_link(h).is_some()))
+            {
                 return CursorIcon::Pointer; // Ctrl over a hint with a target
             }
             // Gutter (line numbers, fold chevrons, breakpoints) is not text.
             let gutter_right = l.editor.x + 56;
-            return if x < gutter_right as f64 && l.editor.contains(x, y) { CursorIcon::Default } else { CursorIcon::Text };
+            return if x < gutter_right as f64 && l.editor.contains(x, y) {
+                CursorIcon::Default
+            } else {
+                CursorIcon::Text
+            };
         }
         if l.panel.contains(x, y) {
             return CursorIcon::Text;
@@ -1539,7 +1654,11 @@ impl App {
         }
         if self.sidebar_open && l.sidebar.contains(x, y) && y >= (l.sidebar.y + TAB_H) as f64 {
             let rel = y - (l.sidebar.y + TAB_H) as f64 + self.tree.scroll;
-            let rows = if self.sidebar_mode == SidebarMode::Outline { self.docs.get(self.active).map_or(0, |d| d.symbols.len()) } else { self.tree.rows.len() };
+            let rows = if self.sidebar_mode == SidebarMode::Outline {
+                self.docs.get(self.active).map_or(0, |d| d.symbols.len())
+            } else {
+                self.tree.rows.len()
+            };
             if rel >= 0.0 && ((rel / ROW_H as f64) as usize) < rows {
                 let k = (rel / ROW_H as f64) as i32;
                 let top = l.sidebar.y + TAB_H - self.tree.scroll as i32;
@@ -1552,21 +1671,19 @@ impl App {
     pub fn update_cursor(&mut self) {
         // Pointing at a palette row selects it (like macOS menus).
         let (mx, my) = self.mouse;
-        if let Overlay::TopMenu(m) = &mut self.overlay {
-            if let Some((_, k)) = m.rows.iter().find(|(r, _)| r.contains(mx, my)) {
-                if m.sel != *k {
-                    m.sel = *k;
-                    self.request_redraw();
-                }
-            }
+        if let Overlay::TopMenu(m) = &mut self.overlay
+            && let Some((_, k)) = m.rows.iter().find(|(r, _)| r.contains(mx, my))
+            && m.sel != *k
+        {
+            m.sel = *k;
+            self.request_redraw();
         }
-        if let Overlay::Picker(p) = &mut self.overlay {
-            if let Some((_, idx)) = self.layout.overlay_rows.iter().find(|(r, _)| r.contains(mx, my)) {
-                if p.sel != *idx {
-                    p.sel = *idx;
-                    self.request_redraw();
-                }
-            }
+        if let Overlay::Picker(p) = &mut self.overlay
+            && let Some((_, idx)) = self.layout.overlay_rows.iter().find(|(r, _)| r.contains(mx, my))
+            && p.sel != *idx
+        {
+            p.sel = *idx;
+            self.request_redraw();
         }
         let hot_ed = self.docs.get(self.active).and_then(|d| d.sb).is_some_and(|b| b.track.contains(mx, my));
         if self.hbar_hover() {
@@ -1588,7 +1705,12 @@ impl App {
             self.sidebar_bar_hot = hot_sb;
             self.request_redraw();
         }
-        let th = self.layout.tabs.iter().find(|(r, _, _)| r.contains(mx, my)).map(|(_, close, i)| (*i, close.contains(mx, my)));
+        let th = self
+            .layout
+            .tabs
+            .iter()
+            .find(|(r, _, _)| r.contains(mx, my))
+            .map(|(_, close, i)| (*i, close.contains(mx, my)));
         if th != self.tab_hover {
             self.tab_hover = th;
             self.request_redraw();
@@ -1610,7 +1732,11 @@ impl App {
 
     /// (total, visible) of the sidebar list in pixels.
     fn sidebar_extent(&self) -> (f64, f64) {
-        let count = if self.sidebar_mode == SidebarMode::Outline { self.docs.get(self.active).map_or(0, |d| d.symbols.len()) } else { self.tree.rows.len() };
+        let count = if self.sidebar_mode == SidebarMode::Outline {
+            self.docs.get(self.active).map_or(0, |d| d.symbols.len())
+        } else {
+            self.tree.rows.len()
+        };
         (count as f64 * ROW_H as f64, (self.layout.sidebar.h - TAB_H) as f64)
     }
 
@@ -1725,15 +1851,24 @@ impl App {
         }
 
         // User key bindings win over the built-in shortcuts.
-        if self.diff.is_some() && self.diff_pane_focused() {
-            if self.diff_key(&key) {
-                self.request_redraw();
-                return false;
-            }
+        if self.diff.is_some() && self.diff_pane_focused() && self.diff_key(&key) {
+            self.request_redraw();
+            return false;
         }
         // Second stroke of a chord (`Ctrl+K` then a letter): modifier presses alone keep it pending.
         if let Some(prefix) = self.chord.clone() {
-            if matches!(&key, Key::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::AltGraph | NamedKey::Super | NamedKey::Meta | NamedKey::CapsLock)) {
+            if matches!(
+                &key,
+                Key::Named(
+                    NamedKey::Shift
+                        | NamedKey::Control
+                        | NamedKey::Alt
+                        | NamedKey::AltGraph
+                        | NamedKey::Super
+                        | NamedKey::Meta
+                        | NamedKey::CapsLock
+                )
+            ) {
                 return false;
             }
             self.chord = None;
@@ -1746,18 +1881,22 @@ impl App {
             return false; // an unbound second stroke only cancels the chord
         }
         // The explorer's own keys (A, Shift+A, F2, Delete) win over the global table while it has the focus.
-        if self.focus == Focus::Sidebar {
-            if let Some(id) = self.keymap.lookup_explorer(ctrl, shift, alt, &key).map(str::to_string) {
-                let quit = self.run_bound(&id);
-                self.request_redraw();
-                return quit;
-            }
+        if self.focus == Focus::Sidebar
+            && let Some(id) = self.keymap.lookup_explorer(ctrl, shift, alt, &key).map(str::to_string)
+        {
+            let quit = self.run_bound(&id);
+            self.request_redraw();
+            return quit;
         }
         // One table: keybindings.json first ("none" disables), then keymap::DEFAULTS.
         if let Some(id) = self.keymap.lookup(ctrl, shift, alt, &key).map(str::to_string) {
             let cmd = crate::app_overlay::Cmd::from_id(&id);
             // Ctrl+Shift+V is also "paste" outside Markdown files: let it through.
-            let paste = cmd == Some(crate::app_overlay::Cmd::MarkdownPreview) && !self.active_is_markdown() && ctrl && shift && !alt;
+            let paste = cmd == Some(crate::app_overlay::Cmd::MarkdownPreview)
+                && !self.active_is_markdown()
+                && ctrl
+                && shift
+                && !alt;
             if !paste {
                 let quit = self.run_bound(&id);
                 self.request_redraw();
@@ -1771,17 +1910,17 @@ impl App {
             return false;
         }
 
-        if ctrl || alt {
-            if let Some(r) = self.shortcut(&key, ctrl, alt) {
-                self.request_redraw();
-                return r;
-            }
+        if (ctrl || alt)
+            && let Some(r) = self.shortcut(&key, ctrl, alt)
+        {
+            self.request_redraw();
+            return r;
         }
-        if let Key::Named(n) = &key {
-            if let Some(r) = self.named_shortcut(*n, ctrl, shift, alt) {
-                self.request_redraw();
-                return r;
-            }
+        if let Key::Named(n) = &key
+            && let Some(r) = self.named_shortcut(*n, ctrl, shift, alt)
+        {
+            self.request_redraw();
+            return r;
         }
 
         if self.completion_key(&key) {
@@ -1800,45 +1939,44 @@ impl App {
         d.reveal = true;
         let multi = !d.ed.extra.is_empty();
 
-        if ctrl {
-            if let Key::Character(c) = &key {
-                let k = c.to_lowercase();
-                // Commands that understand several cursors; anything else collapses to one.
-                let multi_aware = matches!((k.as_str(), shift), ("d", false) | ("l", true) | ("c", _) | ("x", _) | ("v", _));
-                if multi && !multi_aware {
-                    d.ed.clear_extra();
+        if ctrl && let Key::Character(c) = &key {
+            let k = c.to_lowercase();
+            // Commands that understand several cursors; anything else collapses to one.
+            let multi_aware =
+                matches!((k.as_str(), shift), ("d", false) | ("l", true) | ("c", _) | ("x", _) | ("v", _));
+            if multi && !multi_aware {
+                d.ed.clear_extra();
+            }
+            match (k.as_str(), shift) {
+                ("a", _) => d.ed.select_all(&mut d.buf),
+                ("d", false) => d.ed.add_next_occurrence(&mut d.buf),
+                ("l", true) => d.ed.select_all_occurrences(&mut d.buf),
+                ("c", _) => {
+                    let t = d.copy_cmd();
+                    self.clip.set(&t);
                 }
-                match (k.as_str(), shift) {
-                    ("a", _) => d.ed.select_all(&mut d.buf),
-                    ("d", false) => d.ed.add_next_occurrence(&mut d.buf),
-                    ("l", true) => d.ed.select_all_occurrences(&mut d.buf),
-                    ("c", _) => {
-                        let t = d.copy_cmd();
+                ("x", _) => {
+                    if multi {
+                        let t = d.ed.copy_text_multi(&d.buf);
+                        self.clip.set(&t);
+                        d.ed.edit_multi(&mut d.buf, EditKind::Other, |e, b| e.backspace(b));
+                    } else {
+                        let t = d.cut_cmd();
                         self.clip.set(&t);
                     }
-                    ("x", _) => {
-                        if multi {
-                            let t = d.ed.copy_text_multi(&d.buf);
-                            self.clip.set(&t);
-                            d.ed.edit_multi(&mut d.buf, EditKind::Other, |e, b| e.backspace(b));
-                        } else {
-                            let t = d.cut_cmd();
-                            self.clip.set(&t);
-                        }
-                    }
-                    ("v", _) => {
-                        let t = self.clip.get();
-                        let d = &mut self.docs[self.active];
-                        d.ed.paste_multi(&mut d.buf, &t);
-                    }
-                    ("d", true) => d.duplicate_cmd(),
-                    ("k", true) => d.delete_line_cmd(),
-                    ("]", _) => d.ed.tab(&mut d.buf, false),
-                    ("[", _) => d.ed.tab(&mut d.buf, true),
-                    _ => {}
                 }
-                return self.after_key(None);
+                ("v", _) => {
+                    let t = self.clip.get();
+                    let d = &mut self.docs[self.active];
+                    d.ed.paste_multi(&mut d.buf, &t);
+                }
+                ("d", true) => d.duplicate_cmd(),
+                ("k", true) => d.delete_line_cmd(),
+                ("]", _) => d.ed.tab(&mut d.buf, false),
+                ("[", _) => d.ed.tab(&mut d.buf, true),
+                _ => {}
             }
+            return self.after_key(None);
         }
 
         match &key {
@@ -1889,66 +2027,66 @@ impl App {
                 NamedKey::Home => d.home_cmd(shift),
                 NamedKey::End => d.end_cmd(shift),
                 NamedKey::Backspace => d.ed.edit_multi(&mut d.buf, EditKind::Backspace, |e, b| {
-                    if ctrl {
-                        e.delete_word(b, false)
-                    } else {
-                        e.backspace(b)
-                    }
+                    if ctrl { e.delete_word(b, false) } else { e.backspace(b) }
                 }),
                 NamedKey::Delete => d.ed.edit_multi(&mut d.buf, EditKind::Delete, |e, b| {
-                    if ctrl {
-                        e.delete_word(b, true)
-                    } else {
-                        e.delete(b)
-                    }
+                    if ctrl { e.delete_word(b, true) } else { e.delete(b) }
                 }),
                 NamedKey::Enter => d.ed.edit_multi(&mut d.buf, EditKind::Other, |e, b| e.newline(b)),
                 NamedKey::Tab if !shift && d.ed.extra.is_empty() && d.snippet_next() => {}
-                NamedKey::Tab if !shift && d.ed.extra.is_empty() && d.ed.sel.is_empty() && self.completion.is_none() && {
-                    // Snippet prefix right before the cursor?
-                    let head = d.ed.head();
-                    let mut st = head;
-                    while st > 0 && d.buf.char_at(st - 1).is_some_and(|c| c.is_alphanumeric() || c == '_') {
-                        st -= 1;
-                    }
-                    let word = d.buf.slice(st, head);
-                    match crate::snippets::find(d.lang, &word) {
-                        Some(sn) => {
-                            d.insert_snippet(st, head, sn.body);
-                            true
+                NamedKey::Tab
+                    if !shift && d.ed.extra.is_empty() && d.ed.sel.is_empty() && self.completion.is_none() && {
+                        // Snippet prefix right before the cursor?
+                        let head = d.ed.head();
+                        let mut st = head;
+                        while st > 0 && d.buf.char_at(st - 1).is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                            st -= 1;
                         }
-                        None => false,
-                    }
-                } => {}
-                NamedKey::Tab if !shift && d.ed.extra.is_empty() && d.ed.sel.is_empty() && self.completion.is_none() && {
-                    // Emmet abbreviation right before the cursor (HTML/Vue/Svelte/JSX/TSX)?
-                    let flavor = match d.lang {
-                        Some("html" | "vue" | "svelte") => Some((crate::emmet::Flavor::Html, false)),
-                        Some("tsx" | "jsx") => Some((crate::emmet::Flavor::Jsx, true)),
-                        _ => None,
-                    };
-                    match flavor {
-                        Some((fl, jsx_code)) => {
-                            let head = d.ed.head();
-                            let (l, col) = d.buf.line_col(head);
-                            let prefix: String = d.buf.line(l).chars().take(col).collect();
-                            match crate::emmet::extract_abbr(&prefix) {
-                                Some((start_col, abbr)) if crate::snippets::emmet_allowed(&abbr, &prefix.chars().take(start_col).collect::<String>(), jsx_code) => {
-                                    match crate::emmet::expand(&abbr, fl) {
-                                        Some(body) => {
-                                            let start = d.buf.line_start(l) + start_col;
-                                            d.insert_snippet(start, head, &body);
-                                            true
-                                        }
-                                        None => false,
-                                    }
-                                }
-                                _ => false,
+                        let word = d.buf.slice(st, head);
+                        match crate::snippets::find(d.lang, &word) {
+                            Some(sn) => {
+                                d.insert_snippet(st, head, sn.body);
+                                true
                             }
+                            None => false,
                         }
-                        None => false,
-                    }
-                } => {}
+                    } => {}
+                NamedKey::Tab
+                    if !shift && d.ed.extra.is_empty() && d.ed.sel.is_empty() && self.completion.is_none() && {
+                        // Emmet abbreviation right before the cursor (HTML/Vue/Svelte/JSX/TSX)?
+                        let flavor = match d.lang {
+                            Some("html" | "vue" | "svelte") => Some((crate::emmet::Flavor::Html, false)),
+                            Some("tsx" | "jsx") => Some((crate::emmet::Flavor::Jsx, true)),
+                            _ => None,
+                        };
+                        match flavor {
+                            Some((fl, jsx_code)) => {
+                                let head = d.ed.head();
+                                let (l, col) = d.buf.line_col(head);
+                                let prefix: String = d.buf.line(l).chars().take(col).collect();
+                                match crate::emmet::extract_abbr(&prefix) {
+                                    Some((start_col, abbr))
+                                        if crate::snippets::emmet_allowed(
+                                            &abbr,
+                                            &prefix.chars().take(start_col).collect::<String>(),
+                                            jsx_code,
+                                        ) =>
+                                    {
+                                        match crate::emmet::expand(&abbr, fl) {
+                                            Some(body) => {
+                                                let start = d.buf.line_start(l) + start_col;
+                                                d.insert_snippet(start, head, &body);
+                                                true
+                                            }
+                                            None => false,
+                                        }
+                                    }
+                                    _ => false,
+                                }
+                            }
+                            None => false,
+                        }
+                    } => {}
                 NamedKey::Tab => d.ed.edit_multi(&mut d.buf, EditKind::Other, |e, b| e.tab(b, shift)),
                 NamedKey::Escape => {
                     d.snippet = None;
@@ -2036,7 +2174,8 @@ impl App {
             Key::Named(NamedKey::ArrowDown) => self.tree.step(1, self.mods.shift_key()),
             Key::Named(NamedKey::ArrowUp) => self.tree.step(-1, self.mods.shift_key()),
             Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::Enter) => self.sidebar_activate(),
-            Key::Character(c) if self.mods.control_key() && !self.mods.alt_key() && self.explorer_ctrl_key(c.as_str()) => {}
+            Key::Character(c)
+                if self.mods.control_key() && !self.mods.alt_key() && self.explorer_ctrl_key(c.as_str()) => {}
             Key::Named(NamedKey::ArrowLeft) => self.tree.collapse_or_parent(),
             Key::Named(NamedKey::Escape) => {
                 // First Esc forgets a pending cut (the dimmed rows); the next one leaves the explorer.
@@ -2171,26 +2310,24 @@ impl ApplicationHandler<UserEvent> for App {
                 self.update_cursor();
             }
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
-                (ElementState::Pressed, MouseButton::Left | MouseButton::Middle | MouseButton::Right) => self.mouse_down(button),
+                (ElementState::Pressed, MouseButton::Left | MouseButton::Middle | MouseButton::Right) => {
+                    self.mouse_down(button)
+                }
                 (ElementState::Released, _) => self.mouse_up(),
                 _ => {}
             },
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 let s = crate::ui::scale() as f64;
                 let delta = match delta {
-                    MouseScrollDelta::PixelDelta(p) => MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(p.x / s, p.y / s)),
+                    MouseScrollDelta::PixelDelta(p) => {
+                        MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(p.x / s, p.y / s))
+                    }
                     d => d,
                 };
-                if phase == winit::event::TouchPhase::Ended {
-                    self.on_wheel_end()
-                } else {
-                    self.on_wheel(delta)
-                }
+                if phase == winit::event::TouchPhase::Ended { self.on_wheel_end() } else { self.on_wheel(delta) }
             }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if self.on_key(&event) {
-                    el.exit();
-                }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && self.on_key(&event) => {
+                el.exit();
             }
             _ => {}
         }
@@ -2201,4 +2338,3 @@ pub fn run(app: App, el: EventLoop<UserEvent>) {
     let mut app = app;
     el.run_app(&mut app).expect("run");
 }
-

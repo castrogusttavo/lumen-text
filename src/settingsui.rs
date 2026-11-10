@@ -28,11 +28,19 @@ pub enum Event {
     /// Close the modal.
     Close,
     /// A setting changed: store `value` under `key` in config.json and apply it.
-    Setting { key: String, value: Value },
+    Setting {
+        key: String,
+        value: Value,
+    },
     /// Set `keybindings.json[combo] = command_id` (`command_id == "none"` disables a default).
-    Bind { combo: String, command_id: String },
+    Bind {
+        combo: String,
+        command_id: String,
+    },
     /// Remove `combo` from keybindings.json (the built-in default, if any, applies again).
-    Unbind { combo: String },
+    Unbind {
+        combo: String,
+    },
     /// Clear keybindings.json entirely (every shortcut back to its default).
     ResetAll,
     /// Several events produced by one action, to be applied in order.
@@ -65,7 +73,11 @@ pub enum SettingKind {
     Bool,
     /// Fixed options; an empty slice means "filled at runtime" via [`SettingsPage::set_choices`].
     Choice(&'static [&'static str]),
-    Number { min: f64, max: f64, step: f64 },
+    Number {
+        min: f64,
+        max: f64,
+        step: f64,
+    },
     Text,
 }
 
@@ -85,35 +97,179 @@ pub fn default_settings() -> Vec<SettingDef> {
     use SettingKind::*;
     let d = |key, section, label, help, kind| SettingDef { key, section, label, help, kind };
     vec![
-        d("format_on_save", "General", "Format on save", "Runs the language server's formatter every time a file is saved.", Bool),
-        d("updates", "General", "Updates", "Automatic checks every 4 hours and downloads the new version in the background; Notify only shows a notice; Off never checks (the \"Check for updates\" command still works).", Choice(&["auto", "notify", "off"])),
-        d("font_size", "Editor", "Font size", "Code text size in pixels (8 to 40). Ctrl + mouse wheel adjusts it temporarily.", Number { min: 8.0, max: 40.0, step: 1.0 }),
+        d(
+            "format_on_save",
+            "General",
+            "Format on save",
+            "Runs the language server's formatter every time a file is saved.",
+            Bool,
+        ),
+        d(
+            "updates",
+            "General",
+            "Updates",
+            "Automatic checks every 4 hours and downloads the new version in the background; Notify only shows a notice; Off never checks (the \"Check for updates\" command still works).",
+            Choice(&["auto", "notify", "off"]),
+        ),
+        d(
+            "font_size",
+            "Editor",
+            "Font size",
+            "Code text size in pixels (8 to 40). Ctrl + mouse wheel adjusts it temporarily.",
+            Number { min: 8.0, max: 40.0, step: 1.0 },
+        ),
         // --- not in config.rs yet (see PENDING_KEYS) ---
         d("minimap", "Editor", "Minimap", "Shows a thumbnail of the file at the right edge of the editor.", Bool),
-        d("minimap_style", "Editor", "Minimap style", "Subtle is narrower and low-contrast; Normal is the original look.", Choice(&["subtle", "normal"])),
-        d("word_wrap", "Editor", "Word wrap", "Wraps long lines at the window width instead of scrolling horizontally.", Bool),
-        d("sticky_scroll", "Editor", "Sticky scroll", "Keeps the enclosing scopes (function, class) visible at the top while you scroll.", Bool),
-        d("tab_width", "Editor", "Tab width", "How many columns a tab character takes in the editor (2, 4 or 8). Per-file indentation stays in the bottom bar.", Choice(&["2", "4", "8"])),
+        d(
+            "minimap_style",
+            "Editor",
+            "Minimap style",
+            "Subtle is narrower and low-contrast; Normal is the original look.",
+            Choice(&["subtle", "normal"]),
+        ),
+        d(
+            "word_wrap",
+            "Editor",
+            "Word wrap",
+            "Wraps long lines at the window width instead of scrolling horizontally.",
+            Bool,
+        ),
+        d(
+            "sticky_scroll",
+            "Editor",
+            "Sticky scroll",
+            "Keeps the enclosing scopes (function, class) visible at the top while you scroll.",
+            Bool,
+        ),
+        d(
+            "tab_width",
+            "Editor",
+            "Tab width",
+            "How many columns a tab character takes in the editor (2, 4 or 8). Per-file indentation stays in the bottom bar.",
+            Choice(&["2", "4", "8"]),
+        ),
         d("indent_guides", "Editor", "Indent guides", "Draws thin vertical lines at the indentation levels.", Bool),
-        d("breadcrumbs", "Editor", "Breadcrumbs", "Shows the file path and symbols above the editor. When off, the editor takes the row's space.", Bool),
+        d(
+            "breadcrumbs",
+            "Editor",
+            "Breadcrumbs",
+            "Shows the file path and symbols above the editor. When off, the editor takes the row's space.",
+            Bool,
+        ),
         // --- end of pending keys ---
-        d("appearance", "Appearance", "Appearance mode", "Fixed uses the chosen theme; System follows the desktop light/dark setting.", Choice(&["fixed", "system"])),
+        d(
+            "appearance",
+            "Appearance",
+            "Appearance mode",
+            "Fixed uses the chosen theme; System follows the desktop light/dark setting.",
+            Choice(&["fixed", "system"]),
+        ),
         d("theme", "Appearance", "Theme", "Color theme used in fixed mode.", Choice(&[])),
-        d("theme_light", "Appearance", "Light theme", "Theme used when the system is in light mode (appearance: system).", Choice(&[])),
-        d("theme_dark", "Appearance", "Dark theme", "Theme used when the system is in dark mode (appearance: system).", Choice(&[])),
-        d("theme_chrome", "Appearance", "Interface colors", "Derived keeps the usual calm, flat look; From theme uses the theme's own sidebar, tabs and bottom bar when the text stays legible (the rest falls back to the derived look).", Choice(&["derived", "theme"])),
-        d("ui_scale", "Appearance", "Interface scale", "Scale for hi-DPI screens (0.5 to 4). 0 = automatic, uses the system scale (LUMEN_SCALE is also accepted).", Number { min: 0.0, max: 4.0, step: 0.25 }),
-        d("auto_import", "TypeScript", "Auto import", "Automatically adds missing imports when you accept a suggestion.", Bool),
-        d("lsp_narrow", "TypeScript", "Lean mode", "Limits the language server to the essentials to use less memory and CPU.", Bool),
-        d("code_lens", "TypeScript", "Code lens", "Shows reference and implementation counts next to symbols (costs server CPU).", Bool),
-        d("code_lens_refs", "TypeScript", "Code lens: references", "Shows \"N references\" (needs Code lens on).", Bool),
-        d("code_lens_impls", "TypeScript", "Code lens: implementations", "Shows \"N implementations\" (needs Code lens on).", Bool),
-        d("inlay_hints", "TypeScript", "Inlay hints", "Shows inferred types and parameter names in gray inside the code (visible lines only).", Bool),
-        d("inlay_hints_params", "TypeScript", "Inlay hints: parameters", "Shows the parameter name before each argument (needs Inlay hints on).", Bool),
-        d("inlay_hints_types", "TypeScript", "Inlay hints: types", "Shows inferred types of variables, parameters and returns; double-click a type to insert the annotation, Ctrl+click goes to the definition (needs Inlay hints on).", Bool),
-        d("tsgo_source", "TypeScript", "tsgo source", "Automatic uses the project's tsgo if installed, otherwise the bundled one.", Choice(&["auto", "project", "bundled"])),
-        d("git_pull_strategy", "Git", "Pull strategy", "How Pull integrates the remote commits when the histories have diverged. \"Ask\" shows the choice on the spot; you can also change it by right-clicking Pull.", Choice(&["ask", "merge", "rebase", "ff-only"])),
-        d("git_blame", "Git", "Git blame on line", "Shows the author and date of the last commit on the cursor line, in gray at the end of the line. Also available as the \"Toggle git blame\" command.", Bool),
+        d(
+            "theme_light",
+            "Appearance",
+            "Light theme",
+            "Theme used when the system is in light mode (appearance: system).",
+            Choice(&[]),
+        ),
+        d(
+            "theme_dark",
+            "Appearance",
+            "Dark theme",
+            "Theme used when the system is in dark mode (appearance: system).",
+            Choice(&[]),
+        ),
+        d(
+            "theme_chrome",
+            "Appearance",
+            "Interface colors",
+            "Derived keeps the usual calm, flat look; From theme uses the theme's own sidebar, tabs and bottom bar when the text stays legible (the rest falls back to the derived look).",
+            Choice(&["derived", "theme"]),
+        ),
+        d(
+            "ui_scale",
+            "Appearance",
+            "Interface scale",
+            "Scale for hi-DPI screens (0.5 to 4). 0 = automatic, uses the system scale (LUMEN_SCALE is also accepted).",
+            Number { min: 0.0, max: 4.0, step: 0.25 },
+        ),
+        d(
+            "auto_import",
+            "TypeScript",
+            "Auto import",
+            "Automatically adds missing imports when you accept a suggestion.",
+            Bool,
+        ),
+        d(
+            "lsp_narrow",
+            "TypeScript",
+            "Lean mode",
+            "Limits the language server to the essentials to use less memory and CPU.",
+            Bool,
+        ),
+        d(
+            "code_lens",
+            "TypeScript",
+            "Code lens",
+            "Shows reference and implementation counts next to symbols (costs server CPU).",
+            Bool,
+        ),
+        d(
+            "code_lens_refs",
+            "TypeScript",
+            "Code lens: references",
+            "Shows \"N references\" (needs Code lens on).",
+            Bool,
+        ),
+        d(
+            "code_lens_impls",
+            "TypeScript",
+            "Code lens: implementations",
+            "Shows \"N implementations\" (needs Code lens on).",
+            Bool,
+        ),
+        d(
+            "inlay_hints",
+            "TypeScript",
+            "Inlay hints",
+            "Shows inferred types and parameter names in gray inside the code (visible lines only).",
+            Bool,
+        ),
+        d(
+            "inlay_hints_params",
+            "TypeScript",
+            "Inlay hints: parameters",
+            "Shows the parameter name before each argument (needs Inlay hints on).",
+            Bool,
+        ),
+        d(
+            "inlay_hints_types",
+            "TypeScript",
+            "Inlay hints: types",
+            "Shows inferred types of variables, parameters and returns; double-click a type to insert the annotation, Ctrl+click goes to the definition (needs Inlay hints on).",
+            Bool,
+        ),
+        d(
+            "tsgo_source",
+            "TypeScript",
+            "tsgo source",
+            "Automatic uses the project's tsgo if installed, otherwise the bundled one.",
+            Choice(&["auto", "project", "bundled"]),
+        ),
+        d(
+            "git_pull_strategy",
+            "Git",
+            "Pull strategy",
+            "How Pull integrates the remote commits when the histories have diverged. \"Ask\" shows the choice on the spot; you can also change it by right-clicking Pull.",
+            Choice(&["ask", "merge", "rebase", "ff-only"]),
+        ),
+        d(
+            "git_blame",
+            "Git",
+            "Git blame on line",
+            "Shows the author and date of the last commit on the cursor line, in gray at the end of the line. Also available as the \"Toggle git blame\" command.",
+            Bool,
+        ),
         // Bottom bar: one switch per item. The sidebar toggle (left corner) is mandatory and has none.
         d("status_search", "Status bar", "Search in project", "Project search button (left corner).", Bool),
         d("status_problems", "Status bar", "Problems", "Error and warning counts (left corner).", Bool),
@@ -126,17 +282,83 @@ pub fn default_settings() -> Vec<SettingDef> {
         d("status_ram", "Status bar", "Memory", "Memory use of the editor and the language servers.", Bool),
         // Order of the items: a stepper per item with its position among the visible ones of its group
         // (1 = leftmost); - moves it left, + moves it right, hopping over hidden items.
-        d("status_pos_sidebar", "Status bar", "Order: Sidebar", "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 3.0, step: 1.0 }),
-        d("status_pos_search", "Status bar", "Order: Search in project", "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 3.0, step: 1.0 }),
-        d("status_pos_problems", "Status bar", "Order: Problems", "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 3.0, step: 1.0 }),
-        d("status_pos_position", "Status bar", "Order: Line and column", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_indent", "Status bar", "Order: Indentation", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_language", "Status bar", "Order: Language", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_terminal", "Status bar", "Order: Terminal", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_debug", "Status bar", "Order: Debug", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_git", "Status bar", "Order: Git", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_ram", "Status bar", "Order: Memory", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("ram_display", "Status bar", "Memory format", "Long shows the numbers (\"RAM 13 MB + tsgo 65 MB\"); Short shows just a chip icon, with the values in the tooltip.", Choice(&["long", "short"])),
+        d(
+            "status_pos_sidebar",
+            "Status bar",
+            "Order: Sidebar",
+            "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 3.0, step: 1.0 },
+        ),
+        d(
+            "status_pos_search",
+            "Status bar",
+            "Order: Search in project",
+            "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 3.0, step: 1.0 },
+        ),
+        d(
+            "status_pos_problems",
+            "Status bar",
+            "Order: Problems",
+            "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 3.0, step: 1.0 },
+        ),
+        d(
+            "status_pos_position",
+            "Status bar",
+            "Order: Line and column",
+            "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 7.0, step: 1.0 },
+        ),
+        d(
+            "status_pos_indent",
+            "Status bar",
+            "Order: Indentation",
+            "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 7.0, step: 1.0 },
+        ),
+        d(
+            "status_pos_language",
+            "Status bar",
+            "Order: Language",
+            "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 7.0, step: 1.0 },
+        ),
+        d(
+            "status_pos_terminal",
+            "Status bar",
+            "Order: Terminal",
+            "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 7.0, step: 1.0 },
+        ),
+        d(
+            "status_pos_debug",
+            "Status bar",
+            "Order: Debug",
+            "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 7.0, step: 1.0 },
+        ),
+        d(
+            "status_pos_git",
+            "Status bar",
+            "Order: Git",
+            "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 7.0, step: 1.0 },
+        ),
+        d(
+            "status_pos_ram",
+            "Status bar",
+            "Order: Memory",
+            "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 7.0, step: 1.0 },
+        ),
+        d(
+            "ram_display",
+            "Status bar",
+            "Memory format",
+            "Long shows the numbers (\"RAM 13 MB + tsgo 65 MB\"); Short shows just a chip icon, with the values in the tooltip.",
+            Choice(&["long", "short"]),
+        ),
     ]
 }
 
@@ -261,7 +483,19 @@ impl SettingsPage {
             Value::Object(o) => o,
             _ => Map::new(),
         };
-        Self { defs, values, defaults, choices: HashMap::new(), search: TextField::default(), section: 0, sel: 0, scroll: 0.0, edit: None, drop: None, view_h: 380 }
+        Self {
+            defs,
+            values,
+            defaults,
+            choices: HashMap::new(),
+            search: TextField::default(),
+            section: 0,
+            sel: 0,
+            scroll: 0.0,
+            edit: None,
+            drop: None,
+            view_h: 380,
+        }
     }
 
     /// Replace the per-key defaults used for the reset icon.
@@ -307,7 +541,9 @@ impl SettingsPage {
     pub fn visible(&self) -> Vec<usize> {
         if self.searching() {
             let q = &self.search.text;
-            (0..self.defs.len()).filter(|&i| matches_all(&format!("{} {}", self.defs[i].label, self.defs[i].help), q)).collect()
+            (0..self.defs.len())
+                .filter(|&i| matches_all(&format!("{} {}", self.defs[i].label, self.defs[i].help), q))
+                .collect()
         } else {
             let secs = self.sections();
             let Some(s) = secs.get(self.section) else { return vec![] };
@@ -592,7 +828,13 @@ impl SettingsPage {
         if let Some(def) = self.drop.as_ref().map(|d| d.def) {
             let max = self.choice_count(def).saturating_sub(DROP_VIS) as i64;
             if let Some(d) = self.drop.as_mut() {
-                let step = if dy > 0.0 { 1 } else if dy < 0.0 { -1 } else { 0 };
+                let step = if dy > 0.0 {
+                    1
+                } else if dy < 0.0 {
+                    -1
+                } else {
+                    0
+                };
                 d.scroll = (d.scroll as i64 + step).clamp(0, max) as usize;
             }
             return;
@@ -691,10 +933,10 @@ impl SettingsPage {
                 }
             }
             K::Space if empty_search => {
-                if let Some(d) = self.selected_def() {
-                    if matches!(self.defs[d].kind, SettingKind::Bool | SettingKind::Choice(_)) {
-                        return self.activate(d);
-                    }
+                if let Some(d) = self.selected_def()
+                    && matches!(self.defs[d].kind, SettingKind::Bool | SettingKind::Choice(_))
+                {
+                    return self.activate(d);
                 }
             }
             K::Backspace => {
@@ -738,7 +980,10 @@ enum Mode {
     /// Waiting for the next key combo for the selected command.
     Record,
     /// The captured combo belongs to `other` (a command id): waiting for "Substituir".
-    Confirm { combo: String, other: String },
+    Confirm {
+        combo: String,
+        other: String,
+    },
     /// Waiting for confirmation of "Restore defaults".
     ConfirmReset,
 }
@@ -782,13 +1027,13 @@ pub fn combo_parts(combo: &str) -> Vec<String> {
     loop {
         let mut found = false;
         for m in ["ctrl+", "shift+", "alt+"] {
-            if let Some(r) = rest.strip_prefix(m) {
-                if !r.is_empty() {
-                    out.push(m.trim_end_matches('+').to_string());
-                    rest = r;
-                    found = true;
-                    break;
-                }
+            if let Some(r) = rest.strip_prefix(m)
+                && !r.is_empty()
+            {
+                out.push(m.trim_end_matches('+').to_string());
+                rest = r;
+                found = true;
+                break;
             }
         }
         if !found {
@@ -838,7 +1083,23 @@ pub fn combo_chips(combo: &str) -> Vec<String> {
 }
 
 fn is_modifier_name(n: &str) -> bool {
-    matches!(n, "control" | "shift" | "alt" | "altgraph" | "super" | "meta" | "hyper" | "capslock" | "numlock" | "scrolllock" | "fn" | "fnlock" | "symbol" | "symbollock")
+    matches!(
+        n,
+        "control"
+            | "shift"
+            | "alt"
+            | "altgraph"
+            | "super"
+            | "meta"
+            | "hyper"
+            | "capslock"
+            | "numlock"
+            | "scrolllock"
+            | "fn"
+            | "fnlock"
+            | "symbol"
+            | "symbollock"
+    )
 }
 
 fn is_fkey(n: &str) -> bool {
@@ -861,7 +1122,18 @@ impl KeybindsPage {
             }
         }
         let user = user.into_iter().map(|(k, v)| (keymap::normalize(&k), v)).collect();
-        let mut p = Self { commands, defaults, user, filter: TextField::default(), filtered: vec![], sel: 0, scroll: 0.0, mode: Mode::Browse, note: None, view_h: 340 };
+        let mut p = Self {
+            commands,
+            defaults,
+            user,
+            filter: TextField::default(),
+            filtered: vec![],
+            sel: 0,
+            scroll: 0.0,
+            mode: Mode::Browse,
+            note: None,
+            view_h: 340,
+        };
         p.refilter();
         p
     }
@@ -883,7 +1155,8 @@ impl KeybindsPage {
     /// Every built-in combo of a command, main one first.
     fn defaults_of(&self, id: &str) -> Vec<String> {
         let main = self.default_of(id).map(str::to_string);
-        let mut v: Vec<String> = self.defaults.iter().filter(|(_, i)| i.as_str() == id).map(|(c, _)| c.clone()).collect();
+        let mut v: Vec<String> =
+            self.defaults.iter().filter(|(_, i)| i.as_str() == id).map(|(c, _)| c.clone()).collect();
         v.sort_by_key(|c| (Some(c) != main.as_ref(), c.clone()));
         v
     }
@@ -976,7 +1249,10 @@ impl KeybindsPage {
             })
             .collect();
         self.filtered = filtered;
-        self.sel = keep.and_then(|id| self.filtered.iter().position(|&i| self.commands[i].id == id)).unwrap_or(0).min(self.filtered.len().saturating_sub(1));
+        self.sel = keep
+            .and_then(|id| self.filtered.iter().position(|&i| self.commands[i].id == id))
+            .unwrap_or(0)
+            .min(self.filtered.len().saturating_sub(1));
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
     }
 
@@ -1363,8 +1639,8 @@ impl Modal {
 
     /// Modal rectangle for a window: min(window-80, 860) x min(window-80, 560), centered.
     pub fn rect_for(window: Rect) -> Rect {
-        let w = (window.w - 80).min(860).max(120);
-        let h = (window.h - 80).min(560).max(120);
+        let w = (window.w - 80).clamp(120, 860);
+        let h = (window.h - 80).clamp(120, 560);
         Rect::new(window.x + (window.w - w) / 2, window.y + (window.h - h) / 2, w, h)
     }
 
@@ -1438,7 +1714,10 @@ impl Modal {
         if self.page == Page::Settings && self.settings.is_editing() && !matches!(hit, Some(Hit::EditText(_))) {
             return self.settings.commit_edit();
         }
-        if self.page == Page::Keybinds && self.keybinds.is_capturing() && !matches!(hit, Some(Hit::KbConfirm) | Some(Hit::KbCancel)) {
+        if self.page == Page::Keybinds
+            && self.keybinds.is_capturing()
+            && !matches!(hit, Some(Hit::KbConfirm) | Some(Hit::KbCancel))
+        {
             self.keybinds.cancel();
             if !matches!(hit, Some(Hit::KbRow(_))) {
                 return Event::None;
@@ -1524,7 +1803,9 @@ impl Modal {
 
         // Header: page tabs + close button.
         let mut x = r.x + 18;
-        for (page, icon, label) in [(Page::Settings, "settings", "Settings"), (Page::Keybinds, "keyboard", "Keyboard shortcuts")] {
+        for (page, icon, label) in
+            [(Page::Settings, "settings", "Settings"), (Page::Keybinds, "keyboard", "Keyboard shortcuts")]
+        {
             let active = self.page == page;
             let tw = tx.ui_width(label, active);
             let tab = Rect::new(x, r.y + 9, 16 + 8 + tw + 28, 30);
@@ -1617,7 +1898,15 @@ fn scrollbar(cv: &mut Canvas, area: Rect, scroll: f64, content: i32, col: Rgba) 
     cv.fill_round(Rect::new(area.right() - 5, ty, 4, th), 2, col);
 }
 
-fn search_box(cv: &mut Canvas, tx: &mut TextCtx, th: &Theme, r: Rect, field: &TextField, placeholder: &str, focused: bool) {
+fn search_box(
+    cv: &mut Canvas,
+    tx: &mut TextCtx,
+    th: &Theme,
+    r: Rect,
+    field: &TextField,
+    placeholder: &str,
+    focused: bool,
+) {
     let c = th.chrome;
     card_c(cv, r, 8, c.input_bg, if focused { c.accent } else { c.border }, r);
     tx.icon(cv, "hugeicons/search", r.x + 11, r.y + 9, 16, c.tab_inactive_fg, r);
@@ -1651,7 +1940,17 @@ fn button(cv: &mut Canvas, tx: &mut TextCtx, th: &Theme, r: Rect, label: &str, p
     }
 }
 
-fn draw_chips(tx: &mut TextCtx, cv: &mut Canvas, th: &Theme, x: i32, cy: i32, combos: &[String], max_x: i32, clip: Rect, muted: bool) {
+fn draw_chips(
+    tx: &mut TextCtx,
+    cv: &mut Canvas,
+    th: &Theme,
+    x: i32,
+    cy: i32,
+    combos: &[String],
+    max_x: i32,
+    clip: Rect,
+    muted: bool,
+) {
     let c = th.chrome;
     let mut x = x;
     for (ci, combo) in combos.iter().enumerate() {
@@ -1669,7 +1968,15 @@ fn draw_chips(tx: &mut TextCtx, cv: &mut Canvas, th: &Theme, x: i32, cy: i32, co
             if !muted {
                 cv.fill_clip(Rect::new(r.x + 3, r.bottom() - 2, r.w - 6, 1), c.border, clip);
             }
-            tx.draw_ui(cv, r.x + (w - tw) / 2, r.y + 1, &part, if muted { c.tab_inactive_fg } else { th.foreground }, r.intersect(&clip), false);
+            tx.draw_ui(
+                cv,
+                r.x + (w - tw) / 2,
+                r.y + 1,
+                &part,
+                if muted { c.tab_inactive_fg } else { th.foreground },
+                r.intersect(&clip),
+                false,
+            );
             x += w + 4;
         }
         x -= 4;
@@ -1678,7 +1985,14 @@ fn draw_chips(tx: &mut TextCtx, cv: &mut Canvas, th: &Theme, x: i32, cy: i32, co
 
 // ───────────────────────────── settings drawing ─────────────────────────────
 
-fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &Theme, area: Rect, hits: &mut Vec<(Rect, Hit)>) -> Option<(Rect, i32)> {
+fn draw_settings(
+    p: &mut SettingsPage,
+    cv: &mut Canvas,
+    tx: &mut TextCtx,
+    th: &Theme,
+    area: Rect,
+    hits: &mut Vec<(Rect, Hit)>,
+) -> Option<(Rect, i32)> {
     let c = th.chrome;
     let fg = th.foreground;
     let dim = c.tab_inactive_fg;
@@ -1775,7 +2089,15 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
         let clip_row = row.intersect(&list);
         tx.draw_ui(cv, row.x + 14, row.y + 9, &label_s, fg, clip_row, true);
         if searching && lw + 80 < text_w {
-            tx.draw_ui(cv, row.x + 14 + lw + 8, row.y + 9, &format!("· {}", def.section), dim.with_alpha(170), clip_row, false);
+            tx.draw_ui(
+                cv,
+                row.x + 14 + lw + 8,
+                row.y + 9,
+                &format!("· {}", def.section),
+                dim.with_alpha(170),
+                clip_row,
+                false,
+            );
         }
         let help_s = fit(tx, def.help, text_w, false);
         tx.draw_ui(cv, row.x + 14, row.y + 29, &help_s, dim, clip_row, false);
@@ -1787,7 +2109,13 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
                 let pill = Rect::new(right - 40, cy - 11, 40, 22);
                 rr(cv, pill, 11, if on { c.accent } else { c.border.mix(fg, 0.25) }, list);
                 let kx = if on { pill.right() - 19 } else { pill.x + 3 };
-                rr(cv, Rect::new(kx, pill.y + 3, 16, 16), 8, if on { on_accent(c.accent) } else { Rgba(250, 250, 250, 255) }, list);
+                rr(
+                    cv,
+                    Rect::new(kx, pill.y + 3, 16, 16),
+                    8,
+                    if on { on_accent(c.accent) } else { Rgba(250, 250, 250, 255) },
+                    list,
+                );
                 push_hit(hits, pill, list, Hit::Toggle(d));
             }
             SettingKind::Choice(_) => {
@@ -1805,7 +2133,15 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
                         if active {
                             rr(cv, seg, 6, c.accent, list);
                         }
-                        tx.draw_ui(cv, seg.x + 11, seg.y + 5, &label, if active { on_accent(c.accent) } else { fg }, seg.intersect(&list), active);
+                        tx.draw_ui(
+                            cv,
+                            seg.x + 11,
+                            seg.y + 5,
+                            &label,
+                            if active { on_accent(c.accent) } else { fg },
+                            seg.intersect(&list),
+                            active,
+                        );
                         push_hit(hits, seg, list, Hit::Seg(d, oi));
                         x += w;
                     }
@@ -1826,11 +2162,21 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
             SettingKind::Number { min, max, .. } => {
                 let v = p.cur_num(d);
                 let x0 = right - ctl_w;
-                for (i, (dir, icon, enabled)) in [(-1, "minus", v > *min), (1, "plus", v < *max)].into_iter().enumerate() {
+                for (i, (dir, icon, enabled)) in
+                    [(-1, "minus", v > *min), (1, "plus", v < *max)].into_iter().enumerate()
+                {
                     let bx = if i == 0 { x0 } else { right - 30 };
                     let b = Rect::new(bx, cy - 15, 30, 30);
                     card_c(cv, b, 8, c.input_bg, c.border, list);
-                    tx.icon(cv, &format!("hugeicons/{icon}"), b.x + 7, b.y + 7, 16, if enabled { fg } else { dim.with_alpha(90) }, b.intersect(&list));
+                    tx.icon(
+                        cv,
+                        &format!("hugeicons/{icon}"),
+                        b.x + 7,
+                        b.y + 7,
+                        16,
+                        if enabled { fg } else { dim.with_alpha(90) },
+                        b.intersect(&list),
+                    );
                     push_hit(hits, b, list, Hit::Step(d, dir));
                 }
                 let t = fmt_num(v);
@@ -1847,7 +2193,12 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
                     Some((_, f)) => {
                         if f.sel_all {
                             let w = tx.ui_width(&f.text, false);
-                            cv.fill_round_clip(Rect::new(b.x + 7, b.y + 3, w + 6, 24), 5, c.accent.with_alpha(0x55), inner);
+                            cv.fill_round_clip(
+                                Rect::new(b.x + 7, b.y + 3, w + 6, 24),
+                                5,
+                                c.accent.with_alpha(0x55),
+                                inner,
+                            );
                         }
                         tx.draw_ui(cv, b.x + 10, b.y + 6, &f.text, fg, inner, false);
                         let prefix: String = f.text.chars().take(f.cursor).collect();
@@ -1898,7 +2249,13 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
             }
             hits.push((ir, Hit::DropItem(i)));
         }
-        scrollbar(cv, Rect::new(pr.x, pr.y + 4, pr.w - 2, ph - 8), dr.scroll as f64, opts.len() as i32 * 26, dim.with_alpha(120));
+        scrollbar(
+            cv,
+            Rect::new(pr.x, pr.y + 4, pr.w - 2, ph - 8),
+            dr.scroll as f64,
+            opts.len() as i32 * 26,
+            dim.with_alpha(120),
+        );
     }
 
     // Footer hint.
@@ -1909,7 +2266,14 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
 
 // ───────────────────────────── keybindings drawing ─────────────────────────────
 
-fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &Theme, area: Rect, hits: &mut Vec<(Rect, Hit)>) -> Option<(Rect, i32)> {
+fn draw_keybinds(
+    p: &mut KeybindsPage,
+    cv: &mut Canvas,
+    tx: &mut TextCtx,
+    th: &Theme,
+    area: Rect,
+    hits: &mut Vec<(Rect, Hit)>,
+) -> Option<(Rect, i32)> {
     let c = th.chrome;
     let fg = th.foreground;
     let dim = c.tab_inactive_fg;
@@ -1928,7 +2292,8 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
 
     // Column captions.
     let hdr_y = fr.bottom() + 8;
-    let list = Rect::new(area.x + pad - 8, hdr_y + 24, area.w - 2 * pad + 16, (area.bottom() - FOOT_H - (hdr_y + 24)).max(0));
+    let list =
+        Rect::new(area.x + pad - 8, hdr_y + 24, area.w - 2 * pad + 16, (area.bottom() - FOOT_H - (hdr_y + 24)).max(0));
     let row_x = list.x + 12;
     let tw = list.w - 10 - 24 - 30;
     let (c2, c3) = (row_x + tw * 40 / 100, row_x + tw * 76 / 100);
@@ -1969,7 +2334,9 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
         let recording = selected && p.mode != Mode::Browse && p.mode != Mode::ConfirmReset;
         if recording {
             match &p.mode {
-                Mode::Confirm { combo, .. } => draw_chips(tx, cv, th, c2, cy, std::slice::from_ref(combo), c3 - 8, clip, false),
+                Mode::Confirm { combo, .. } => {
+                    draw_chips(tx, cv, th, c2, cy, std::slice::from_ref(combo), c3 - 8, clip, false)
+                }
                 _ => {
                     let cell = Rect::new(c2 - 6, cy - 13, c3 - c2 - 4, 26);
                     card_c(cv, cell, 6, c.input_bg, c.accent, clip);
@@ -2009,7 +2376,11 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
         Mode::Browse => {
             let (text, col) = match &p.note {
                 Some(m) => (m.clone(), c.warning),
-                None => ("Enter record shortcut   Del remove   Ctrl+R restore row   Ctrl+Shift+R restore all   Esc close".to_string(), dim.with_alpha(170)),
+                None => (
+                    "Enter record shortcut   Del remove   Ctrl+R restore row   Ctrl+Shift+R restore all   Esc close"
+                        .to_string(),
+                    dim.with_alpha(170),
+                ),
             };
             let text = fit(tx, &text, area.w - 2 * pad, false);
             tx.draw_ui(cv, left, ty, &text, col, area, false);
@@ -2137,14 +2508,19 @@ mod tests {
             CommandRow { id: "Save".into(), label: "Save".into(), default: Some("ctrl+s".into()) },
         ];
         let mut p = KeybindsPage::new(rows, HashMap::new());
-        p.add_default_aliases([("ctrl+y".to_string(), "Redo".to_string()), ("Ctrl+K S".to_string(), "Save".to_string())]);
+        p.add_default_aliases([
+            ("ctrl+y".to_string(), "Redo".to_string()),
+            ("Ctrl+K S".to_string(), "Save".to_string()),
+        ]);
         assert_eq!(p.bindings_of("Redo"), vec!["ctrl+shift+z", "ctrl+y"], "main default first");
         assert_eq!(p.bindings_of("Save"), vec!["ctrl+s", "ctrl+k s"]);
         assert!(!p.is_modified("Redo"), "an alias is not a modification");
         assert_eq!(p.owner_of("ctrl+y"), Some("Redo"));
         // Removing the alias disables it explicitly and marks the row as modified; reset undoes it.
         let ev = p.remove_binding("Redo", "ctrl+y");
-        assert!(matches!(ev, Some(Event::Bind { ref combo, ref command_id }) if combo == "ctrl+y" && command_id == "none"));
+        assert!(
+            matches!(ev, Some(Event::Bind { ref combo, ref command_id }) if combo == "ctrl+y" && command_id == "none")
+        );
         assert!(p.is_modified("Redo"));
         assert_eq!(p.to_json(), r#"{"ctrl+y":"none"}"#);
         p.reset_row(0);
@@ -2162,13 +2538,26 @@ mod tests {
         let n = keys.len();
         keys.dedup();
         assert_eq!(keys.len(), n);
-        for k in ["theme", "appearance", "font_size", "format_on_save", "auto_import", "lsp_narrow", "code_lens", "tsgo_source", "theme_light", "theme_dark"] {
+        for k in [
+            "theme",
+            "appearance",
+            "font_size",
+            "format_on_save",
+            "auto_import",
+            "lsp_narrow",
+            "code_lens",
+            "tsgo_source",
+            "theme_light",
+            "theme_dark",
+        ] {
             assert!(defs.iter().any(|d| d.key == k), "{k}");
         }
         for k in PENDING_KEYS {
             assert!(defs.iter().any(|d| d.key == *k), "{k}");
         }
-        assert!(matches!(defs.iter().find(|d| d.key == "font_size").unwrap().kind, SettingKind::Number { min, max, .. } if min == 8.0 && max == 40.0));
+        assert!(
+            matches!(defs.iter().find(|d| d.key == "font_size").unwrap().kind, SettingKind::Number { min, max, .. } if min == 8.0 && max == 40.0)
+        );
     }
 
     #[test]
@@ -2191,7 +2580,9 @@ mod tests {
             assert!(defs.iter().any(|d| d.key == k), "{k}");
             assert!(vals.get(k).is_some(), "{k} default");
         }
-        assert!(matches!(&defs.iter().find(|d| d.key == "ram_display").unwrap().kind, SettingKind::Choice(o) if *o == ["long", "short"]));
+        assert!(
+            matches!(&defs.iter().find(|d| d.key == "ram_display").unwrap().kind, SettingKind::Choice(o) if *o == ["long", "short"])
+        );
     }
 
     #[test]
@@ -2202,7 +2593,9 @@ mod tests {
         for (slot, id) in crate::config::STATUS_RIGHT.iter().enumerate() {
             let key = format!("status_pos_{id}");
             let def = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("missing {key}"));
-            assert!(matches!(def.kind, SettingKind::Number { min, max, step } if min == 1.0 && max == 7.0 && step == 1.0));
+            assert!(
+                matches!(def.kind, SettingKind::Number { min, max, step } if min == 1.0 && max == 7.0 && step == 1.0)
+            );
             assert_eq!(vals[&key], json!(slot + 1), "{key} default slot");
         }
     }
@@ -2222,7 +2615,20 @@ mod tests {
         assert_eq!(p.sections(), vec!["General", "Editor", "Appearance", "TypeScript", "Git", "Status bar"]);
         assert_eq!(p.visible().len(), 2);
         p.set_section(3);
-        assert_eq!(keys_of(&p), vec!["auto_import", "lsp_narrow", "code_lens", "code_lens_refs", "code_lens_impls", "inlay_hints", "inlay_hints_params", "inlay_hints_types", "tsgo_source"]);
+        assert_eq!(
+            keys_of(&p),
+            vec![
+                "auto_import",
+                "lsp_narrow",
+                "code_lens",
+                "code_lens_refs",
+                "code_lens_impls",
+                "inlay_hints",
+                "inlay_hints_params",
+                "inlay_hints_types",
+                "tsgo_source"
+            ]
+        );
         p.set_section(99);
         assert_eq!(p.section, 3, "out of range ignored");
     }
@@ -2234,7 +2640,10 @@ mod tests {
         assert_eq!(keys_of(&m.settings), vec!["minimap", "minimap_style"]);
         m.settings.search = TextField::with("server");
         let keys = keys_of(&m.settings);
-        assert!(keys.contains(&"format_on_save") && keys.contains(&"lsp_narrow") && keys.contains(&"code_lens"), "{keys:?}");
+        assert!(
+            keys.contains(&"format_on_save") && keys.contains(&"lsp_narrow") && keys.contains(&"code_lens"),
+            "{keys:?}"
+        );
         m.settings.search = TextField::with("zzzz");
         assert!(m.settings.visible().is_empty());
         assert_eq!(m.settings.selected_def(), None);
@@ -2269,9 +2678,15 @@ mod tests {
         assert_eq!(ev, Event::Setting { key: "format_on_save".into(), value: json!(true) });
         let ev = press(&mut m, named(NamedKey::Space));
         assert_eq!(ev, Event::Setting { key: "format_on_save".into(), value: json!(false) });
-        assert_eq!(press(&mut m, named(NamedKey::ArrowRight)), Event::Setting { key: "format_on_save".into(), value: json!(true) });
+        assert_eq!(
+            press(&mut m, named(NamedKey::ArrowRight)),
+            Event::Setting { key: "format_on_save".into(), value: json!(true) }
+        );
         assert_eq!(press(&mut m, named(NamedKey::ArrowRight)), Event::None, "already on");
-        assert_eq!(press(&mut m, named(NamedKey::ArrowLeft)), Event::Setting { key: "format_on_save".into(), value: json!(false) });
+        assert_eq!(
+            press(&mut m, named(NamedKey::ArrowLeft)),
+            Event::Setting { key: "format_on_save".into(), value: json!(false) }
+        );
         assert_eq!(m.settings.values()["format_on_save"], json!(false));
     }
 
@@ -2291,7 +2706,11 @@ mod tests {
         assert_eq!(p.cycle(d, 1), Event::Setting { key: "appearance".into(), value: json!("fixed") });
         assert_eq!(p.cycle(d, -1), Event::Setting { key: "appearance".into(), value: json!("system") });
         let t = def_idx(&p, "tsgo_source");
-        assert_eq!(p.cycle(t, 1), Event::Setting { key: "tsgo_source".into(), value: json!("project") }, "auto -> project");
+        assert_eq!(
+            p.cycle(t, 1),
+            Event::Setting { key: "tsgo_source".into(), value: json!("project") },
+            "auto -> project"
+        );
         assert_eq!(p.pick(t, 2), Event::Setting { key: "tsgo_source".into(), value: json!("bundled") });
         assert_eq!(p.cycle(t, 1), Event::Setting { key: "tsgo_source".into(), value: json!("auto") }, "wraps");
         assert_eq!(p.pick(t, 0), Event::None, "same value");
@@ -2313,7 +2732,11 @@ mod tests {
         press(&mut m, named(NamedKey::ArrowDown));
         press(&mut m, named(NamedKey::ArrowDown));
         let ev = press(&mut m, named(NamedKey::Enter));
-        assert_eq!(ev, Event::Setting { key: "theme".into(), value: json!("theme-2") }, "list starts at 0 without a current value");
+        assert_eq!(
+            ev,
+            Event::Setting { key: "theme".into(), value: json!("theme-2") },
+            "list starts at 0 without a current value"
+        );
         assert!(!m.settings.dropdown_open());
         // Esc closes the dropdown only, a second Esc closes the modal.
         press(&mut m, named(NamedKey::Enter));
@@ -2359,7 +2782,13 @@ mod tests {
     #[test]
     fn number_out_of_range_value_is_pulled_in_and_fractions_survive() {
         let mut p = SettingsPage::new(
-            vec![SettingDef { key: "scale", section: "General", label: "Scale", help: "", kind: SettingKind::Number { min: 0.5, max: 2.0, step: 0.25 } }],
+            vec![SettingDef {
+                key: "scale",
+                section: "General",
+                label: "Scale",
+                help: "",
+                kind: SettingKind::Number { min: 0.5, max: 2.0, step: 0.25 },
+            }],
             json!({"scale": 9}),
         );
         assert_eq!(p.step(0, -1), Event::Setting { key: "scale".into(), value: json!(2) });
@@ -2374,19 +2803,38 @@ mod tests {
         let mut m = modal();
         m.settings.set_section(1);
         assert_eq!(m.settings.selected_def(), Some(def_idx(&m.settings, "font_size")));
-        assert_eq!(press(&mut m, named(NamedKey::ArrowRight)), Event::Setting { key: "font_size".into(), value: json!(15) });
-        assert_eq!(press(&mut m, named(NamedKey::ArrowLeft)), Event::Setting { key: "font_size".into(), value: json!(14) });
+        assert_eq!(
+            press(&mut m, named(NamedKey::ArrowRight)),
+            Event::Setting { key: "font_size".into(), value: json!(15) }
+        );
+        assert_eq!(
+            press(&mut m, named(NamedKey::ArrowLeft)),
+            Event::Setting { key: "font_size".into(), value: json!(14) }
+        );
         assert_eq!(press(&mut m, named(NamedKey::Enter)), Event::None);
     }
 
     #[test]
     fn text_setting_edit_commit_and_cancel() {
-        let defs = vec![SettingDef { key: "shell", section: "General", label: "Shell", help: "Terminal program", kind: SettingKind::Text }];
-        let mut m = Modal::new(SettingsPage::new(defs, json!({"shell": "bash"})), KeybindsPage::new(vec![], HashMap::new()), Page::Settings);
+        let defs = vec![SettingDef {
+            key: "shell",
+            section: "General",
+            label: "Shell",
+            help: "Terminal program",
+            kind: SettingKind::Text,
+        }];
+        let mut m = Modal::new(
+            SettingsPage::new(defs, json!({"shell": "bash"})),
+            KeybindsPage::new(vec![], HashMap::new()),
+            Page::Settings,
+        );
         press(&mut m, named(NamedKey::Enter));
         assert!(m.settings.is_editing());
         typing(&mut m, "ç");
-        assert_eq!(press(&mut m, named(NamedKey::Enter)), Event::Setting { key: "shell".into(), value: json!("bashç") });
+        assert_eq!(
+            press(&mut m, named(NamedKey::Enter)),
+            Event::Setting { key: "shell".into(), value: json!("bashç") }
+        );
         assert!(!m.settings.is_editing());
         // cancel keeps the value
         press(&mut m, named(NamedKey::Enter));
@@ -2440,7 +2888,13 @@ mod tests {
     #[test]
     fn selection_keeps_row_in_view_and_wheel_clamps() {
         let defs: Vec<SettingDef> = (0..30)
-            .map(|i| SettingDef { key: Box::leak(format!("k{i}").into_boxed_str()), section: "General", label: "Item", help: "", kind: SettingKind::Bool })
+            .map(|i| SettingDef {
+                key: Box::leak(format!("k{i}").into_boxed_str()),
+                section: "General",
+                label: "Item",
+                help: "",
+                kind: SettingKind::Bool,
+            })
             .collect();
         let mut p = SettingsPage::new(defs, json!({}));
         p.view_h = 240;
@@ -2615,7 +3069,10 @@ mod tests {
         press(&mut m, named(NamedKey::ArrowDown));
         press(&mut m, named(NamedKey::ArrowDown));
         assert_eq!(m.keybinds.selected_id(), Some("CloseTab"));
-        assert_eq!(press(&mut m, named(NamedKey::Delete)), Event::Bind { combo: "ctrl+w".into(), command_id: "none".into() });
+        assert_eq!(
+            press(&mut m, named(NamedKey::Delete)),
+            Event::Bind { combo: "ctrl+w".into(), command_id: "none".into() }
+        );
         // With text in the filter, Backspace edits the filter instead.
         typing(&mut m, "a");
         assert_eq!(press(&mut m, named(NamedKey::Backspace)), Event::None);
@@ -2624,7 +3081,10 @@ mod tests {
         assert_eq!(press(&mut m, named(NamedKey::Backspace)), Event::None);
         press(&mut m, named(NamedKey::ArrowUp));
         assert_eq!(m.keybinds.selected_id(), Some("Palette"));
-        assert_eq!(press(&mut m, named(NamedKey::Backspace)), Event::Bind { combo: "ctrl+shift+p".into(), command_id: "none".into() });
+        assert_eq!(
+            press(&mut m, named(NamedKey::Backspace)),
+            Event::Bind { combo: "ctrl+shift+p".into(), command_id: "none".into() }
+        );
     }
 
     #[test]

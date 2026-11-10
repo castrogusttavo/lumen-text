@@ -7,12 +7,7 @@
 //! * [`indent_chain`] derives the breadcrumb chain of a line from indentation alone (scanning up
 //!   to a bounded distance), used while the server's outline is missing or was trimmed.
 
-use crate::{
-    app::App,
-    buffer::Buffer,
-    doc::Sym,
-    lsp::Pending,
-};
+use crate::{app::App, buffer::Buffer, doc::Sym, lsp::Pending};
 use serde_json::json;
 use std::{
     cell::RefCell,
@@ -105,10 +100,10 @@ pub struct Big {
 impl Big {
     /// [`indent_chain`] of `line`, memoized per (line, document version): breadcrumbs ask on every frame.
     pub fn chain(&self, buf: &Buffer, line: usize, version: i32) -> Vec<Sym> {
-        if let Some((key, c)) = self.chain.borrow().as_ref() {
-            if *key == (line, version) {
-                return c.clone();
-            }
+        if let Some((key, c)) = self.chain.borrow().as_ref()
+            && *key == (line, version)
+        {
+            return c.clone();
         }
         let c = indent_chain(buf, line, CHAIN_MAX_BACK);
         *self.chain.borrow_mut() = Some(((line, version), c.clone()));
@@ -142,7 +137,12 @@ pub fn indent_chain(buf: &Buffer, line: usize, max_back: usize) -> Vec<Sym> {
         let t = buf.line(l);
         let body = t.trim_start();
         // Blank lines, comments and closers say nothing about the scope we are in.
-        if body.is_empty() || body.starts_with("//") || body.starts_with("/*") || body.starts_with('*') || body.starts_with(['}', ')', ']', '#']) {
+        if body.is_empty()
+            || body.starts_with("//")
+            || body.starts_with("/*")
+            || body.starts_with('*')
+            || body.starts_with(['}', ')', ']', '#'])
+        {
             continue;
         }
         let ind = indent_cols(&t);
@@ -162,8 +162,28 @@ pub fn indent_chain(buf: &Buffer, line: usize, max_back: usize) -> Vec<Sym> {
     out
 }
 
-const MODIFIERS: &[&str] = &["export", "default", "declare", "abstract", "async", "public", "private", "protected", "static", "readonly", "override", "get", "set", "pub", "unsafe", "final"];
-const NOT_METHODS: &[&str] = &["if", "for", "while", "switch", "catch", "return", "else", "do", "try", "with", "new", "typeof", "await", "super", "function", "elif", "match", "loop"];
+const MODIFIERS: &[&str] = &[
+    "export",
+    "default",
+    "declare",
+    "abstract",
+    "async",
+    "public",
+    "private",
+    "protected",
+    "static",
+    "readonly",
+    "override",
+    "get",
+    "set",
+    "pub",
+    "unsafe",
+    "final",
+];
+const NOT_METHODS: &[&str] = &[
+    "if", "for", "while", "switch", "catch", "return", "else", "do", "try", "with", "new", "typeof", "await", "super",
+    "function", "elif", "match", "loop",
+];
 
 fn ident_len(s: &str) -> usize {
     s.char_indices().find(|(_, c)| !(c.is_alphanumeric() || *c == '_' || *c == '$')).map_or(s.len(), |(i, _)| i)
@@ -215,7 +235,11 @@ fn header_name(body: &str) -> Option<(String, u32, usize)> {
         if kind == 13 && !(body.contains("=>") || body.contains("function") || body.trim_end().ends_with('{')) {
             return None;
         }
-        return Some((after[..n].to_string(), if kind == 13 && body.contains("=>") { 12 } else { kind }, off + skipped));
+        return Some((
+            after[..n].to_string(),
+            if kind == 13 && body.contains("=>") { 12 } else { kind },
+            off + skipped,
+        ));
     }
     // Method / constructor: `name(...) {`, `name<T>(...) {`, `*gen(...) {`.
     let start = rest.trim_start_matches('*');
@@ -241,11 +265,11 @@ impl App {
         let d = &mut self.docs[i];
         let count = d.buf.line_count();
         let (vf, vl) = d.visible_line_span();
-        if let Some((_, _, _, sent)) = d.big.semwin.inflight {
-            if d.big.semwin.inflight_alive(now) {
-                want(sent + SEM_INFLIGHT_TTL); // retry if the answer never comes
-                return;
-            }
+        if let Some((_, _, _, sent)) = d.big.semwin.inflight
+            && d.big.semwin.inflight_alive(now)
+        {
+            want(sent + SEM_INFLIGHT_TTL); // retry if the answer never comes
+            return;
         }
         if d.big.semwin.due.is_none() && d.big.semwin.needs(vf, vl, count) {
             d.big.semwin.due = Some(now + SEM_DEBOUNCE);
@@ -262,13 +286,22 @@ impl App {
         let version = d.version;
         d.big.semwin.inflight = Some((a, b, version, now));
         let params = json!({"textDocument": {"uri": uri}, "range": {"start": {"line": a, "character": 0}, "end": {"line": b, "character": end_col}}});
-        self.lsps[li].request("textDocument/semanticTokens/range", params, Pending::SemRange { uri, version, first: a, last: b });
+        self.lsps[li].request(
+            "textDocument/semanticTokens/range",
+            params,
+            Pending::SemRange { uri, version, first: a, last: b },
+        );
     }
 
     /// Semantic tokens arrived (`full` or `range`), already packed by the reader thread.
     pub fn on_tokens(&mut self, li: usize, what: Pending, data: Vec<u32>) {
         let legend = self.lsps[li].caps["semanticTokensProvider"]["legend"].clone();
-        let names = |k: &str| legend[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>()).unwrap_or_default();
+        let names = |k: &str| {
+            legend[k]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
         match what {
             Pending::SemTokens { uri } => {
                 if let Some(i) = self.doc_by_uri(&uri) {
@@ -292,7 +325,12 @@ impl App {
                     d.sem_valid_until = usize::MAX;
                     d.big.semwin.cover = Some((first, last));
                     if std::env::var_os("LUMEN_DEBUG").is_some() {
-                        eprintln!("[lsp] semantic range {first}..={last}: {} ints, cache {} lines, {:?}", data.len(), d.sem.len(), took);
+                        eprintln!(
+                            "[lsp] semantic range {first}..={last}: {} ints, cache {} lines, {:?}",
+                            data.len(),
+                            d.sem.len(),
+                            took
+                        );
                     }
                     self.request_redraw();
                 }
@@ -303,12 +341,12 @@ impl App {
 
     /// A range request failed or was dropped (too large): do not ask for the same window again.
     pub fn sem_range_failed(&mut self, what: &Pending) {
-        if let Pending::SemRange { uri, first, last, .. } = what {
-            if let Some(i) = self.doc_by_uri(uri) {
-                let w = &mut self.docs[i].big.semwin;
-                w.inflight = None;
-                w.cover = Some((*first, *last));
-            }
+        if let Pending::SemRange { uri, first, last, .. } = what
+            && let Some(i) = self.doc_by_uri(uri)
+        {
+            let w = &mut self.docs[i].big.semwin;
+            w.inflight = None;
+            w.cover = Some((*first, *last));
         }
     }
 }

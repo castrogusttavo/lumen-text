@@ -30,7 +30,11 @@ impl Span {
         Span { text: t.into(), code: true, ..Default::default() }
     }
     fn same_style(&self, o: &Span) -> bool {
-        self.bold == o.bold && self.italic == o.italic && self.code == o.code && self.strike == o.strike && self.link == o.link
+        self.bold == o.bold
+            && self.italic == o.italic
+            && self.code == o.code
+            && self.strike == o.strike
+            && self.link == o.link
     }
 }
 
@@ -44,7 +48,10 @@ pub struct ListItem {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Blk {
     /// Fenced code (highlighted by the TextMate tokenizer of `lang`).
-    Code { text: String, lang: String },
+    Code {
+        text: String,
+        lang: String,
+    },
     Para(Vec<Span>),
     List(Vec<ListItem>),
     Quote(Vec<Span>),
@@ -52,26 +59,42 @@ pub enum Blk {
     /// Small caps section title ("Parameters", "Returns", ...).
     Label(String),
     /// `head` is TypeScript shown highlighted (`name: type`), `body` the prose, `extra` more blocks.
-    Item { head: Option<String>, body: Vec<Span>, extra: Vec<Blk> },
+    Item {
+        head: Option<String>,
+        body: Vec<Span>,
+        extra: Vec<Blk>,
+    },
     /// A diagnostic: severity 1 error / 2 warning / 3 info / 4 hint.
-    Diag { sev: u8, msg: String, code: String, url: Option<String> },
+    Diag {
+        sev: u8,
+        msg: String,
+        code: String,
+        url: Option<String>,
+    },
     /// A tinted callout ("Obsoleto — use `add`").
-    Note { sev: u8, title: String, body: Vec<Span> },
+    Note {
+        sev: u8,
+        title: String,
+        body: Vec<Span>,
+    },
     /// Dim one-liner ("... mais 12 linhas").
     Dim(Vec<Span>),
     /// "Module   ./types"
-    Kv { key: String, val: Vec<Span> },
+    Kv {
+        key: String,
+        val: Vec<Span>,
+    },
 }
 
 fn push_text(spans: &mut Vec<Span>, mut s: Span) {
     if s.text.is_empty() {
         return;
     }
-    if let Some(last) = spans.last_mut() {
-        if last.same_style(&s) {
-            last.text.push_str(&s.text);
-            return;
-        }
+    if let Some(last) = spans.last_mut()
+        && last.same_style(&s)
+    {
+        last.text.push_str(&s.text);
+        return;
     }
     if spans.is_empty() && !s.code {
         s.text = s.text.trim_start().to_string();
@@ -94,7 +117,14 @@ fn linkify(base: &Span, text: &str, out: &mut Vec<Span>) {
         if m.start() > last {
             push_text(out, Span { text: text[last..m.start()].to_string(), ..base.clone() });
         }
-        push_text(out, Span { text: text[m.start()..end].to_string(), link: Some(text[m.start()..end].to_string()), ..base.clone() });
+        push_text(
+            out,
+            Span {
+                text: text[m.start()..end].to_string(),
+                link: Some(text[m.start()..end].to_string()),
+                ..base.clone()
+            },
+        );
         last = end;
     }
     if last < text.len() {
@@ -142,7 +172,13 @@ pub fn parse_markdown(md: &str) -> Vec<Blk> {
     let mut heading = false;
 
     fn base(bold: u32, italic: u32, strike: u32, links: &[String]) -> Span {
-        Span { bold: bold > 0, italic: italic > 0, strike: strike > 0, link: links.last().cloned(), ..Default::default() }
+        Span {
+            bold: bold > 0,
+            italic: italic > 0,
+            strike: strike > 0,
+            link: links.last().cloned(),
+            ..Default::default()
+        }
     }
     fn commit_item(lists: &mut [ListFrame], cur: &mut Option<Vec<Span>>) {
         let depth = lists.len().saturating_sub(1);
@@ -162,18 +198,18 @@ pub fn parse_markdown(md: &str) -> Vec<Blk> {
                 _ => {}
             },
             Event::End(TagEnd::Paragraph) => {
-                if lists.is_empty() {
-                    if let Some(mut sp) = cur.take() {
-                        trim_end_spans(&mut sp);
-                        if sp.is_empty() {
-                        } else if let Some(q) = &mut quote {
-                            if !q.is_empty() {
-                                q.push(Span::plain("\n"));
-                            }
-                            q.extend(sp);
-                        } else {
-                            out.push(Blk::Para(sp));
+                if lists.is_empty()
+                    && let Some(mut sp) = cur.take()
+                {
+                    trim_end_spans(&mut sp);
+                    if sp.is_empty() {
+                    } else if let Some(q) = &mut quote {
+                        if !q.is_empty() {
+                            q.push(Span::plain("\n"));
                         }
+                        q.extend(sp);
+                    } else {
+                        out.push(Blk::Para(sp));
                     }
                 }
             }
@@ -203,7 +239,9 @@ pub fn parse_markdown(md: &str) -> Vec<Blk> {
             }
             Event::Start(Tag::CodeBlock(kind)) => {
                 let lang = match kind {
-                    CodeBlockKind::Fenced(l) => l.split(|c: char| c.is_whitespace() || c == ',' || c == '{').next().unwrap_or("").to_lowercase(),
+                    CodeBlockKind::Fenced(l) => {
+                        l.split(|c: char| c.is_whitespace() || c == ',' || c == '{').next().unwrap_or("").to_lowercase()
+                    }
                     CodeBlockKind::Indented => String::new(),
                 };
                 code = Some((lang, String::new()));
@@ -224,7 +262,12 @@ pub fn parse_markdown(md: &str) -> Vec<Blk> {
                 if !lists.is_empty() {
                     commit_item(&mut lists, &mut cur);
                 }
-                lists.push(ListFrame { ordered: start.is_some(), n: start.unwrap_or(1), items: vec![], marker: String::new() });
+                lists.push(ListFrame {
+                    ordered: start.is_some(),
+                    n: start.unwrap_or(1),
+                    items: vec![],
+                    marker: String::new(),
+                });
             }
             Event::End(TagEnd::List(_)) => {
                 commit_item(&mut lists, &mut cur);
@@ -334,14 +377,14 @@ pub struct JsDoc {
 }
 
 fn strip_sep(spans: &mut Vec<Span>) {
-    if let Some(f) = spans.first_mut() {
-        if !f.code {
-            let t = f.text.trim_start();
-            let t = t.strip_prefix('—').or_else(|| t.strip_prefix('–')).or_else(|| t.strip_prefix('-')).unwrap_or(t);
-            f.text = t.trim_start().to_string();
-            if f.text.is_empty() {
-                spans.remove(0);
-            }
+    if let Some(f) = spans.first_mut()
+        && !f.code
+    {
+        let t = f.text.trim_start();
+        let t = t.strip_prefix('—').or_else(|| t.strip_prefix('–')).or_else(|| t.strip_prefix('-')).unwrap_or(t);
+        f.text = t.trim_start().to_string();
+        if f.text.is_empty() {
+            spans.remove(0);
         }
     }
 }
@@ -371,21 +414,23 @@ fn parse_tag_para(sp: &[Span]) -> Option<JsTag> {
         rest.remove(0);
     }
     let mut name = None;
-    if matches!(tag.as_str(), "param" | "arg" | "argument" | "template" | "typeParam" | "typeparam" | "prop" | "property") {
-        if let Some(f) = rest.first_mut() {
-            if f.code {
-                name = Some(f.text.clone());
-                rest.remove(0);
-            } else {
-                let t = f.text.trim_start();
-                let t = if t.starts_with('{') { t.find('}').map_or(t, |e| t[e + 1..].trim_start()) } else { t };
-                let end = t.find(char::is_whitespace).unwrap_or(t.len());
-                if end > 0 {
-                    name = Some(t[..end].to_string());
-                    f.text = t[end..].to_string();
-                    if f.text.is_empty() {
-                        rest.remove(0);
-                    }
+    if matches!(
+        tag.as_str(),
+        "param" | "arg" | "argument" | "template" | "typeParam" | "typeparam" | "prop" | "property"
+    ) && let Some(f) = rest.first_mut()
+    {
+        if f.code {
+            name = Some(f.text.clone());
+            rest.remove(0);
+        } else {
+            let t = f.text.trim_start();
+            let t = if t.starts_with('{') { t.find('}').map_or(t, |e| t[e + 1..].trim_start()) } else { t };
+            let end = t.find(char::is_whitespace).unwrap_or(t.len());
+            if end > 0 {
+                name = Some(t[..end].to_string());
+                f.text = t[end..].to_string();
+                if f.text.is_empty() {
+                    rest.remove(0);
                 }
             }
         }
@@ -399,11 +444,11 @@ fn parse_tag_para(sp: &[Span]) -> Option<JsTag> {
 pub fn group_jsdoc(blocks: Vec<Blk>) -> JsDoc {
     let mut doc = JsDoc::default();
     for b in blocks {
-        if let Blk::Para(sp) = &b {
-            if let Some(t) = parse_tag_para(sp) {
-                doc.tags.push(t);
-                continue;
-            }
+        if let Blk::Para(sp) = &b
+            && let Some(t) = parse_tag_para(sp)
+        {
+            doc.tags.push(t);
+            continue;
         }
         match doc.tags.last_mut() {
             Some(t) => t.extra.push(b),
@@ -438,7 +483,18 @@ pub enum Kind {
 impl Kind {
     /// The kinds whose declaration body is worth fetching with `textDocument/definition`.
     pub fn wants_def(self) -> bool {
-        matches!(self, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias | Kind::Function | Kind::Method | Kind::Variable | Kind::Constructor | Kind::Module)
+        matches!(
+            self,
+            Kind::Interface
+                | Kind::Class
+                | Kind::Enum
+                | Kind::TypeAlias
+                | Kind::Function
+                | Kind::Method
+                | Kind::Variable
+                | Kind::Constructor
+                | Kind::Module
+        )
     }
     pub fn wants_type_def(self) -> bool {
         matches!(self, Kind::Variable | Kind::Property | Kind::Param | Kind::Accessor)
@@ -516,7 +572,10 @@ pub fn detect_kind(sig: &str) -> (Kind, String) {
     }
     if let Some(r) = s.strip_prefix("module ") {
         let t = r.trim();
-        return (if t.starts_with('"') || t.starts_with('\'') { Kind::Module } else { Kind::Namespace }, t.trim_matches(['"', '\'']).to_string());
+        return (
+            if t.starts_with('"') || t.starts_with('\'') { Kind::Module } else { Kind::Namespace },
+            t.trim_matches(['"', '\'']).to_string(),
+        );
     }
     (Kind::Other, String::new())
 }
@@ -615,7 +674,21 @@ pub fn parse_sig(sig: &str) -> Option<Sig> {
     let mut changed = true;
     while changed {
         changed = false;
-        for p in ["(alias) ", "(method) ", "(local function) ", "export ", "declare ", "async ", "function ", "constructor ", "new ", "static ", "abstract ", "get ", "set "] {
+        for p in [
+            "(alias) ",
+            "(method) ",
+            "(local function) ",
+            "export ",
+            "declare ",
+            "async ",
+            "function ",
+            "constructor ",
+            "new ",
+            "static ",
+            "abstract ",
+            "get ",
+            "set ",
+        ] {
             if let Some(r) = s.strip_prefix(p) {
                 s = r.trim_start();
                 changed = true;
@@ -665,7 +738,12 @@ pub fn parse_sig(sig: &str) -> Option<Sig> {
     let close = close?;
     let inner: String = b[i + 1..close].iter().collect();
     let rest: String = b[close + 1..].iter().collect();
-    let ret = rest.trim().strip_prefix(':').or_else(|| rest.trim().strip_prefix("=>")).map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
+    let ret = rest
+        .trim()
+        .strip_prefix(':')
+        .or_else(|| rest.trim().strip_prefix("=>"))
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty());
     let mut params = Vec::new();
     for p in split_top(&inner, ',') {
         let p = p.trim();
@@ -673,11 +751,15 @@ pub fn parse_sig(sig: &str) -> Option<Sig> {
             continue;
         }
         let (decl, default) = match split_top(p, '=').as_slice() {
-            [a, rest @ ..] if !rest.is_empty() && !a.trim_end().ends_with(':') => (a.trim().to_string(), Some(rest.join("=").trim().to_string())),
+            [a, rest @ ..] if !rest.is_empty() && !a.trim_end().ends_with(':') => {
+                (a.trim().to_string(), Some(rest.join("=").trim().to_string()))
+            }
             _ => (p.to_string(), None),
         };
         let (n, ty) = match decl.find(':') {
-            Some(k) if !decl.starts_with('{') && !decl.starts_with('[') => (decl[..k].trim().to_string(), decl[k + 1..].trim().to_string()),
+            Some(k) if !decl.starts_with('{') && !decl.starts_with('[') => {
+                (decl[..k].trim().to_string(), decl[k + 1..].trim().to_string())
+            }
             _ => {
                 // destructuring: `{ a, b }: T`
                 match split_top(&decl, ':').as_slice() {
@@ -687,7 +769,12 @@ pub fn parse_sig(sig: &str) -> Option<Sig> {
             }
         };
         let optional = n.ends_with('?');
-        params.push(SigParam { name: n.trim_end_matches('?').to_string(), optional: optional || default.is_some(), ty, default });
+        params.push(SigParam {
+            name: n.trim_end_matches('?').to_string(),
+            optional: optional || default.is_some(),
+            ty,
+            default,
+        });
     }
     Some(Sig { name, params, ret })
 }
@@ -695,7 +782,22 @@ pub fn parse_sig(sig: &str) -> Option<Sig> {
 // ───────────────────────────── source lexer ─────────────────────────────
 
 /// Words after which a `/` starts a regular expression rather than a division.
-const REGEX_AFTER: [&[u8]; 14] = [b"return", b"typeof", b"instanceof", b"in", b"of", b"delete", b"void", b"throw", b"new", b"case", b"do", b"else", b"yield", b"await"];
+const REGEX_AFTER: [&[u8]; 14] = [
+    b"return",
+    b"typeof",
+    b"instanceof",
+    b"in",
+    b"of",
+    b"delete",
+    b"void",
+    b"throw",
+    b"new",
+    b"case",
+    b"do",
+    b"else",
+    b"yield",
+    b"await",
+];
 
 fn is_id_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c >= 0x80
@@ -898,7 +1000,8 @@ enum Mode {
 }
 
 /// Words after which a `{` is a type literal (`x is { a: 1 }`, `T extends { a: 1 }`), never a body.
-const TYPE_BRACE_AFTER: [&str; 9] = ["is", "extends", "keyof", "typeof", "infer", "in", "readonly", "asserts", "unique"];
+const TYPE_BRACE_AFTER: [&str; 9] =
+    ["is", "extends", "keyof", "typeof", "infer", "in", "readonly", "asserts", "unique"];
 
 /// Does the `{` at `at` open the body of a function (rather than a type literal / object)?
 fn opens_body(text: &str, at: usize) -> bool {
@@ -935,7 +1038,14 @@ fn stmt_end(text: &str, from: usize, mode: Mode) -> (usize, bool) {
         match c {
             b'(' | b'[' => depth += 1,
             b')' | b']' => depth -= 1,
-            b'<' if mode != Mode::Var && depth == 0 && b.get(at + 1) != Some(&b'<') && b.get(at + 1) != Some(&b'=') && prev != b'<' => angle += 1,
+            b'<' if mode != Mode::Var
+                && depth == 0
+                && b.get(at + 1) != Some(&b'<')
+                && b.get(at + 1) != Some(&b'=')
+                && prev != b'<' =>
+            {
+                angle += 1
+            }
             b'>' if angle > 0 && prev != b'=' && prev != b'-' => angle -= 1,
             b'{' => {
                 if mode == Mode::Fn && depth == 0 && angle == 0 && opens_body(text, at) {
@@ -954,7 +1064,25 @@ fn stmt_end(text: &str, from: usize, mode: Mode) -> (usize, bool) {
                 let p = prev_sig(text, at);
                 let arrow = at >= 2 && text[..at].trim_end().ends_with("=>");
                 let n = next_sig(text, at);
-                let cont_prev = matches!(p, Some(b'=' | b'|' | b'&' | b'?' | b':' | b',' | b'(' | b'[' | b'<' | b'+' | b'-' | b'*' | b'/' | b'%' | b'.')) || arrow;
+                let cont_prev = matches!(
+                    p,
+                    Some(
+                        b'=' | b'|'
+                            | b'&'
+                            | b'?'
+                            | b':'
+                            | b','
+                            | b'('
+                            | b'['
+                            | b'<'
+                            | b'+'
+                            | b'-'
+                            | b'*'
+                            | b'/'
+                            | b'%'
+                            | b'.'
+                    )
+                ) || arrow;
                 let cont_next = matches!(n, Some(b'|' | b'&' | b'?' | b':' | b'.' | b')' | b']'));
                 if !(cont_prev || cont_next || angle > 0) {
                     return (at, false);
@@ -1101,7 +1229,14 @@ fn split_members(body: &str) -> Vec<(usize, usize)> {
             }
             b'(' | b'[' => paren += 1,
             b')' | b']' => paren -= 1,
-            b'<' if brace == 0 && paren == 0 && (prev.is_ascii_alphanumeric() || prev == b'>' || prev == b'_') && !matches!(body.as_bytes().get(at + 1), Some(b'<' | b'=')) && body.as_bytes().get(at.wrapping_sub(1)) != Some(&b'<') => angle += 1,
+            b'<' if brace == 0
+                && paren == 0
+                && (prev.is_ascii_alphanumeric() || prev == b'>' || prev == b'_')
+                && !matches!(body.as_bytes().get(at + 1), Some(b'<' | b'='))
+                && body.as_bytes().get(at.wrapping_sub(1)) != Some(&b'<') =>
+            {
+                angle += 1
+            }
             b'>' if brace == 0 && paren == 0 && angle > 0 && prev != b'=' => angle -= 1,
             // `;` ends a member even if a `<` was a comparison; `,` only outside generics.
             b';' if brace == 0 && paren == 0 => {
@@ -1128,11 +1263,15 @@ fn split_members(body: &str) -> Vec<(usize, usize)> {
 /// The first line of a `/** ... */` at the start of `s`, and the rest after the comment.
 fn leading_doc(s: &str) -> (Option<String>, &str) {
     let t = s.trim_start();
-    if let Some(r) = t.strip_prefix("/**") {
-        if let Some(e) = r.find("*/") {
-            let line = r[..e].lines().map(|l| l.trim().trim_start_matches('*').trim()).find(|l| !l.is_empty() && !l.starts_with('@')).map(str::to_string);
-            return (line, r[e + 2..].trim_start());
-        }
+    if let Some(r) = t.strip_prefix("/**")
+        && let Some(e) = r.find("*/")
+    {
+        let line = r[..e]
+            .lines()
+            .map(|l| l.trim().trim_start_matches('*').trim())
+            .find(|l| !l.is_empty() && !l.starts_with('@'))
+            .map(str::to_string);
+        return (line, r[e + 2..].trim_start());
     }
     (None, t)
 }
@@ -1205,7 +1344,19 @@ fn strip_decorators(mut s: &str) -> &str {
     }
 }
 
-const MODS: [&str; 11] = ["public", "private", "protected", "static", "readonly", "abstract", "override", "async", "declare", "accessor", "export"];
+const MODS: [&str; 11] = [
+    "public",
+    "private",
+    "protected",
+    "static",
+    "readonly",
+    "abstract",
+    "override",
+    "async",
+    "declare",
+    "accessor",
+    "export",
+];
 
 /// A class body reduced to its public surface: signatures without bodies or initializers.
 pub fn class_skeleton(body: &str) -> (Vec<String>, usize) {
@@ -1246,7 +1397,11 @@ pub fn class_skeleton(body: &str) -> (Vec<String>, usize) {
             if parts.len() > 1 && !parts[0].trim_end().ends_with(':') {
                 let init = parts[1..].join("=");
                 let has_ty = parts[0].contains(':');
-                head = if has_ty || init.trim().chars().count() > 30 || init.contains('\n') { parts[0].trim_end().to_string() } else { format!("{} = {}", parts[0].trim_end(), init.trim()) };
+                head = if has_ty || init.trim().chars().count() > 30 || init.contains('\n') {
+                    parts[0].trim_end().to_string()
+                } else {
+                    format!("{} = {}", parts[0].trim_end(), init.trim())
+                };
             }
         }
         let head = head.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1296,7 +1451,11 @@ fn parse_int(v: &str) -> Option<i64> {
         Some(r) => (true, r.trim()),
         None => (false, v),
     };
-    let n = if let Some(h) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) { i64::from_str_radix(&h.replace('_', ""), 16).ok()? } else { v.replace('_', "").parse::<i64>().ok()? };
+    let n = if let Some(h) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+        i64::from_str_radix(&h.replace('_', ""), 16).ok()?
+    } else {
+        v.replace('_', "").parse::<i64>().ok()?
+    };
     Some(if neg { -n } else { n })
 }
 
@@ -1384,7 +1543,10 @@ pub fn find_overloads(text: &str, name: &str, def_off: usize) -> Vec<String> {
     if name.is_empty() {
         return vec![];
     }
-    let pat = format!(r"(?m)^[ \t]*(?:(?:export|default|declare|public|private|protected|static|abstract|async|override)\s+)*(?:function\s+)?{}\s*[<(?]", regex::escape(name));
+    let pat = format!(
+        r"(?m)^[ \t]*(?:(?:export|default|declare|public|private|protected|static|abstract|async|override)\s+)*(?:function\s+)?{}\s*[<(?]",
+        regex::escape(name)
+    );
     let Ok(re) = Regex::new(&pat) else { return vec![] };
     struct M {
         start: usize,
@@ -1468,7 +1630,12 @@ fn split_top_eq(s: &str) -> Option<&str> {
                     depth -= 1;
                 }
             }
-            b'=' if depth <= 0 && b.get(at + 1) != Some(&b'>') && b.get(at + 1) != Some(&b'=') && at > 0 && !matches!(b[at - 1], b'=' | b'!' | b'<' | b'>') => {
+            b'=' if depth <= 0
+                && b.get(at + 1) != Some(&b'>')
+                && b.get(at + 1) != Some(&b'=')
+                && at > 0
+                && !matches!(b[at - 1], b'=' | b'!' | b'<' | b'>') =>
+            {
                 return Some(&s[at + 1..]);
             }
             _ => {}
@@ -1482,7 +1649,8 @@ fn split_top_eq(s: &str) -> Option<&str> {
 pub fn import_spec(lines: &[String], idx: usize) -> Option<(String, usize, usize)> {
     use std::sync::OnceLock;
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r#"(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"]+)['"]"#).unwrap());
+    let re = RE
+        .get_or_init(|| Regex::new(r#"(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"]+)['"]"#).unwrap());
     let find = |l: usize| -> Option<(String, usize, usize)> {
         let line = lines.get(l)?;
         let c = re.captures(line)?;
@@ -1496,7 +1664,8 @@ pub fn import_spec(lines: &[String], idx: usize) -> Option<(String, usize, usize
     let mut start = None;
     for j in (idx.saturating_sub(60)..idx).rev() {
         let t = lines.get(j)?.trim_start();
-        if t.starts_with("import ") || t.starts_with("export ") || t.starts_with("import{") || t.starts_with("export{") {
+        if t.starts_with("import ") || t.starts_with("export ") || t.starts_with("import{") || t.starts_with("export{")
+        {
             start = Some(j);
             break;
         }
@@ -1574,7 +1743,10 @@ mod tests {
         assert_eq!(detect_kind("interface User"), (Kind::Interface, "User".into()));
         assert_eq!(detect_kind("(alias) interface User\nimport User"), (Kind::Interface, "User".into()));
         assert_eq!(detect_kind("(property) Repo<T extends Base>.items: T[]"), (Kind::Property, "items".into()));
-        assert_eq!(detect_kind("(method) User.greet(greeting: string, loud?: boolean): string"), (Kind::Method, "greet".into()));
+        assert_eq!(
+            detect_kind("(method) User.greet(greeting: string, loud?: boolean): string"),
+            (Kind::Method, "greet".into())
+        );
         assert_eq!(detect_kind("(enum member) Role.Editor = 5"), (Kind::EnumMember, "Editor".into()));
         assert_eq!(detect_kind("const limit: 42"), (Kind::Variable, "limit".into()));
         assert_eq!(detect_kind("module \"./types\"").0, Kind::Module);
@@ -1665,7 +1837,7 @@ const obj = {
 
     #[test]
     fn interface_declaration_is_extracted_whole() {
-        let at = off("User extends") ;
+        let at = off("User extends");
         assert_eq!(decl_kind_at(SRC, at), Some(Kind::Interface));
         let (t, more) = render_decl(SRC, at, Kind::Interface, 40).unwrap();
         assert!(t.starts_with("export interface User extends Base {"), "{t}");
@@ -1733,7 +1905,10 @@ const obj = {
 
     #[test]
     fn non_ascii_sources_never_panic() {
-        let t = format!("export interface Usuário {{\n  /** descrição — ação */\n  nome: string; // coração\n  tag: \"é\";\n}}\n\nexport type Longo = {};\n", "\"á\" | ".repeat(2000) + "\"z\"");
+        let t = format!(
+            "export interface Usuário {{\n  /** descrição — ação */\n  nome: string; // coração\n  tag: \"é\";\n}}\n\nexport type Longo = {};\n",
+            "\"á\" | ".repeat(2000) + "\"z\""
+        );
         let at = t.find("Usuário").unwrap();
         let (d, _) = render_decl(&t, at, Kind::Interface, 40).unwrap();
         assert!(d.contains("nome: string; // coração"));
@@ -1764,9 +1939,15 @@ const obj = {
     #[test]
     fn long_unions_are_broken_up() {
         let s = "export type Status = \"idle\" | \"loading\" | \"error\" | { code: number; message: string }";
-        assert_eq!(pretty_union(s), "export type Status =\n  | \"idle\"\n  | \"loading\"\n  | \"error\"\n  | { code: number; message: string }");
+        assert_eq!(
+            pretty_union(s),
+            "export type Status =\n  | \"idle\"\n  | \"loading\"\n  | \"error\"\n  | { code: number; message: string }"
+        );
         assert_eq!(pretty_union("type A = 1 | 2"), "type A = 1 | 2");
-        assert_eq!(pretty_union("export type Fn = (a: number, b: string) => Promise<Array<string | number | boolean>>"), "export type Fn = (a: number, b: string) => Promise<Array<string | number | boolean>>");
+        assert_eq!(
+            pretty_union("export type Fn = (a: number, b: string) => Promise<Array<string | number | boolean>>"),
+            "export type Fn = (a: number, b: string) => Promise<Array<string | number | boolean>>"
+        );
     }
 
     #[test]
@@ -1822,7 +2003,10 @@ const obj = {
     fn generics_with_braces_in_headers() {
         let src = "export interface Box<T extends { a: 1 } = { a: 1 }> extends Base<{ x: number }> {\n  value: T;\n}\n\nexport class Store<S extends { [k: string]: unknown }, A = () => void> extends Emitter<{ s: S }> implements Disposable {\n  state!: S;\n  dispatch(a: A): void {}\n}\n\nexport interface Next { n: 1 }\n";
         let b = decl(src, "Box<", Kind::Interface);
-        assert!(b.starts_with("export interface Box<T extends { a: 1 } = { a: 1 }> extends Base<{ x: number }> {"), "{b}");
+        assert!(
+            b.starts_with("export interface Box<T extends { a: 1 } = { a: 1 }> extends Base<{ x: number }> {"),
+            "{b}"
+        );
         assert!(b.ends_with("  value: T;\n}"), "{b}");
         let c = decl(src, "Store<", Kind::Class);
         assert!(c.starts_with("export class Store<S extends { [k: string]: unknown }, A = () => void> extends Emitter<{ s: S }> implements Disposable {"), "{c}");
@@ -1854,9 +2038,15 @@ const obj = {
     #[test]
     fn type_aliases_with_arrow_functions_and_multiline_generics() {
         let src = "type Fn = (a: number, cb: (x: string) => void) => Promise<{ ok: boolean }>;\ntype Arr = Array<\n  string\n>\ntype Cond<T> = T extends (infer U)[] ? U : T extends string ? `s:${T}` : never;\ntype Mapped = {\n  [K in keyof Fn]: Fn[K];\n}\nconst after = 1;\n";
-        assert_eq!(decl(src, "Fn =", Kind::TypeAlias), "type Fn = (a: number, cb: (x: string) => void) => Promise<{ ok: boolean }>");
+        assert_eq!(
+            decl(src, "Fn =", Kind::TypeAlias),
+            "type Fn = (a: number, cb: (x: string) => void) => Promise<{ ok: boolean }>"
+        );
         assert_eq!(decl(src, "Arr =", Kind::TypeAlias), "type Arr = Array<\n  string\n>");
-        assert_eq!(decl(src, "Cond<", Kind::TypeAlias), "type Cond<T> = T extends (infer U)[] ? U : T extends string ? `s:${T}` : never");
+        assert_eq!(
+            decl(src, "Cond<", Kind::TypeAlias),
+            "type Cond<T> = T extends (infer U)[] ? U : T extends string ? `s:${T}` : never"
+        );
         assert_eq!(decl(src, "Mapped", Kind::TypeAlias), "type Mapped = {\n  [K in keyof Fn]: Fn[K];\n}");
     }
 
@@ -1957,11 +2147,38 @@ const obj = {
 
     #[test]
     fn random_garbage_never_panics_or_runs_away() {
-        let junk = ["{{{{", "`${`${`${", "/*", "'", "\"\\", "interface A<<<<<{", "class C extends { { {", "@@@(", "/[", "type T = <<<", "enum E { A = `", "é{è`ü/ö", "function f<<(", "\u{1F600}{`", "}}}}", "@Foo<", "/", "//"];
+        let junk = [
+            "{{{{",
+            "`${`${`${",
+            "/*",
+            "'",
+            "\"\\",
+            "interface A<<<<<{",
+            "class C extends { { {",
+            "@@@(",
+            "/[",
+            "type T = <<<",
+            "enum E { A = `",
+            "é{è`ü/ö",
+            "function f<<(",
+            "\u{1F600}{`",
+            "}}}}",
+            "@Foo<",
+            "/",
+            "//",
+        ];
         for j in junk {
             for pre in ["", "interface A ", "class C ", "enum E ", "type T = ", "function f", "const v = "] {
                 let src = format!("{pre}{j}");
-                for kind in [Kind::Interface, Kind::Class, Kind::Enum, Kind::TypeAlias, Kind::Function, Kind::Variable, Kind::Namespace] {
+                for kind in [
+                    Kind::Interface,
+                    Kind::Class,
+                    Kind::Enum,
+                    Kind::TypeAlias,
+                    Kind::Function,
+                    Kind::Variable,
+                    Kind::Namespace,
+                ] {
                     for off in (0..src.len()).filter(|i| src.is_char_boundary(*i)) {
                         let _ = render_decl(&src, off, kind, 10);
                         let _ = decl_kind_at(&src, off);

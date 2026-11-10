@@ -29,13 +29,29 @@ pub fn frame(v: &Value) -> Vec<u8> {
 // ───────────────────────────── messages ─────────────────────────────
 
 pub enum Msg {
-    Response { id: i64, result: Result<Value, Value> },
+    Response {
+        id: i64,
+        result: Result<Value, Value>,
+    },
     /// A `semanticTokens/*` response, with its integers packed (see `lsp_stream`).
-    Tokens { id: i64, data: Vec<u32> },
+    Tokens {
+        id: i64,
+        data: Vec<u32>,
+    },
     /// A `documentSymbol` response, flattened (and trimmed when huge; see `lsp_stream`).
-    Symbols { id: i64, syms: Vec<crate::doc::Sym> },
-    Notification { method: String, params: Value },
-    Request { id: Value, method: String, params: Value },
+    Symbols {
+        id: i64,
+        syms: Vec<crate::doc::Sym>,
+    },
+    Notification {
+        method: String,
+        params: Value,
+    },
+    Request {
+        id: Value,
+        method: String,
+        params: Value,
+    },
     Exited,
 }
 
@@ -43,32 +59,84 @@ pub enum Msg {
 #[derive(Clone, Debug)]
 pub enum Pending {
     Initialize,
-    Diagnostic { uri: String },
-    Hover { uri: String, at: usize },
-    HoverExtra { uri: String, at: usize, serial: u64, what: crate::app_hover::HoverWhat },
-    Completion { uri: String, at: usize },
-    Definition { kind: DefKind },
+    Diagnostic {
+        uri: String,
+    },
+    Hover {
+        uri: String,
+        at: usize,
+    },
+    HoverExtra {
+        uri: String,
+        at: usize,
+        serial: u64,
+        what: crate::app_hover::HoverWhat,
+    },
+    Completion {
+        uri: String,
+        at: usize,
+    },
+    Definition {
+        kind: DefKind,
+    },
     References,
     Rename,
-    Format { uri: String, version: i32 },
-    CodeActions { uri: String },
-    Signature { uri: String },
-    Symbols { uri: String },
-    ResolveCompletion { uri: String, version: i32 },
+    Format {
+        uri: String,
+        version: i32,
+    },
+    CodeActions,
+    Signature {
+        uri: String,
+    },
+    Symbols {
+        uri: String,
+    },
+    ResolveCompletion {
+        uri: String,
+        version: i32,
+    },
     ResolveAction,
     SelectionRange,
-    SymbolsCache { uri: String },
-    Folding { uri: String },
-    SemTokens { uri: String },
+    SymbolsCache {
+        uri: String,
+    },
+    Folding {
+        uri: String,
+    },
+    SemTokens {
+        uri: String,
+    },
     /// `semanticTokens/range` for lines `first..=last` of document `version` (big files).
-    SemRange { uri: String, version: i32, first: usize, last: usize },
-    CodeLens { uri: String },
-    InlayHint { uri: String, version: i32, first: usize, last: usize },
-    ResolveLens { uri: String, line: usize },
-    PrepareCalls { incoming: bool },
-    Calls { incoming: bool },
+    SemRange {
+        uri: String,
+        version: i32,
+        first: usize,
+        last: usize,
+    },
+    CodeLens {
+        uri: String,
+    },
+    InlayHint {
+        uri: String,
+        version: i32,
+        first: usize,
+        last: usize,
+    },
+    ResolveLens {
+        uri: String,
+        line: usize,
+    },
+    PrepareCalls {
+        incoming: bool,
+    },
+    Calls {
+        incoming: bool,
+    },
     Organize,
-    WorkspaceSymbols { query: String },
+    WorkspaceSymbols {
+        query: String,
+    },
     ExecuteCommand,
 }
 
@@ -99,7 +167,15 @@ pub struct Lsp {
 
 impl Lsp {
     /// Spawn `bin args...` as a language server rooted at `root`.
-    pub fn spawn(name: &str, bin: &Path, args: &[&str], root: &Path, work_dir: &Path, mem_limit_mib: u32, wake: Wake) -> std::io::Result<Lsp> {
+    pub fn spawn(
+        name: &str,
+        bin: &Path,
+        args: &[&str],
+        root: &Path,
+        work_dir: &Path,
+        mem_limit_mib: u32,
+        wake: Wake,
+    ) -> std::io::Result<Lsp> {
         let mut cmd = Command::new(bin);
         cmd.args(args)
             .current_dir(work_dir)
@@ -139,10 +215,10 @@ impl Lsp {
                     }
                     Ok(Frame::Skipped) => {}
                     Ok(Frame::Msg(m)) => {
-                        if let Msg::Response { id, .. } | Msg::Tokens { id, .. } | Msg::Symbols { id, .. } = &m {
-                            if let Ok(mut p) = reader_policies.lock() {
-                                p.remove(id);
-                            }
+                        if let Msg::Response { id, .. } | Msg::Tokens { id, .. } | Msg::Symbols { id, .. } = &m
+                            && let Ok(mut p) = reader_policies.lock()
+                        {
+                            p.remove(id);
                         }
                         if mtx.send(m).is_err() {
                             return;
@@ -197,10 +273,10 @@ impl Lsp {
         let id = self.alloc_id();
         self.pending.insert(id, what);
         let policy = policy_for(method);
-        if policy != Policy::Value {
-            if let Ok(mut p) = self.policies.lock() {
-                p.insert(id, policy);
-            }
+        if policy != Policy::Value
+            && let Ok(mut p) = self.policies.lock()
+        {
+            p.insert(id, policy);
         }
         self.send_or_queue(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
         id
@@ -248,8 +324,12 @@ impl Drop for Lsp {
 pub(crate) fn classify(v: Value) -> Option<Msg> {
     let method = v.get("method").and_then(Value::as_str).map(str::to_string);
     match (method, v.get("id")) {
-        (Some(method), Some(id)) => Some(Msg::Request { id: id.clone(), method, params: v.get("params").cloned().unwrap_or(Value::Null) }),
-        (Some(method), None) => Some(Msg::Notification { method, params: v.get("params").cloned().unwrap_or(Value::Null) }),
+        (Some(method), Some(id)) => {
+            Some(Msg::Request { id: id.clone(), method, params: v.get("params").cloned().unwrap_or(Value::Null) })
+        }
+        (Some(method), None) => {
+            Some(Msg::Notification { method, params: v.get("params").cloned().unwrap_or(Value::Null) })
+        }
         (None, Some(id)) => {
             let id = id.as_i64()?;
             let result = match v.get("error") {
@@ -323,7 +403,8 @@ fn bundled_tsgo() -> Option<PathBuf> {
         }
     }
     if let Some(home) = std::env::var_os("HOME") {
-        let p = Path::new(&home).join(".local/share/lumen-text/tsgo/node_modules/@typescript/native-preview-linux-x64/lib/tsgo");
+        let p = Path::new(&home)
+            .join(".local/share/lumen-text/tsgo/node_modules/@typescript/native-preview-linux-x64/lib/tsgo");
         if p.exists() {
             return Some(p);
         }
@@ -335,7 +416,12 @@ fn bundled_tsgo() -> Option<PathBuf> {
 /// The tsgo a project installed itself (`node_modules/@typescript/native-preview-*`).
 fn project_tsgo(root: &Path) -> Option<PathBuf> {
     root.ancestors().find_map(|d| {
-        std::fs::read_dir(d.join("node_modules/@typescript")).ok()?.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("native-preview-")).map(|e| e.path().join("lib/tsgo")).find(|p| p.exists())
+        std::fs::read_dir(d.join("node_modules/@typescript"))
+            .ok()?
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("native-preview-"))
+            .map(|e| e.path().join("lib/tsgo"))
+            .find(|p| p.exists())
     })
 }
 
@@ -373,8 +459,12 @@ pub fn project_root(file: &Path) -> Option<PathBuf> {
 
 /// Where the mirror for `root` lives.
 pub fn mirror_dir(root: &Path) -> PathBuf {
-    let h = root.to_string_lossy().bytes().fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
-    let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache"))).unwrap_or_else(std::env::temp_dir);
+    let h =
+        root.to_string_lossy().bytes().fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
     base.join("lumen-text/mirrors").join(format!("{h:016x}"))
 }
 
@@ -408,7 +498,8 @@ pub fn write_mirror(root: &Path, mirror: &Path, includes: &[PathBuf]) -> std::io
         }
         let _ = std::fs::remove_file(e.path());
     }
-    let mut rels: Vec<String> = includes.iter().filter_map(|p| p.strip_prefix(root).ok().map(|r| r.to_string_lossy().into_owned())).collect();
+    let mut rels: Vec<String> =
+        includes.iter().filter_map(|p| p.strip_prefix(root).ok().map(|r| r.to_string_lossy().into_owned())).collect();
     rels.sort();
     rels.dedup();
     let mut cfg = json!({"include": rels, "compilerOptions": {"incremental": false, "noEmit": true}});
@@ -533,15 +624,26 @@ mod tests {
         };
         let root = std::env::temp_dir().join(format!("lumen-tsgo-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true,"noEmit":true},"include":["*.ts"]}"#).unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":true,"noEmit":true},"include":["*.ts"]}"#,
+        )
+        .unwrap();
         let file = root.join("bad.ts");
         let src = "const x: number = \"a\"\nexport const y = nope\n";
         std::fs::write(&file, src).unwrap();
         let uri = crate::doc::path_to_uri(&file);
 
         let mut lsp = Lsp::spawn("tsgo", &bin, &["--lsp", "--stdio"], &root, &root, 512, Arc::new(|| {})).unwrap();
-        lsp.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": "typescript", "version": 1, "text": src}}));
-        lsp.request("textDocument/diagnostic", json!({"textDocument": {"uri": uri}}), Pending::Diagnostic { uri: uri.clone() });
+        lsp.notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": uri, "languageId": "typescript", "version": 1, "text": src}}),
+        );
+        lsp.request(
+            "textDocument/diagnostic",
+            json!({"textDocument": {"uri": uri}}),
+            Pending::Diagnostic { uri: uri.clone() },
+        );
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut items = None;
@@ -560,7 +662,8 @@ mod tests {
         lsp.shutdown();
         std::fs::remove_dir_all(&root).ok();
         let items = items.expect("no diagnostic response within 20s");
-        let msgs: Vec<String> = items.as_array().unwrap().iter().map(|d| d["message"].as_str().unwrap_or("").to_string()).collect();
+        let msgs: Vec<String> =
+            items.as_array().unwrap().iter().map(|d| d["message"].as_str().unwrap_or("").to_string()).collect();
         assert!(msgs.iter().any(|m| m.contains("not assignable")), "{msgs:?}");
         assert!(msgs.iter().any(|m| m.contains("Cannot find name")), "{msgs:?}");
     }
@@ -573,10 +676,17 @@ mod tests {
             eprintln!("tsgo not installed, skipping");
             return;
         };
-        let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache"))).unwrap_or_else(std::env::temp_dir);
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache")))
+            .unwrap_or_else(std::env::temp_dir);
         let root = base.join(format!("lumen-bigtest-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true,"noEmit":true},"include":["*.ts"]}"#).unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":true,"noEmit":true},"include":["*.ts"]}"#,
+        )
+        .unwrap();
         let mut src = String::new();
         for i in 0..3000 {
             src.push_str(&format!("export class C{i} {{\n  m{i}(x: number): number {{\n    const y = x + {i}\n    return y\n  }}\n}}\n\n\n\n\n"));
@@ -585,10 +695,17 @@ mod tests {
         std::fs::write(&file, &src).unwrap();
         let uri = crate::doc::path_to_uri(&file);
         let mut lsp = Lsp::spawn("tsgo", &bin, &["--lsp", "--stdio"], &root, &root, 512, Arc::new(|| {})).unwrap();
-        lsp.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": "typescript", "version": 1, "text": src}}));
+        lsp.notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": uri, "languageId": "typescript", "version": 1, "text": src}}),
+        );
         let (first, last) = (15_000u64, 15_050u64);
         lsp.request("textDocument/semanticTokens/range", json!({"textDocument": {"uri": uri}, "range": {"start": {"line": first, "character": 0}, "end": {"line": last, "character": 0}}}), Pending::SemRange { uri: uri.clone(), version: 1, first: first as usize, last: last as usize });
-        lsp.request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri}}), Pending::SymbolsCache { uri: uri.clone() });
+        lsp.request(
+            "textDocument/documentSymbol",
+            json!({"textDocument": {"uri": uri}}),
+            Pending::SymbolsCache { uri: uri.clone() },
+        );
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let (mut tokens, mut syms) = (None, None);

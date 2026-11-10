@@ -121,7 +121,17 @@ pub fn wheel_pos(r: &Region, px: f64) -> f64 {
 impl App {
     /// Register a scrollable pane and paint its bar. `total`/`visible`/`pos` share one unit (px or
     /// rows); `unit` is the pixel size of that unit. Returns the bar when the content overflows.
-    pub fn region_bar(&mut self, cv: &mut Canvas, id: Reg, area: Rect, total: f64, visible: f64, pos: f64, unit: f64, int: bool) -> Option<VBar> {
+    pub fn region_bar(
+        &mut self,
+        cv: &mut Canvas,
+        id: Reg,
+        area: Rect,
+        total: f64,
+        visible: f64,
+        pos: f64,
+        unit: f64,
+        int: bool,
+    ) -> Option<VBar> {
         let track = Rect::new(area.right() - TRACK_W, area.y, TRACK_W, area.h);
         let bar = VBar::new(track, total, visible, pos);
         self.regions.list.push(Region { id, area, bar, total, visible, pos, unit, int });
@@ -146,7 +156,9 @@ impl App {
             return true;
         }
         let px = match delta {
-            MouseScrollDelta::LineDelta(_, dy) => -(dy as f64) * 3.0 * if r.unit > 1.5 { r.unit } else { line_h() as f64 },
+            MouseScrollDelta::LineDelta(_, dy) => {
+                -(dy as f64) * 3.0 * if r.unit > 1.5 { r.unit } else { line_h() as f64 }
+            }
             MouseScrollDelta::PixelDelta(p) => -p.y,
         };
         let v = wheel_pos(&r, px);
@@ -218,7 +230,13 @@ impl App {
     /// follow the fingers exactly.
     fn region_glide(&mut self, r: Region, delta: MouseScrollDelta) {
         let w = self.wheel_in(delta);
-        let d = if w.dy != 0.0 { w.dy } else if self.mods.shift_key() { w.dx } else { 0.0 };
+        let d = if w.dy != 0.0 {
+            w.dy
+        } else if self.mods.shift_key() {
+            w.dx
+        } else {
+            0.0
+        };
         if d == 0.0 {
             return;
         }
@@ -274,7 +292,14 @@ impl App {
 
     /// One-line description of the gliding regions for the headless `state` token.
     pub fn regions_state(&self) -> String {
-        self.regions.anim.iter().map(|a| format!("{:?}={:.2}(frac {:.2}{})", a.id, a.sc.pos, a.frac, if a.sc.settled() { "" } else { ",moving" })).collect::<Vec<_>>().join(" ")
+        self.regions
+            .anim
+            .iter()
+            .map(|a| {
+                format!("{:?}={:.2}(frac {:.2}{})", a.id, a.sc.pos, a.frac, if a.sc.settled() { "" } else { ",moving" })
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Pixel offset of the fractional row an animated row-region is scrolled past (draw the rows
@@ -394,7 +419,16 @@ mod tests {
 
     fn region(total: f64, visible: f64, pos: f64, unit: f64, int: bool) -> Region {
         let track = Rect::new(90, 0, TRACK_W, 100);
-        Region { id: Reg::Picker, area: Rect::new(0, 0, 100, 100), bar: VBar::new(track, total, visible, pos), total, visible, pos, unit, int }
+        Region {
+            id: Reg::Picker,
+            area: Rect::new(0, 0, 100, 100),
+            bar: VBar::new(track, total, visible, pos),
+            total,
+            visible,
+            pos,
+            unit,
+            int,
+        }
     }
 
     #[test]

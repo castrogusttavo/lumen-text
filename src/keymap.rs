@@ -93,7 +93,8 @@ pub const DEFAULTS: &[(&str, &str)] = &[
 /// Commands whose `Ctrl+<letter>` default also fires with Shift held (`Ctrl+Shift+W` closes the
 /// tab, `Ctrl+Shift+Q` quits, ...). An exact `Ctrl+Shift+<letter>` row or user binding still wins,
 /// which is why `Ctrl+Shift+G` opens the Git panel while `Ctrl+G` goes to a line.
-pub const SHIFT_TOLERANT: &[&str] = &["Save", "CloseTab", "Quit", "GotoLine", "ToggleOutput", "Replace", "ToggleSidebar", "WorkspaceSymbols"];
+pub const SHIFT_TOLERANT: &[&str] =
+    &["Save", "CloseTab", "Quit", "GotoLine", "ToggleOutput", "Replace", "ToggleSidebar", "WorkspaceSymbols"];
 
 /// Prefix that scopes a combo to the file explorer.
 pub const EXPLORER: &str = "explorer:";
@@ -151,7 +152,9 @@ pub fn combo(ctrl: bool, shift: bool, alt: bool, key: &str) -> String {
 /// Normalize a user-written combination ("Shift+Ctrl+T" -> "ctrl+shift+t").
 pub fn normalize(text: &str) -> String {
     let text = text.trim();
-    if let Some(rest) = text.get(..EXPLORER.len()).filter(|p| p.eq_ignore_ascii_case(EXPLORER)).map(|_| &text[EXPLORER.len()..]) {
+    if let Some(rest) =
+        text.get(..EXPLORER.len()).filter(|p| p.eq_ignore_ascii_case(EXPLORER)).map(|_| &text[EXPLORER.len()..])
+    {
         return format!("{EXPLORER}{}", normalize(rest));
     }
     // A chord: each stroke is normalized on its own ("Ctrl+K  R" -> "ctrl+k r").
@@ -229,8 +232,15 @@ impl Keymap {
         std::fs::read_to_string(path).map(|t| Keymap::from_json(&t)).unwrap_or_default()
     }
 
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
     pub fn load() -> Keymap {
-        crate::config::default_path().map(|p| Keymap::load_from(&p.with_file_name("keybindings.json"))).unwrap_or_default()
+        crate::config::default_path()
+            .map(|p| Keymap::load_from(&p.with_file_name("keybindings.json")))
+            .unwrap_or_default()
     }
 
     /// First hit for `cands` (in order): the user's file, then the built-in table.
@@ -307,10 +317,6 @@ impl Keymap {
     pub fn entries(&self) -> HashMap<String, String> {
         self.map.clone()
     }
-
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
 }
 
 #[cfg(test)]
@@ -360,7 +366,11 @@ mod tests {
             if text.is_empty() {
                 continue;
             }
-            assert_eq!(default_combo(&id), Some(palette_combo(text).as_str()), "{label}: {text} disagrees with keymap::DEFAULTS");
+            assert_eq!(
+                default_combo(&id),
+                Some(palette_combo(text).as_str()),
+                "{label}: {text} disagrees with keymap::DEFAULTS"
+            );
         }
         // Every default of a command that has a palette hint is its main one or an alias of it.
         for (combo, id) in DEFAULTS {
@@ -378,7 +388,10 @@ mod tests {
         // A chord prefix must not also be a plain command.
         for (combo, id) in DEFAULTS {
             if let Some((first, _)) = combo.split_once(' ') {
-                assert!(DEFAULTS.iter().all(|(c, _)| *c != first), "{combo} ({id}): its prefix {first} is a command too");
+                assert!(
+                    DEFAULTS.iter().all(|(c, _)| *c != first),
+                    "{combo} ({id}): its prefix {first} is a command too"
+                );
             }
         }
         for id in SHIFT_TOLERANT {
@@ -402,7 +415,11 @@ mod tests {
         assert_eq!(k.lookup(true, false, false, &ch("k")), None, "the prefix alone is not a command");
         assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("r")), Some("RepeatTask"));
         assert_eq!(k.lookup_chord("ctrl+k", true, false, false, &ch("r")), Some("RepeatTask"), "Ctrl still held");
-        assert_eq!(k.lookup_chord("ctrl+k", false, true, false, &ch("R")), Some("RepeatTask"), "Shift is ignored by the fallback");
+        assert_eq!(
+            k.lookup_chord("ctrl+k", false, true, false, &ch("R")),
+            Some("RepeatTask"),
+            "Shift is ignored by the fallback"
+        );
         assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("s")), Some("Save"));
         assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("w")), Some("CloseTab"));
         assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("i")), Some("ShowHover"));

@@ -77,7 +77,15 @@ fn closer(c: char) -> Option<char> {
 
 impl Editor {
     pub fn new(buf: &Buffer, comment: &str) -> Self {
-        Self { sel: Sel::caret(0), extra: Vec::new(), want: None, indent: detect_indent(buf), comment: comment.to_string(), tab_w: default_tab_w(), jsx: false }
+        Self {
+            sel: Sel::caret(0),
+            extra: Vec::new(),
+            want: None,
+            indent: detect_indent(buf),
+            comment: comment.to_string(),
+            tab_w: default_tab_w(),
+            jsx: false,
+        }
     }
 
     pub fn head(&self) -> usize {
@@ -103,22 +111,14 @@ impl Editor {
         if p == 0 {
             return 0;
         }
-        if buf.char_at(p - 1) == Some('\n') && p >= 2 && buf.char_at(p - 2) == Some('\r') {
-            p - 2
-        } else {
-            p - 1
-        }
+        if buf.char_at(p - 1) == Some('\n') && p >= 2 && buf.char_at(p - 2) == Some('\r') { p - 2 } else { p - 1 }
     }
 
     fn next_pos(&self, buf: &Buffer, p: usize) -> usize {
         if p >= buf.len_chars() {
             return p;
         }
-        if buf.char_at(p) == Some('\r') && buf.char_at(p + 1) == Some('\n') {
-            p + 2
-        } else {
-            p + 1
-        }
+        if buf.char_at(p) == Some('\r') && buf.char_at(p + 1) == Some('\n') { p + 2 } else { p + 1 }
     }
 
     fn word_left(&self, buf: &Buffer, mut p: usize) -> usize {
@@ -148,7 +148,10 @@ impl Editor {
         if matches!(buf.char_at(p), Some('\n') | Some('\r')) {
             return self.next_pos(buf, p);
         }
-        while p < n && class(buf.char_at(p).unwrap()) == Class::Space && !matches!(buf.char_at(p), Some('\n') | Some('\r')) {
+        while p < n
+            && class(buf.char_at(p).unwrap()) == Class::Space
+            && !matches!(buf.char_at(p), Some('\n') | Some('\r'))
+        {
             p += 1;
         }
         if p < n && matches!(buf.char_at(p), Some('\n') | Some('\r')) {
@@ -220,7 +223,9 @@ impl Editor {
     fn normalize_cursors(&mut self) {
         let mut seen: Vec<Sel> = vec![self.sel];
         self.extra.retain(|s| {
-            let dup = seen.iter().any(|t| t.start() < s.end().max(s.start() + 0) && s.start() < t.end().max(t.start() + 0) || *t == *s);
+            let dup = seen
+                .iter()
+                .any(|t| t.start() < s.end().max(s.start()) && s.start() < t.end().max(t.start()) || *t == *s);
             if !dup {
                 seen.push(*s);
             }
@@ -310,7 +315,12 @@ impl Editor {
         }
         let primary = found.iter().position(|&p| p == self.sel.start()).unwrap_or(0);
         self.sel = Sel { anchor: found[primary], head: found[primary] + len };
-        self.extra = found.iter().enumerate().filter(|(i, _)| *i != primary).map(|(_, &p)| Sel { anchor: p, head: p + len }).collect();
+        self.extra = found
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != primary)
+            .map(|(_, &p)| Sel { anchor: p, head: p + len })
+            .collect();
         self.want = None;
     }
 
@@ -646,7 +656,8 @@ impl Editor {
             if is_quote && next == Some(ch) {
                 return self.move_to(buf, e + 1, false, false);
             }
-            let word_adjacent = prev.is_some_and(|c| c.is_alphanumeric() || c == '_') || next.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            let word_adjacent = prev.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                || next.is_some_and(|c| c.is_alphanumeric() || c == '_');
             let next_ok = next.is_none_or(|c| c.is_whitespace() || ")]};,.:>".contains(c));
             if next_ok && !(is_quote && (word_adjacent || prev == Some(ch))) {
                 let before = self.sel;
@@ -659,13 +670,15 @@ impl Editor {
         }
         let mut tmp = [0u8; 4];
         self.insert_text(buf, ch.encode_utf8(&mut tmp));
-        if ch == '>' && self.jsx && self.sel.is_empty() {
-            if let Some(close) = closing_tag_for(buf, self.sel.head) {
-                let h = self.sel.head;
-                let before = self.sel;
-                buf.replace(h, h, &close, EditKind::Typing, before);
-                self.set_caret_keep_group(buf, h);
-            }
+        if ch == '>'
+            && self.jsx
+            && self.sel.is_empty()
+            && let Some(close) = closing_tag_for(buf, self.sel.head)
+        {
+            let h = self.sel.head;
+            let before = self.sel;
+            buf.replace(h, h, &close, EditKind::Typing, before);
+            self.set_caret_keep_group(buf, h);
         }
     }
 
@@ -715,10 +728,10 @@ impl Editor {
         let prev = buf.char_at(h - 1);
         let next = buf.char_at(h);
         // Delete an empty auto-closed pair together.
-        if let (Some(p), Some(n)) = (prev, next) {
-            if closer(p) == Some(n) {
-                return self.delete_range(buf, h - 1, h + 1, EditKind::Backspace);
-            }
+        if let (Some(p), Some(n)) = (prev, next)
+            && closer(p) == Some(n)
+        {
+            return self.delete_range(buf, h - 1, h + 1, EditKind::Backspace);
         }
         // Smart backspace inside leading spaces: delete back to the previous indent stop.
         let (l, col) = buf.line_col(h);
@@ -789,7 +802,7 @@ impl Editor {
                 if p >= start + rem {
                     np += ins_len as isize - *rem as isize;
                 } else if p > *start {
-                    np = np - (p - start) as isize + 0;
+                    np -= (p - start) as isize;
                 }
             }
             np.max(0) as usize
@@ -862,11 +875,8 @@ impl Editor {
             return;
         }
         let all_commented = nonblank.iter().all(|(_, t)| t.trim_start().starts_with(&prefix));
-        let min_indent = nonblank
-            .iter()
-            .map(|(_, t)| t.chars().take_while(|c| c.is_whitespace()).count())
-            .min()
-            .unwrap_or(0);
+        let min_indent =
+            nonblank.iter().map(|(_, t)| t.chars().take_while(|c| c.is_whitespace()).count()).min().unwrap_or(0);
         let mut edits = Vec::new();
         for (l, t) in &lines {
             if t.trim().is_empty() {
@@ -993,7 +1003,8 @@ impl Editor {
     }
 }
 
-const VOID_TAGS: &[&str] = &["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"];
+const VOID_TAGS: &[&str] =
+    &["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"];
 
 /// After `>` was typed at `caret` (char index just past it): the `</tag>` to insert, if the
 /// text before it is an opening JSX/HTML tag. Generic type arguments (`Array<T>`) are skipped
@@ -1013,7 +1024,8 @@ pub fn closing_tag_for(buf: &Buffer, caret: usize) -> Option<String> {
             return None;
         }
     }
-    let name: String = inner.chars().take_while(|c| c.is_alphanumeric() || matches!(c, '.' | ':' | '-' | '_')).collect();
+    let name: String =
+        inner.chars().take_while(|c| c.is_alphanumeric() || matches!(c, '.' | ':' | '-' | '_')).collect();
     if name.is_empty() || !name.chars().next().is_some_and(|c| c.is_alphabetic()) {
         return None;
     }
@@ -1038,7 +1050,13 @@ pub fn match_bracket(buf: &Buffer, pos: usize) -> Option<(usize, usize)> {
     for p in candidates.into_iter().flatten() {
         let Some(c) = buf.char_at(p) else { continue };
         for (o, cl) in PAIRS {
-            let (forward, target, same) = if c == o { (true, cl, o) } else if c == cl { (false, o, cl) } else { continue };
+            let (forward, target, same) = if c == o {
+                (true, cl, o)
+            } else if c == cl {
+                (false, o, cl)
+            } else {
+                continue;
+            };
             let mut depth = 0i32;
             let limit = 50_000usize;
             if forward {
@@ -1114,11 +1132,7 @@ mod tests {
 
     fn typ(b: &mut Buffer, e: &mut Editor, s: &str) {
         for c in s.chars() {
-            if c == '\n' {
-                e.newline(b)
-            } else {
-                e.type_char(b, c)
-            }
+            if c == '\n' { e.newline(b) } else { e.type_char(b, c) }
         }
     }
 
@@ -1372,7 +1386,11 @@ mod tests {
         e.edit_multi(&mut b, EditKind::Typing, |ed, bf| ed.type_char(bf, 'Y'));
         assert_eq!(b.to_string(), "XY bar\nXY baz\nxXY XY\n");
         e.undo(&mut b);
-        assert_eq!(b.to_string(), "foo bar\nfoo baz\nxfoo foo\n", "one undo reverts the whole typing run on all cursors");
+        assert_eq!(
+            b.to_string(),
+            "foo bar\nfoo baz\nxfoo foo\n",
+            "one undo reverts the whole typing run on all cursors"
+        );
     }
 
     #[test]

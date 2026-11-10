@@ -121,15 +121,8 @@ impl Parser {
             let count = self.count()?;
             return Some(Item::Group { children, count });
         }
-        let mut e = Elem {
-            name: None,
-            id: None,
-            classes: vec![],
-            attrs: vec![],
-            text: None,
-            children: vec![],
-            count: None,
-        };
+        let mut e =
+            Elem { name: None, id: None, classes: vec![], attrs: vec![], text: None, children: vec![], count: None };
         let name = self.name();
         let mut any = !name.is_empty();
         if any {
@@ -197,12 +190,9 @@ impl Parser {
             while self.peek().is_some_and(char::is_whitespace) {
                 self.pos += 1;
             }
-            match self.peek()? {
-                ']' => {
-                    self.pos += 1;
-                    return Some(());
-                }
-                _ => {}
+            if self.peek()? == ']' {
+                self.pos += 1;
+                return Some(());
             }
             let start = self.pos;
             while self.peek().is_some_and(|c| !c.is_whitespace() && c != '=' && c != ']') {
@@ -290,8 +280,8 @@ fn implicit_tag(parent: Option<&str>) -> &'static str {
         Some("tr") => "td",
         Some("select" | "optgroup" | "datalist") => "option",
         Some(
-            "em" | "strong" | "span" | "a" | "b" | "i" | "u" | "small" | "code" | "label" | "abbr"
-            | "cite" | "q" | "s" | "sub" | "sup" | "mark" | "kbd" | "var" | "p",
+            "em" | "strong" | "span" | "a" | "b" | "i" | "u" | "small" | "code" | "label" | "abbr" | "cite" | "q" | "s"
+            | "sub" | "sup" | "mark" | "kbd" | "var" | "p",
         ) => "span",
         _ => "div",
     }
@@ -300,8 +290,19 @@ fn implicit_tag(parent: Option<&str>) -> &'static str {
 fn is_void(tag: &str) -> bool {
     matches!(
         tag,
-        "img" | "br" | "hr" | "input" | "meta" | "link" | "area" | "base" | "col" | "embed"
-            | "source" | "track" | "wbr"
+        "img"
+            | "br"
+            | "hr"
+            | "input"
+            | "meta"
+            | "link"
+            | "area"
+            | "base"
+            | "col"
+            | "embed"
+            | "source"
+            | "track"
+            | "wbr"
     )
 }
 
@@ -464,8 +465,26 @@ fn is_abbr_char(c: char) -> bool {
     c.is_alphanumeric()
         || matches!(
             c,
-            '.' | '#' | '>' | '+' | '*' | '^' | '(' | ')' | '[' | ']' | '{' | '}' | '=' | '"' | '\''
-                | '$' | '@' | '-' | '_' | ':' | '/'
+            '.' | '#'
+                | '>'
+                | '+'
+                | '*'
+                | '^'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '='
+                | '"'
+                | '\''
+                | '$'
+                | '@'
+                | '-'
+                | '_'
+                | ':'
+                | '/'
         )
 }
 
@@ -526,10 +545,7 @@ mod tests {
     #[test]
     fn implicit_li_tr_td_option() {
         assert_eq!(h("ul>.a"), "<ul>\n  <li class=\"a\">$1</li>\n</ul>$0");
-        assert_eq!(
-            h("table>.r>.c"),
-            "<table>\n  <tr class=\"r\">\n    <td class=\"c\">$1</td>\n  </tr>\n</table>$0"
-        );
+        assert_eq!(h("table>.r>.c"), "<table>\n  <tr class=\"r\">\n    <td class=\"c\">$1</td>\n  </tr>\n</table>$0");
         assert_eq!(h("select>.o"), "<select>\n  <option class=\"o\">$1</option>\n</select>$0");
     }
 
@@ -546,10 +562,7 @@ mod tests {
 
     #[test]
     fn attributes() {
-        assert_eq!(
-            h("a[title=\"v 2\" data-x]"),
-            "<a href=\"$1\" title=\"v 2\" data-x=\"$2\">$3</a>$0"
-        );
+        assert_eq!(h("a[title=\"v 2\" data-x]"), "<a href=\"$1\" title=\"v 2\" data-x=\"$2\">$3</a>$0");
         assert_eq!(h("a[href=x]"), "<a href=\"x\">$1</a>$0");
         assert_eq!(h("p[a='1' b=2]{t}"), "<p a=\"1\" b=\"2\">t</p>$0");
     }
@@ -577,10 +590,7 @@ mod tests {
 
     #[test]
     fn climb_up() {
-        assert_eq!(
-            h("div>p>span^em"),
-            "<div>\n  <p>\n    <span>$1</span>\n  </p>\n  <em>$2</em>\n</div>$0"
-        );
+        assert_eq!(h("div>p>span^em"), "<div>\n  <p>\n    <span>$1</span>\n  </p>\n  <em>$2</em>\n</div>$0");
         assert_eq!(
             h("div>p>span^^section"),
             "<div>\n  <p>\n    <span>$1</span>\n  </p>\n</div>\n<section>$2</section>$0"
@@ -600,10 +610,7 @@ mod tests {
 
     #[test]
     fn numbering_inherited_by_children() {
-        assert_eq!(
-            h("ul>li*2>b{n$}"),
-            "<ul>\n  <li>\n    <b>n1</b>\n  </li>\n  <li>\n    <b>n2</b>\n  </li>\n</ul>$0"
-        );
+        assert_eq!(h("ul>li*2>b{n$}"), "<ul>\n  <li>\n    <b>n1</b>\n  </li>\n  <li>\n    <b>n2</b>\n  </li>\n</ul>$0");
     }
 
     #[test]
@@ -636,8 +643,8 @@ mod tests {
     #[test]
     fn invalid_abbreviations() {
         for bad in [
-            "", " ", ">", "a>", "a++b", "(a", "a)", "a[", "a{x", "a*", "a*0", "^a", "a^b", "+a",
-            "br>b", "br{x}", "a[=x]", "a.", "a#", "(a)>b", "a*9999",
+            "", " ", ">", "a>", "a++b", "(a", "a)", "a[", "a{x", "a*", "a*0", "^a", "a^b", "+a", "br>b", "br{x}",
+            "a[=x]", "a.", "a#", "(a)>b", "a*9999",
         ] {
             assert_eq!(expand(bad, Html), None, "{bad:?} should be invalid");
         }

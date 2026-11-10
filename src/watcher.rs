@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::io;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -87,7 +87,9 @@ impl Watcher {
         if ifd < 0 {
             let e = io::Error::last_os_error();
             return Err(match e.raw_os_error() {
-                Some(libc::EMFILE) => io::Error::other("inotify instance limit reached (fs.inotify.max_user_instances)"),
+                Some(libc::EMFILE) => {
+                    io::Error::other("inotify instance limit reached (fs.inotify.max_user_instances)")
+                }
                 _ => e,
             });
         }
@@ -142,8 +144,8 @@ impl Watcher {
             });
         }
         // The same inode reached through another path (symlink) returns the same wd.
-        if !st.by_wd.contains_key(&wd) {
-            st.by_wd.insert(wd, dir.to_path_buf());
+        if let std::collections::hash_map::Entry::Vacant(e) = st.by_wd.entry(wd) {
+            e.insert(dir.to_path_buf());
             st.by_path.insert(dir.to_path_buf(), wd);
         }
         Ok(())

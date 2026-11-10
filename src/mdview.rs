@@ -120,7 +120,11 @@ fn dedupe_slug(base: String, seen: &mut HashMap<String, usize>) -> String {
 #[derive(Clone, Debug, PartialEq)]
 enum Inl {
     /// `link` is 0 for none, else index + 1 into `MdView::urls`.
-    Text { text: String, flags: u8, link: u32 },
+    Text {
+        text: String,
+        flags: u8,
+        link: u32,
+    },
     Soft,
     Hard,
     /// `[^label]`: shown as `[n]`, `n` being the order of first reference in the document.
@@ -146,18 +150,36 @@ struct LItem {
 
 #[derive(Clone, Debug)]
 enum Kind {
-    Heading { level: u8, inl: Vec<Inl>, slug: String },
+    Heading {
+        level: u8,
+        inl: Vec<Inl>,
+        slug: String,
+    },
     Para(Vec<Inl>),
-    Code { lang: String, text: String },
+    Code {
+        lang: String,
+        text: String,
+    },
     Rule,
     Quote(Vec<Block>),
-    List { start: Option<u64>, items: Vec<LItem>, loose: bool },
-    Table { aligns: Vec<Alignment>, head: Vec<Vec<Inl>>, rows: Vec<Vec<Vec<Inl>>> },
+    List {
+        start: Option<u64>,
+        items: Vec<LItem>,
+        loose: bool,
+    },
+    Table {
+        aligns: Vec<Alignment>,
+        head: Vec<Vec<Inl>>,
+        rows: Vec<Vec<Vec<Inl>>>,
+    },
     Images(Vec<Img>),
     /// `$$ ... $$`.
     Math(String),
     /// `[^label]: ...`, moved to the end of the document when laid out.
-    FootDef { label: String, blocks: Vec<Block> },
+    FootDef {
+        label: String,
+        blocks: Vec<Block>,
+    },
 }
 
 /// A block with its 0-based source line range (inclusive).
@@ -198,11 +220,11 @@ impl Urls {
 fn fxhash(bytes: &[u8], seed: u64) -> u64 {
     const K: u64 = 0x517c_c1b7_2722_0a95;
     let mut h = (seed ^ bytes.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    let mut it = bytes.chunks_exact(8);
-    for c in &mut it {
-        h = (h.rotate_left(5) ^ u64::from_le_bytes(c.try_into().unwrap())).wrapping_mul(K);
+    let (chunks, rest) = bytes.as_chunks::<8>();
+    for c in chunks {
+        h = (h.rotate_left(5) ^ u64::from_le_bytes(*c)).wrapping_mul(K);
     }
-    for &b in it.remainder() {
+    for &b in rest {
         h = (h.rotate_left(5) ^ b as u64).wrapping_mul(K);
     }
     (h ^ (h >> 32)).wrapping_mul(0x9e37_79b9_7f4a_7c15)
@@ -299,7 +321,8 @@ fn split(text: &str) -> Split {
     let mut fence: Option<(u8, usize)> = None;
     let mut raw: Option<&'static str> = None;
     let (mut off, mut ln) = (0usize, 0usize);
-    let close = |c: Cur, segs: &mut Vec<SegSpan>| segs.push(SegSpan { b0: c.b0, b1: c.b1, l0: c.l0, nl: c.l1 - c.l0 + 1 });
+    let close =
+        |c: Cur, segs: &mut Vec<SegSpan>| segs.push(SegSpan { b0: c.b0, b1: c.b1, l0: c.l0, nl: c.l1 - c.l0 + 1 });
     for line in text.split_inclusive('\n') {
         let len = line.len();
         let content = line.trim_end_matches(['\n', '\r']);
@@ -322,15 +345,13 @@ fn split(text: &str) -> Split {
             blank_pending = cur.is_some();
         } else {
             // Fast path: a plain line that continues the current segment (most lines).
-            if !blank_pending {
-                if let Some(c) = cur.as_mut() {
-                    let first = content.bytes().find(|b| *b != b' ' && *b != b'\t');
-                    if !matches!(first, Some(b'`' | b'~' | b'<' | b'[')) {
-                        (c.b1, c.l1) = (off + len, ln);
-                        off += len;
-                        ln += 1;
-                        continue;
-                    }
+            if !blank_pending && let Some(c) = cur.as_mut() {
+                let first = content.bytes().find(|b| *b != b' ' && *b != b'\t');
+                if !matches!(first, Some(b'`' | b'~' | b'<' | b'[')) {
+                    (c.b1, c.l1) = (off + len, ln);
+                    off += len;
+                    ln += 1;
+                    continue;
                 }
             }
             let (cols, nb) = indent_of(content);
@@ -356,18 +377,22 @@ fn split(text: &str) -> Split {
                 raw = if l.starts_with("<!--") && !l.contains("-->") {
                     Some("-->")
                 } else {
-                    [("<pre", "</pre>"), ("<script", "</script>"), ("<style", "</style>"), ("<textarea", "</textarea>")].iter().find(|(o, e)| l.starts_with(o) && !l.contains(e)).map(|(_, e)| *e)
+                    [("<pre", "</pre>"), ("<script", "</script>"), ("<style", "</style>"), ("<textarea", "</textarea>")]
+                        .iter()
+                        .find(|(o, e)| l.starts_with(o) && !l.contains(e))
+                        .map(|(_, e)| *e)
                 };
-            } else if cols <= 3 && rest.starts_with('[') {
-                if let Some(e) = rest.find("]:") {
-                    let label = &rest[1..e];
-                    if let Some(f) = label.strip_prefix('^') {
-                        ctx.foot.insert(f.trim().to_lowercase());
-                    } else if !label.is_empty() {
-                        let url = rest[e + 2..].split_whitespace().next().unwrap_or("").trim_matches(['<', '>']);
-                        if !url.is_empty() {
-                            ctx.refs.entry(norm_label(label)).or_insert_with(|| url.to_string());
-                        }
+            } else if cols <= 3
+                && rest.starts_with('[')
+                && let Some(e) = rest.find("]:")
+            {
+                let label = &rest[1..e];
+                if let Some(f) = label.strip_prefix('^') {
+                    ctx.foot.insert(f.trim().to_lowercase());
+                } else if !label.is_empty() {
+                    let url = rest[e + 2..].split_whitespace().next().unwrap_or("").trim_matches(['<', '>']);
+                    if !url.is_empty() {
+                        ctx.refs.entry(norm_label(label)).or_insert_with(|| url.to_string());
                     }
                 }
             }
@@ -521,7 +546,9 @@ impl<'a> Builder<'a> {
     fn push_block(&mut self, b: Block) {
         match self.stack.last_mut() {
             Some(Cont::Root(v)) => v.push(b),
-            Some(Cont::Quote { blocks, .. }) | Some(Cont::Item { blocks, .. }) | Some(Cont::Foot { blocks, .. }) => blocks.push(b),
+            Some(Cont::Quote { blocks, .. }) | Some(Cont::Item { blocks, .. }) | Some(Cont::Foot { blocks, .. }) => {
+                blocks.push(b)
+            }
             _ => {}
         }
     }
@@ -534,11 +561,13 @@ impl<'a> Builder<'a> {
         let (flags, link) = self.flags();
         let flags = flags | extra;
         let Some(ic) = self.inl.as_mut() else { return };
-        if let Some(Inl::Text { text: t, flags: f, link: l }) = ic.spans.last_mut() {
-            if *f == flags && *l == link && flags & F_CODE == 0 {
-                t.push_str(text);
-                return;
-            }
+        if let Some(Inl::Text { text: t, flags: f, link: l }) = ic.spans.last_mut()
+            && *f == flags
+            && *l == link
+            && flags & F_CODE == 0
+        {
+            t.push_str(text);
+            return;
         }
         ic.spans.push(Inl::Text { text: text.to_string(), flags, link });
     }
@@ -645,8 +674,18 @@ impl<'a> Builder<'a> {
             let i = from + i;
             let end = s[i..].find('>').map_or(s.len(), |e| i + e + 1);
             let tag = &s[i..end];
-            let dim = |n: &str| attr(tag, n).and_then(|v| v.trim().trim_end_matches("px").trim().parse::<f32>().ok()).filter(|v| *v >= 1.0).map(|v| v as i32);
-            imgs.push(Img { alt: attr(tag, "alt").unwrap_or_default(), url: attr(tag, "src").unwrap_or_default(), link, size: (dim("width"), dim("height")) });
+            let dim = |n: &str| {
+                attr(tag, n)
+                    .and_then(|v| v.trim().trim_end_matches("px").trim().parse::<f32>().ok())
+                    .filter(|v| *v >= 1.0)
+                    .map(|v| v as i32)
+            };
+            imgs.push(Img {
+                alt: attr(tag, "alt").unwrap_or_default(),
+                url: attr(tag, "src").unwrap_or_default(),
+                link,
+                size: (dim("width"), dim("height")),
+            });
             from = end;
         }
         let text = strip_tags(&s);
@@ -746,10 +785,10 @@ impl<'a> Builder<'a> {
             }
             Event::InlineHtml(h) => {
                 let t = h.trim().to_ascii_lowercase();
-                if t.starts_with("<br") {
-                    if let Some(ic) = self.inl.as_mut() {
-                        ic.spans.push(Inl::Hard);
-                    }
+                if t.starts_with("<br")
+                    && let Some(ic) = self.inl.as_mut()
+                {
+                    ic.spans.push(Inl::Hard);
                 }
             }
             Event::Rule => {
@@ -763,7 +802,6 @@ impl<'a> Builder<'a> {
                     *task_off = range.start;
                 }
             }
-            _ => {}
         }
     }
 
@@ -773,10 +811,11 @@ impl<'a> Builder<'a> {
             Tag::Paragraph => {
                 self.close_implicit();
                 let n = self.stack.len();
-                if n >= 2 && matches!(self.stack[n - 1], Cont::Item { .. }) {
-                    if let Cont::List { loose, .. } = &mut self.stack[n - 2] {
-                        *loose = true;
-                    }
+                if n >= 2
+                    && matches!(self.stack[n - 1], Cont::Item { .. })
+                    && let Cont::List { loose, .. } = &mut self.stack[n - 2]
+                {
+                    *loose = true;
                 }
                 self.start_inline(IK::Para, range.start, range.end, false);
             }
@@ -791,7 +830,9 @@ impl<'a> Builder<'a> {
             Tag::CodeBlock(kind) => {
                 self.close_implicit();
                 let lang = match kind {
-                    CodeBlockKind::Fenced(info) => info.split_whitespace().next().unwrap_or("").trim_matches(|c| c == '{' || c == '}').to_string(),
+                    CodeBlockKind::Fenced(info) => {
+                        info.split_whitespace().next().unwrap_or("").trim_matches(|c| c == '{' || c == '}').to_string()
+                    }
                     CodeBlockKind::Indented => String::new(),
                 };
                 self.code = Some((lang, String::new(), l));
@@ -867,10 +908,10 @@ impl<'a> Builder<'a> {
             }
             TagEnd::Item => {
                 self.close_implicit();
-                if let Some(Cont::Item { blocks, task, task_off }) = self.stack.pop() {
-                    if let Some(Cont::List { items, .. }) = self.stack.last_mut() {
-                        items.push(LItem { task, task_off, blocks });
-                    }
+                if let Some(Cont::Item { blocks, task, task_off }) = self.stack.pop()
+                    && let Some(Cont::List { items, .. }) = self.stack.last_mut()
+                {
+                    items.push(LItem { task, task_off, blocks });
                 }
             }
             TagEnd::FootnoteDefinition => {
@@ -892,7 +933,11 @@ impl<'a> Builder<'a> {
             }
             TagEnd::Table => {
                 if let Some(t) = self.table.take() {
-                    self.push_block(Block { kind: Kind::Table { aligns: t.aligns, head: t.head, rows: t.rows }, line: t.l.0, end: t.l.1 });
+                    self.push_block(Block {
+                        kind: Kind::Table { aligns: t.aligns, head: t.head, rows: t.rows },
+                        line: t.l.0,
+                        end: t.l.1,
+                    });
                 }
             }
             TagEnd::Emphasis => self.em = self.em.saturating_sub(1),
@@ -980,17 +1025,55 @@ enum Col {
 
 #[derive(Debug)]
 enum Op {
-    Text { x: i32, w: i32, text: String, flags: u8, si: u8, lh: i32 },
-    Fill { r: Rect, col: Col, rad: i32 },
-    Card { r: Rect, rad: i32, fill: Col, border: Col },
-    Stroke { r: Rect, col: Col },
-    Bullet { cx: i32, cy: i32, level: u8 },
-    Check { x: i32, y: i32, done: bool },
+    Text {
+        x: i32,
+        w: i32,
+        text: String,
+        flags: u8,
+        si: u8,
+        lh: i32,
+    },
+    Fill {
+        r: Rect,
+        col: Col,
+        rad: i32,
+    },
+    Card {
+        r: Rect,
+        rad: i32,
+        fill: Col,
+        border: Col,
+    },
+    Stroke {
+        r: Rect,
+        col: Col,
+    },
+    Bullet {
+        cx: i32,
+        cy: i32,
+        level: u8,
+    },
+    Check {
+        x: i32,
+        y: i32,
+        done: bool,
+    },
     /// Code block (`math` = a `$$` block: centered, tinted). `key` identifies lang + text for the
     /// highlight cache.
-    Code { r: Rect, lang: String, lines: Vec<String>, lh: i32, top: i32, key: u64, math: bool },
+    Code {
+        r: Rect,
+        lang: String,
+        lines: Vec<String>,
+        lh: i32,
+        top: i32,
+        key: u64,
+        math: bool,
+    },
     /// A local image drawn at `r` (logical px); `id` is its [`ImgStore`] id.
-    Image { r: Rect, id: u32 },
+    Image {
+        r: Rect,
+        id: u32,
+    },
 }
 
 #[derive(Debug)]
@@ -1187,14 +1270,15 @@ struct Atom {
 }
 
 fn push_piece(line: &mut Vec<Run>, x: f32, text: &str, flags: u8, link: u32, w: f32) {
-    if flags & F_CODE == 0 {
-        if let Some(l) = line.last_mut() {
-            if l.flags == flags && l.link == link && (l.x + l.w - x).abs() < 0.01 {
-                l.text.push_str(text);
-                l.w += w;
-                return;
-            }
-        }
+    if flags & F_CODE == 0
+        && let Some(l) = line.last_mut()
+        && l.flags == flags
+        && l.link == link
+        && (l.x + l.w - x).abs() < 0.01
+    {
+        l.text.push_str(text);
+        l.w += w;
+        return;
     }
     line.push(Run { x, w, text: text.to_string(), flags, link });
 }
@@ -1251,7 +1335,11 @@ impl Flow {
             let bold = self.bold_base || a.flags & F_B != 0;
             let (mut buf, mut bw) = (String::new(), 0.0f32);
             for ch in a.text.chars() {
-                let cw = if code { cell_count(ch) as f32 * tx.cell_w } else { m.w(tx, ch.encode_utf8(&mut [0; 4]), bold, self.si) };
+                let cw = if code {
+                    cell_count(ch) as f32 * tx.cell_w
+                } else {
+                    m.w(tx, ch.encode_utf8(&mut [0; 4]), bold, self.si)
+                };
                 if self.x + 2.0 * pad + bw + cw > self.width && (bw > 0.0 || self.x > 0.0) {
                     if bw > 0.0 {
                         push_piece(self.lines.last_mut().unwrap(), self.x, &buf, a.flags, a.link, bw + 2.0 * pad);
@@ -1346,7 +1434,17 @@ impl Lay<'_> {
 
     /// Flow inline content into lines of runs (x relative to the column).
     fn flow(&mut self, inl: &[Inl], width: i32, si: usize, bold_base: bool, wrap: bool) -> Vec<Vec<Run>> {
-        let mut f = Flow { lines: vec![vec![]], x: 0.0, chunk: vec![], chunk_w: 0.0, space: None, width: width.max(1) as f32, wrap, si, bold_base };
+        let mut f = Flow {
+            lines: vec![vec![]],
+            x: 0.0,
+            chunk: vec![],
+            chunk_w: 0.0,
+            space: None,
+            width: width.max(1) as f32,
+            wrap,
+            si,
+            bold_base,
+        };
         let (mut lf, mut ll) = (0u8, 0u32);
         for item in inl {
             match item {
@@ -1423,7 +1521,11 @@ impl Lay<'_> {
             let bold = bold_base || run.flags & F_B != 0;
             let (mut buf, mut bw) = (String::new(), 0.0f32);
             for ch in run.text.chars() {
-                let cw = if code { cell_count(ch) as f32 * self.tx.cell_w } else { self.m.w(self.tx, ch.encode_utf8(&mut [0; 4]), bold, si) };
+                let cw = if code {
+                    cell_count(ch) as f32 * self.tx.cell_w
+                } else {
+                    self.m.w(self.tx, ch.encode_utf8(&mut [0; 4]), bold, si)
+                };
                 if run.x + pad + bw + cw > target {
                     break;
                 }
@@ -1520,7 +1622,8 @@ impl Lay<'_> {
             }
             Kind::Code { lang, text } => {
                 let lh = line_h() as i32;
-                let lines: Vec<String> = text.split('\n').map(|l| l.trim_end_matches('\r').replace('\t', "    ")).collect();
+                let lines: Vec<String> =
+                    text.split('\n').map(|l| l.trim_end_matches('\r').replace('\t', "    ")).collect();
                 let top = if lang.is_empty() { 12 } else { 18 };
                 let h = top + lines.len() as i32 * lh + 12;
                 let r = Rect::new(x, y, w, h);
@@ -1531,9 +1634,14 @@ impl Lay<'_> {
             }
             Kind::Math(text) => {
                 let lh = line_h() as i32;
-                let lines: Vec<String> = text.split('\n').map(|l| l.trim_end_matches('\r').replace('\t', "    ")).collect();
+                let lines: Vec<String> =
+                    text.split('\n').map(|l| l.trim_end_matches('\r').replace('\t', "    ")).collect();
                 let h = 18 + lines.len() as i32 * lh + 12;
-                self.op(y, y + h, Op::Code { r: Rect::new(x, y, w, h), lang: "math".into(), lines, lh, top: 18, key: 0, math: true });
+                self.op(
+                    y,
+                    y + h,
+                    Op::Code { r: Rect::new(x, y, w, h), lang: "math".into(), lines, lh, top: 18, key: 0, math: true },
+                );
                 self.anchor(b, y, y + h);
                 y + h
             }
@@ -1585,7 +1693,18 @@ impl Lay<'_> {
                 self.checks.push(CheckHit { x: x + indent - 26, y: iy, w: 22, h: LH[BODY], off: it.task_off });
             } else if start.is_some() {
                 let f = F_DIM;
-                self.op(iy, iy + LH[BODY], Op::Text { x: x + indent - 8 - lws[i], w: lws[i], text: labels[i].clone(), flags: f, si: BODY as u8, lh: LH[BODY] });
+                self.op(
+                    iy,
+                    iy + LH[BODY],
+                    Op::Text {
+                        x: x + indent - 8 - lws[i],
+                        w: lws[i],
+                        text: labels[i].clone(),
+                        flags: f,
+                        si: BODY as u8,
+                        lh: LH[BODY],
+                    },
+                );
             } else {
                 self.op(mid - 4, mid + 4, Op::Bullet { cx: x + indent - 15, cy: mid, level: st.depth % 3 });
             }
@@ -1595,7 +1714,16 @@ impl Lay<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn table(&mut self, b: &Block, aligns: &[Alignment], head: &[Vec<Inl>], rows: &[Vec<Vec<Inl>>], x: i32, w: i32, y: i32) -> i32 {
+    fn table(
+        &mut self,
+        b: &Block,
+        aligns: &[Alignment],
+        head: &[Vec<Inl>],
+        rows: &[Vec<Vec<Inl>>],
+        x: i32,
+        w: i32,
+        y: i32,
+    ) -> i32 {
         let ncols = rows.iter().map(|r| r.len()).chain([head.len()]).max().unwrap_or(0);
         if ncols == 0 {
             return y;
@@ -1707,9 +1835,17 @@ impl Lay<'_> {
             let tw = bw - 44 - 10;
             let (alt, aw) = self.fit(&label, SMALL, false, tw);
             let (url, uw2) = self.fit(&im.url, TINY, false, tw);
-            self.op(cy + 5, cy + 5 + LH[SMALL], Op::Text { x: r.x + 40, w: aw, text: alt, flags: 0, si: SMALL as u8, lh: LH[SMALL] });
+            self.op(
+                cy + 5,
+                cy + 5 + LH[SMALL],
+                Op::Text { x: r.x + 40, w: aw, text: alt, flags: 0, si: SMALL as u8, lh: LH[SMALL] },
+            );
             if !url.is_empty() {
-                self.op(cy + 24, cy + 24 + LH[TINY], Op::Text { x: r.x + 40, w: uw2, text: url, flags: F_DIM, si: TINY as u8, lh: LH[TINY] });
+                self.op(
+                    cy + 24,
+                    cy + 24 + LH[TINY],
+                    Op::Text { x: r.x + 40, w: uw2, text: url, flags: F_DIM, si: TINY as u8, lh: LH[TINY] },
+                );
             }
             if im.link != 0 {
                 self.links.push(LinkHit { x: r.x, y: cy, w: bw, h: H, link: im.link });
@@ -1737,12 +1873,23 @@ impl Lay<'_> {
             let back = "\u{21a9}";
             let bw = self.m.w(self.tx, back, false, BODY).ceil() as i32;
             let link = self.urls.id(&format!("#fnref-{label}"));
-            let mut ey = self.blocks(blocks, x + indent, w - indent - bw - 10, iy, St { depth: 1, tight: Some(4), dim: false });
-            self.emit(vec![vec![Run { x: (w - bw) as f32, w: bw as f32, text: back.into(), flags: F_LINK, link }]], x, iy, BODY, 0);
+            let mut ey =
+                self.blocks(blocks, x + indent, w - indent - bw - 10, iy, St { depth: 1, tight: Some(4), dim: false });
+            self.emit(
+                vec![vec![Run { x: (w - bw) as f32, w: bw as f32, text: back.into(), flags: F_LINK, link }]],
+                x,
+                iy,
+                BODY,
+                0,
+            );
             if blocks.is_empty() {
                 ey = iy + LH[BODY];
             }
-            self.op(iy, iy + LH[BODY], Op::Text { x: x + indent - 8 - lw, w: lw, text: num, flags: F_DIM, si: BODY as u8, lh: LH[BODY] });
+            self.op(
+                iy,
+                iy + LH[BODY],
+                Op::Text { x: x + indent - 8 - lw, w: lw, text: num, flags: F_DIM, si: BODY as u8, lh: LH[BODY] },
+            );
             y = ey + 6;
         }
         y
@@ -1921,13 +2068,31 @@ impl Default for MdView {
 /// Parse one segment: its blocks (lines relative to the segment) and the footnote labels it refers to.
 fn parse_seg(text: &str, ctx: &Ctx, urls: &mut Urls) -> (Vec<Block>, Vec<String>) {
     let idx = LineIndex::new(text);
-    let mut opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_MATH;
+    let mut opts =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_MATH;
     if !ctx.foot.is_empty() {
         opts |= Options::ENABLE_OLD_FOOTNOTES;
     }
-    let mut b = Builder { idx: &idx, urls, known: &ctx.foot, refs: vec![], stack: vec![Cont::Root(vec![])], inl: None, strong: 0, em: 0, strike: 0, links: vec![], code: None, table: None, html: None, image: None };
+    let mut b = Builder {
+        idx: &idx,
+        urls,
+        known: &ctx.foot,
+        refs: vec![],
+        stack: vec![Cont::Root(vec![])],
+        inl: None,
+        strong: 0,
+        em: 0,
+        strike: 0,
+        links: vec![],
+        code: None,
+        table: None,
+        html: None,
+        image: None,
+    };
     let refs = &ctx.refs;
-    let cb = move |bl: BrokenLink| refs.get(&norm_label(&bl.reference)).map(|u| (CowStr::from(u.clone()), CowStr::from(String::new())));
+    let cb = move |bl: BrokenLink| {
+        refs.get(&norm_label(&bl.reference)).map(|u| (CowStr::from(u.clone()), CowStr::from(String::new())))
+    };
     for (ev, range) in Parser::new_with_broken_link_callback(text, opts, Some(cb)).into_offset_iter() {
         b.event(ev, range);
     }
@@ -1936,7 +2101,9 @@ fn parse_seg(text: &str, ctx: &Ctx, urls: &mut Urls) -> (Vec<Block>, Vec<String>
         // unbalanced input cannot happen with pulldown-cmark, but never lose content
         match b.stack.pop() {
             Some(Cont::Quote { blocks, l }) => b.push_block(Block { kind: Kind::Quote(blocks), line: l.0, end: l.1 }),
-            Some(Cont::Foot { blocks, label, l }) => b.push_block(Block { kind: Kind::FootDef { label, blocks }, line: l.0, end: l.1 }),
+            Some(Cont::Foot { blocks, label, l }) => {
+                b.push_block(Block { kind: Kind::FootDef { label, blocks }, line: l.0, end: l.1 })
+            }
             _ => {}
         }
     }
@@ -2131,10 +2298,10 @@ impl MdView {
                     num.entry(l.clone()).or_insert(n);
                 }
                 for b in &sd.blocks {
-                    if let Kind::FootDef { label, blocks } = &b.kind {
-                        if !defs.iter().any(|(l, _)| l == label) {
-                            defs.push((label.clone(), blocks));
-                        }
+                    if let Kind::FootDef { label, blocks } = &b.kind
+                        && !defs.iter().any(|(l, _)| l == label)
+                    {
+                        defs.push((label.clone(), blocks));
                     }
                 }
             }
@@ -2157,7 +2324,7 @@ impl MdView {
             return;
         }
         let t0 = std::time::Instant::now();
-        let col_w = (width - 2 * PAD).min(MAX_COL).max(40);
+        let col_w = (width - 2 * PAD).clamp(40, MAX_COL);
         let col_x = ((width - col_w) / 2).max(PAD.min(width / 2));
         let (fnum, defs) = self.footnotes();
         let mut segs: Vec<SegRef> = Vec::with_capacity(self.order.len());
@@ -2172,7 +2339,18 @@ impl MdView {
             }
             let skey: SegKey = (width, key.1, key.2, fh, base_gen);
             if sd.lay.as_ref().is_none_or(|l| l.key != skey) {
-                let mut lay = Lay { tx: &mut *tx, m: &mut self.measure, urls: &mut self.urls, imgs: &mut self.imgs, fnum: &fnum, ops: vec![], anchors: vec![], links: vec![], checks: vec![], heads: vec![] };
+                let mut lay = Lay {
+                    tx: &mut *tx,
+                    m: &mut self.measure,
+                    urls: &mut self.urls,
+                    imgs: &mut self.imgs,
+                    fnum: &fnum,
+                    ops: vec![],
+                    anchors: vec![],
+                    links: vec![],
+                    checks: vec![],
+                    heads: vec![],
+                };
                 let y_end = lay.blocks(&sd.blocks, col_x, col_w, 0, St { dim: false, depth: 0, tight: None });
                 sd.lay = Some(seg_lay(skey, lay, y_end, &sd.blocks));
                 self.seg_layouts += 1;
@@ -2197,8 +2375,20 @@ impl MdView {
         if !defs.is_empty() {
             let gap = prev_after.unwrap_or(0).max(24);
             let top = y + gap;
-            let list: Vec<(usize, &str, &[Block])> = defs.iter().map(|(l, b)| (fnum.get(l).copied().unwrap_or(0), l.as_str(), b.as_slice())).collect();
-            let mut lay = Lay { tx: &mut *tx, m: &mut self.measure, urls: &mut self.urls, imgs: &mut self.imgs, fnum: &fnum, ops: vec![], anchors: vec![], links: vec![], checks: vec![], heads: vec![] };
+            let list: Vec<(usize, &str, &[Block])> =
+                defs.iter().map(|(l, b)| (fnum.get(l).copied().unwrap_or(0), l.as_str(), b.as_slice())).collect();
+            let mut lay = Lay {
+                tx: &mut *tx,
+                m: &mut self.measure,
+                urls: &mut self.urls,
+                imgs: &mut self.imgs,
+                fnum: &fnum,
+                ops: vec![],
+                anchors: vec![],
+                links: vec![],
+                checks: vec![],
+                heads: vec![],
+            };
             let y_end = lay.foot_section(&list, col_x, col_w, 0);
             let sl = seg_lay((width, key.1, key.2, 0, base_gen), lay, y_end, &[]);
             y = top + sl.height;
@@ -2218,7 +2408,15 @@ impl MdView {
 
     /// [`draw`](Self::draw) with a syntax highlighter for fenced code blocks. It is asked lazily,
     /// once per block that comes into view, and the result is cached per theme.
-    pub fn draw_with(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, scroll_px: f64, mut hl: Option<&mut HlFn>) {
+    pub fn draw_with(
+        &mut self,
+        cv: &mut Canvas,
+        tx: &mut TextCtx,
+        theme: &Theme,
+        rect: Rect,
+        scroll_px: f64,
+        mut hl: Option<&mut HlFn>,
+    ) {
         let pal = Pal::new(theme);
         let rect = rect.intersect(&cv.bounds());
         if rect.w <= 0 || rect.h <= 0 {
@@ -2228,7 +2426,14 @@ impl MdView {
         self.imgs.poll();
         self.imgs.begin_frame();
         self.ensure_layout(tx, rect.w);
-        let theme_key = fxhash(theme.name.as_bytes(), ((theme.background.0 as u64) << 40) | ((theme.background.1 as u64) << 32) | ((theme.foreground.0 as u64) << 24) | ((theme.foreground.1 as u64) << 16) | theme.foreground.2 as u64);
+        let theme_key = fxhash(
+            theme.name.as_bytes(),
+            ((theme.background.0 as u64) << 40)
+                | ((theme.background.1 as u64) << 32)
+                | ((theme.foreground.0 as u64) << 24)
+                | ((theme.foreground.1 as u64) << 16)
+                | theme.foreground.2 as u64,
+        );
         if self.hl_theme != theme_key {
             self.hl.clear();
             self.hl_theme = theme_key;
@@ -2249,10 +2454,11 @@ impl MdView {
                 segs.push((l, p.y0));
             }
         }
-        if let Some((l, p)) = foot.as_ref() {
-            if p.y0 < bot && p.y1 > top {
-                segs.push((l, p.y0));
-            }
+        if let Some((l, p)) = foot.as_ref()
+            && p.y0 < bot
+            && p.y1 > top
+        {
+            segs.push((l, p.y0));
         }
         let _ = lay;
         for (sl, base) in segs {
@@ -2302,7 +2508,9 @@ impl MdView {
                         }
                     }
                     Op::Fill { r, col, rad } => round_clip(cv, tr(*r), *rad, pal.get(*col), clip),
-                    Op::Card { r, rad, fill, border } => card_clip(cv, tr(*r), *rad, pal.get(*fill), pal.get(*border), clip),
+                    Op::Card { r, rad, fill, border } => {
+                        card_clip(cv, tr(*r), *rad, pal.get(*fill), pal.get(*border), clip)
+                    }
                     Op::Stroke { r, col } => stroke_clip(cv, tr(*r), pal.get(*col), clip),
                     Op::Bullet { cx, cy, level } => {
                         let (cx, cy) = (cx + ox, cy + oy);
@@ -2341,12 +2549,30 @@ impl MdView {
                                 let lw = tx.ui_width_sized(label, false, SIZES[TINY]);
                                 let pill = Rect::new(sr.x + 6, sr.y + 6, lw + 12, 18).intersect(&sr);
                                 round_clip(cv, pill, 9, pal.bg.with_alpha(0xd0), clip);
-                                tx.draw_ui_sized(cv, pill.x + 6, pill.y + 2, label, pal.fg, clip.intersect(&pill), false, SIZES[TINY]);
+                                tx.draw_ui_sized(
+                                    cv,
+                                    pill.x + 6,
+                                    pill.y + 2,
+                                    label,
+                                    pal.fg,
+                                    clip.intersect(&pill),
+                                    false,
+                                    SIZES[TINY],
+                                );
                             }
                             Tex::Pending => card_clip(cv, sr, 4, pal.widget, pal.border, clip),
                             Tex::Failed => {
                                 card_clip(cv, sr, 4, pal.widget, pal.border, clip);
-                                tx.draw_ui_sized(cv, sr.x + 8, sr.y + 6, "image unavailable", pal.dim, clip.intersect(&sr), false, SIZES[TINY]);
+                                tx.draw_ui_sized(
+                                    cv,
+                                    sr.x + 8,
+                                    sr.y + 6,
+                                    "image unavailable",
+                                    pal.dim,
+                                    clip.intersect(&sr),
+                                    false,
+                                    SIZES[TINY],
+                                );
                             }
                         }
                     }
@@ -2359,12 +2585,25 @@ impl MdView {
                         }
                         if !lang.is_empty() {
                             let lw = tx.ui_width_sized(lang, false, SIZES[TINY]);
-                            tx.draw_ui_sized(cv, sr.right() - lw - 10, sr.y + 3, lang, pal.dim, clip.intersect(&sr), false, SIZES[TINY]);
+                            tx.draw_ui_sized(
+                                cv,
+                                sr.right() - lw - 10,
+                                sr.y + 3,
+                                lang,
+                                pal.dim,
+                                clip.intersect(&sr),
+                                false,
+                                SIZES[TINY],
+                            );
                         }
                         let inner = Rect::new(sr.x + 1, sr.y + 1, sr.w - 2, sr.h - 2).intersect(&clip);
                         let first = ((clip.y - sr.y - ctop) / lh).max(0) as usize;
                         let max_chars = ((sr.w as f32) / tx.cell_w.max(1.0)) as usize + 2;
-                        let colored = if !*math && !lang.is_empty() && lines.len() <= HL_MAX_LINES { hl_lines(hl_cache, *key, lang, lines, &mut hl, fill, pal.bg) } else { None };
+                        let colored = if !*math && !lang.is_empty() && lines.len() <= HL_MAX_LINES {
+                            hl_lines(hl_cache, *key, lang, lines, &mut hl, fill, pal.bg)
+                        } else {
+                            None
+                        };
                         for (i, line) in lines.iter().enumerate().skip(first) {
                             let ly = sr.y + ctop + i as i32 * lh;
                             if ly >= clip.bottom() {
@@ -2373,7 +2612,11 @@ impl MdView {
                             if line.is_empty() {
                                 continue;
                             }
-                            let shown: String = if line.len() > max_chars { line.chars().take(max_chars).collect() } else { line.clone() };
+                            let shown: String = if line.len() > max_chars {
+                                line.chars().take(max_chars).collect()
+                            } else {
+                                line.clone()
+                            };
                             let sw = code_w(tx, &shown);
                             let lx = if *math { sr.x + ((sr.w as f32 - sw) / 2.0).max(14.0) as i32 } else { sr.x + 14 };
                             match colored.as_ref().and_then(|c| c.get(i)) {
@@ -2478,10 +2721,11 @@ impl MdView {
 
     /// The laid-out segment (or the footnote section) covering content y, and its top.
     fn seg_at_y(&self, lay: &Layout, y: i32) -> Option<(&SegLay, i32)> {
-        if let Some((l, p)) = self.foot.as_ref() {
-            if y >= p.y0 && y < p.y1 {
-                return Some((l, p.y0));
-            }
+        if let Some((l, p)) = self.foot.as_ref()
+            && y >= p.y0
+            && y < p.y1
+        {
+            return Some((l, p.y0));
         }
         let s = lay.segs.get(lay.segs.partition_point(|s| s.y1 <= y)).filter(|s| s.y0 <= y)?;
         Some((self.seg_lay_of(s)?, s.y0))
@@ -2500,7 +2744,10 @@ impl MdView {
         let sl = self.seg_lay_of(&s)?;
         let cy = cy - s.y0 as f64;
         let b0 = self.order.get(s.ix)?.b0;
-        sl.checks.iter().find(|c| cx >= c.x as f64 && cx < (c.x + c.w) as f64 && cy >= c.y as f64 && cy < (c.y + c.h) as f64).map(|c| c.off + b0)
+        sl.checks
+            .iter()
+            .find(|c| cx >= c.x as f64 && cx < (c.x + c.w) as f64 && cy >= c.y as f64 && cy < (c.y + c.h) as f64)
+            .map(|c| c.off + b0)
     }
 
     /// `(github-style slug, content y)` of every heading in document order (duplicates get
@@ -2516,10 +2763,10 @@ impl MdView {
             }
         };
         for s in &lay.segs {
-            if let Some(l) = self.seg_lay_of(s) {
-                if !l.heads.is_empty() {
-                    add(l, s.y0);
-                }
+            if let Some(l) = self.seg_lay_of(s)
+                && !l.heads.is_empty()
+            {
+                add(l, s.y0);
             }
         }
         if let Some((l, p)) = self.foot.as_ref() {
@@ -2534,20 +2781,42 @@ impl MdView {
         fn shift(b: &Block, d: usize) -> Block {
             let kind = match &b.kind {
                 Kind::Quote(v) => Kind::Quote(v.iter().map(|x| shift(x, d)).collect()),
-                Kind::List { start, items, loose } => Kind::List { start: *start, loose: *loose, items: items.iter().map(|i| LItem { task: i.task, task_off: i.task_off, blocks: i.blocks.iter().map(|x| shift(x, d)).collect() }).collect() },
-                Kind::FootDef { label, blocks } => Kind::FootDef { label: label.clone(), blocks: blocks.iter().map(|x| shift(x, d)).collect() },
+                Kind::List { start, items, loose } => Kind::List {
+                    start: *start,
+                    loose: *loose,
+                    items: items
+                        .iter()
+                        .map(|i| LItem {
+                            task: i.task,
+                            task_off: i.task_off,
+                            blocks: i.blocks.iter().map(|x| shift(x, d)).collect(),
+                        })
+                        .collect(),
+                },
+                Kind::FootDef { label, blocks } => {
+                    Kind::FootDef { label: label.clone(), blocks: blocks.iter().map(|x| shift(x, d)).collect() }
+                }
                 k => k.clone(),
             };
             Block { kind, line: b.line + d, end: b.end + d }
         }
-        self.order.iter().filter_map(|p| self.cache.get(&p.key).map(|d| (p, d))).flat_map(|(p, d)| d.blocks.iter().map(move |b| shift(b, p.l0))).collect()
+        self.order
+            .iter()
+            .filter_map(|p| self.cache.get(&p.key).map(|d| (p, d)))
+            .flat_map(|(p, d)| d.blocks.iter().map(move |b| shift(b, p.l0)))
+            .collect()
     }
 
     /// Link boxes with absolute y, in document order (tests).
     #[cfg(test)]
     fn all_links(&self) -> Vec<LinkHit> {
         let Some(lay) = self.lay.as_ref() else { return vec![] };
-        let mut v: Vec<LinkHit> = lay.segs.iter().filter_map(|s| self.seg_lay_of(s).map(|l| (s, l))).flat_map(|(s, l)| l.links.iter().map(move |k| LinkHit { y: k.y + s.y0, ..*k })).collect();
+        let mut v: Vec<LinkHit> = lay
+            .segs
+            .iter()
+            .filter_map(|s| self.seg_lay_of(s).map(|l| (s, l)))
+            .flat_map(|(s, l)| l.links.iter().map(move |k| LinkHit { y: k.y + s.y0, ..*k }))
+            .collect();
         if let Some((l, p)) = self.foot.as_ref() {
             v.extend(l.links.iter().map(|k| LinkHit { y: k.y + p.y0, ..*k }));
         }
@@ -2558,19 +2827,39 @@ impl MdView {
     #[cfg(test)]
     fn all_checks(&self) -> Vec<CheckHit> {
         let Some(lay) = self.lay.as_ref() else { return vec![] };
-        lay.segs.iter().filter_map(|s| self.seg_lay_of(s).map(|l| (s, l))).flat_map(|(s, l)| l.checks.iter().map(move |c| CheckHit { y: c.y + s.y0, off: c.off + self.order[s.ix].b0, ..*c })).collect()
+        lay.segs
+            .iter()
+            .filter_map(|s| self.seg_lay_of(s).map(|l| (s, l)))
+            .flat_map(|(s, l)| {
+                l.checks.iter().map(move |c| CheckHit { y: c.y + s.y0, off: c.off + self.order[s.ix].b0, ..*c })
+            })
+            .collect()
     }
 
     /// Draw ops of the whole document, in layout order (tests).
     #[cfg(test)]
     fn ops(&self) -> Vec<&DrawOp> {
-        self.order.iter().filter_map(|p| self.cache.get(&p.key)).filter_map(|d| d.lay.as_ref()).chain(self.foot.iter().map(|(l, _)| l)).flat_map(|l| l.ops.iter()).collect()
+        self.order
+            .iter()
+            .filter_map(|p| self.cache.get(&p.key))
+            .filter_map(|d| d.lay.as_ref())
+            .chain(self.foot.iter().map(|(l, _)| l))
+            .flat_map(|l| l.ops.iter())
+            .collect()
     }
 }
 
 /// Colored runs of a code block, asked from the host once and cached. Colors that would not read
 /// on the block's own background are nudged (the theme's tokens are checked against the editor's).
-fn hl_lines(cache: &mut HashMap<u64, Option<Rc<HlLines>>>, key: u64, lang: &str, lines: &[String], host: &mut Option<&mut HlFn>, fill: Rgba, bg: Rgba) -> Option<Rc<HlLines>> {
+fn hl_lines(
+    cache: &mut HashMap<u64, Option<Rc<HlLines>>>,
+    key: u64,
+    lang: &str,
+    lines: &[String],
+    host: &mut Option<&mut HlFn>,
+    fill: Rgba,
+    bg: Rgba,
+) -> Option<Rc<HlLines>> {
     if let Some(v) = cache.get(&key) {
         return v.clone();
     }
@@ -2712,7 +3001,10 @@ after it.
     #[test]
     fn parses_block_sequence() {
         let v = view(README);
-        assert_eq!(kinds(&v), ["h", "img", "p", "h", "list", "list", "list", "quote", "h", "code", "table", "rule", "h", "p"]);
+        assert_eq!(
+            kinds(&v),
+            ["h", "img", "p", "h", "list", "list", "list", "quote", "h", "code", "table", "rule", "h", "p"]
+        );
     }
 
     #[test]
@@ -2726,7 +3018,10 @@ after it.
         let src_line = README.lines().position(|l| l.starts_with("```rust")).unwrap();
         assert_eq!(code.line, src_line);
         assert_eq!(code.end, src_line + 4);
-        let hs: Vec<u8> = bl.iter().filter_map(|b| if let Kind::Heading { level, .. } = &b.kind { Some(*level) } else { None }).collect();
+        let hs: Vec<u8> = bl
+            .iter()
+            .filter_map(|b| if let Kind::Heading { level, .. } = &b.kind { Some(*level) } else { None })
+            .collect();
         assert_eq!(hs, [1, 2, 3, 2]);
     }
 
@@ -2763,8 +3058,12 @@ after it.
         let v = view("***both*** and **bold *inner* text**");
         let bl = v.blocks();
         let Kind::Para(inl) = &bl[0].kind else { panic!() };
-        assert!(inl.iter().any(|i| matches!(i, Inl::Text { text, flags, .. } if text == "both" && *flags == F_B | F_I)));
-        assert!(inl.iter().any(|i| matches!(i, Inl::Text { text, flags, .. } if text == "inner" && *flags == F_B | F_I)));
+        assert!(
+            inl.iter().any(|i| matches!(i, Inl::Text { text, flags, .. } if text == "both" && *flags == F_B | F_I))
+        );
+        assert!(
+            inl.iter().any(|i| matches!(i, Inl::Text { text, flags, .. } if text == "inner" && *flags == F_B | F_I))
+        );
     }
 
     #[test]
@@ -2815,7 +3114,11 @@ after it.
     fn table_is_parsed_with_alignment() {
         let v = view(README);
         let bl = v.blocks();
-        let Some(Kind::Table { aligns, head, rows }) = bl.iter().find_map(|b| if let Kind::Table { .. } = &b.kind { Some(b.kind.clone()) } else { None }) else { panic!() };
+        let Some(Kind::Table { aligns, head, rows }) =
+            bl.iter().find_map(|b| if let Kind::Table { .. } = &b.kind { Some(b.kind.clone()) } else { None })
+        else {
+            panic!()
+        };
         assert_eq!(aligns, [Alignment::Left, Alignment::Center, Alignment::Right]);
         assert_eq!(head.len(), 3);
         assert_eq!(rows.len(), 2);
@@ -2836,7 +3139,9 @@ after it.
 
     #[test]
     fn raw_html_img_and_comments() {
-        let v = view("<!-- hidden -->\n\n<p align=\"center\"><a href=\"http://h\"><img src=\"x/logo.png\" alt=\"Logo\"></a></p>\n\nafter <br> br\n");
+        let v = view(
+            "<!-- hidden -->\n\n<p align=\"center\"><a href=\"http://h\"><img src=\"x/logo.png\" alt=\"Logo\"></a></p>\n\nafter <br> br\n",
+        );
         let bl = v.blocks();
         let Kind::Images(im) = &bl[0].kind else { panic!("{:?}", kinds(&v)) };
         assert_eq!((im[0].alt.as_str(), im[0].url.as_str()), ("Logo", "x/logo.png"));
@@ -2873,7 +3178,8 @@ after it.
     #[test]
     fn slugify_duplicates_get_suffixes() {
         let mut seen = HashMap::new();
-        let s: Vec<String> = ["Intro", "Intro", "Intro", "Other", "intro"].iter().map(|h| slugify_unique(h, &mut seen)).collect();
+        let s: Vec<String> =
+            ["Intro", "Intro", "Intro", "Other", "intro"].iter().map(|h| slugify_unique(h, &mut seen)).collect();
         assert_eq!(s, ["intro", "intro-1", "intro-2", "other", "intro-3"]);
     }
 
@@ -2939,13 +3245,22 @@ after it.
     #[test]
     fn list_nesting_indents_text() {
         let (v, _) = laid("- a\n  - b\n    - c\n", 800);
-        let lay = v.lay.as_ref().unwrap();
-        let xs: Vec<i32> = v.ops().into_iter().filter_map(|o| if let Op::Text { x, text, .. } = &o.op { Some((text.as_str(), *x)) } else { None }).map(|(_, x)| x).collect();
+        let _lay = v.lay.as_ref().unwrap();
+        let xs: Vec<i32> = v
+            .ops()
+            .into_iter()
+            .filter_map(|o| if let Op::Text { x, text, .. } = &o.op { Some((text.as_str(), *x)) } else { None })
+            .map(|(_, x)| x)
+            .collect();
         assert_eq!(xs.len(), 3);
         assert_eq!(xs[1] - xs[0], LIST_BULLET_INDENT);
         assert_eq!(xs[2] - xs[1], LIST_BULLET_INDENT);
         // three bullets of increasing depth, hanging to the left of their text
-        let bullets: Vec<(i32, u8)> = v.ops().into_iter().filter_map(|o| if let Op::Bullet { cx, level, .. } = o.op { Some((cx, level)) } else { None }).collect();
+        let bullets: Vec<(i32, u8)> = v
+            .ops()
+            .into_iter()
+            .filter_map(|o| if let Op::Bullet { cx, level, .. } = o.op { Some((cx, level)) } else { None })
+            .collect();
         assert_eq!(bullets.iter().map(|b| b.1).collect::<Vec<_>>(), [0, 1, 2]);
         assert!(bullets.iter().zip(&xs).all(|(b, x)| b.0 < *x));
     }
@@ -2956,7 +3271,13 @@ after it.
         let (v, _) = laid(&items, 800);
         let (v1, _) = laid("1. item\n2. item\n", 800);
         let x = |v: &MdView| {
-            v.ops().into_iter().filter_map(|o| if let Op::Text { x, text, .. } = &o.op { (text == "item").then_some(*x) } else { None }).next().unwrap()
+            v.ops()
+                .into_iter()
+                .filter_map(
+                    |o| if let Op::Text { x, text, .. } = &o.op { (text == "item").then_some(*x) } else { None },
+                )
+                .next()
+                .unwrap()
         };
         assert!(x(&v) > x(&v1));
     }
@@ -2966,11 +3287,18 @@ after it.
         let src = "| a | long header here |\n|---|---|\n| short | x |\n| much longer cell text | y |\n";
         let (v, _) = laid(src, 900);
         let lay = v.lay.as_ref().unwrap();
-        let verts: Vec<i32> = v.ops().into_iter().filter_map(|o| if let Op::Fill { r, .. } = &o.op { (r.w == 1 && r.h == 3 * ROW_H).then_some(r.x) } else { None }).collect();
+        let verts: Vec<i32> = v
+            .ops()
+            .into_iter()
+            .filter_map(|o| {
+                if let Op::Fill { r, .. } = &o.op { (r.w == 1 && r.h == 3 * ROW_H).then_some(r.x) } else { None }
+            })
+            .collect();
         assert_eq!(verts.len(), 1, "one inner column rule");
         let first = verts[0] - lay.col_x;
         assert!(first > 100, "first column sized by 'much longer cell text', got {first}");
-        let stroke = v.ops().into_iter().find_map(|o| if let Op::Stroke { r, .. } = &o.op { Some(*r) } else { None }).unwrap();
+        let stroke =
+            v.ops().into_iter().find_map(|o| if let Op::Stroke { r, .. } = &o.op { Some(*r) } else { None }).unwrap();
         assert!(stroke.w < 900 - 2 * PAD);
         assert_eq!(stroke.h, 3 * ROW_H);
     }
@@ -2979,8 +3307,9 @@ after it.
     fn narrow_table_shrinks_columns_and_ellipsizes() {
         let src = "| a | b |\n|---|---|\n| aaaaaaaa bbbbbbbb cccccccc dddddddd eeeeeeee | zzzzzzzz yyyyyyyy xxxxxxxx wwwwwwww |\n";
         let (v, _) = laid(src, 260);
-        let lay = v.lay.as_ref().unwrap();
-        let stroke = v.ops().into_iter().find_map(|o| if let Op::Stroke { r, .. } = &o.op { Some(*r) } else { None }).unwrap();
+        let _lay = v.lay.as_ref().unwrap();
+        let stroke =
+            v.ops().into_iter().find_map(|o| if let Op::Stroke { r, .. } = &o.op { Some(*r) } else { None }).unwrap();
         assert!(stroke.w <= 260 - 2 * PAD + 2, "table width {}", stroke.w);
         assert!(v.ops().into_iter().any(|o| matches!(&o.op, Op::Text { text, .. } if text.ends_with("..."))));
     }
@@ -3052,7 +3381,7 @@ after it.
         let mut v = view("[click me](https://example.com/a) and plain text here\n");
         v.ensure_layout(&mut tx, 800);
         let rect = Rect::new(100, 50, 800, 400);
-        let lay = v.lay.as_ref().unwrap();
+        let _lay = v.lay.as_ref().unwrap();
         let hit = v.all_links()[0];
         let (px, py) = (rect.x as f64 + (hit.x + hit.w / 2) as f64, rect.y as f64 + (hit.y + hit.h / 2) as f64);
         assert_eq!(v.link_at(px, py, rect, 0.0).as_deref(), Some("https://example.com/a"));
@@ -3096,7 +3425,13 @@ after it.
         v.set_text(&format!("{README}\nmore\n"));
         v.draw(&mut cv, &mut tx, &t, rect, 0.0);
         assert_eq!(v.layout_count(), 2);
-        v.draw(&mut cv, &mut tx, &Theme::load(&assets().join("themes/dark-plus.json")).unwrap(), Rect::new(10, 10, 500, 300), 0.0);
+        v.draw(
+            &mut cv,
+            &mut tx,
+            &Theme::load(&assets().join("themes/dark-plus.json")).unwrap(),
+            Rect::new(10, 10, 500, 300),
+            0.0,
+        );
         assert_eq!(v.layout_count(), 3, "width change re-lays out");
     }
 
@@ -3148,7 +3483,10 @@ after it.
         assert_eq!(inside_changed, rect.w * rect.h, "background must fill the whole rect");
         let bg = t.background.with_alpha(255);
         let bgpx = ((bg.0 as u32) << 16) | ((bg.1 as u32) << 8) | bg.2 as u32;
-        let ink = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| rect.contains(x as f64, y as f64) && px[(y * w + x) as usize] != bgpx).count();
+        let ink = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .filter(|&(x, y)| rect.contains(x as f64, y as f64) && px[(y * w + x) as usize] != bgpx)
+            .count();
         assert!(ink > 1500, "only {ink} pixels differ from the background");
         // scrolled far down shows a different picture
         let mut px2 = vec![sentinel; (w * h) as usize];
@@ -3194,7 +3532,11 @@ after it.
         let cold = v.last_layout_ms();
         v.ensure_layout(&mut tx, 700);
         let warm = v.last_layout_ms();
-        eprintln!("[mdview] 5000 lines ({} KB): parse {parse_ms:.1} ms, layout cold {cold:.1} ms, relayout warm {warm:.1} ms, height {} px", src.len() / 1024, v.content_height());
+        eprintln!(
+            "[mdview] 5000 lines ({} KB): parse {parse_ms:.1} ms, layout cold {cold:.1} ms, relayout warm {warm:.1} ms, height {} px",
+            src.len() / 1024,
+            v.content_height()
+        );
         assert!(warm < 1500.0 && cold < 15_000.0);
     }
     #[test]
@@ -3226,15 +3568,20 @@ after it.
         let cold = v.last_layout_ms();
         v.ensure_layout(&mut tx, 700);
         let warm = v.last_layout_ms();
-        eprintln!("[mdview] varied prose {} KB: layout cold {cold:.0} ms, relayout warm {warm:.0} ms, height {} px", src.len() / 1024, v.content_height());
+        eprintln!(
+            "[mdview] varied prose {} KB: layout cold {cold:.0} ms, relayout warm {warm:.0} ms, height {} px",
+            src.len() / 1024,
+            v.content_height()
+        );
         assert!(warm < 1000.0);
     }
-
 
     // ---- incremental layout, footnotes, math, tasks, images, highlighting ----
 
     fn unit(i: usize) -> String {
-        format!("## Section {i}\n\nParagraph {i} with **bold** text, a [link](https://x.io/{i}) and `code {i}` plus some more words to wrap around the line a few times over.\n\n- item one {i}\n- item two {i}\n\n```rust\nlet x = {i};\n```\n\n| a | b |\n|---|---|\n| {i} | y |\n\n")
+        format!(
+            "## Section {i}\n\nParagraph {i} with **bold** text, a [link](https://x.io/{i}) and `code {i}` plus some more words to wrap around the line a few times over.\n\n- item one {i}\n- item two {i}\n\n```rust\nlet x = {i};\n```\n\n| a | b |\n|---|---|\n| {i} | y |\n\n"
+        )
     }
 
     fn doc_of(units: usize) -> String {
@@ -3246,7 +3593,18 @@ after it.
         let t = "# T\n\npara one\nstill\n\n```rust\nlet a;\n\nlet b;\n```\n\n- a\n\n- b\n\n  cont\n\nnext para\n\n    code\n\n<!-- a\n\nb -->\n\nlast\n";
         let sp = split(t);
         let segs: Vec<&str> = sp.segs.iter().map(|s| &t[s.b0..s.b1]).collect();
-        assert_eq!(segs, ["# T\n", "para one\nstill\n", "```rust\nlet a;\n\nlet b;\n```\n", "- a\n\n- b\n\n  cont\n", "next para\n\n    code\n", "<!-- a\n\nb -->\n", "last\n"]);
+        assert_eq!(
+            segs,
+            [
+                "# T\n",
+                "para one\nstill\n",
+                "```rust\nlet a;\n\nlet b;\n```\n",
+                "- a\n\n- b\n\n  cont\n",
+                "next para\n\n    code\n",
+                "<!-- a\n\nb -->\n",
+                "last\n"
+            ]
+        );
         for s in &sp.segs {
             assert_eq!(t[..s.b0].matches('\n').count(), s.l0, "first line of {:?}", &t[s.b0..s.b1]);
             assert_eq!(t[s.b0..s.b1].trim_end_matches('\n').matches('\n').count() + 1, s.nl);
@@ -3287,10 +3645,21 @@ after it.
         assert!(p0 >= 1000 && l0 >= 1000, "cold: {p0} parsed, {l0} laid out");
         let edits: Vec<(&str, Box<dyn Fn(&str) -> String>)> = vec![
             ("typing in a paragraph", Box::new(|s| s.replacen("Paragraph 150 with", "Paragraph 150 X with", 1))),
-            ("making a paragraph longer", Box::new(|s| s.replacen("Paragraph 77 with", &format!("Paragraph 77 {} with", "wrap ".repeat(60)), 1))),
+            (
+                "making a paragraph longer",
+                Box::new(|s| s.replacen("Paragraph 77 with", &format!("Paragraph 77 {} with", "wrap ".repeat(60)), 1)),
+            ),
             ("editing a heading", Box::new(|s| s.replacen("## Section 200", "## Section two hundred", 1))),
-            ("splitting a segment with a blank line", Box::new(|s| s.replacen("- item one 40\n- item two 40", "- item one 40\n\nmiddle text\n\n- item two 40", 1))),
-            ("joining two segments", Box::new(|s| s.replacen("## Section 9\n\nParagraph 9", "## Section 9\nParagraph 9", 1))),
+            (
+                "splitting a segment with a blank line",
+                Box::new(|s| {
+                    s.replacen("- item one 40\n- item two 40", "- item one 40\n\nmiddle text\n\n- item two 40", 1)
+                }),
+            ),
+            (
+                "joining two segments",
+                Box::new(|s| s.replacen("## Section 9\n\nParagraph 9", "## Section 9\nParagraph 9", 1)),
+            ),
         ];
         for (what, f) in edits {
             let new = f(&v.text);
@@ -3352,7 +3721,11 @@ after it.
         }
         times.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let (median, worst) = (times[times.len() / 2], times[times.len() - 1]);
-        eprintln!("[mdview] {label} ({} KB, {} lines): cold {cold:.0} ms; per keystroke median {median:.1} ms, worst {worst:.1} ms", src.len() / 1024, v.line_count);
+        eprintln!(
+            "[mdview] {label} ({} KB, {} lines): cold {cold:.0} ms; per keystroke median {median:.1} ms, worst {worst:.1} ms",
+            src.len() / 1024,
+            v.line_count
+        );
         drop((v, rope, src, px));
         // Give the memory back: `perf::memory_100k_buffer_and_tokenizer` measures the whole test process.
         unsafe { libc::malloc_trim(0) };
@@ -3381,7 +3754,11 @@ after it.
     fn footnotes_are_numbered_by_first_reference_and_collected_at_the_end() {
         let src = "A[^b] and B[^a] again[^b], unknown[^zz].\n\n[^a]: Alpha note.\n[^b]: Beta note.\n\nTail.\n";
         let (v, _) = laid(src, 800);
-        let texts: Vec<String> = v.ops().iter().filter_map(|o| if let Op::Text { text, .. } = &o.op { Some(text.clone()) } else { None }).collect();
+        let texts: Vec<String> = v
+            .ops()
+            .iter()
+            .filter_map(|o| if let Op::Text { text, .. } = &o.op { Some(text.clone()) } else { None })
+            .collect();
         let all = texts.join("|");
         assert!(all.contains("[1]") && all.contains("[2]"), "{all}");
         assert!(all.contains("[^zz]"), "an undefined reference stays literal: {all}");
@@ -3389,7 +3766,11 @@ after it.
         assert!(pos("Beta note") < pos("Alpha note"), "definitions follow the numbering: {all}");
         assert!(pos("Tail") < pos("Beta note"), "footnotes come after the body: {all}");
         let names: Vec<String> = v.heading_anchors().into_iter().map(|(n, _)| n).collect();
-        assert_eq!(names, ["fnref-b", "fnref-a", "fnref-b", "fn-b", "fn-a"], "every reference is an anchor for the back-link; the first one wins");
+        assert_eq!(
+            names,
+            ["fnref-b", "fnref-a", "fnref-b", "fn-b", "fn-a"],
+            "every reference is an anchor for the back-link; the first one wins"
+        );
         // the reference links to its definition
         assert!(v.all_links().iter().any(|l| v.urls.get(l.link).is_some_and(|u| u == "#fn-b")));
         assert_eq!(v.blocks().iter().filter(|b| matches!(b.kind, Kind::FootDef { .. })).count(), 2);
@@ -3399,12 +3780,23 @@ after it.
     fn footnote_definitions_get_a_back_link_to_the_first_reference() {
         let src = "Intro paragraph.\n\nSecond paragraph cites it[^a] and again[^a].\n\n[^a]: The note.\n";
         let (v, _) = laid(src, 800);
-        let arrows: Vec<&Op> = v.ops().iter().map(|o| &o.op).filter(|o| matches!(o, Op::Text { text, .. } if text == "\u{21a9}")).collect();
+        let arrows: Vec<&Op> = v
+            .ops()
+            .iter()
+            .map(|o| &o.op)
+            .filter(|o| matches!(o, Op::Text { text, .. } if text == "\u{21a9}"))
+            .collect();
         assert_eq!(arrows.len(), 1, "one return arrow per footnote definition");
         let back = v.all_links().iter().filter(|l| v.urls.get(l.link).is_some_and(|u| u == "#fnref-a")).count();
         assert_eq!(back, 1, "and it is a link");
         let anchors = v.heading_anchors();
-        let y = |n: &str| anchors.iter().find(|(a, _)| a == n).map(|(_, y)| *y).unwrap_or_else(|| panic!("{n} missing in {anchors:?}"));
+        let y = |n: &str| {
+            anchors
+                .iter()
+                .find(|(a, _)| a == n)
+                .map(|(_, y)| *y)
+                .unwrap_or_else(|| panic!("{n} missing in {anchors:?}"))
+        };
         // The link target is the paragraph that mentions the footnote (not the first one), above the definition.
         assert!(y("fnref-a") > PAD && y("fnref-a") < y("fn-a"));
         // A definition nobody references still gets its arrow, but no anchor to land on.
@@ -3420,7 +3812,9 @@ after it.
         let mut v = view("![x](md-edit-me.png)\n");
         v.set_base_dir(Some(&dir));
         v.ensure_layout(&mut tx, 800);
-        let size_of = |v: &MdView| v.ops().iter().find_map(|o| if let Op::Image { r, .. } = &o.op { Some((r.w, r.h)) } else { None });
+        let size_of = |v: &MdView| {
+            v.ops().iter().find_map(|o| if let Op::Image { r, .. } = &o.op { Some((r.w, r.h)) } else { None })
+        };
         assert_eq!(size_of(&v), Some((64, 32)));
         assert!(!v.refresh_images(), "nothing changed on disk");
         png_file(name, 40, 90, [0, 255, 0, 255]);
@@ -3437,7 +3831,16 @@ after it.
         let bl = v.blocks();
         assert_eq!(kinds(&v), ["p", "math", "p"]);
         let Kind::Para(inl) = &bl[0].kind else { panic!() };
-        let math: Vec<&str> = inl.iter().filter_map(|i| if let Inl::Text { text, flags, .. } = i { (flags & F_MATH != 0).then_some(text.as_str()) } else { None }).collect();
+        let math: Vec<&str> = inl
+            .iter()
+            .filter_map(|i| {
+                if let Inl::Text { text, flags, .. } = i {
+                    (flags & F_MATH != 0).then_some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert_eq!(math, ["e^{i\\pi}+1=0"], "only the formula is math, the dollar amounts are text");
         let Kind::Math(m) = &bl[1].kind else { panic!() };
         assert_eq!(m, "\\int_0^1 x\\,dx");
@@ -3465,7 +3868,10 @@ after it.
         }
         // a click through a scrolled view
         let c = checks[0];
-        assert_eq!(v.check_at(rect.x as f64 + c.x as f64 + 6.0, rect.y as f64 + c.y as f64 + 8.0 - 5.0, rect, 5.0), Some(c.off));
+        assert_eq!(
+            v.check_at(rect.x as f64 + c.x as f64 + 6.0, rect.y as f64 + c.y as f64 + 8.0 - 5.0, rect, 5.0),
+            Some(c.off)
+        );
     }
 
     #[test]
@@ -3502,11 +3908,16 @@ after it.
         let mut v = view(src);
         v.set_base_dir(Some(&dir));
         v.ensure_layout(&mut tx, 800);
-        let imgs: Vec<Rect> = v.ops().iter().filter_map(|o| if let Op::Image { r, .. } = &o.op { Some(*r) } else { None }).collect();
+        let imgs: Vec<Rect> =
+            v.ops().iter().filter_map(|o| if let Op::Image { r, .. } = &o.op { Some(*r) } else { None }).collect();
         assert_eq!(imgs.len(), 2, "only the two local files are images");
         assert_eq!((imgs[0].w, imgs[0].h), (64, 32), "natural size");
         assert_eq!((imgs[1].w, imgs[1].h), (20, 10), "width attribute keeps the ratio");
-        assert_eq!(v.ops().iter().filter(|o| matches!(&o.op, Op::Card { .. })).count(), 2, "remote + missing keep the card");
+        assert_eq!(
+            v.ops().iter().filter(|o| matches!(&o.op, Op::Card { .. })).count(),
+            2,
+            "remote + missing keep the card"
+        );
         // the pixels arrive from a worker thread
         let (w, h) = (900, 500);
         let mut px = vec![0u32; (w * h) as usize];
@@ -3537,7 +3948,16 @@ after it.
         let mut hl = |lang: &str, text: &str| -> Option<HlLines> {
             calls.set(calls.get() + 1);
             assert_eq!(lang, "ts");
-            Some(text.split('\n').map(|l| vec![(0, l.len().min(5), Rgba(255, 0, 255, 255), 0u8), (l.len().min(5), l.len(), t.foreground, 0u8)]).collect())
+            Some(
+                text.split('\n')
+                    .map(|l| {
+                        vec![
+                            (0, l.len().min(5), Rgba(255, 0, 255, 255), 0u8),
+                            (l.len().min(5), l.len(), t.foreground, 0u8),
+                        ]
+                    })
+                    .collect(),
+            )
         };
         for _ in 0..3 {
             let mut cv = Canvas { px: &mut px, w, h };
@@ -3623,7 +4043,10 @@ after it.
             let t0 = std::time::Instant::now();
             let _ = tx.ui_width_sized(&format!("wordx{i}y"), false, 14.0 * 8.0);
             let k = ms(t0);
-            eprintln!("to_string {a:.1}  split {b:.1}  hash {c:.1} ({hh})  set_text(all) {d:.1}  ensure_layout {e:.1}  draw {f:.1} draw2 {g:.1} width_new_word {k:.1} work {:?}", v.work_counts());
+            eprintln!(
+                "to_string {a:.1}  split {b:.1}  hash {c:.1} ({hh})  set_text(all) {d:.1}  ensure_layout {e:.1}  draw {f:.1} draw2 {g:.1} width_new_word {k:.1} work {:?}",
+                v.work_counts()
+            );
         }
     }
 

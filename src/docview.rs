@@ -122,7 +122,15 @@ impl ViewMap {
         }
         let wrap = self.cols > 0 && self.wrap_rows.len() == n;
         let rows: Vec<usize> = (0..n)
-            .map(|i| if self.folds.is_hidden(i) { 0 } else if wrap { self.wrap_rows[i] as usize } else { 1 })
+            .map(|i| {
+                if self.folds.is_hidden(i) {
+                    0
+                } else if wrap {
+                    self.wrap_rows[i] as usize
+                } else {
+                    1
+                }
+            })
             .collect();
         let mut m = RowMap::new(n);
         m.splice_lines(0, n, &rows);
@@ -179,7 +187,13 @@ impl ViewMap {
         if recs.is_empty() {
             // Nothing recorded: fall back to the line-count difference.
             let delta = n as isize - self.lines as isize;
-            let op = if delta > 0 { Some(LineOp::Insert { after: first as isize, n: delta as usize }) } else if delta < 0 { Some(LineOp::Remove { after: first as isize, n: (-delta) as usize }) } else { None };
+            let op = if delta > 0 {
+                Some(LineOp::Insert { after: first as isize, n: delta as usize })
+            } else if delta < 0 {
+                Some(LineOp::Remove { after: first as isize, n: (-delta) as usize })
+            } else {
+                None
+            };
             if let Some(op) = op {
                 structural = true;
                 self.folds.apply_op(op);
@@ -313,13 +327,21 @@ impl Doc {
     /// (line, row within the line) shown at the top of the viewport.
     pub fn top_pos(&self) -> (usize, usize) {
         let row = self.top.max(0.0) as usize;
-        if self.vm_live() { self.view.map.line_at_row(row) } else { (row.min(self.buf.line_count().saturating_sub(1)), 0) }
+        if self.vm_live() {
+            self.view.map.line_at_row(row)
+        } else {
+            (row.min(self.buf.line_count().saturating_sub(1)), 0)
+        }
     }
 
     /// Scroll so that (line, sub) is at the top again, after the map changed.
     fn set_top_to(&mut self, (line, sub): (usize, usize)) {
         let line = self.nearest_visible(line);
-        let row = if self.vm_live() { self.view.map.row_of(line) + sub.min(self.view.map.rows_in(line).saturating_sub(1)) } else { line };
+        let row = if self.vm_live() {
+            self.view.map.row_of(line) + sub.min(self.view.map.rows_in(line).saturating_sub(1))
+        } else {
+            line
+        };
         if row != self.top.max(0.0) as usize {
             self.top = row as f64;
             self.target = self.top;
@@ -560,14 +582,7 @@ impl Doc {
     /// Unfold the fold at the caret line (or the innermost one around it).
     pub fn unfold_at_cursor(&mut self) -> bool {
         let line = self.caret_line();
-        let start = self
-            .view
-            .folds
-            .regions()
-            .iter()
-            .filter(|r| r.0 <= line && line <= r.1)
-            .map(|r| r.0)
-            .max();
+        let start = self.view.folds.regions().iter().filter(|r| r.0 <= line && line <= r.1).map(|r| r.0).max();
         let Some(s) = start else { return false };
         let anchor = self.top_pos();
         self.view.folds.unfold(s);
@@ -924,7 +939,16 @@ mod tests {
     }
 
     fn hint(line: usize, col: usize, label: &str, pad_left: bool, pad_right: bool) -> crate::inlay::Hint {
-        crate::inlay::Hint { line, col, label: label.into(), kind: crate::inlay::HintKind::Type, pad_left, pad_right, links: Vec::new(), edits: Vec::new() }
+        crate::inlay::Hint {
+            line,
+            col,
+            label: label.into(),
+            kind: crate::inlay::HintKind::Type,
+            pad_left,
+            pad_right,
+            links: Vec::new(),
+            edits: Vec::new(),
+        }
     }
 
     #[test]
@@ -934,7 +958,11 @@ mod tests {
         d.set_word_wrap(true);
         d.cell_w = 8.0;
         d.view_prepare(30);
-        let hs = vec![hint(0, 35, ": number", true, false), hint(0, 70, "x:", false, true), hint(0, 96, ": T", false, false)];
+        let hs = vec![
+            hint(0, 35, ": number", true, false),
+            hint(0, 70, "x:", false, true),
+            hint(0, 96, ": T", false, false),
+        ];
         d.inlay.apply(0, 1, hs, d.buf.line_count());
         let lh = crate::ui::line_h() as f64;
         let base = (d.rect.x + d.gutter_w()) as f64;
@@ -1028,10 +1056,16 @@ mod tests {
         d.ed.add_cursor_at(p);
         d.end_cmd(false);
         let cols: Vec<(usize, usize)> = d.ed.all_sels().iter().map(|s| d.buf.line_col(s.head)).collect();
-        assert!(cols.contains(&(0, 80)) && cols.contains(&(1, 59)), "{cols:?}: the row end, the line end on the last row");
+        assert!(
+            cols.contains(&(0, 80)) && cols.contains(&(1, 59)),
+            "{cols:?}: the row end, the line end on the last row"
+        );
         d.home_cmd(false);
         let cols: Vec<(usize, usize)> = d.ed.all_sels().iter().map(|s| d.buf.line_col(s.head)).collect();
-        assert!(cols.contains(&(0, 60)) && cols.contains(&(1, 30)), "{cols:?}: each cursor to the start of its own row");
+        assert!(
+            cols.contains(&(0, 60)) && cols.contains(&(1, 30)),
+            "{cols:?}: each cursor to the start of its own row"
+        );
         // selecting with shift keeps every anchor
         d.end_cmd(true);
         assert!(d.ed.all_sels().iter().all(|s| s.anchor != s.head));

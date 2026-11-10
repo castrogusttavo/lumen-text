@@ -104,13 +104,15 @@ impl Icons {
     fn file_types(&mut self) -> &FileTypes {
         if self.types.is_none() {
             let mut t = FileTypes::default();
-            if let Ok(text) = std::fs::read_to_string(self.dir.join("file_types.json")) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                    let load = |k: &str| -> HashMap<String, String> {
-                        v[k].as_object().map(|o| o.iter().filter_map(|(a, b)| b.as_str().map(|s| (a.clone(), s.to_string()))).collect()).unwrap_or_default()
-                    };
-                    t = FileTypes { stems: load("stems"), suffixes: load("suffixes"), icons: load("icons") };
-                }
+            if let Ok(text) = std::fs::read_to_string(self.dir.join("file_types.json"))
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+            {
+                let load = |k: &str| -> HashMap<String, String> {
+                    v[k].as_object()
+                        .map(|o| o.iter().filter_map(|(a, b)| b.as_str().map(|s| (a.clone(), s.to_string()))).collect())
+                        .unwrap_or_default()
+                };
+                t = FileTypes { stems: load("stems"), suffixes: load("suffixes"), icons: load("icons") };
             }
             self.types = Some(t);
         }

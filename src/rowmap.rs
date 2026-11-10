@@ -418,17 +418,21 @@ pub fn fold_regions_by_indent(
     let mut have = vec![false; line_count];
     let mut stack: Vec<(usize, usize)> = Vec::new(); // (line, indent)
     let mut prev: Option<usize> = None; // last non-blank line
-    let mut close = |stack: &mut Vec<(usize, usize)>, d: usize, prev: Option<usize>, ends: &mut Vec<usize>, have: &mut Vec<bool>| {
+    let close = |stack: &mut Vec<(usize, usize)>,
+                 d: usize,
+                 prev: Option<usize>,
+                 ends: &mut Vec<usize>,
+                 have: &mut Vec<bool>| {
         while let Some(&(h, hi)) = stack.last() {
             if hi < d {
                 break;
             }
             stack.pop();
-            if let Some(p) = prev {
-                if p > h {
-                    ends[h] = p;
-                    have[h] = true;
-                }
+            if let Some(p) = prev
+                && p > h
+            {
+                ends[h] = p;
+                have[h] = true;
             }
         }
     };

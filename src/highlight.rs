@@ -31,11 +31,14 @@ use ropey::Rope;
 use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
-    panic::{catch_unwind, AssertUnwindSafe},
+    panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering::{Acquire, Relaxed, Release}},
         Arc, Condvar, Mutex, MutexGuard, TryLockError,
+        atomic::{
+            AtomicBool, AtomicUsize,
+            Ordering::{Acquire, Relaxed, Release},
+        },
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -279,7 +282,13 @@ impl Highlighter {
     pub fn new(tk: SharedTokenizer) -> Self {
         let first = tk.lock_ui().initial_state();
         let shared = Arc::new(Shared {
-            job: Mutex::new(Job { states: vec![first.clone()], want: 0, rope: None, inval: Vec::new(), running: false }),
+            job: Mutex::new(Job {
+                states: vec![first.clone()],
+                want: 0,
+                rope: None,
+                inval: Vec::new(),
+                running: false,
+            }),
             work_cv: Condvar::new(),
             progress_cv: Condvar::new(),
             ready: AtomicUsize::new(1),
@@ -342,7 +351,11 @@ impl Highlighter {
         }
         if self.worker.is_none() && !self.shared.stop.load(Relaxed) {
             let (sh, tk) = (self.shared.clone(), self.tk.clone());
-            self.worker = std::thread::Builder::new().name("hl-worker".into()).stack_size(16 << 20).spawn(move || worker(sh, tk)).ok();
+            self.worker = std::thread::Builder::new()
+                .name("hl-worker".into())
+                .stack_size(16 << 20)
+                .spawn(move || worker(sh, tk))
+                .ok();
         }
         if self.worker.is_none() {
             // Fallback: tokenize here, within the budget (the pre-worker behaviour).
@@ -428,7 +441,9 @@ impl Highlighter {
                     None => {
                         let strs = tk.reg.scope_strs(&t.scopes);
                         let st = theme.resolve(&strs);
-                        let f = (if st.bold { crate::ui::BOLD } else { 0 }) | (if st.italic { crate::ui::ITALIC } else { 0 }) | (if st.underline { crate::ui::UNDERLINE } else { 0 });
+                        let f = (if st.bold { crate::ui::BOLD } else { 0 })
+                            | (if st.italic { crate::ui::ITALIC } else { 0 })
+                            | (if st.underline { crate::ui::UNDERLINE } else { 0 });
                         let c = (st.fg.unwrap_or(theme.foreground), f);
                         self.color_cache.insert(key, c);
                         c
@@ -492,7 +507,9 @@ pub fn highlight_text(tk: &SharedTokenizer, theme: &Theme, text: &str) -> Vec<Ve
                 None => {
                     let strs = g.reg.scope_strs(&t.scopes);
                     let style = theme.resolve(&strs);
-                    let f = (if style.bold { crate::ui::BOLD } else { 0 }) | (if style.italic { crate::ui::ITALIC } else { 0 }) | (if style.underline { crate::ui::UNDERLINE } else { 0 });
+                    let f = (if style.bold { crate::ui::BOLD } else { 0 })
+                        | (if style.italic { crate::ui::ITALIC } else { 0 })
+                        | (if style.underline { crate::ui::UNDERLINE } else { 0 });
                     let c = (style.fg.unwrap_or(theme.foreground), f);
                     cache.insert(key, c);
                     c
@@ -608,7 +625,9 @@ mod tests {
                 }
                 let strs = t.reg.scope_strs(&tok.scopes);
                 let st = theme.resolve(&strs);
-                let f = (if st.bold { crate::ui::BOLD } else { 0 }) | (if st.italic { crate::ui::ITALIC } else { 0 }) | (if st.underline { crate::ui::UNDERLINE } else { 0 });
+                let f = (if st.bold { crate::ui::BOLD } else { 0 })
+                    | (if st.italic { crate::ui::ITALIC } else { 0 })
+                    | (if st.underline { crate::ui::UNDERLINE } else { 0 });
                 v.push((s, e, st.fg.unwrap_or(theme.foreground), f));
             }
             all.push(v);
@@ -727,7 +746,12 @@ mod tests {
         assert!(single.as_millis() < 50, "spans() blocked behind the worker: {single:?}");
         assert!(worst.as_millis() < 250, "frame too slow while worker busy: {worst:?}");
         let (r1, dt) = (hl.ready(), t_r0.elapsed());
-        eprintln!("[hl] worker progress: {} lines in {:.2} s = {:.0} lines/s while the UI re-coloured", r1 - r0, dt.as_secs_f64(), (r1 - r0) as f64 / dt.as_secs_f64());
+        eprintln!(
+            "[hl] worker progress: {} lines in {:.2} s = {:.0} lines/s while the UI re-coloured",
+            r1 - r0,
+            dt.as_secs_f64(),
+            (r1 - r0) as f64 / dt.as_secs_f64()
+        );
         assert!(r1 > r0 + 200, "worker made no progress ({r0} -> {r1})");
 
         // Far jump: provisional colours immediately, even though the frontier is far behind.

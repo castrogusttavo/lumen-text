@@ -181,7 +181,11 @@ pub fn git_run(dir: &Path, args: &[&str]) -> Result<String, String> {
         let s = String::from_utf8_lossy(b).into_owned();
         let lines: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
         // Hooks print a lot: the first line says what ran, the last one why it failed.
-        lines.iter().find(|l| l.starts_with("error:") || l.starts_with("fatal:")).or(lines.last()).map(|l| l.to_string())
+        lines
+            .iter()
+            .find(|l| l.starts_with("error:") || l.starts_with("fatal:"))
+            .or(lines.last())
+            .map(|l| l.to_string())
     };
     Err(pick(&out.stderr).or_else(|| pick(&out.stdout)).unwrap_or_else(|| "git failed".into()))
 }
@@ -216,7 +220,9 @@ pub fn discard(top: &Path, c: &Change) -> Result<(), String> {
     match c.group {
         Group::Untracked => std::fs::remove_file(top.join(&c.path)).map_err(|e| e.to_string()),
         // Staged + modified again: restore the working tree from the index (keeps the staged part).
-        Group::Changes | Group::Staged if c.discardable() => run_owned(top, &with_paths(&["checkout"], std::slice::from_ref(&c.path))).map(|_| ()),
+        Group::Changes | Group::Staged if c.discardable() => {
+            run_owned(top, &with_paths(&["checkout"], std::slice::from_ref(&c.path))).map(|_| ())
+        }
         Group::Changes | Group::Staged => Err("unstage before discarding".into()),
     }
 }
@@ -237,7 +243,9 @@ pub fn log_page(top: &Path, skip: usize, n: usize) -> Vec<LogEntry> {
 
 /// Files touched by `hash` (against its first parent; root commits against the empty tree).
 pub fn commit_files(top: &Path, hash: &str) -> Vec<CommitFile> {
-    let parents = git_run(top, &["rev-list", "--parents", "-n", "1", hash]).map(|o| o.split_whitespace().count().saturating_sub(1)).unwrap_or(0);
+    let parents = git_run(top, &["rev-list", "--parents", "-n", "1", hash])
+        .map(|o| o.split_whitespace().count().saturating_sub(1))
+        .unwrap_or(0);
     let out = if parents == 0 {
         git_run(top, &["diff-tree", "--root", "--no-commit-id", "--name-status", "-r", "-M", hash])
     } else {
@@ -250,6 +258,7 @@ fn show(top: &Path, rev_path: &str) -> String {
     git_run(top, &["show", rev_path]).unwrap_or_default()
 }
 
+#[cfg(test)]
 /// (old, new) texts of a working-tree entry: HEAD against the file on disk.
 pub fn working_pair(top: &Path, c: &Change) -> (String, String) {
     let old = if c.code == '?' || (c.code == 'A' && c.group == Group::Staged && c.old.is_none()) {
@@ -263,7 +272,11 @@ pub fn working_pair(top: &Path, c: &Change) -> (String, String) {
 
 /// (old, new) texts of a file in a commit.
 pub fn commit_pair(top: &Path, hash: &str, f: &CommitFile) -> (String, String) {
-    let old = if f.code == 'A' { String::new() } else { show(top, &format!("{hash}^1:{}", f.old.as_deref().unwrap_or(&f.path))) };
+    let old = if f.code == 'A' {
+        String::new()
+    } else {
+        show(top, &format!("{hash}^1:{}", f.old.as_deref().unwrap_or(&f.path)))
+    };
     let new = if f.code == 'D' { String::new() } else { show(top, &format!("{hash}:{}", f.path)) };
     // Root commit: no parent, `show` fails and gives "" which is the right "before".
     (old, new)
@@ -278,7 +291,11 @@ fn byte_at(f: &TextField, ci: usize) -> usize {
 /// Insert text keeping line breaks (CRLF / CR become LF, tabs four spaces, other controls dropped).
 pub fn ml_insert(f: &mut TextField, s: &str) {
     let s = s.replace("\r\n", "\n").replace('\r', "\n");
-    let s: String = s.chars().flat_map(|c| if c == '\t' { vec![' '; 4] } else { vec![c] }).filter(|c| *c == '\n' || !c.is_control()).collect();
+    let s: String = s
+        .chars()
+        .flat_map(|c| if c == '\t' { vec![' '; 4] } else { vec![c] })
+        .filter(|c| *c == '\n' || !c.is_control())
+        .collect();
     let b = byte_at(f, f.cursor);
     f.text.insert_str(b, &s);
     f.cursor += s.chars().count();
@@ -373,8 +390,12 @@ pub enum ForceWhy {
 impl ForceWhy {
     pub fn text(self) -> &'static str {
         match self {
-            ForceWhy::Rejected => "Force the push? The remote has a different version of this branch (you rewrote commits that were already published). --force-with-lease only overwrites if nobody else has pushed anything since your last fetch.",
-            ForceWhy::Amended => "The amended commit was already published. Sending it requires a force push. --force-with-lease only overwrites if the remote is still as it was at your last fetch.",
+            ForceWhy::Rejected => {
+                "Force the push? The remote has a different version of this branch (you rewrote commits that were already published). --force-with-lease only overwrites if nobody else has pushed anything since your last fetch."
+            }
+            ForceWhy::Amended => {
+                "The amended commit was already published. Sending it requires a force push. --force-with-lease only overwrites if the remote is still as it was at your last fetch."
+            }
         }
     }
 }
@@ -526,7 +547,9 @@ impl GitPanel {
     pub fn refresh(&mut self) {
         self.top = git::toplevel(&self.root);
         self.changes = match &self.top {
-            Some(t) => git_run(t, &["status", "--porcelain=v1", "-z", "-uall"]).map(|o| parse_status_z(&o)).unwrap_or_default(),
+            Some(t) => {
+                git_run(t, &["status", "--porcelain=v1", "-z", "-uall"]).map(|o| parse_status_z(&o)).unwrap_or_default()
+            }
             None => Vec::new(),
         };
         self.sync = match &self.top {
@@ -565,7 +588,17 @@ impl GitPanel {
         }
         let mut v: Vec<(&'static str, Hit, bool)> = [PullStrategy::Merge, PullStrategy::Rebase, PullStrategy::FfOnly]
             .into_iter()
-            .map(|st| (match st { PullStrategy::Merge => "Merge", PullStrategy::Rebase => "Rebase", PullStrategy::FfOnly => "FF only" }, Hit::Strategy(st), false))
+            .map(|st| {
+                (
+                    match st {
+                        PullStrategy::Merge => "Merge",
+                        PullStrategy::Rebase => "Rebase",
+                        PullStrategy::FfOnly => "FF only",
+                    },
+                    Hit::Strategy(st),
+                    false,
+                )
+            })
             .collect();
         v.push(("Cancel", Hit::StrategyNo, false));
         v
@@ -726,7 +759,11 @@ pub(crate) fn now_secs() -> i64 {
 }
 
 fn mtime(p: &Path) -> u128 {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos())
+    std::fs::metadata(p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos())
 }
 
 /// Longest prefix of `text` (plus an ellipsis) that fits `max` px.
@@ -803,12 +840,25 @@ fn auto_panel_width(win: i32) -> i32 {
 
 /// Keys that only change modifier state; they never mean anything on their own.
 fn is_modifier_key(key: &Key) -> bool {
-    matches!(key, Key::Named(NamedKey::Control | NamedKey::Shift | NamedKey::Alt | NamedKey::AltGraph | NamedKey::Super | NamedKey::Meta | NamedKey::Hyper | NamedKey::CapsLock | NamedKey::NumLock | NamedKey::ScrollLock | NamedKey::Fn | NamedKey::FnLock | NamedKey::Symbol | NamedKey::SymbolLock))
-}
-
-/// Text color that reads on top of `bg`.
-fn on(bg: Rgba) -> Rgba {
-    if bg.luminance() > 0.6 { Rgba(0x10, 0x10, 0x10, 0xff) } else { Rgba(0xff, 0xff, 0xff, 0xff) }
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::Control
+                | NamedKey::Shift
+                | NamedKey::Alt
+                | NamedKey::AltGraph
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::Hyper
+                | NamedKey::CapsLock
+                | NamedKey::NumLock
+                | NamedKey::ScrollLock
+                | NamedKey::Fn
+                | NamedKey::FnLock
+                | NamedKey::Symbol
+                | NamedKey::SymbolLock
+        )
+    )
 }
 
 // ───────────────────────────── App glue ─────────────────────────────
@@ -905,7 +955,8 @@ impl App {
         let gitdir = gp.top.clone().unwrap_or_else(|| self.root.clone()).join(".git");
         mtime(&gitdir.join("index")).hash(&mut h);
         let sig = h.finish();
-        let hist = mtime(&gitdir.join("logs").join("HEAD")) as u64 ^ (mtime(&gitdir.join("HEAD")) as u64).rotate_left(7);
+        let hist =
+            mtime(&gitdir.join("logs").join("HEAD")) as u64 ^ (mtime(&gitdir.join("HEAD")) as u64).rotate_left(7);
         if gp.root != self.root {
             gp.root = self.root.clone();
             gp.reset_history();
@@ -1137,7 +1188,11 @@ impl App {
                     gp.force = Some(ForceWhy::Rejected);
                     self.say(format!("{}: {}", op.label(), f.text));
                 } else {
-                    self.gp_note(gp, "Push: rejected, the remote has commits you do not have. Fetch and pull before pushing.".into(), false);
+                    self.gp_note(
+                        gp,
+                        "Push: rejected, the remote has commits you do not have. Fetch and pull before pushing.".into(),
+                        false,
+                    );
                 }
             }
             Err(f) => self.gp_note(gp, format!("{}: {}", op.label(), f.text), false),
@@ -1181,7 +1236,7 @@ impl App {
 
     fn gp_open_diff_change(&mut self, gp: &mut GitPanel, i: usize) {
         let (Some(top), Some(c)) = (gp.top.clone(), gp.changes.get(i).cloned()) else { return };
-        let big = std::fs::metadata(top.join(&c.path)).map_or(false, |m| m.len() > 3_000_000);
+        let big = std::fs::metadata(top.join(&c.path)).is_ok_and(|m| m.len() > 3_000_000);
         if big {
             return gp.say("File too large for the side-by-side diff", false);
         }
@@ -1201,7 +1256,12 @@ impl App {
         let (old, new) = commit_pair(&top, &c.hash, &f);
         let rows = gitx::side_by_side(&old, &new);
         let name = split_name(&f.path).0.to_string();
-        self.diff = Some(DiffView::plain(format!("{name} — {}  {}", c.short, c.subject), format!("{}^", c.short), c.short.clone(), rows));
+        self.diff = Some(DiffView::plain(
+            format!("{name} — {}  {}", c.short, c.subject),
+            format!("{}^", c.short),
+            c.short.clone(),
+            rows,
+        ));
         gp.open_file = Some(j);
     }
 
@@ -1271,7 +1331,11 @@ impl App {
             return true;
         }
         if matches!(key, Key::Named(NamedKey::Escape)) {
-            if gp.confirm.take().is_some() || gp.publish.take().is_some() || gp.force.take().is_some() || std::mem::take(&mut gp.strategy_ask) {
+            if gp.confirm.take().is_some()
+                || gp.publish.take().is_some()
+                || gp.force.take().is_some()
+                || std::mem::take(&mut gp.strategy_ask)
+            {
             } else if gp.msg_focus && gp.tab == Tab::Changes && self.diff.is_none() {
                 gp.msg_focus = false;
             } else if self.diff.is_some() {
@@ -1359,13 +1423,15 @@ impl App {
                 None => {}
             },
             Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
-                if let Some(Row::File(i)) = rows.get(gp.cursor).copied() {
-                    if gp.changes[i].discardable() {
-                        gp.confirm = Some(i);
-                    }
+                if let Some(Row::File(i)) = rows.get(gp.cursor).copied()
+                    && gp.changes[i].discardable()
+                {
+                    gp.confirm = Some(i);
                 }
             }
-            Key::Named(NamedKey::PageUp | NamedKey::PageDown | NamedKey::Home | NamedKey::End) if self.diff.is_some() => {
+            Key::Named(NamedKey::PageUp | NamedKey::PageDown | NamedKey::Home | NamedKey::End)
+                if self.diff.is_some() =>
+            {
                 self.diff_key(key);
             }
             Key::Character(c) if matches!(c.as_str(), "n" | "p" | "s" | "q") && self.diff.is_some() => {
@@ -1460,7 +1526,13 @@ impl App {
                     gp.msg_focus = true;
                     let b = gp.msg_box;
                     let line = gp.msg_top + ((y as i32 - b.y - 8).max(0) / LINE) as usize;
-                    let text_line = gp.msg.text.split('\n').nth(line.min(gp.msg.text.split('\n').count() - 1)).unwrap_or("").to_string();
+                    let text_line = gp
+                        .msg
+                        .text
+                        .split('\n')
+                        .nth(line.min(gp.msg.text.split('\n').count() - 1))
+                        .unwrap_or("")
+                        .to_string();
                     let target = x as i32 - (b.x + 12) + gp.msg_hscroll;
                     let mut col = 0;
                     for n in 1..=text_line.chars().count() {
@@ -1538,7 +1610,8 @@ impl App {
             MouseScrollDelta::PixelDelta(d) => -d.y,
         };
         let k = if gp.tab == Tab::Changes { 0 } else { 1 };
-        gp.scroll[k] = (gp.scroll[k] + px).clamp(0.0, gp.max_scroll[k].max(if k == 1 && !gp.log_done { f64::MAX } else { 0.0 }));
+        gp.scroll[k] =
+            (gp.scroll[k] + px).clamp(0.0, gp.max_scroll[k].max(if k == 1 && !gp.log_done { f64::MAX } else { 0.0 }));
         true
     }
 
@@ -1596,7 +1669,16 @@ impl App {
     }
 
     /// Small text button (pill) with hover; returns its width.
-    fn gp_text_btn(&mut self, cv: &mut Canvas, gp: &mut GitPanel, right: i32, y: i32, label: &str, hit: Hit, tint: Rgba) -> i32 {
+    fn gp_text_btn(
+        &mut self,
+        cv: &mut Canvas,
+        gp: &mut GitPanel,
+        right: i32,
+        y: i32,
+        label: &str,
+        hit: Hit,
+        tint: Rgba,
+    ) -> i32 {
         let w = self.tx.ui_width(label, false) + 18;
         let r = Rect::new(right - w, y, w, 24);
         let hov = self.hv(r);
@@ -1642,7 +1724,13 @@ impl App {
             x += w + 4;
         }
         self.gp_icon_btn(cv, &mut gp, Rect::new(p.right() - 12 - 28, p.y + 8, 28, 28), "ui/close", Hit::Close);
-        self.gp_icon_btn(cv, &mut gp, Rect::new(p.right() - 12 - 28 - 32, p.y + 8, 28, 28), "ui/rotate_cw", Hit::Refresh);
+        self.gp_icon_btn(
+            cv,
+            &mut gp,
+            Rect::new(p.right() - 12 - 28 - 32, p.y + 8, 28, 28),
+            "ui/rotate_cw",
+            Hit::Refresh,
+        );
 
         // Branch line: name on the left, fetch / pull / push on the right.
         let by = p.y + HEAD_H;
@@ -1652,9 +1740,20 @@ impl App {
             let (ahead, behind, has_up) = (gp.sync.ahead, gp.sync.behind, gp.sync.upstream.is_some());
             let count = |n: usize| if n > 0 { format!(" {n}") } else { String::new() };
             let push = format!("Push{}", if has_up { count(ahead) } else { String::new() });
-            right -= self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/arrow_up", &push, Hit::Push, !busy && (ahead > 0 || !has_up)) + 4;
+            right -= self.gp_sync_btn(
+                cv,
+                &mut gp,
+                right,
+                by + 5,
+                "ui/arrow_up",
+                &push,
+                Hit::Push,
+                !busy && (ahead > 0 || !has_up),
+            ) + 4;
             let pull = format!("Pull{}", count(behind));
-            right -= self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/arrow_down", &pull, Hit::Pull, !busy && behind > 0) + 4;
+            right -=
+                self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/arrow_down", &pull, Hit::Pull, !busy && behind > 0)
+                    + 4;
             right -= self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/cloud_download", "", Hit::Fetch, !busy) + 4;
         }
         self.tx.icon(cv, "ui/git_branch", p.x + 16, by + 10, 14, dim, p);
@@ -1670,7 +1769,8 @@ impl App {
         }
 
         let commit_h = if gp.tab == Tab::Changes && gp.top.is_some() { COMMIT_AREA_H } else { 0 };
-        let body = Rect::new(p.x + 1, by + BRANCH_H + strip_h, p.w - 1, (p.h - HEAD_H - BRANCH_H - strip_h - commit_h).max(0));
+        let body =
+            Rect::new(p.x + 1, by + BRANCH_H + strip_h, p.w - 1, (p.h - HEAD_H - BRANCH_H - strip_h - commit_h).max(0));
         if gp.top.is_none() {
             let msg = "This folder is not a git repository";
             let w = self.tx.ui_width(msg, false);
@@ -1686,7 +1786,17 @@ impl App {
     }
 
     /// Pill with an icon and an optional label (fetch / pull / push); returns its width.
-    fn gp_sync_btn(&mut self, cv: &mut Canvas, gp: &mut GitPanel, right: i32, y: i32, icon: &str, label: &str, hit: Hit, active: bool) -> i32 {
+    fn gp_sync_btn(
+        &mut self,
+        cv: &mut Canvas,
+        gp: &mut GitPanel,
+        right: i32,
+        y: i32,
+        icon: &str,
+        label: &str,
+        hit: Hit,
+        active: bool,
+    ) -> i32 {
         let c = self.theme.chrome;
         let lw = if label.is_empty() { 0 } else { self.tx.ui_width(label, false) + 5 };
         let w = 12 + 14 + lw + if label.is_empty() { 0 } else { 6 };
@@ -1695,7 +1805,13 @@ impl App {
         if hov {
             cv.fill_round(r, 8, c.tab_active_fg.with_alpha(0x1c));
         }
-        let tint = if active { c.accent_text } else if hov { c.tab_active_fg } else { c.tab_inactive_fg };
+        let tint = if active {
+            c.accent_text
+        } else if hov {
+            c.tab_active_fg
+        } else {
+            c.tab_inactive_fg
+        };
         self.tx.icon(cv, icon, r.x + 6, r.y + 6, 14, tint, r);
         if !label.is_empty() {
             self.tx.draw_ui(cv, r.x + 6 + 14 + 5, r.y + 4, label, tint, r, false);
@@ -1716,7 +1832,8 @@ impl App {
         }
         let text = gp.force.map_or(STRATEGY_TEXT, ForceWhy::text);
         let lines = wrap_lines(&mut self.tx, text, w - 32, 5).len() as i32;
-        let widths: Vec<i32> = Self::gp_card_buttons(gp).iter().map(|(l, _, _)| self.tx.ui_width(l, false) + 18).collect();
+        let widths: Vec<i32> =
+            Self::gp_card_buttons(gp).iter().map(|(l, _, _)| self.tx.ui_width(l, false) + 18).collect();
         let rows = button_rows(&widths, w - 20, 4).len() as i32;
         gp.prompt_h = 8 + lines * STRIP_LINE + 6 + rows * 28 + 4;
     }
@@ -1746,7 +1863,13 @@ impl App {
             let y = first_y + ri as i32 * 28;
             let mut right = area.right() - 10;
             for &(label, hit, danger) in btns[k..k + n].iter().rev() {
-                let tint = if danger { c.error } else if matches!(hit, Hit::ForceNo | Hit::StrategyNo) { c.tab_inactive_fg } else { c.accent_text };
+                let tint = if danger {
+                    c.error
+                } else if matches!(hit, Hit::ForceNo | Hit::StrategyNo) {
+                    c.tab_inactive_fg
+                } else {
+                    c.accent_text
+                };
                 right -= self.gp_text_btn(cv, gp, right, y, label, hit, tint) + 4;
             }
             k += n;
@@ -1910,11 +2033,11 @@ impl App {
         cv.fill(Rect::new(area.x, area.y, area.w, 1), c.border);
         let mut y = area.y + 10;
         // Notice (success / error), fades after a while.
-        if let Some((m, ok, t)) = gp.notice.clone() {
-            if t.elapsed().as_secs() < 12 {
-                let txt = fit(&mut self.tx, &m, area.w - 32, false);
-                self.tx.draw_ui(cv, area.x + 16, y + 1, &txt, if ok { c.git_added } else { c.error }, area, false);
-            }
+        if let Some((m, ok, t)) = gp.notice.clone()
+            && t.elapsed().as_secs() < 12
+        {
+            let txt = fit(&mut self.tx, &m, area.w - 32, false);
+            self.tx.draw_ui(cv, area.x + 16, y + 1, &txt, if ok { c.git_added } else { c.error }, area, false);
         }
         y += 22;
         // Message box.
@@ -1960,7 +2083,12 @@ impl App {
         if ah {
             cv.fill_round(am, 8, strong.with_alpha(0x12));
         }
-        self.gp_checkbox(cv, Rect::new(am.x + 6, y + 6, 16, 16), if gp.amend { CheckState::On } else { CheckState::Off }, ah);
+        self.gp_checkbox(
+            cv,
+            Rect::new(am.x + 6, y + 6, 16, 16),
+            if gp.amend { CheckState::On } else { CheckState::Off },
+            ah,
+        );
         let txt = fit(&mut self.tx, "Amend last commit", am.w - 36, false);
         self.tx.draw_ui(cv, am.x + 30, y + 5, &txt, if ah || gp.amend { strong } else { dim }, am, false);
         gp.hits.push((am, Hit::Amend));
@@ -1968,12 +2096,19 @@ impl App {
 
         // Option + Commit button.
         let staged = gp.staged();
-        let ready = !gp.msg.text.trim().is_empty() && (gp.amend || staged > 0 || (gp.include_all && !gp.changes.is_empty()));
+        let ready =
+            !gp.msg.text.trim().is_empty() && (gp.amend || staged > 0 || (gp.include_all && !gp.changes.is_empty()));
         let label = if gp.amend { "Amend" } else { "Commit" };
         let bw = self.tx.ui_width(label, true) + 36;
         let btn = Rect::new(area.right() - 12 - bw, y, bw, 34);
         let bh = self.hv(btn);
-        let fill = if ready { if bh { c.accent.shift(22) } else { c.accent } } else if bh { c.accent.with_alpha(0x70) } else { c.accent.with_alpha(0x48) };
+        let fill = if ready {
+            if bh { c.accent.shift(22) } else { c.accent }
+        } else if bh {
+            c.accent.with_alpha(0x70)
+        } else {
+            c.accent.with_alpha(0x48)
+        };
         cv.fill_round(btn, 10, fill);
         let text_col = if ready { c.on_accent } else { strong.with_alpha(0xc0) };
         self.tx.draw_ui(cv, btn.x + 18, btn.y + 8, label, text_col, btn, true);
@@ -1984,7 +2119,12 @@ impl App {
         if oh {
             cv.fill_round(opt, 8, strong.with_alpha(0x12));
         }
-        self.gp_checkbox(cv, Rect::new(opt.x + 6, y + 9, 16, 16), if gp.include_all { CheckState::On } else { CheckState::Off }, oh);
+        self.gp_checkbox(
+            cv,
+            Rect::new(opt.x + 6, y + 9, 16, 16),
+            if gp.include_all { CheckState::On } else { CheckState::Off },
+            oh,
+        );
         let txt = "Include everything if nothing is staged".to_string();
         let txt = fit(&mut self.tx, &txt, opt.w - 36, false);
         self.tx.draw_ui(cv, opt.x + 30, y + 8, &txt, if oh { strong } else { dim }, opt, false);
@@ -2031,7 +2171,15 @@ impl App {
                     } else if hov || cur {
                         cv.fill_round_clip(r, 8, strong.with_alpha(if cur { 0x1e } else { 0x12 }), body);
                     }
-                    self.tx.icon(cv, if open { "ui/chevron_down" } else { "ui/chevron_right" }, r.x + 8, y + 17, 16, dim, vis);
+                    self.tx.icon(
+                        cv,
+                        if open { "ui/chevron_down" } else { "ui/chevron_right" },
+                        r.x + 8,
+                        y + 17,
+                        16,
+                        dim,
+                        vis,
+                    );
                     let subj = if e.subject.is_empty() { "(no subject)".to_string() } else { e.subject.clone() };
                     let subj = fit(&mut self.tx, &subj, r.w - 44, open);
                     self.tx.draw_ui(cv, r.x + 32, y + 7, &subj, strong, vis, open);
@@ -2083,7 +2231,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lumen-gp-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        for a in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "Ana"], &["config", "commit.gpgsign", "false"]] {
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@t"],
+            &["config", "user.name", "Ana"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
             git_run(&dir, a).unwrap();
         }
         dir
@@ -2097,7 +2250,11 @@ mod tests {
         assert_eq!(find("staged.ts", Group::Staged).unwrap().code, 'M');
         assert_eq!(find("work.ts", Group::Changes).unwrap().code, 'M');
         assert_eq!(find("both.ts", Group::Staged).unwrap().code, 'M');
-        assert_eq!(find("both.ts", Group::Changes).unwrap().code, 'M', "staged and modified again is listed under Unstaged too");
+        assert_eq!(
+            find("both.ts", Group::Changes).unwrap().code,
+            'M',
+            "staged and modified again is listed under Unstaged too"
+        );
         assert_eq!(find("new.ts", Group::Untracked).unwrap().code, '?');
         let r = find("new name.ts", Group::Staged).unwrap();
         assert_eq!((r.code, r.old.as_deref()), ('R', Some("old name.ts")));
@@ -2112,10 +2269,14 @@ mod tests {
 
     #[test]
     fn log_and_name_status_parsing() {
-        let out = "aaaa\x1faaa\x1fAna\x1f1700000000\x1ffix: a | b\nbbbb\x1fbbb\x1fBeto\x1f1699990000\x1f\nlixo sem separador";
+        let out =
+            "aaaa\x1faaa\x1fAna\x1f1700000000\x1ffix: a | b\nbbbb\x1fbbb\x1fBeto\x1f1699990000\x1f\nlixo sem separador";
         let v = parse_log(out);
         assert_eq!(v.len(), 2);
-        assert_eq!((v[0].short.as_str(), v[0].author.as_str(), v[0].ts, v[0].subject.as_str()), ("aaa", "Ana", 1700000000, "fix: a | b"));
+        assert_eq!(
+            (v[0].short.as_str(), v[0].author.as_str(), v[0].ts, v[0].subject.as_str()),
+            ("aaa", "Ana", 1700000000, "fix: a | b")
+        );
         assert_eq!(v[1].subject, "");
         let f = parse_name_status("M\ta.ts\nA\tdir/b.ts\nD\tc.ts\nR087\told.ts\tnew.ts\n");
         assert_eq!(f.len(), 4);
@@ -2197,9 +2358,15 @@ mod tests {
         let dir = tmp_repo("empty");
         std::fs::write(dir.join("a.ts"), "x\n").unwrap();
         stage(&dir, &["a.ts".into()]).unwrap();
-        assert_eq!(parse_status_z(&git_run(&dir, &["status", "--porcelain=v1", "-z"]).unwrap())[0].group, Group::Staged);
+        assert_eq!(
+            parse_status_z(&git_run(&dir, &["status", "--porcelain=v1", "-z"]).unwrap())[0].group,
+            Group::Staged
+        );
         unstage(&dir, &["a.ts".into()]).unwrap();
-        assert_eq!(parse_status_z(&git_run(&dir, &["status", "--porcelain=v1", "-z"]).unwrap())[0].group, Group::Untracked);
+        assert_eq!(
+            parse_status_z(&git_run(&dir, &["status", "--porcelain=v1", "-z"]).unwrap())[0].group,
+            Group::Untracked
+        );
         assert!(log_page(&dir, 0, 5).is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2320,7 +2487,11 @@ mod tests {
         std::fs::write(dir.join("a.ts"), "3\n").unwrap();
         let mut gp = GitPanel::new(&dir);
         assert_eq!(gp.changes.len(), 2);
-        assert_eq!(gp.rows(), vec![Row::Header(Group::Staged), Row::File(0), Row::Header(Group::Changes), Row::File(1)], "one row under each group");
+        assert_eq!(
+            gp.rows(),
+            vec![Row::Header(Group::Staged), Row::File(0), Row::Header(Group::Changes), Row::File(1)],
+            "one row under each group"
+        );
         assert_eq!((gp.changes[0].group, gp.changes[1].group), (Group::Staged, Group::Changes));
         // "Add all" (the Unstaged section) stages the edit made after the first `add`.
         let paths = gp.group_paths(Group::Changes);
@@ -2356,7 +2527,11 @@ mod tests {
         std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
         let work = dir.join("work");
         std::fs::create_dir_all(&work).unwrap();
-        for a in [&["init", "-q", "-b", "main"][..], &["remote", "add", "origin", "ssh://localhost/nothing"], &["config", "core.sshCommand", slow.to_str().unwrap()]] {
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["remote", "add", "origin", "ssh://localhost/nothing"],
+            &["config", "core.sshCommand", slow.to_str().unwrap()],
+        ] {
             git_run(&work, a).unwrap();
         }
         let mut app = test_app(&work);
@@ -2370,7 +2545,10 @@ mod tests {
         // ...the event loop keeps waking up for the spinner...
         let (now, mut due) = (Instant::now(), Vec::new());
         app.git_bg_tick(now, &mut |t| due.push(t));
-        assert!(due.iter().any(|t| *t <= now + Duration::from_millis(200)), "wakes up often enough to turn the spinner");
+        assert!(
+            due.iter().any(|t| *t <= now + Duration::from_millis(200)),
+            "wakes up often enough to turn the spinner"
+        );
         // ...and the bottom bar draws it (nothing when no command runs or there is no room).
         let (w, h) = (500, 28);
         let mut px = vec![0u32; (w * h) as usize];
@@ -2416,7 +2594,15 @@ mod tests {
     fn expanded_commit_files_are_scrolled_into_view() {
         let mut gp = GitPanel::new(&std::env::temp_dir().join("lumen-gp-no-such-dir"));
         gp.tab = Tab::History;
-        gp.commits = (0..20).map(|i| LogEntry { hash: format!("h{i}"), short: format!("s{i}"), author: "a".into(), ts: 0, subject: "x".into() }).collect();
+        gp.commits = (0..20)
+            .map(|i| LogEntry {
+                hash: format!("h{i}"),
+                short: format!("s{i}"),
+                author: "a".into(),
+                ts: 0,
+                subject: "x".into(),
+            })
+            .collect();
         gp.files = (0..4).map(|i| CommitFile { code: 'M', path: format!("f{i}.ts"), old: None }).collect();
         gp.open_commit = Some(10);
         let k = gp.rows().iter().position(|r| *r == Row::Commit(10)).unwrap();
@@ -2461,7 +2647,11 @@ mod tests {
         let (remote, work) = (base.join("remote.git"), base.join("work"));
         git_run(&base, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]).unwrap();
         git_run(&base, &["init", "-q", "-b", "main", work.to_str().unwrap()]).unwrap();
-        for a in [&["config", "user.email", "t@t"][..], &["config", "user.name", "T"], &["config", "commit.gpgsign", "false"]] {
+        for a in [
+            &["config", "user.email", "t@t"][..],
+            &["config", "user.name", "T"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
             git_run(&work, a).unwrap();
         }
         git_run(&work, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
@@ -2501,7 +2691,9 @@ mod tests {
         assert_eq!(gp.strip_h(), PROMPT_H, "never smaller than the one-line prompt");
         gp.strategy_ask = false;
         assert_eq!(gp.strip_h(), 0);
-        assert!(ForceWhy::Rejected.text().contains("--force-with-lease") && ForceWhy::Amended.text().contains("amended"));
+        assert!(
+            ForceWhy::Rejected.text().contains("--force-with-lease") && ForceWhy::Amended.text().contains("amended")
+        );
         let confirm = GitPanel::gp_card_buttons_for(true);
         assert_eq!(confirm.iter().map(|b| b.1).collect::<Vec<_>>(), [Hit::ForceYes, Hit::ForceNo]);
         let strat = GitPanel::gp_card_buttons_for(false);

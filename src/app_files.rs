@@ -11,12 +11,21 @@ impl App {
     /// Directory the next "new file" should land in: the selected folder in the explorer,
     /// else the folder of the active document, else the project root.
     fn target_dir(&self) -> PathBuf {
-        if self.focus == Focus::Sidebar {
-            if let Some(r) = self.tree.rows.get(self.tree.sel) {
-                return if r.is_dir { r.path.clone() } else { r.path.parent().map(Path::to_path_buf).unwrap_or_else(|| self.root.clone()) };
-            }
+        if self.focus == Focus::Sidebar
+            && let Some(r) = self.tree.rows.get(self.tree.sel)
+        {
+            return if r.is_dir {
+                r.path.clone()
+            } else {
+                r.path.parent().map(Path::to_path_buf).unwrap_or_else(|| self.root.clone())
+            };
         }
-        self.docs.get(self.active).and_then(|d| d.path()).and_then(Path::parent).map(Path::to_path_buf).unwrap_or_else(|| self.root.clone())
+        self.docs
+            .get(self.active)
+            .and_then(|d| d.path())
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.root.clone())
     }
 
     /// The path rename/delete act on: explorer selection if focused, else the active file.
@@ -30,7 +39,8 @@ impl App {
     pub fn prompt_new_file(&mut self, dir: bool) {
         let d = self.target_dir();
         let rel = self.rel(&d);
-        let title = format!("{} in {}", if dir { "New folder" } else { "New file" }, if rel.is_empty() { "." } else { &rel });
+        let title =
+            format!("{} in {}", if dir { "New folder" } else { "New file" }, if rel.is_empty() { "." } else { &rel });
         let kind = if dir { PromptKind::NewDir { dir: d } } else { PromptKind::NewFile { dir: d } };
         self.overlay = Overlay::Prompt(Prompt { kind, title, field: TextField::default() });
     }
@@ -38,7 +48,11 @@ impl App {
     pub fn prompt_rename_path(&mut self) {
         let Some(p) = self.target_path() else { return };
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        self.overlay = Overlay::Prompt(Prompt { title: format!("Rename {name}"), kind: PromptKind::RenamePath { from: p }, field: TextField::with(&name) });
+        self.overlay = Overlay::Prompt(Prompt {
+            title: format!("Rename {name}"),
+            kind: PromptKind::RenamePath { from: p },
+            field: TextField::with(&name),
+        });
     }
 
     pub fn prompt_delete_path(&mut self) {
@@ -48,7 +62,11 @@ impl App {
         let Some(p) = self.target_path() else { return };
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let what = if p.is_dir() { "the folder (and everything in it)" } else { "the file" };
-        self.overlay = Overlay::Prompt(Prompt { title: format!("Delete {what} {name}? Type 'yes' to confirm"), kind: PromptKind::DeletePath { path: p }, field: TextField::default() });
+        self.overlay = Overlay::Prompt(Prompt {
+            title: format!("Delete {what} {name}? Type 'yes' to confirm"),
+            kind: PromptKind::DeletePath { path: p },
+            field: TextField::default(),
+        });
     }
 
     pub fn refresh_tree(&mut self) {
@@ -141,7 +159,10 @@ impl App {
                     }
                 }
                 self.refresh_tree();
-                self.say(format!("deleted: {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                self.say(format!(
+                    "deleted: {}",
+                    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                ));
             }
             Err(e) => self.say(format!("error deleting: {e}")),
         }

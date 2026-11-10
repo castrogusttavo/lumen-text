@@ -120,7 +120,11 @@ impl App {
     }
 
     pub fn prompt_git_commit(&mut self) {
-        self.overlay = Overlay::Prompt(Prompt { title: "Commit message (for what is staged)".into(), kind: PromptKind::GitCommit, field: TextField::default() });
+        self.overlay = Overlay::Prompt(Prompt {
+            title: "Commit message (for what is staged)".into(),
+            kind: PromptKind::GitCommit,
+            field: TextField::default(),
+        });
     }
 
     pub fn git_commit(&mut self, msg: &str) {

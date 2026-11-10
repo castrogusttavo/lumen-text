@@ -82,7 +82,18 @@ impl DiffView {
             Side::Unstaged => ("Index", "Current", "changes"),
             Side::Staged => ("HEAD", "Index", "staged"),
         };
-        let src = DiffSrc { top: top.to_path_buf(), rel: rel.to_string(), old_rel: old_rel.map(str::to_string), side, hunks, old, new, editable, can_flip: false, name: name.to_string() };
+        let src = DiffSrc {
+            top: top.to_path_buf(),
+            rel: rel.to_string(),
+            old_rel: old_rel.map(str::to_string),
+            side,
+            hunks,
+            old,
+            new,
+            editable,
+            can_flip: false,
+            name: name.to_string(),
+        };
         let mut dv = DiffView::plain(format!("{name} — {what}"), left.into(), right.into(), rows);
         dv.src = Some(src);
         Some(dv)
@@ -163,7 +174,8 @@ impl App {
         if rows.iter().all(|r| r.kind == RowKind::Same) {
             return self.say("no differences from HEAD");
         }
-        self.diff = Some(DiffView::plain(format!("{} — HEAD vs. current file", d.name), "HEAD".into(), "Current".into(), rows));
+        self.diff =
+            Some(DiffView::plain(format!("{} — HEAD vs. current file", d.name), "HEAD".into(), "Current".into(), rows));
     }
 
     pub fn open_diff_commit(&mut self, path: &Path, commit: &str, subject: &str) {
@@ -171,7 +183,12 @@ impl App {
         let new = gitx::file_at(path, commit).unwrap_or_default();
         let rows = gitx::side_by_side(&old, &new);
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        self.diff = Some(DiffView::plain(format!("{name} — {commit}  {subject}"), format!("{commit}^"), commit.to_string(), rows));
+        self.diff = Some(DiffView::plain(
+            format!("{name} — {commit}  {subject}"),
+            format!("{commit}^"),
+            commit.to_string(),
+            rows,
+        ));
     }
 
     pub fn open_file_history(&mut self) {
@@ -182,7 +199,11 @@ impl App {
         }
         let items: Vec<Item> = log
             .into_iter()
-            .map(|c| Item { label: c.subject.clone(), detail: format!("{} · {} · {}", c.short, c.author, c.when), action: Action::GitShow(path.clone(), c.hash, c.subject) })
+            .map(|c| Item {
+                label: c.subject.clone(),
+                detail: format!("{} · {} · {}", c.short, c.author, c.when),
+                action: Action::GitShow(path.clone(), c.hash, c.subject),
+            })
             .collect();
         self.open_locations("File history", items);
     }
@@ -190,7 +211,8 @@ impl App {
     /// Keys while a diff is shown. Returns true when consumed.
     pub fn diff_key(&mut self, key: &winit::keyboard::Key) -> bool {
         use winit::keyboard::{Key, NamedKey};
-        if matches!(key, Key::Character(c) if c.as_str() == "s") && self.diff.as_ref().is_some_and(|d| d.src.is_some()) {
+        if matches!(key, Key::Character(c) if c.as_str() == "s") && self.diff.as_ref().is_some_and(|d| d.src.is_some())
+        {
             let cur = self.diff.as_ref().map_or(0, |d| d.cur);
             self.diff_toggle_block(cur);
             return true;
@@ -240,7 +262,8 @@ impl App {
     pub fn diff_toggle_block(&mut self, i: usize) {
         let Some(src) = self.diff.as_ref().and_then(|d| d.src.as_ref()) else { return };
         if !src.editable {
-            return self.say("hunk-by-hunk only works for files that already exist in HEAD and the index; use the checkbox");
+            return self
+                .say("hunk-by-hunk only works for files that already exist in HEAD and the index; use the checkbox");
         }
         let Some(h) = src.hunks.get(i).copied() else { return };
         let staging = src.side == Side::Unstaged;
@@ -284,7 +307,9 @@ impl App {
 
     /// Left click on a hunk button / the flip button. Returns true when consumed.
     pub fn diff_click(&mut self, x: f64, y: f64) -> bool {
-        let Some(&(_, b)) = self.diff.as_ref().and_then(|d| d.btns.iter().find(|(r, _)| r.contains(x, y))) else { return false };
+        let Some(&(_, b)) = self.diff.as_ref().and_then(|d| d.btns.iter().find(|(r, _)| r.contains(x, y))) else {
+            return false;
+        };
         match b {
             DiffBtn::Hunk(i) => {
                 if let Some(d) = self.diff.as_mut() {
@@ -322,7 +347,10 @@ impl App {
         cv.fill(editor, bg);
         let head_h = 28;
         let half = editor.w / 2;
-        let (lr, rr) = (Rect::new(editor.x, editor.y + head_h, half, editor.h - head_h), Rect::new(editor.x + half, editor.y + head_h, editor.w - half, editor.h - head_h));
+        let (lr, rr) = (
+            Rect::new(editor.x, editor.y + head_h, half, editor.h - head_h),
+            Rect::new(editor.x + half, editor.y + head_h, editor.w - half, editor.h - head_h),
+        );
         cv.fill(Rect::new(editor.x, editor.y, editor.w, head_h), c.sidebar_bg);
         cv.fill(Rect::new(editor.x, editor.y + head_h - 1, editor.w, 1), c.border);
         cv.fill(Rect::new(editor.x + half, editor.y, 1, editor.h), c.border);
@@ -340,14 +368,30 @@ impl App {
             btns.push((r, DiffBtn::Flip));
             hint_right = r.x - 10;
         }
-        self.tx.draw_ui(cv, editor.x + 14, editor.y + 5, &format!("{}   ·   {}", dv.left_name, dv.title), fg, Rect::new(editor.x, editor.y, half, head_h), true);
+        self.tx.draw_ui(
+            cv,
+            editor.x + 14,
+            editor.y + 5,
+            &format!("{}   ·   {}", dv.left_name, dv.title),
+            fg,
+            Rect::new(editor.x, editor.y, half, head_h),
+            true,
+        );
         let narrow = hint_right - editor.x - half < 330;
         let hint = match (staging.is_some(), narrow) {
             (true, false) => format!("{}   ·   Esc closes · n/p block · s stage", dv.right_name),
             (true, true) => format!("{}  ·  n/p · s", dv.right_name),
             (false, _) => format!("{}   ·   Esc closes · n next block", dv.right_name),
         };
-        self.tx.draw_ui(cv, editor.x + half + 14, editor.y + 5, &hint, dim, Rect::new(editor.x + half, editor.y, (hint_right - editor.x - half).max(0), head_h), false);
+        self.tx.draw_ui(
+            cv,
+            editor.x + half + 14,
+            editor.y + 5,
+            &hint,
+            dim,
+            Rect::new(editor.x + half, editor.y, (hint_right - editor.x - half).max(0), head_h),
+            false,
+        );
 
         let lh = line_h() as i32;
         let first = dv.scroll as usize;
@@ -379,19 +423,27 @@ impl App {
             if let Some(b) = rbg {
                 cv.fill_clip(Rect::new(rr.x, y, rr.w, lh), b, rr);
             }
-            if row.kind == RowKind::Changed {
-                if let (Some((_, l)), Some((_, r))) = (&row.left, &row.right) {
-                    let (lrg, rrg) = gitx::changed_ranges(l, r);
-                    // Ranges are in characters; tabs expand to the configured width on screen.
-                    let tab = self.config.tab_width;
-                    for (a, b) in lrg {
-                        let (a, b) = (crate::editor::visual_col(l, a, tab), crate::editor::visual_col(l, b, tab));
-                        cv.fill_clip(Rect::new(lr.x + num_w + 8 + (a as f32 * cell) as i32, y, ((b - a) as f32 * cell) as i32, lh), strong_r, lr);
-                    }
-                    for (a, b) in rrg {
-                        let (a, b) = (crate::editor::visual_col(r, a, tab), crate::editor::visual_col(r, b, tab));
-                        cv.fill_clip(Rect::new(rr.x + num_w + 8 + (a as f32 * cell) as i32, y, ((b - a) as f32 * cell) as i32, lh), strong_a, rr);
-                    }
+            if row.kind == RowKind::Changed
+                && let (Some((_, l)), Some((_, r))) = (&row.left, &row.right)
+            {
+                let (lrg, rrg) = gitx::changed_ranges(l, r);
+                // Ranges are in characters; tabs expand to the configured width on screen.
+                let tab = self.config.tab_width;
+                for (a, b) in lrg {
+                    let (a, b) = (crate::editor::visual_col(l, a, tab), crate::editor::visual_col(l, b, tab));
+                    cv.fill_clip(
+                        Rect::new(lr.x + num_w + 8 + (a as f32 * cell) as i32, y, ((b - a) as f32 * cell) as i32, lh),
+                        strong_r,
+                        lr,
+                    );
+                }
+                for (a, b) in rrg {
+                    let (a, b) = (crate::editor::visual_col(r, a, tab), crate::editor::visual_col(r, b, tab));
+                    cv.fill_clip(
+                        Rect::new(rr.x + num_w + 8 + (a as f32 * cell) as i32, y, ((b - a) as f32 * cell) as i32, lh),
+                        strong_a,
+                        rr,
+                    );
                 }
             }
             for (side, region, pieces) in [(&row.left, lr, &mut lp), (&row.right, rr, &mut rp)] {
@@ -427,13 +479,42 @@ impl App {
                 let r = Rect::new(rr.right() - 22 - bw, y + 1, bw, lh - 2);
                 let hov = editable && r.contains(self.mouse.0, self.mouse.1);
                 cv.fill_round_clip(r, 6, c.sidebar_bg, rr);
-                cv.fill_round_clip(r, 6, c.accent.with_alpha(if !editable { 0x10 } else if hov { 0x48 } else { 0x26 }), rr);
-                self.tx.draw_ui_sized(cv, r.x + 10, r.y + 1, label, if editable { c.accent_text } else { dim }, r, false, 12.0);
+                cv.fill_round_clip(
+                    r,
+                    6,
+                    c.accent.with_alpha(if !editable {
+                        0x10
+                    } else if hov {
+                        0x48
+                    } else {
+                        0x26
+                    }),
+                    rr,
+                );
+                self.tx.draw_ui_sized(
+                    cv,
+                    r.x + 10,
+                    r.y + 1,
+                    label,
+                    if editable { c.accent_text } else { dim },
+                    r,
+                    false,
+                    12.0,
+                );
                 btns.push((r, DiffBtn::Hunk(i)));
             }
         }
-        let (total, visible, pos) = (rows_total as f64, (lr.h / lh) as f64, scroll as f64);
-        self.region_bar(cv, crate::scrollreg::Reg::Diff, Rect::new(editor.x, lr.y, editor.w, lr.h), total, visible, pos, lh as f64, false);
+        let (total, visible, pos) = (rows_total as f64, (lr.h / lh) as f64, scroll);
+        self.region_bar(
+            cv,
+            crate::scrollreg::Reg::Diff,
+            Rect::new(editor.x, lr.y, editor.w, lr.h),
+            total,
+            visible,
+            pos,
+            lh as f64,
+            false,
+        );
         if let Some(d) = self.diff.as_mut() {
             d.btns = btns;
         }
@@ -456,7 +537,9 @@ impl App {
     /// Click on one of the inline "Aceitar …" actions drawn above a conflict.
     pub fn conflict_click(&mut self, x: f64, y: f64) -> bool {
         let Some(d) = self.docs.get_mut(self.active) else { return false };
-        let Some((_, ci, pick)) = d.conflict_hits.iter().find(|(r, _, _)| r.contains(x, y)).copied() else { return false };
+        let Some((_, ci, pick)) = d.conflict_hits.iter().find(|(r, _, _)| r.contains(x, y)).copied() else {
+            return false;
+        };
         let Some(c) = d.conflicts.get(ci).cloned() else { return false };
         let text = gitx::resolve(&d.buf.to_string(), &c, pick);
         d.replace_text(&text);
@@ -474,7 +557,12 @@ mod tests {
         let d = std::env::temp_dir().join(format!("lumen-dv-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        for a in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "T"], &["config", "commit.gpgsign", "false"]] {
+        for a in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@t"],
+            &["config", "user.name", "T"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
             git_run(&d, a).unwrap();
         }
         d

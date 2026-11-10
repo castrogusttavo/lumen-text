@@ -1,70 +1,71 @@
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 mod app;
 mod app_ctxmenu;
-mod app_explorer;
 mod app_debug;
+mod app_explorer;
 mod app_files;
+mod app_git;
+mod app_gitbg;
+mod app_gitpanel;
 mod app_gitx;
 mod app_hover;
-mod app_gitpanel;
-mod app_git;
+mod app_input;
 mod app_lsp;
 mod app_md;
-mod app_input;
 mod app_overlay;
 mod app_panel;
-mod buffer;
-mod config;
-mod clipboard;
-mod dap;
-mod doc;
-mod doc_scroll;
-mod docview;
-mod emmet;
-mod eslint;
-mod editor;
-mod field;
-mod format;
-mod fuzzy;
-mod git;
-mod gitsync;
-mod app_gitbg;
-mod gitx;
-mod highlight;
-mod hover_md;
-mod icons;
-mod instance;
-mod keymap;
-mod lsp;
-mod lsp_stream;
-mod bigfile;
-mod mdimg;
-mod mdview;
-mod mem;
-mod minimap;
-mod perf;
-mod script;
-mod snippets;
-mod rowmap;
-mod scrollreg;
-mod scroller;
-mod search;
-mod tasks;
-mod inlay;
-mod watcher;
-mod zedtheme;
-mod settingsui;
 mod app_settings;
 mod app_split;
 mod app_tooltip;
 mod app_topbar;
 mod app_unsaved;
 mod app_update;
+mod bigfile;
+mod buffer;
+mod clipboard;
+mod config;
+mod dap;
+mod doc;
+mod doc_scroll;
+mod docview;
+mod editor;
+mod emmet;
+mod eslint;
+mod field;
+mod format;
+mod fuzzy;
+mod git;
+mod gitsync;
+mod gitx;
+mod highlight;
+mod hover_md;
+mod icons;
+mod inlay;
+mod instance;
+mod keymap;
+mod lsp;
+mod lsp_stream;
+mod mdimg;
+mod mdview;
+mod mem;
+mod minimap;
+mod perf;
+mod rowmap;
+mod script;
+mod scroller;
+mod scrollreg;
+mod search;
+mod settingsui;
+mod snippets;
+mod tasks;
 mod terminal;
 mod textmate;
 mod theme;
 mod tree;
 mod ui;
 mod update;
+mod watcher;
+mod zedtheme;
 
 use std::{env, path::PathBuf, process::ExitCode};
 use winit::event_loop::EventLoop;
@@ -163,7 +164,11 @@ fn main() -> ExitCode {
         .or_else(|| files.first().and_then(|(p, _)| p.canonicalize().ok()).and_then(|p| lsp::project_root(&p)))
         .or_else(|| {
             // Launched without a target: reopen the project used last time.
-            if args.is_empty() && keys.is_none() { app_topbar::load_recents().into_iter().find(|p| p.is_dir()) } else { None }
+            if args.is_empty() && keys.is_none() {
+                app_topbar::load_recents().into_iter().find(|p| p.is_dir())
+            } else {
+                None
+            }
         })
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 

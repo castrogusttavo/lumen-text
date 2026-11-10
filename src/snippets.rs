@@ -4,38 +4,37 @@
 pub struct Snippet {
     pub prefix: &'static str,
     pub body: &'static str,
-    pub desc: &'static str,
 }
 
 const JS: &[Snippet] = &[
-    Snippet { prefix: "clg", body: "console.log($1)", desc: "console.log" },
-    Snippet { prefix: "cle", body: "console.error($1)", desc: "console.error" },
-    Snippet { prefix: "fn", body: "function ${1:name}(${2}) {\n  $0\n}", desc: "function" },
-    Snippet { prefix: "afn", body: "async function ${1:name}(${2}) {\n  $0\n}", desc: "async function" },
-    Snippet { prefix: "af", body: "const ${1:name} = (${2}) => {\n  $0\n}", desc: "arrow function" },
-    Snippet { prefix: "aaf", body: "const ${1:name} = async (${2}) => {\n  $0\n}", desc: "async arrow function" },
-    Snippet { prefix: "imp", body: "import { $2 } from '$1'", desc: "import" },
-    Snippet { prefix: "impd", body: "import ${2:name} from '${1:module}'", desc: "default import" },
-    Snippet { prefix: "exp", body: "export const ${1:name} = $0", desc: "export const" },
-    Snippet { prefix: "desc", body: "describe('${1:suite}', () => {\n  $0\n})", desc: "describe" },
-    Snippet { prefix: "it", body: "it('${1:does something}', () => {\n  $0\n})", desc: "it" },
-    Snippet { prefix: "ita", body: "it('${1:does something}', async () => {\n  $0\n})", desc: "async it" },
-    Snippet { prefix: "try", body: "try {\n  $1\n} catch (${2:error}) {\n  $0\n}", desc: "try/catch" },
-    Snippet { prefix: "for", body: "for (const ${1:item} of ${2:items}) {\n  $0\n}", desc: "for…of" },
-    Snippet { prefix: "if", body: "if (${1:condition}) {\n  $0\n}", desc: "if" },
-    Snippet { prefix: "ife", body: "if (${1:condition}) {\n  $2\n} else {\n  $0\n}", desc: "if/else" },
-    Snippet { prefix: "ue", body: "useEffect(() => {\n  $1\n}, [${2}])", desc: "useEffect" },
-    Snippet { prefix: "us", body: "const [${1:state}, set${2:State}] = useState(${3})", desc: "useState" },
-    Snippet { prefix: "rfc", body: "export function ${1:Component}() {\n  return (\n    <div>$0</div>\n  )\n}", desc: "React component" },
-    Snippet { prefix: "iface", body: "interface ${1:Name} {\n  $0\n}", desc: "interface" },
-    Snippet { prefix: "type", body: "type ${1:Name} = $0", desc: "type alias" },
+    Snippet { prefix: "clg", body: "console.log($1)" },
+    Snippet { prefix: "cle", body: "console.error($1)" },
+    Snippet { prefix: "fn", body: "function ${1:name}(${2}) {\n  $0\n}" },
+    Snippet { prefix: "afn", body: "async function ${1:name}(${2}) {\n  $0\n}" },
+    Snippet { prefix: "af", body: "const ${1:name} = (${2}) => {\n  $0\n}" },
+    Snippet { prefix: "aaf", body: "const ${1:name} = async (${2}) => {\n  $0\n}" },
+    Snippet { prefix: "imp", body: "import { $2 } from '$1'" },
+    Snippet { prefix: "impd", body: "import ${2:name} from '${1:module}'" },
+    Snippet { prefix: "exp", body: "export const ${1:name} = $0" },
+    Snippet { prefix: "desc", body: "describe('${1:suite}', () => {\n  $0\n})" },
+    Snippet { prefix: "it", body: "it('${1:does something}', () => {\n  $0\n})" },
+    Snippet { prefix: "ita", body: "it('${1:does something}', async () => {\n  $0\n})" },
+    Snippet { prefix: "try", body: "try {\n  $1\n} catch (${2:error}) {\n  $0\n}" },
+    Snippet { prefix: "for", body: "for (const ${1:item} of ${2:items}) {\n  $0\n}" },
+    Snippet { prefix: "if", body: "if (${1:condition}) {\n  $0\n}" },
+    Snippet { prefix: "ife", body: "if (${1:condition}) {\n  $2\n} else {\n  $0\n}" },
+    Snippet { prefix: "ue", body: "useEffect(() => {\n  $1\n}, [${2}])" },
+    Snippet { prefix: "us", body: "const [${1:state}, set${2:State}] = useState(${3})" },
+    Snippet { prefix: "rfc", body: "export function ${1:Component}() {\n  return (\n    <div>$0</div>\n  )\n}" },
+    Snippet { prefix: "iface", body: "interface ${1:Name} {\n  $0\n}" },
+    Snippet { prefix: "type", body: "type ${1:Name} = $0" },
 ];
 
 const RUST: &[Snippet] = &[
-    Snippet { prefix: "fn", body: "fn ${1:name}(${2}) {\n    $0\n}", desc: "fn" },
-    Snippet { prefix: "test", body: "#[test]\nfn ${1:name}() {\n    $0\n}", desc: "test" },
-    Snippet { prefix: "impl", body: "impl ${1:Type} {\n    $0\n}", desc: "impl" },
-    Snippet { prefix: "pl", body: "println!(\"{}\", $1);", desc: "println!" },
+    Snippet { prefix: "fn", body: "fn ${1:name}(${2}) {\n    $0\n}" },
+    Snippet { prefix: "test", body: "#[test]\nfn ${1:name}() {\n    $0\n}" },
+    Snippet { prefix: "impl", body: "impl ${1:Type} {\n    $0\n}" },
+    Snippet { prefix: "pl", body: "println!(\"{}\", $1);" },
 ];
 
 pub fn for_lang(lang: Option<&str>) -> &'static [Snippet] {
@@ -81,19 +80,19 @@ pub fn expand(body: &str, indent: &str) -> Expanded {
                 i = j;
                 continue;
             }
-            if chars[i + 1] == '{' {
-                if let Some(close) = chars[i..].iter().position(|c| *c == '}') {
-                    let inner: String = chars[i + 2..i + close].iter().collect();
-                    let (num, def) = inner.split_once(':').unwrap_or((inner.as_str(), ""));
-                    if let Ok(num) = num.parse::<u32>() {
-                        let start = n;
-                        for d in def.chars() {
-                            push(&mut text, &mut n, d);
-                        }
-                        stops.push((num, start, n));
-                        i += close + 1;
-                        continue;
+            if chars[i + 1] == '{'
+                && let Some(close) = chars[i..].iter().position(|c| *c == '}')
+            {
+                let inner: String = chars[i + 2..i + close].iter().collect();
+                let (num, def) = inner.split_once(':').unwrap_or((inner.as_str(), ""));
+                if let Ok(num) = num.parse::<u32>() {
+                    let start = n;
+                    for d in def.chars() {
+                        push(&mut text, &mut n, d);
                     }
+                    stops.push((num, start, n));
+                    i += close + 1;
+                    continue;
                 }
             }
         }
@@ -117,8 +116,9 @@ pub fn expand(body: &str, indent: &str) -> Expanded {
 }
 
 const HTML_TAGS: &[&str] = &[
-    "div", "span", "p", "a", "ul", "ol", "li", "section", "article", "header", "footer", "nav", "main", "form", "input", "button", "img", "table",
-    "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "label", "select", "option", "textarea", "aside", "pre", "code", "strong", "em",
+    "div", "span", "p", "a", "ul", "ol", "li", "section", "article", "header", "footer", "nav", "main", "form",
+    "input", "button", "img", "table", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "label", "select",
+    "option", "textarea", "aside", "pre", "code", "strong", "em",
 ];
 
 /// Should Tab try Emmet here? `before` is the text on the line before the abbreviation. Markup

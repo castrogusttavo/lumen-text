@@ -151,10 +151,19 @@ pub fn parse(v: &Value, to_char_col: &mut dyn FnMut(usize, usize) -> usize) -> V
                     label.push_str(&clean(val));
                     let end = label.chars().count();
                     let loc = &p["location"];
-                    if let (Some(uri), Some(l), Some(c)) = (loc["uri"].as_str(), loc["range"]["start"]["line"].as_u64(), loc["range"]["start"]["character"].as_u64()) {
-                        if end > start {
-                            links.push(HintLink { start, end, uri: uri.to_string(), line: l as usize, character: c as usize });
-                        }
+                    if let (Some(uri), Some(l), Some(c)) = (
+                        loc["uri"].as_str(),
+                        loc["range"]["start"]["line"].as_u64(),
+                        loc["range"]["start"]["character"].as_u64(),
+                    ) && end > start
+                    {
+                        links.push(HintLink {
+                            start,
+                            end,
+                            uri: uri.to_string(),
+                            line: l as usize,
+                            character: c as usize,
+                        });
                     }
                 }
             }
@@ -173,9 +182,13 @@ pub fn parse(v: &Value, to_char_col: &mut dyn FnMut(usize, usize) -> usize) -> V
         let mut edits = Vec::new();
         for e in item["textEdits"].as_array().into_iter().flatten() {
             let r = &e["range"];
-            let (Some(sl), Some(sc), Some(el), Some(ec), Some(text)) =
-                (r["start"]["line"].as_u64(), r["start"]["character"].as_u64(), r["end"]["line"].as_u64(), r["end"]["character"].as_u64(), e["newText"].as_str())
-            else {
+            let (Some(sl), Some(sc), Some(el), Some(ec), Some(text)) = (
+                r["start"]["line"].as_u64(),
+                r["start"]["character"].as_u64(),
+                r["end"]["line"].as_u64(),
+                r["end"]["character"].as_u64(),
+                e["newText"].as_str(),
+            ) else {
                 continue;
             };
             let (sl, el) = (sl as usize, el as usize);
@@ -334,11 +347,7 @@ impl LineHints {
 
     /// Virtual cells inserted at columns strictly before `col`, plus those AT `col` if `include_at`.
     pub fn extra_before(&self, line: usize, col: usize, include_at: bool) -> usize {
-        self.hints_on(line)
-            .iter()
-            .take_while(|h| h.col < col || (include_at && h.col == col))
-            .map(|h| h.width())
-            .sum()
+        self.hints_on(line).iter().take_while(|h| h.col < col || (include_at && h.col == col)).map(|h| h.width()).sum()
     }
 
     /// Visual column (tabs + virtual hint cells) of char column `col` in `text`.
@@ -401,7 +410,16 @@ impl LineHints {
     /// only needed when `ins_lines > 0`). Hints before the edit stay, hints after it on the same
     /// line move with their text (also across an inserted line break), hints inside the removed
     /// text vanish, later lines shift. A hint exactly at an insertion point moves after it.
-    pub fn apply_edit(&mut self, line: usize, col: usize, removed: usize, inserted: usize, rem_lines: usize, ins_lines: usize, end_col: Option<usize>) {
+    pub fn apply_edit(
+        &mut self,
+        line: usize,
+        col: usize,
+        removed: usize,
+        inserted: usize,
+        rem_lines: usize,
+        ins_lines: usize,
+        end_col: Option<usize>,
+    ) {
         let delta = ins_lines as isize - rem_lines as isize;
         let end_col = if ins_lines == 0 { Some(col + inserted) } else { end_col };
         let old = std::mem::take(&mut self.by_line);
@@ -414,10 +432,11 @@ impl LineHints {
                 for h in v {
                     if h.col < col || (h.col == col && removed > 0) {
                         stay.push(h);
-                    } else if rem_lines == 0 && h.col >= col + removed {
-                        if let Some(e) = end_col {
-                            moved.push(Hint { line: line + ins_lines, col: e + (h.col - col - removed), ..h });
-                        }
+                    } else if rem_lines == 0
+                        && h.col >= col + removed
+                        && let Some(e) = end_col
+                    {
+                        moved.push(Hint { line: line + ins_lines, col: e + (h.col - col - removed), ..h });
                     }
                 }
                 if !stay.is_empty() {
@@ -474,7 +493,13 @@ impl InlayState {
     /// column of a char position in the *current* text (valid for the last record only). The
     /// hints follow their text, so nothing flashes while typing; the server's answer (asked for
     /// after a pause) replaces them.
-    pub fn on_edits(&mut self, recs: &[crate::buffer::EditRec], first_line: usize, line_count: usize, end_of: &dyn Fn(usize) -> (usize, usize)) {
+    pub fn on_edits(
+        &mut self,
+        recs: &[crate::buffer::EditRec],
+        first_line: usize,
+        line_count: usize,
+        end_of: &dyn Fn(usize) -> (usize, usize),
+    ) {
         use crate::buffer::EditShape;
         if recs.is_empty() {
             return self.on_edit(first_line, line_count);
@@ -656,7 +681,16 @@ mod tests {
     }
 
     fn h(line: usize, col: usize, label: &str, l: bool, r: bool) -> Hint {
-        Hint { line, col, label: label.into(), kind: HintKind::Type, pad_left: l, pad_right: r, links: Vec::new(), edits: Vec::new() }
+        Hint {
+            line,
+            col,
+            label: label.into(),
+            kind: HintKind::Type,
+            pad_left: l,
+            pad_right: r,
+            links: Vec::new(),
+            edits: Vec::new(),
+        }
     }
 
     fn ident(_l: usize, c: usize) -> usize {
@@ -737,7 +771,12 @@ mod tests {
 
     #[test]
     fn line_hints_sorted_and_grouped() {
-        let lh = LineHints::from(vec![h(1, 9, "c", false, false), h(0, 3, "z", false, false), h(1, 2, "a", false, false), h(1, 2, "b", false, false)]);
+        let lh = LineHints::from(vec![
+            h(1, 9, "c", false, false),
+            h(0, 3, "z", false, false),
+            h(1, 2, "a", false, false),
+            h(1, 2, "b", false, false),
+        ]);
         assert_eq!(lh.len(), 4);
         let l1: Vec<_> = lh.hints_on(1).iter().map(|x| x.label.as_str()).collect();
         assert_eq!(l1, vec!["a", "b", "c"]); // stable among equal columns
@@ -852,7 +891,12 @@ mod tests {
             let lh = random_hints(&mut r, len);
             for col in 0..=len {
                 let v = lh.vcol(0, &text, col, tab_w, true);
-                assert_eq!(lh.col_from_vcol(0, &text, v, tab_w), (col, None), "text={text:?} col={col} v={v} hints={:?}", lh.hints_on(0));
+                assert_eq!(
+                    lh.col_from_vcol(0, &text, v, tab_w),
+                    (col, None),
+                    "text={text:?} col={col} v={v} hints={:?}",
+                    lh.hints_on(0)
+                );
                 let v0 = lh.vcol(0, &text, col, tab_w, false);
                 let (c0, hit) = lh.col_from_vcol(0, &text, v0, tab_w);
                 assert_eq!(c0, col, "text={text:?} col={col}");
@@ -926,7 +970,9 @@ mod tests {
             let n = r.below(12);
             let text: String = (0..n).map(|_| alphabet[r.below(alphabet.len())]).collect();
             let len = text.chars().count();
-            let mut hs: Vec<Hint> = (0..r.below(4)).map(|_| h(0, r.below(len + 3), &"T".repeat(1 + r.below(9)), r.below(2) == 0, r.below(2) == 0)).collect();
+            let mut hs: Vec<Hint> = (0..r.below(4))
+                .map(|_| h(0, r.below(len + 3), &"T".repeat(1 + r.below(9)), r.below(2) == 0, r.below(2) == 0))
+                .collect();
             hs.sort_by_key(|x| x.col);
             let spans: crate::highlight::Spans = std::rc::Rc::new(vec![(0, text.len().min(2), kw, 0)]);
             let full: Vec<char> = expected_cells(&text, &hs, 4).chars().collect();
@@ -974,7 +1020,12 @@ mod tests {
 
     #[test]
     fn row_hints_split_a_line_between_rows() {
-        let mut hs = vec![h(0, 0, "a", false, false), h(0, 4, "b", false, false), h(0, 7, "c", false, false), h(0, 20, "d", false, false)];
+        let mut hs = vec![
+            h(0, 0, "a", false, false),
+            h(0, 4, "b", false, false),
+            h(0, 7, "c", false, false),
+            h(0, 20, "d", false, false),
+        ];
         hs.sort_by_key(|x| x.col);
         // line of 10 chars wrapped as [0,4) [4,8) [8,10)
         let r0 = row_hints(&hs, 10, 0, 4, false);
@@ -1040,7 +1091,12 @@ mod tests {
         let hint = &hs[0];
         assert_eq!(hint.label, ": User[]");
         assert_eq!(hint.links, vec![HintLink { start: 2, end: 6, uri: "file:///a.ts".into(), line: 0, character: 10 }]);
-        assert!(hint.link_at(1).is_none() && hint.link_at(2).is_some() && hint.link_at(5).is_some() && hint.link_at(6).is_none());
+        assert!(
+            hint.link_at(1).is_none()
+                && hint.link_at(2).is_some()
+                && hint.link_at(5).is_some()
+                && hint.link_at(6).is_none()
+        );
         assert_eq!(hint.edits, vec![HintEdit { dl0: 0, c0: 0, dl1: 0, c1: 0, text: ": User[]".into() }]);
         assert_eq!(hint.annotation_edits(), hint.edits);
     }
@@ -1062,7 +1118,9 @@ mod tests {
 
     #[test]
     fn edit_follows_single_line_changes() {
-        let mk = || LineHints::from(vec![h(2, 3, "A", false, false), h(2, 8, "B", false, false), h(3, 1, "C", false, false)]);
+        let mk = || {
+            LineHints::from(vec![h(2, 3, "A", false, false), h(2, 8, "B", false, false), h(3, 1, "C", false, false)])
+        };
         // typing 2 chars at col 5 (between the hints): B moves, A stays
         let mut lh = mk();
         lh.apply_edit(2, 5, 0, 2, 0, 0, None);
@@ -1088,14 +1146,25 @@ mod tests {
 
     #[test]
     fn edit_follows_line_breaks() {
-        let mk = || LineHints::from(vec![h(1, 1, "pre", false, false), h(2, 3, "A", false, false), h(2, 8, "B", false, false), h(3, 2, "C", false, false)]);
+        let mk = || {
+            LineHints::from(vec![
+                h(1, 1, "pre", false, false),
+                h(2, 3, "A", false, false),
+                h(2, 8, "B", false, false),
+                h(3, 2, "C", false, false),
+            ])
+        };
         // Enter + 4 spaces of indent at (2, 5): inserted 5 chars, ends at col 4 of line 3
         let mut lh = mk();
         lh.apply_edit(2, 5, 0, 5, 0, 1, Some(4));
         assert_eq!(lh.hints_on(1).len(), 1);
         assert_eq!(lh.hints_on(2).iter().map(|x| x.col).collect::<Vec<_>>(), vec![3]);
         assert_eq!(lh.hints_on(3).iter().map(|x| (x.line, x.col)).collect::<Vec<_>>(), vec![(3, 7)], "B: 4 + (8 - 5)");
-        assert_eq!(lh.hints_on(4).iter().map(|x| (x.line, x.col)).collect::<Vec<_>>(), vec![(4, 2)], "later lines shift down");
+        assert_eq!(
+            lh.hints_on(4).iter().map(|x| (x.line, x.col)).collect::<Vec<_>>(),
+            vec![(4, 2)],
+            "later lines shift down"
+        );
         // unknown end column: the tail's hints are dropped, never misplaced
         let mut lh = mk();
         lh.apply_edit(2, 5, 0, 5, 0, 1, None);
@@ -1110,14 +1179,36 @@ mod tests {
     #[test]
     fn state_follows_recorded_edits() {
         use crate::buffer::{EditRec, EditShape};
-        let rec = |line, col, removed, inserted| EditRec { at: 0, removed, inserted, line, col, rem_lines: 0, ins_lines: 0, tail_empty: false, shape: EditShape::Splice };
+        let rec = |line, col, removed, inserted| EditRec {
+            at: 0,
+            removed,
+            inserted,
+            line,
+            col,
+            rem_lines: 0,
+            ins_lines: 0,
+            tail_empty: false,
+            shape: EditShape::Splice,
+        };
         let mut st = InlayState::default();
-        st.apply(0, 10, vec![h(2, 3, ": T", false, false), h(2, 9, "x:", false, true), h(5, 0, "z", false, false)], 100);
+        st.apply(
+            0,
+            10,
+            vec![h(2, 3, ": T", false, false), h(2, 9, "x:", false, true), h(5, 0, "z", false, false)],
+            100,
+        );
         st.on_edits(&[rec(2, 4, 0, 1)], 2, 100, &|_| (0, 0));
-        assert_eq!(st.hints.hints_on(2).iter().map(|x| x.col).collect::<Vec<_>>(), vec![3, 10], "no flash: hints kept and shifted");
+        assert_eq!(
+            st.hints.hints_on(2).iter().map(|x| x.col).collect::<Vec<_>>(),
+            vec![3, 10],
+            "no flash: hints kept and shifted"
+        );
         assert!(st.due.is_some());
         // a Swap drops the exchanged lines
-        let swap = EditRec { shape: EditShape::Swap { a_lines: 1, b_lines: 1, a_chars: 3, b_chars: 3, eol: 1 }, ..rec(4, 0, 0, 0) };
+        let swap = EditRec {
+            shape: EditShape::Swap { a_lines: 1, b_lines: 1, a_chars: 3, b_chars: 3, eol: 1 },
+            ..rec(4, 0, 0, 0)
+        };
         st.on_edits(&[swap], 4, 100, &|_| (0, 0));
         assert!(st.hints.hints_on(5).is_empty());
         assert_eq!(st.hints.hints_on(2).len(), 2);
@@ -1143,13 +1234,15 @@ mod tests {
 
     #[test]
     fn invalidate_edit_shifts_and_drops() {
-        let mut lh = LineHints::from(vec![h(1, 0, "a", false, false), h(3, 0, "b", false, false), h(5, 0, "c", false, false)]);
+        let mut lh =
+            LineHints::from(vec![h(1, 0, "a", false, false), h(3, 0, "b", false, false), h(5, 0, "c", false, false)]);
         lh.invalidate_edit(3, 2); // two lines inserted at line 3
         assert_eq!(lh.hints_on(1).len(), 1);
         assert!(lh.hints_on(3).is_empty());
         assert_eq!(lh.hints_on(7).len(), 1);
         assert_eq!(lh.hints_on(7)[0].line, 7);
-        let mut lh = LineHints::from(vec![h(1, 0, "a", false, false), h(2, 0, "b", false, false), h(5, 0, "c", false, false)]);
+        let mut lh =
+            LineHints::from(vec![h(1, 0, "a", false, false), h(2, 0, "b", false, false), h(5, 0, "c", false, false)]);
         lh.invalidate_edit(1, -2); // lines 2 and 3 removed
         assert!(lh.hints_on(1).is_empty() && lh.hints_on(2).is_empty());
         assert_eq!(lh.hints_on(3).len(), 1);
@@ -1158,8 +1251,16 @@ mod tests {
 
     #[test]
     fn replace_range_keeps_outside_and_prunes_far() {
-        let mut lh = LineHints::from(vec![h(0, 0, "a", false, false), h(50, 0, "b", false, false), h(900, 0, "far", false, false)]);
-        lh.replace_range(40, 60, vec![h(55, 3, "n", false, false), h(55, 1, "m", false, false), h(99, 0, "out", false, false)]);
+        let mut lh = LineHints::from(vec![
+            h(0, 0, "a", false, false),
+            h(50, 0, "b", false, false),
+            h(900, 0, "far", false, false),
+        ]);
+        lh.replace_range(
+            40,
+            60,
+            vec![h(55, 3, "n", false, false), h(55, 1, "m", false, false), h(99, 0, "out", false, false)],
+        );
         assert_eq!(lh.hints_on(0).len(), 1);
         assert!(lh.hints_on(50).is_empty());
         assert_eq!(lh.hints_on(55).iter().map(|x| x.col).collect::<Vec<_>>(), vec![1, 3]);

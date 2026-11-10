@@ -50,7 +50,14 @@ struct SavedMain {
 
 /// Re-lay `cells` (old_rows x old_cols) into rows x cols keeping the top-left,
 /// or the bottom rows when shrinking vertically. Returns the cells and the row shift.
-fn reshape(cells: &[Cell], old_rows: usize, old_cols: usize, cy: usize, rows: usize, cols: usize) -> (Vec<Cell>, usize) {
+fn reshape(
+    cells: &[Cell],
+    old_rows: usize,
+    old_cols: usize,
+    cy: usize,
+    rows: usize,
+    cols: usize,
+) -> (Vec<Cell>, usize) {
     let mut out = vec![Cell::default(); rows * cols];
     let shift = cy.saturating_sub(rows - 1).min(old_rows.saturating_sub(rows));
     for r in 0..rows.min(old_rows - shift) {
@@ -87,13 +94,32 @@ pub struct Grid {
 impl Grid {
     pub fn new(rows: usize, cols: usize) -> Grid {
         let (rows, cols) = (rows.max(1), cols.max(1));
-        Grid { rows, cols, cells: vec![Cell::default(); rows * cols], cx: 0, cy: 0, cursor_visible: true, attr: Cell::default(), saved: (0, 0), top: 0, bottom: rows - 1, wrap_pending: false, history: VecDeque::new(), max_history: DEFAULT_HISTORY, pushed: 0, alt: None, app_cursor: false, bracketed_paste: false }
+        Grid {
+            rows,
+            cols,
+            cells: vec![Cell::default(); rows * cols],
+            cx: 0,
+            cy: 0,
+            cursor_visible: true,
+            attr: Cell::default(),
+            saved: (0, 0),
+            top: 0,
+            bottom: rows - 1,
+            wrap_pending: false,
+            history: VecDeque::new(),
+            max_history: DEFAULT_HISTORY,
+            pushed: 0,
+            alt: None,
+            app_cursor: false,
+            bracketed_paste: false,
+        }
     }
 
     pub fn at(&self, r: usize, c: usize) -> Cell {
         self.cells[r * self.cols + c]
     }
 
+    #[cfg(test)]
     pub fn row_text(&self, r: usize) -> String {
         (0..self.cols).map(|c| self.at(r, c).ch).collect::<String>().trim_end().to_string()
     }
@@ -148,6 +174,7 @@ impl Grid {
         }
     }
 
+    #[cfg(test)]
     pub fn view_row_text(&self, row: usize, offset: usize) -> String {
         (0..self.cols).map(|c| self.view_cell(row, c, offset).ch).collect::<String>().trim_end().to_string()
     }
@@ -351,7 +378,11 @@ impl vte::Perform for Grid {
                         25 => self.cursor_visible = on,
                         2004 => self.bracketed_paste = on,
                         47 | 1047 | 1049 => {
-                            if on { self.enter_alt() } else { self.leave_alt() }
+                            if on {
+                                self.enter_alt()
+                            } else {
+                                self.leave_alt()
+                            }
                         }
                         _ => {}
                     }
@@ -527,7 +558,15 @@ impl Term {
                 }
             }
         });
-        Ok(Term { grid: Grid::new(rows, cols), parser: vte::Parser::new(), master, child, rx, alive: true, scroll_offset: 0 })
+        Ok(Term {
+            grid: Grid::new(rows, cols),
+            parser: vte::Parser::new(),
+            master,
+            child,
+            rx,
+            alive: true,
+            scroll_offset: 0,
+        })
     }
 
     /// Feed pending output through the emulator; true if anything changed.
@@ -564,6 +603,7 @@ impl Term {
         };
     }
 
+    #[cfg(test)]
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
     }
@@ -603,13 +643,20 @@ impl Drop for Term {
     }
 }
 
+#[cfg(test)]
 /// Bytes a key sends to the shell (None when the key has no terminal meaning).
 pub fn key_bytes(named: Option<&str>, text: Option<&str>, ctrl: bool, alt: bool) -> Option<Vec<u8>> {
     key_bytes_app(named, text, ctrl, alt, false)
 }
 
 /// Like `key_bytes`, honoring application cursor keys (`Grid::app_cursor`).
-pub fn key_bytes_app(named: Option<&str>, text: Option<&str>, ctrl: bool, alt: bool, app_cursor: bool) -> Option<Vec<u8>> {
+pub fn key_bytes_app(
+    named: Option<&str>,
+    text: Option<&str>,
+    ctrl: bool,
+    alt: bool,
+    app_cursor: bool,
+) -> Option<Vec<u8>> {
     if let Some(n) = named {
         if app_cursor {
             let s: Option<&[u8]> = match n {
@@ -639,7 +686,13 @@ pub fn key_bytes_app(named: Option<&str>, text: Option<&str>, ctrl: bool, alt: b
             "PageUp" => b"\x1b[5~",
             "PageDown" => b"\x1b[6~",
             "Delete" => b"\x1b[3~",
-            "Space" => if ctrl { b"\x00" } else { b" " },
+            "Space" => {
+                if ctrl {
+                    b"\x00"
+                } else {
+                    b" "
+                }
+            }
             _ => return None,
         };
         return Some(s.to_vec());

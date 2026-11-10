@@ -4,15 +4,15 @@
 use crate::{
     buffer::Buffer,
     docview::{FOLD_W, row_range as row_range_of},
-    editor::{Editor, col_from_visual, visual_col},
+    editor::{Editor, col_from_visual},
     highlight::{Highlighter, Spans},
-    theme::{Rgba, Theme},
     rowmap::wrap_breaks,
-    ui::{Canvas, line_h, Rect, TextCtx},
+    theme::{Rgba, Theme},
+    ui::{Canvas, Rect, TextCtx, line_h},
 };
 use std::{
-    rc::Rc,
     path::{Path, PathBuf},
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -125,12 +125,16 @@ pub fn sem_scope(class: u8, readonly: bool) -> Option<&'static str> {
 }
 
 /// Decode LSP `semanticTokens` (relative encoding) into per-line (utf16 start, utf16 len, class, readonly).
-pub fn decode_semantic(data: &[u32], types: &[String], mods: &[String]) -> std::collections::HashMap<usize, Vec<(usize, usize, u8, bool)>> {
+pub fn decode_semantic(
+    data: &[u32],
+    types: &[String],
+    mods: &[String],
+) -> std::collections::HashMap<usize, Vec<(usize, usize, u8, bool)>> {
     let ro_bit = mods.iter().position(|m| m == "readonly");
     let classes: Vec<u8> = types.iter().map(|t| sem_class(t)).collect();
     let mut out: std::collections::HashMap<usize, Vec<(usize, usize, u8, bool)>> = std::collections::HashMap::new();
     let (mut line, mut start) = (0usize, 0usize);
-    for t in data.chunks_exact(5) {
+    for t in data.as_chunks::<5>().0 {
         let (dl, ds, len, ty, m) = (t[0] as usize, t[1] as usize, t[2] as usize, t[3] as usize, t[4]);
         if dl > 0 {
             line += dl;
@@ -148,7 +152,11 @@ pub fn decode_semantic(data: &[u32], types: &[String], mods: &[String]) -> std::
 }
 
 /// Recolor parts of `spans` (byte ranges of `line`) with semantic token colors given as UTF-16 ranges.
-pub fn overlay_colors(spans: &[(usize, usize, Rgba, u8)], line: &str, toks: &[(usize, usize, Rgba)]) -> Vec<(usize, usize, Rgba, u8)> {
+pub fn overlay_colors(
+    spans: &[(usize, usize, Rgba, u8)],
+    line: &str,
+    toks: &[(usize, usize, Rgba)],
+) -> Vec<(usize, usize, Rgba, u8)> {
     // UTF-16 offset -> byte offset
     let mut map: Vec<usize> = Vec::with_capacity(line.len() + 1);
     for (b, ch) in line.char_indices() {
@@ -158,7 +166,8 @@ pub fn overlay_colors(spans: &[(usize, usize, Rgba, u8)], line: &str, toks: &[(u
     }
     map.push(line.len());
     let at = |u: usize| map.get(u).copied().unwrap_or(line.len());
-    let mut bt: Vec<(usize, usize, Rgba)> = toks.iter().map(|(s, l, c)| (at(*s), at(s + l), *c)).filter(|(a, b, _)| a < b).collect();
+    let mut bt: Vec<(usize, usize, Rgba)> =
+        toks.iter().map(|(s, l, c)| (at(*s), at(s + l), *c)).filter(|(a, b, _)| a < b).collect();
     bt.sort_by_key(|t| t.0);
     let mut out = Vec::with_capacity(spans.len() + bt.len() * 2);
     for &(s, e, c, f) in spans {
@@ -709,7 +718,7 @@ impl Doc {
         (l, u16col)
     }
 
-    pub fn from_lsp_pos(&self, line: usize, u16col: usize) -> usize {
+    pub fn pos_from_lsp(&self, line: usize, u16col: usize) -> usize {
         let line = line.min(self.buf.line_count() - 1);
         let mut n = 0;
         let mut col = 0;
@@ -758,7 +767,10 @@ impl Doc {
     /// Apply LSP text edits (positions in the *current* text) as one undo step.
     /// The selection is shifted by edits that happen before it.
     pub fn apply_lsp_edits(&mut self, edits: &[LspEdit]) {
-        let ranges: Vec<(usize, usize, String)> = edits.iter().map(|e| (self.from_lsp_pos(e.sl, e.sc), self.from_lsp_pos(e.el, e.ec), e.text.clone())).collect();
+        let ranges: Vec<(usize, usize, String)> = edits
+            .iter()
+            .map(|e| (self.pos_from_lsp(e.sl, e.sc), self.pos_from_lsp(e.el, e.ec), e.text.clone()))
+            .collect();
         self.apply_char_edits(ranges);
     }
 
@@ -814,7 +826,8 @@ impl Doc {
             let len = self.buf.line_len(l as usize) as i64;
             Some(self.buf.pos(l as usize, col.clamp(0, len) as usize))
         };
-        let ranges: Vec<(usize, usize, String)> = edits.iter().filter_map(|e| Some((at(e.dl0, e.c0)?, at(e.dl1, e.c1)?, e.text.clone()))).collect();
+        let ranges: Vec<(usize, usize, String)> =
+            edits.iter().filter_map(|e| Some((at(e.dl0, e.c0)?, at(e.dl1, e.c1)?, e.text.clone()))).collect();
         if ranges.is_empty() {
             return false;
         }
@@ -932,7 +945,11 @@ impl Doc {
                     }
                     row_range[lk] = (ri, ri);
                     let text = &lines[lk];
-                    breaks = if wrap_cols > 0 && (text.len() > wrap_cols || text.contains('\t')) { wrap_breaks(text, wrap_cols, tab_w) } else { Vec::new() };
+                    breaks = if wrap_cols > 0 && (text.len() > wrap_cols || text.contains('\t')) {
+                        wrap_breaks(text, wrap_cols, tab_w)
+                    } else {
+                        Vec::new()
+                    };
                     offs.clear();
                     if !breaks.is_empty() {
                         offs.extend(text.char_indices().map(|(b, _)| b));
@@ -974,7 +991,11 @@ impl Doc {
             rows.iter()
                 .map(|row| {
                     let hs = inl.hints_on(row.line);
-                    if hs.is_empty() { Default::default() } else { crate::inlay::row_hints(hs, geo[row.lk].1, row.c0, row.c1, row.last) }
+                    if hs.is_empty() {
+                        Default::default()
+                    } else {
+                        crate::inlay::row_hints(hs, geo[row.lk].1, row.c0, row.c1, row.last)
+                    }
                 })
                 .collect()
         } else {
@@ -984,7 +1005,9 @@ impl Doc {
         let vx = |vc: usize| body.x + (vc as f32 * cell_w).round() as i32 - left.round() as i32;
         let rt = |r: usize| row_text(&rows, &lines, r);
         // Visual column of char `col` of row `r` (text + the hint cells before it).
-        let vc = |r: usize, col: usize, include_at: bool| -> usize { crate::inlay::vcol_in(hints_for(inl, &row_hs, wrap_cols, r, rows[r].line), rt(r), col, tab_w, include_at) };
+        let vc = |r: usize, col: usize, include_at: bool| -> usize {
+            crate::inlay::vcol_in(hints_for(inl, &row_hs, wrap_cols, r, rows[r].line), rt(r), col, tab_w, include_at)
+        };
         // y of the first row of `line` when that line is on screen (a line scrolled partly off the top
         // reports where its first row would be).
         let line_y = |line: usize| -> Option<i32> {
@@ -1002,7 +1025,7 @@ impl Doc {
             })
         };
         let at_end = |line: usize| -> Option<(usize, usize)> {
-            let lk = vlines.binary_search(&line).ok()?;
+            let _lk = vlines.binary_search(&line).ok()?;
             at(line, usize::MAX, true)
         };
 
@@ -1023,12 +1046,22 @@ impl Doc {
                 if l < cf.start || l > cf.end {
                     continue;
                 }
-                let color = if l == cf.start || l == cf.mid || l == cf.end || cf.base == Some(l) { marker } else if l < cf.mid { ours } else { theirs };
+                let color = if l == cf.start || l == cf.mid || l == cf.end || cf.base == Some(l) {
+                    marker
+                } else if l < cf.mid {
+                    ours
+                } else {
+                    theirs
+                };
                 cv.fill_clip(Rect::new(rect.x, ry(r), rect.w, lh), color, rect);
             }
             if let Some((r, v)) = at_end(cf.start) {
                 let mut x = vx(v) + (cell_w * 3.0) as i32;
-                for (label, pick) in [("Aceitar atual", crate::gitx::Pick::Ours), ("Aceitar entrada", crate::gitx::Pick::Theirs), ("Aceitar ambos", crate::gitx::Pick::Both)] {
+                for (label, pick) in [
+                    ("Aceitar atual", crate::gitx::Pick::Ours),
+                    ("Aceitar entrada", crate::gitx::Pick::Theirs),
+                    ("Aceitar ambos", crate::gitx::Pick::Both),
+                ] {
                     let w = tx.ui_width(label, false);
                     tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, label, c.accent_text, body, true);
                     self.conflict_hits.push((Rect::new(x, ry(r), w, lh), ci, pick));
@@ -1066,8 +1099,7 @@ impl Doc {
                     continue;
                 }
                 let (r0, r1) = row_range[lk];
-                for r in r0..r1 {
-                    let row = &rows[r];
+                for (r, row) in rows.iter().enumerate().take(r1).skip(r0) {
                     let (rs, re) = (ls + row.c0, ls + row.c1 + usize::from(row.last));
                     let (s, e) = (a.max(rs), b.min(re));
                     if s >= e {
@@ -1128,13 +1160,13 @@ impl Doc {
         }
 
         // Matching bracket.
-        if sel.is_empty() {
-            if let Some((a, b)) = crate::editor::match_bracket(&self.buf, self.ed.head()) {
-                for p in [a, b] {
-                    let (l, col) = self.buf.line_col(p);
-                    if let Some((r, v)) = at(l, col, true) {
-                        cv.fill_clip(Rect::new(vx(v), ry(r), (cell_w).round() as i32, lh), c.accent.with_alpha(0x55), body);
-                    }
+        if sel.is_empty()
+            && let Some((a, b)) = crate::editor::match_bracket(&self.buf, self.ed.head())
+        {
+            for p in [a, b] {
+                let (l, col) = self.buf.line_col(p);
+                if let Some((r, v)) = at(l, col, true) {
+                    cv.fill_clip(Rect::new(vx(v), ry(r), (cell_w).round() as i32, lh), c.accent.with_alpha(0x55), body);
                 }
             }
         }
@@ -1150,12 +1182,33 @@ impl Doc {
         for (r, row) in rows.iter().enumerate() {
             let hs = hints_for(inl, &row_hs, wrap_cols, r, row.line);
             if hs.is_empty() {
-                window_pieces(&lines[row.lk], line_spans.get(row.lk).and_then(|s| s.as_ref()), row.b0, row.b1, vc0, vc1, tab_w, fg, &mut pieces);
+                window_pieces(
+                    &lines[row.lk],
+                    line_spans.get(row.lk).and_then(|s| s.as_ref()),
+                    row.b0,
+                    row.b1,
+                    vc0,
+                    vc1,
+                    tab_w,
+                    fg,
+                    &mut pieces,
+                );
             } else {
                 // Inlay hints: a faint pill behind each, its blank cells in the text; the labels
                 // (smaller font) are drawn over them after the text.
                 hint_decor(cv, rt(r), hs, tab_w, &vx, ry(r), lh, cell_w, hint_fg, body, &mut labels);
-                crate::inlay::window_pieces_hinted(&lines[row.lk], line_spans.get(row.lk).and_then(|s| s.as_ref()), row.b0, row.b1, hs, vc0, vc1, tab_w, fg, &mut pieces);
+                crate::inlay::window_pieces_hinted(
+                    &lines[row.lk],
+                    line_spans.get(row.lk).and_then(|s| s.as_ref()),
+                    row.b0,
+                    row.b1,
+                    hs,
+                    vc0,
+                    vc1,
+                    tab_w,
+                    fg,
+                    &mut pieces,
+                );
             }
             pieces.push(("\n".to_string(), fg, 0));
         }
@@ -1196,14 +1249,14 @@ impl Doc {
                     let boundary = chars.get(i + 1 + n).is_none_or(|c| !c.is_alphanumeric());
                     if matches!(n, 3 | 6 | 8) && boundary {
                         let lit: String = chars[i..i + 1 + n].iter().collect();
-                        if let Some(col) = Rgba::parse(&lit) {
-                            if let Some((r, end)) = at(vlines[k], i + 1 + n, false) {
-                                let x = vx(end) + 4;
-                                if x > body.x && x + 10 < body.right() {
-                                    let rr = Rect::new(x, ry(r) + (lh - 10) / 2, 10, 10);
-                                    cv.fill_round(rr, 3, c.border);
-                                    cv.fill_round(rr.inset(1), 2, col);
-                                }
+                        if let Some(col) = Rgba::parse(&lit)
+                            && let Some((r, end)) = at(vlines[k], i + 1 + n, false)
+                        {
+                            let x = vx(end) + 4;
+                            if x > body.x && x + 10 < body.right() {
+                                let rr = Rect::new(x, ry(r) + (lh - 10) / 2, 10, 10);
+                                cv.fill_round(rr, 3, c.border);
+                                cv.fill_round(rr.inset(1), 2, col);
                             }
                         }
                         i += n;
@@ -1247,14 +1300,14 @@ impl Doc {
         }
 
         // Inline git blame for the cursor line, after the code.
-        if let Some((bl, text)) = &self.blame {
-            if sel.is_empty() && *bl == cur_line {
-                if let Some((r, vend)) = at_end(*bl) {
-                    let x = vx(vend) + (cell_w * 4.0) as i32;
-                    if x < body.right() {
-                        tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, text, theme.line_number, body, false);
-                    }
-                }
+        if let Some((bl, text)) = &self.blame
+            && sel.is_empty()
+            && *bl == cur_line
+            && let Some((r, vend)) = at_end(*bl)
+        {
+            let x = vx(vend) + (cell_w * 4.0) as i32;
+            if x < body.right() {
+                tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, text, theme.line_number, body, false);
             }
         }
 
@@ -1276,8 +1329,7 @@ impl Doc {
                 let ce = ce.max(cs + 1);
                 let (a0, b0) = (cs.min(ll), ce.min(ll.max(cs + 1)).min(ll));
                 let (r0, r1) = row_range[k];
-                for r in r0..r1 {
-                    let row = &rows[r];
+                for (r, row) in rows.iter().enumerate().take(r1).skip(r0) {
                     let (lo, hi) = (a0.max(row.c0), b0.min(row.c1));
                     let (va, vb) = if lo < hi {
                         let va = vc(r, lo - row.c0, true);
@@ -1305,7 +1357,13 @@ impl Doc {
             let color = if row.line == cur_line { theme.line_number_active } else { theme.line_number };
             gutter.push((if row.sub == 0 { format!("{:>digits$}\n", row.line + 1) } else { "\n".to_string() }, color));
         }
-        tx.draw(cv, rect.x + cell_w.round() as i32, rect.y + y_off, &gutter, Rect::new(rect.x, rect.y, gutter_w, rect.h));
+        tx.draw(
+            cv,
+            rect.x + cell_w.round() as i32,
+            rect.y + y_off,
+            &gutter,
+            Rect::new(rect.x, rect.y, gutter_w, rect.h),
+        );
         let gclip = Rect::new(rect.x, rect.y, gutter_w, rect.h);
         for (r, row) in rows.iter().enumerate() {
             if row.sub != 0 {
@@ -1313,7 +1371,11 @@ impl Doc {
             }
             let folded = self.view.folds.is_fold_start(row.line).is_some();
             if folded || self.is_foldable(row.line) {
-                let (icon, color) = if folded { ("ui/chevron_right", theme.line_number_active) } else { ("ui/chevron_down", theme.line_number.with_alpha(0x80)) };
+                let (icon, color) = if folded {
+                    ("ui/chevron_right", theme.line_number_active)
+                } else {
+                    ("ui/chevron_down", theme.line_number.with_alpha(0x80))
+                };
                 tx.icon(cv, icon, rect.x + gw0 + 1, ry(r) + (lh - 10) / 2, 10, color, gclip);
             }
         }
@@ -1401,7 +1463,14 @@ impl Doc {
             for (k, l) in heads.iter().enumerate() {
                 let y = rect.y + k as i32 * lh;
                 let num = format!("{:>digits$}", l + 1, digits = self.gutter_digits());
-                tx.draw_line(cv, rect.x + cell_w.round() as i32, y, &num, theme.line_number, Rect::new(rect.x, y, gutter_w, lh));
+                tx.draw_line(
+                    cv,
+                    rect.x + cell_w.round() as i32,
+                    y,
+                    &num,
+                    theme.line_number,
+                    Rect::new(rect.x, y, gutter_w, lh),
+                );
                 let mut pieces = Vec::new();
                 let head_text = self.buf.line(*l);
                 let hs = if wrap_cols == 0 { inl.hints_on(*l) } else { &[] };
@@ -1410,7 +1479,18 @@ impl Doc {
                     window_pieces(&head_text, None, 0, head_text.len(), vc0, vc1, tab_w, fg, &mut pieces);
                 } else {
                     hint_decor(cv, &head_text, hs, tab_w, &vx, y, lh, cell_w, hint_fg, clip, &mut labels);
-                    crate::inlay::window_pieces_hinted(&head_text, None, 0, head_text.len(), hs, vc0, vc1, tab_w, fg, &mut pieces);
+                    crate::inlay::window_pieces_hinted(
+                        &head_text,
+                        None,
+                        0,
+                        head_text.len(),
+                        hs,
+                        vc0,
+                        vc1,
+                        tab_w,
+                        fg,
+                        &mut pieces,
+                    );
                 }
                 tx.draw_styled(cv, body_x, y, &pieces, clip);
                 for (x, ly, label) in labels.drain(..) {
@@ -1436,10 +1516,10 @@ impl Doc {
                 cv.fill_round(Rect::new(rect.x + 2, y + (lh - 10) / 2, 10, 10), 5, c.error);
             }
         }
-        if let Some(dl) = self.debug_line {
-            if let Some(y) = line_y(dl) {
-                tx.icon(cv, "ui/chevron_right", rect.x + 11, y + (lh - 14) / 2, 14, c.warning, gclip);
-            }
+        if let Some(dl) = self.debug_line
+            && let Some(y) = line_y(dl)
+        {
+            tx.icon(cv, "ui/chevron_right", rect.x + 11, y + (lh - 14) / 2, 14, c.warning, gclip);
         }
 
         // Minimap.
@@ -1461,11 +1541,22 @@ impl Doc {
                 }
                 // Token colors for this row: continuation rows of a wrapped line use the line's spans too.
                 let sp = vlines.binary_search(&line).ok().and_then(|k| line_spans.get(k)).and_then(|s| s.as_ref());
-                let sp3: Option<Vec<(usize, usize, Rgba)>> = sp.map(|s| crate::minimap::row_spans(s.iter().map(|&(a, b, c, _)| (a, b, c)), b0, b0 + text.len()));
+                let sp3: Option<Vec<(usize, usize, Rgba)>> =
+                    sp.map(|s| crate::minimap::row_spans(s.iter().map(|&(a, b, c, _)| (a, b, c)), b0, b0 + text.len()));
                 crate::minimap::line_info(&text, sp3.as_deref(), fgc, tab_w)
             };
             let vis_rows = rect.h as f64 / lh_f as f64;
-            crate::minimap::draw_rows(cv, &l, &mut infos, total, self.top, vis_rows, bg, c.accent, crate::minimap::style());
+            crate::minimap::draw_rows(
+                cv,
+                &l,
+                &mut infos,
+                total,
+                self.top,
+                vis_rows,
+                bg,
+                c.accent,
+                crate::minimap::style(),
+            );
             cv.fill(Rect::new(l.rect.x, l.rect.y, 1, l.rect.h), c.border);
             self.minimap_layout = Some(l);
         } else {
@@ -1533,14 +1624,32 @@ struct VRow {
 }
 
 /// Hints of visual row `r` (of line `line`): the whole line's when unwrapped, else the row's slice.
-fn hints_for<'a>(inl: &'a crate::inlay::LineHints, row_hs: &'a [crate::inlay::RowHints], wrap_cols: usize, r: usize, line: usize) -> &'a [crate::inlay::Hint] {
+fn hints_for<'a>(
+    inl: &'a crate::inlay::LineHints,
+    row_hs: &'a [crate::inlay::RowHints],
+    wrap_cols: usize,
+    r: usize,
+    line: usize,
+) -> &'a [crate::inlay::Hint] {
     if wrap_cols == 0 { inl.hints_on(line) } else { row_hs.get(r).map_or(&[], |x| x.hints.as_slice()) }
 }
 
 /// Paint the faint pills behind the labels of one row (`text` = the row's text, `hs` its hints)
 /// and queue the labels as `(x, y, text)`: each centred in its whole-cell slot, at the row's `y`.
 #[allow(clippy::too_many_arguments)]
-fn hint_decor<'a>(cv: &mut Canvas, text: &str, hs: &'a [crate::inlay::Hint], tab_w: usize, vx: &dyn Fn(usize) -> i32, y: i32, lh: i32, cell_w: f32, hint_fg: Rgba, clip: Rect, labels: &mut Vec<(i32, i32, &'a str)>) {
+fn hint_decor<'a>(
+    cv: &mut Canvas,
+    text: &str,
+    hs: &'a [crate::inlay::Hint],
+    tab_w: usize,
+    vx: &dyn Fn(usize) -> i32,
+    y: i32,
+    lh: i32,
+    cell_w: f32,
+    hint_fg: Rgba,
+    clip: Rect,
+    labels: &mut Vec<(i32, i32, &'a str)>,
+) {
     for (h, (v, w)) in hs.iter().zip(crate::inlay::hint_cells(text, hs, tab_w)) {
         let pill = Rect::new(vx(v), y + 1, vx(v + w) - vx(v), lh - 2);
         if pill.x >= clip.x && pill.right() <= clip.right() && pill.y >= clip.y && pill.bottom() <= clip.bottom() {
@@ -1607,12 +1716,13 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&rest[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(v) = u8::from_str_radix(&rest[i + 1..i + 3], 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
@@ -1622,7 +1732,17 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
 
 /// Colored text pieces of bytes [b0, b1) of one line (a visual row), restricted to visual
 /// columns [vc0, vc1) counted from b0, with tabs expanded to spaces.
-fn window_pieces(line: &str, spans: Option<&Spans>, b0: usize, b1: usize, vc0: usize, vc1: usize, tab_w: usize, fg: Rgba, out: &mut Vec<(String, Rgba, u8)>) {
+fn window_pieces(
+    line: &str,
+    spans: Option<&Spans>,
+    b0: usize,
+    b1: usize,
+    vc0: usize,
+    vc1: usize,
+    tab_w: usize,
+    fg: Rgba,
+    out: &mut Vec<(String, Rgba, u8)>,
+) {
     let mut vc = 0usize;
     let mut seg = |text: &str, color: Rgba, flags: u8, vc: &mut usize| {
         let mut s = String::new();
@@ -1705,8 +1825,8 @@ mod tests {
         let d = Doc::new(b, None, None, "//", 8.0);
         // 'b' is char 2 -> utf16 col 3 (the emoji takes two units)
         assert_eq!(d.lsp_pos(2), (0, 3));
-        assert_eq!(d.from_lsp_pos(0, 3), 2);
-        assert_eq!(d.from_lsp_pos(1, 1), 5);
+        assert_eq!(d.pos_from_lsp(0, 3), 2);
+        assert_eq!(d.pos_from_lsp(1, 1), 5);
     }
 
     #[test]

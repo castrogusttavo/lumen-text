@@ -243,10 +243,11 @@ impl App {
             self.inp.tree_v.fling(now);
             self.inp.tree_h.adopt(self.tree.hscroll);
             self.inp.tree_h.fling(now);
-        } else if let Some(d) = self.docs.get_mut(self.active) {
-            if self.layout.editor.contains(x, y) && self.overlay.is_none() {
-                d.wheel_end(now);
-            }
+        } else if let Some(d) = self.docs.get_mut(self.active)
+            && self.layout.editor.contains(x, y)
+            && self.overlay.is_none()
+        {
+            d.wheel_end(now);
         }
         self.request_redraw();
     }
@@ -254,7 +255,11 @@ impl App {
     // ── sidebar ──
 
     fn sidebar_rows(&self) -> usize {
-        if self.sidebar_mode == crate::app::SidebarMode::Outline { self.docs.get(self.active).map_or(0, |d| d.symbols.len()) } else { self.tree.rows.len() }
+        if self.sidebar_mode == crate::app::SidebarMode::Outline {
+            self.docs.get(self.active).map_or(0, |d| d.symbols.len())
+        } else {
+            self.tree.rows.len()
+        }
     }
 
     fn sidebar_max_v(&self) -> f64 {
@@ -384,24 +389,24 @@ impl App {
     /// Press on a horizontal scrollbar (editor or sidebar). True when it was on one.
     pub fn hbar_press(&mut self, x: f64, y: f64) -> bool {
         let grab_of = |b: &HBar| if b.thumb.contains(x, y) { x - b.thumb.x as f64 } else { b.thumb.w as f64 / 2.0 };
-        if let Some(b) = self.docs.get(self.active).and_then(|d| d.hb) {
-            if b.track.contains(x, y) {
-                let grab = grab_of(&b);
-                self.drag_bar = Some((2, grab));
-                if let Some(d) = self.docs.get_mut(self.active) {
-                    d.hb_drag = true;
-                    d.hbar_drag(x, grab);
-                }
-                return true;
+        if let Some(b) = self.docs.get(self.active).and_then(|d| d.hb)
+            && b.track.contains(x, y)
+        {
+            let grab = grab_of(&b);
+            self.drag_bar = Some((2, grab));
+            if let Some(d) = self.docs.get_mut(self.active) {
+                d.hb_drag = true;
+                d.hbar_drag(x, grab);
             }
+            return true;
         }
-        if let Some(b) = self.inp.tree_hb.filter(|_| self.sidebar_open) {
-            if b.track.contains(x, y) {
-                let grab = grab_of(&b);
-                self.drag_bar = Some((3, grab));
-                self.sidebar_hdrag(x, grab);
-                return true;
-            }
+        if let Some(b) = self.inp.tree_hb.filter(|_| self.sidebar_open)
+            && b.track.contains(x, y)
+        {
+            let grab = grab_of(&b);
+            self.drag_bar = Some((3, grab));
+            self.sidebar_hdrag(x, grab);
+            return true;
         }
         false
     }
@@ -430,11 +435,11 @@ impl App {
         let (x, y) = self.mouse;
         let mut changed = false;
         let hot_ed = self.docs.get(self.active).and_then(|d| d.hb).is_some_and(|b| b.track.contains(x, y));
-        if let Some(d) = self.docs.get_mut(self.active) {
-            if d.hb_hot != hot_ed {
-                d.hb_hot = hot_ed;
-                changed = true;
-            }
+        if let Some(d) = self.docs.get_mut(self.active)
+            && d.hb_hot != hot_ed
+        {
+            d.hb_hot = hot_ed;
+            changed = true;
         }
         let hot_sb = self.inp.tree_hb.is_some_and(|b| b.track.contains(x, y));
         if hot_sb != self.inp.tree_hb_hot {
@@ -445,7 +450,8 @@ impl App {
     }
 
     pub fn over_hbar(&self, x: f64, y: f64) -> bool {
-        self.docs.get(self.active).and_then(|d| d.hb).is_some_and(|b| b.track.contains(x, y)) || self.inp.tree_hb.is_some_and(|b| b.track.contains(x, y))
+        self.docs.get(self.active).and_then(|d| d.hb).is_some_and(|b| b.track.contains(x, y))
+            || self.inp.tree_hb.is_some_and(|b| b.track.contains(x, y))
     }
 
     // ── drag selection glue ──
@@ -500,8 +506,20 @@ impl App {
         let Some(d) = self.docs.get_mut(self.active) else { return false };
         let r = d.rect;
         let bx = (r.x + d.gutter_w()) as f64;
-        let dy = if y < r.y as f64 { y - r.y as f64 } else if y > r.bottom() as f64 { y - r.bottom() as f64 } else { 0.0 };
-        let dx = if x < bx { x - bx } else if x > r.right() as f64 { x - r.right() as f64 } else { 0.0 };
+        let dy = if y < r.y as f64 {
+            y - r.y as f64
+        } else if y > r.bottom() as f64 {
+            y - r.bottom() as f64
+        } else {
+            0.0
+        };
+        let dx = if x < bx {
+            x - bx
+        } else if x > r.right() as f64 {
+            x - r.right() as f64
+        } else {
+            0.0
+        };
         if dx == 0.0 && dy == 0.0 {
             return false;
         }
@@ -676,14 +694,21 @@ mod tests {
         let all = d.ed.all_sels();
         // base cursor (0,0) + three block lines; the block on line 0 is the same char range as...
         // the pre-existing primary caret at 0 and block selections 1..4 on lines 0, 1, 2
-        let lines: Vec<(usize, usize, usize)> = all.iter().map(|s| (d.buf.line_col(s.start()).0, d.buf.line_col(s.start()).1, d.buf.line_col(s.end()).1)).collect();
+        let lines: Vec<(usize, usize, usize)> = all
+            .iter()
+            .map(|s| (d.buf.line_col(s.start()).0, d.buf.line_col(s.start()).1, d.buf.line_col(s.end()).1))
+            .collect();
         assert!(lines.contains(&(0, 1, 4)), "{lines:?}");
         assert!(lines.contains(&(1, 1, 4)), "{lines:?}");
         assert!(lines.contains(&(2, 1, 4)), "{lines:?}");
         // a short line clamps to its end
         let pend = d.buf.pos(3, 2);
         ds.update(&mut d, pend, 4);
-        let lines: Vec<(usize, usize, usize)> = d.ed.all_sels().iter().map(|s| (d.buf.line_col(s.start()).0, d.buf.line_col(s.start()).1, d.buf.line_col(s.end()).1)).collect();
+        let lines: Vec<(usize, usize, usize)> =
+            d.ed.all_sels()
+                .iter()
+                .map(|s| (d.buf.line_col(s.start()).0, d.buf.line_col(s.start()).1, d.buf.line_col(s.end()).1))
+                .collect();
         assert!(lines.contains(&(3, 1, 2)), "{lines:?}");
     }
 

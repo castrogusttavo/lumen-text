@@ -161,11 +161,7 @@ pub fn y_to_line(l: &Layout, y: f64, line_count: usize) -> usize {
         return 0;
     }
     let v = ((y - l.rect.y as f64) / l.line_px as f64).floor();
-    if v <= 0.0 {
-        0
-    } else {
-        (v as usize).min(line_count - 1)
-    }
+    if v <= 0.0 { 0 } else { (v as usize).min(line_count - 1) }
 }
 
 pub fn line_to_y(l: &Layout, line: usize) -> f64 {
@@ -242,7 +238,7 @@ pub fn draw_rows(
         bar_h = (bar_h / 2).max(1); // hairlines with a gap between rows
     }
     let max_cols = l.max_cols.min((r.w as f32 / l.char_px) as usize);
-    let mut bar = |cv: &mut Canvas, y: i32, info: &LineInfo| {
+    let bar = |cv: &mut Canvas, y: i32, info: &LineInfo| {
         if info.blank || info.len_cols == 0 {
             return;
         }
@@ -275,7 +271,7 @@ pub fn draw_rows(
             for s in 0..samples {
                 let idx = a + s * count / samples;
                 let info = infos(idx);
-                if !info.blank && best.map_or(true, |bi| info.len_cols > bi.len_cols) {
+                if !info.blank && best.is_none_or(|bi| info.len_cols > bi.len_cols) {
                     best = Some(info);
                 }
             }

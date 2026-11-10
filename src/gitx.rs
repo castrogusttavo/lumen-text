@@ -50,14 +50,7 @@ pub fn hunks(base: &str, current: &str) -> Vec<Hunk> {
                 h.base_len = o.end - h.base_start;
                 h.new_len = n.end - h.new_start;
             }
-            None => {
-                cur = Some(Hunk {
-                    base_start: o.start,
-                    base_len: o.len(),
-                    new_start: n.start,
-                    new_len: n.len(),
-                })
-            }
+            None => cur = Some(Hunk { base_start: o.start, base_len: o.len(), new_start: n.start, new_len: n.len() }),
         }
     }
     if let Some(h) = cur {
@@ -70,11 +63,7 @@ pub fn hunks(base: &str, current: &str) -> Vec<Hunk> {
 /// matches the line where the deletion sits (`new_start`).
 pub fn hunk_at_line(hunks: &[Hunk], line: usize) -> Option<&Hunk> {
     hunks.iter().find(|h| {
-        if h.new_len == 0 {
-            h.new_start == line
-        } else {
-            line >= h.new_start && line < h.new_start + h.new_len
-        }
+        if h.new_len == 0 { h.new_start == line } else { line >= h.new_start && line < h.new_start + h.new_len }
     })
 }
 
@@ -117,25 +106,13 @@ fn hunk_patch_at(rel_path: &str, base: &str, current: &str, h: &Hunk, at: usize)
 
 /// Stage only hunk `h` in the index of the repo at `repo_dir`. `base` / `current` are the texts
 /// the hunk was computed from (the index and the working file, for a working-tree hunk).
-pub fn stage_hunk(
-    repo_dir: &Path,
-    rel_path: &str,
-    base: &str,
-    current: &str,
-    h: &Hunk,
-) -> Result<(), String> {
+pub fn stage_hunk(repo_dir: &Path, rel_path: &str, base: &str, current: &str, h: &Hunk) -> Result<(), String> {
     apply_hunk(repo_dir, rel_path, base, current, h, false)
 }
 
 /// Remove hunk `h` from the index: `base` is HEAD's text and `current` the index text, so the
 /// patch describes what is staged and is applied in reverse.
-pub fn unstage_hunk(
-    repo_dir: &Path,
-    rel_path: &str,
-    base: &str,
-    current: &str,
-    h: &Hunk,
-) -> Result<(), String> {
+pub fn unstage_hunk(repo_dir: &Path, rel_path: &str, base: &str, current: &str, h: &Hunk) -> Result<(), String> {
     apply_hunk(repo_dir, rel_path, base, current, h, true)
 }
 
@@ -163,18 +140,9 @@ fn apply_hunk(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
-    child
-        .stdin
-        .take()
-        .ok_or("no stdin")?
-        .write_all(patch.as_bytes())
-        .map_err(|e| e.to_string())?;
+    child.stdin.take().ok_or("no stdin")?.write_all(patch.as_bytes()).map_err(|e| e.to_string())?;
     let o = child.wait_with_output().map_err(|e| e.to_string())?;
-    if o.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&o.stderr).trim().to_string())
-    }
+    if o.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&o.stderr).trim().to_string()) }
 }
 
 /// Which two texts a diff compares, for hunk staging.
@@ -195,7 +163,10 @@ fn blob(top: &Path, spec: &str) -> Option<String> {
 /// added, unmerged), which also means its hunks cannot be staged one by one.
 pub fn side_texts(top: &Path, rel: &str, old_rel: Option<&str>, side: Side) -> (Option<String>, Option<String>) {
     match side {
-        Side::Unstaged => (blob(top, &format!(":{rel}")), std::fs::read(top.join(rel)).ok().map(|b| String::from_utf8_lossy(&b).into_owned())),
+        Side::Unstaged => (
+            blob(top, &format!(":{rel}")),
+            std::fs::read(top.join(rel)).ok().map(|b| String::from_utf8_lossy(&b).into_owned()),
+        ),
         Side::Staged => (blob(top, &format!("HEAD:{}", old_rel.unwrap_or(rel))), blob(top, &format!(":{rel}"))),
     }
 }
@@ -247,11 +218,7 @@ pub enum Pick {
 
 fn marker_label(line: &str, ch: char) -> Option<String> {
     let rest = line.strip_prefix(&ch.to_string().repeat(7))?;
-    if rest.is_empty() {
-        Some(String::new())
-    } else {
-        rest.strip_prefix(' ').map(|r| r.trim().to_string())
-    }
+    if rest.is_empty() { Some(String::new()) } else { rest.strip_prefix(' ').map(|r| r.trim().to_string()) }
 }
 
 /// Parse conflict blocks. Incomplete blocks are ignored; a new `<<<<<<<`
@@ -280,18 +247,11 @@ pub fn parse_conflicts(text: &str) -> Vec<Conflict> {
         } else if (st == St::Ours || st == St::Base) && l == "=======" {
             mid = i;
             st = St::Theirs;
-        } else if st == St::Theirs {
-            if let Some(tl) = marker_label(l, '>') {
-                out.push(Conflict {
-                    start,
-                    base,
-                    mid,
-                    end: i,
-                    ours_label: std::mem::take(&mut label),
-                    theirs_label: tl,
-                });
-                st = St::Out;
-            }
+        } else if st == St::Theirs
+            && let Some(tl) = marker_label(l, '>')
+        {
+            out.push(Conflict { start, base, mid, end: i, ours_label: std::mem::take(&mut label), theirs_label: tl });
+            st = St::Out;
         }
     }
     out
@@ -351,10 +311,9 @@ fn git_text(dir: &Path, args: &[&str]) -> Option<String> {
 pub fn file_log(path: &Path, limit: usize) -> Vec<Commit> {
     let Some((dir, name)) = split_path(path) else { return vec![] };
     let n = limit.to_string();
-    let Some(s) = git_text(
-        dir,
-        &["log", "--follow", "--pretty=format:%H%x1f%h%x1f%an%x1f%ar%x1f%s", "-n", &n, "--", name],
-    ) else {
+    let Some(s) =
+        git_text(dir, &["log", "--follow", "--pretty=format:%H%x1f%h%x1f%an%x1f%ar%x1f%s", "-n", &n, "--", name])
+    else {
         return vec![];
     };
     s.lines()
@@ -400,10 +359,10 @@ fn name_at_commit(dir: &Path, name: &str, commit: &str) -> Option<String> {
 }
 
 fn show_at(dir: &Path, name: &str, rev: &str) -> Option<String> {
-    if let Some(old) = name_at_commit(dir, name, rev) {
-        if let Some(s) = git_text(dir, &["show", &format!("{rev}:{old}")]) {
-            return Some(s);
-        }
+    if let Some(old) = name_at_commit(dir, name, rev)
+        && let Some(s) = git_text(dir, &["show", &format!("{rev}:{old}")])
+    {
+        return Some(s);
     }
     git_text(dir, &["show", &format!("{rev}:./{name}")])
 }
@@ -708,10 +667,7 @@ mod tests {
     fn patch_text_shape() {
         let (b, c) = ("a\nb\nc\n", "a\nB\nc\n");
         let h = hunks(b, c);
-        assert_eq!(
-            hunk_patch("src/x.rs", b, c, &h[0]),
-            "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -2 +2 @@\n-b\n+B\n"
-        );
+        assert_eq!(hunk_patch("src/x.rs", b, c, &h[0]), "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -2 +2 @@\n-b\n+B\n");
         let c = "a\nb\nq\nr\nc\n";
         let h = hunks(b, c);
         assert!(hunk_patch("f", b, c, &h[0]).contains("@@ -2,0 +3,2 @@\n"));
@@ -881,7 +837,11 @@ mod tests {
                 toggle_hunk(top, rel, Side::Unstaged, &o, &w, &cur_hs[pos]).unwrap();
                 left.remove(pos);
             }
-            assert_eq!(git(top, &["show", ":f.txt"]), with_hunks(base, cur, &hs, &set), "stage mask {mask:b} order {order:?}");
+            assert_eq!(
+                git(top, &["show", ":f.txt"]),
+                with_hunks(base, cur, &hs, &set),
+                "stage mask {mask:b} order {order:?}"
+            );
             // Unstage them again, a different order.
             let mut staged = set.clone();
             let mut undo = set.clone();
@@ -895,7 +855,11 @@ mod tests {
                 let pos = staged.iter().position(|x| x == k).unwrap();
                 toggle_hunk(top, rel, Side::Staged, &o, &i, &cur_hs[pos]).unwrap();
                 staged.remove(pos);
-                assert_eq!(git(top, &["show", ":f.txt"]), with_hunks(base, cur, &hs, &staged), "unstage {k} mask {mask:b}");
+                assert_eq!(
+                    git(top, &["show", ":f.txt"]),
+                    with_hunks(base, cur, &hs, &staged),
+                    "unstage {k} mask {mask:b}"
+                );
             }
         }
     }
@@ -1166,17 +1130,11 @@ mod tests {
     fn sbs_changed_pairs_and_surplus() {
         let r = side_by_side("a\nb1\nb2\nb3\nz\n", "a\nB1\nB2\nz\n");
         let k: Vec<_> = r.iter().map(|r| r.kind).collect();
-        assert_eq!(
-            k,
-            [RowKind::Same, RowKind::Changed, RowKind::Changed, RowKind::Removed, RowKind::Same]
-        );
+        assert_eq!(k, [RowKind::Same, RowKind::Changed, RowKind::Changed, RowKind::Removed, RowKind::Same]);
         assert_eq!(r[3].left, Some((3, "b3".into())));
         let r = side_by_side("a\nb\nz\n", "a\nX\nY\nZ\nz\n");
         let k: Vec<_> = r.iter().map(|r| r.kind).collect();
-        assert_eq!(
-            k,
-            [RowKind::Same, RowKind::Changed, RowKind::Added, RowKind::Added, RowKind::Same]
-        );
+        assert_eq!(k, [RowKind::Same, RowKind::Changed, RowKind::Added, RowKind::Added, RowKind::Same]);
         assert_eq!(r[4].left, Some((2, "z".into())));
         assert_eq!(r[4].right, Some((4, "z".into())));
     }

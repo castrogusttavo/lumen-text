@@ -148,7 +148,41 @@ pub fn status_required(id: &str) -> bool {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { theme: None, format_on_save: false, auto_import: false, font_size: 14.0, lsp_narrow: true, code_lens: false, code_lens_refs: true, code_lens_impls: true, inlay_hints: false, inlay_hints_params: true, inlay_hints_types: true, appearance: "fixed".into(), theme_light: "github-light-default".into(), theme_dark: "github-dark-default".into(), tsgo_source: "auto".into(), minimap: true, minimap_style: "subtle".into(), word_wrap: false, sticky_scroll: true, indent_guides: true, ui_scale: 0.0, breadcrumbs: true, git_blame: true, ram_display: "long".into(), status_items: BTreeMap::new(), status_order: normalize_status_order(&[]), status_left_order: normalize_left_order(&[]), git_pull_strategy: String::new(), tab_width: 4, git_panel_width: 0, md_split: 0.5, theme_chrome: "derived".into(), updates: "auto".into() }
+        Self {
+            theme: None,
+            format_on_save: false,
+            auto_import: false,
+            font_size: 14.0,
+            lsp_narrow: true,
+            code_lens: false,
+            code_lens_refs: true,
+            code_lens_impls: true,
+            inlay_hints: false,
+            inlay_hints_params: true,
+            inlay_hints_types: true,
+            appearance: "fixed".into(),
+            theme_light: "github-light-default".into(),
+            theme_dark: "github-dark-default".into(),
+            tsgo_source: "auto".into(),
+            minimap: true,
+            minimap_style: "subtle".into(),
+            word_wrap: false,
+            sticky_scroll: true,
+            indent_guides: true,
+            ui_scale: 0.0,
+            breadcrumbs: true,
+            git_blame: true,
+            ram_display: "long".into(),
+            status_items: BTreeMap::new(),
+            status_order: normalize_status_order(&[]),
+            status_left_order: normalize_left_order(&[]),
+            git_pull_strategy: String::new(),
+            tab_width: 4,
+            git_panel_width: 0,
+            md_split: 0.5,
+            theme_chrome: "derived".into(),
+            updates: "auto".into(),
+        }
     }
 }
 
@@ -159,10 +193,16 @@ pub fn assets_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("LUMEN_ASSETS").map(PathBuf::from).filter(|p| ok(p)) {
         return p;
     }
-    if let Some(p) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("../share/lumen-text/assets"))).filter(|p| ok(p)) {
+    if let Some(p) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("../share/lumen-text/assets")))
+        .filter(|p| ok(p))
+    {
         return p;
     }
-    if let Some(p) = std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share/lumen-text/assets")).filter(|p| ok(p)) {
+    if let Some(p) =
+        std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share/lumen-text/assets")).filter(|p| ok(p))
+    {
         return p;
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("assets")
@@ -170,10 +210,11 @@ pub fn assets_dir() -> PathBuf {
 
 /// Desktop dark-mode preference, when it can be determined.
 pub fn detect_dark() -> Option<bool> {
-    if let Ok(o) = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "color-scheme"]).output() {
-        if o.status.success() {
-            return Some(String::from_utf8_lossy(&o.stdout).contains("dark"));
-        }
+    if let Ok(o) =
+        std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "color-scheme"]).output()
+        && o.status.success()
+    {
+        return Some(String::from_utf8_lossy(&o.stdout).contains("dark"));
     }
     std::env::var("GTK_THEME").ok().map(|t| t.to_lowercase().contains("dark"))
 }
@@ -249,6 +290,7 @@ impl Config {
         self.move_status_to(id, t as usize)
     }
 
+    #[cfg(test)]
     /// Slot (0 = leftmost, hidden items count) of a bottom bar item in its group.
     pub fn status_slot(&self, id: &str) -> Option<usize> {
         self.status_order.iter().position(|s| s == id).or_else(|| self.status_left_order.iter().position(|s| s == id))
@@ -257,7 +299,8 @@ impl Config {
     /// Position (1 = leftmost) among the *visible* items of the group for a visible item; the raw
     /// slot + 1 for a hidden one. This is what the settings steppers show.
     pub fn status_rank(&self, id: &str) -> usize {
-        let list = if self.status_left_order.iter().any(|s| s == id) { &self.status_left_order } else { &self.status_order };
+        let list =
+            if self.status_left_order.iter().any(|s| s == id) { &self.status_left_order } else { &self.status_order };
         let Some(slot) = list.iter().position(|s| s == id) else { return 1 };
         if !self.status_visible(id) {
             return slot + 1;
@@ -280,7 +323,9 @@ impl Config {
 }
 
 pub fn default_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))?;
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))?;
     Some(base.join("lumen-text").join("config.json"))
 }
 
@@ -304,7 +349,11 @@ impl Config {
             theme_dark: v["theme_dark"].as_str().unwrap_or("github-dark-default").to_string(),
             tsgo_source: v["tsgo_source"].as_str().unwrap_or("auto").to_string(),
             minimap: v["minimap"].as_bool().unwrap_or(true),
-            minimap_style: if v["minimap_style"].as_str() == Some("normal") { "normal".into() } else { "subtle".into() },
+            minimap_style: if v["minimap_style"].as_str() == Some("normal") {
+                "normal".into()
+            } else {
+                "subtle".into()
+            },
             word_wrap: v["word_wrap"].as_bool().unwrap_or(false),
             sticky_scroll: v["sticky_scroll"].as_bool().unwrap_or(true),
             indent_guides: v["indent_guides"].as_bool().unwrap_or(true),
@@ -313,10 +362,29 @@ impl Config {
             ram_display: if v["ram_display"].as_str() == Some("short") { "short".into() } else { "long".into() },
             status_items: v["status_items"]
                 .as_object()
-                .map(|o| o.iter().filter(|(k, val)| !status_required(k) && STATUS_ITEMS.iter().any(|(i, _, _)| *i == k.as_str()) && val.is_boolean()).map(|(k, val)| (k.clone(), val.as_bool().unwrap_or(true))).collect())
+                .map(|o| {
+                    o.iter()
+                        .filter(|(k, val)| {
+                            !status_required(k)
+                                && STATUS_ITEMS.iter().any(|(i, _, _)| *i == k.as_str())
+                                && val.is_boolean()
+                        })
+                        .map(|(k, val)| (k.clone(), val.as_bool().unwrap_or(true)))
+                        .collect()
+                })
                 .unwrap_or_default(),
-            status_order: normalize_status_order(&v["status_order"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>()).unwrap_or_default()),
-            status_left_order: normalize_left_order(&v["status_left_order"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>()).unwrap_or_default()),
+            status_order: normalize_status_order(
+                &v["status_order"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            ),
+            status_left_order: normalize_left_order(
+                &v["status_left_order"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            ),
             git_pull_strategy: clean_pull_strategy(v["git_pull_strategy"].as_str().unwrap_or("")),
             tab_width: clean_tab_width(v["tab_width"].as_u64().unwrap_or(4) as usize),
             git_panel_width: v["git_panel_width"].as_i64().map_or(0, |n| n.clamp(0, 4000) as i32),
@@ -368,7 +436,44 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lumen-cfg-{}", std::process::id()));
         let p = dir.join("sub/config.json");
         assert_eq!(Config::load_from(&p), Config::default(), "missing file -> defaults");
-        let c = Config { minimap: false, minimap_style: "normal".into(), md_split: 0.65, word_wrap: true, sticky_scroll: false, indent_guides: false, theme: Some("dracula".into()), format_on_save: true, auto_import: true, font_size: 17.0, lsp_narrow: false, code_lens: true, code_lens_refs: false, code_lens_impls: true, inlay_hints: true, inlay_hints_params: false, inlay_hints_types: false, appearance: "system".into(), theme_light: "a".into(), theme_dark: "b".into(), tsgo_source: "project".into(), ui_scale: 1.5, breadcrumbs: false, git_blame: false, ram_display: "short".into(), status_items: [("terminal".to_string(), false), ("ram".to_string(), false)].into_iter().collect(), status_order: ["git", "ram", "position", "indent", "language", "terminal", "debug"].iter().map(|s| s.to_string()).collect(), status_left_order: ["problems", "sidebar", "search"].iter().map(|s| s.to_string()).collect(), git_pull_strategy: "rebase".into(), tab_width: 8, git_panel_width: 512, theme_chrome: "theme".into(), updates: "notify".into() };
+        let c = Config {
+            minimap: false,
+            minimap_style: "normal".into(),
+            md_split: 0.65,
+            word_wrap: true,
+            sticky_scroll: false,
+            indent_guides: false,
+            theme: Some("dracula".into()),
+            format_on_save: true,
+            auto_import: true,
+            font_size: 17.0,
+            lsp_narrow: false,
+            code_lens: true,
+            code_lens_refs: false,
+            code_lens_impls: true,
+            inlay_hints: true,
+            inlay_hints_params: false,
+            inlay_hints_types: false,
+            appearance: "system".into(),
+            theme_light: "a".into(),
+            theme_dark: "b".into(),
+            tsgo_source: "project".into(),
+            ui_scale: 1.5,
+            breadcrumbs: false,
+            git_blame: false,
+            ram_display: "short".into(),
+            status_items: [("terminal".to_string(), false), ("ram".to_string(), false)].into_iter().collect(),
+            status_order: ["git", "ram", "position", "indent", "language", "terminal", "debug"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            status_left_order: ["problems", "sidebar", "search"].iter().map(|s| s.to_string()).collect(),
+            git_pull_strategy: "rebase".into(),
+            tab_width: 8,
+            git_panel_width: 512,
+            theme_chrome: "theme".into(),
+            updates: "notify".into(),
+        };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);
         std::fs::write(&p, "{ not json").unwrap();
@@ -402,7 +507,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lumen-cfg-upd-{}", std::process::id()));
         let p = dir.join("config.json");
         std::fs::create_dir_all(&dir).unwrap();
-        for (raw, want) in [(r#"{"updates": "off"}"#, "off"), (r#"{"updates": "notify"}"#, "notify"), (r#"{"updates": "sometimes"}"#, "auto"), (r#"{"updates": 3}"#, "auto"), ("{}", "auto")] {
+        for (raw, want) in [
+            (r#"{"updates": "off"}"#, "off"),
+            (r#"{"updates": "notify"}"#, "notify"),
+            (r#"{"updates": "sometimes"}"#, "auto"),
+            (r#"{"updates": 3}"#, "auto"),
+            ("{}", "auto"),
+        ] {
             std::fs::write(&p, raw).unwrap();
             assert_eq!(Config::load_from(&p).updates, want, "{raw}");
         }
@@ -448,7 +559,10 @@ mod tests {
     fn status_order_is_always_a_permutation_of_the_right_items() {
         let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(normalize_status_order(&[]), v(STATUS_RIGHT));
-        assert_eq!(normalize_status_order(&v(&["git", "bogus", "git", "sidebar", "ram"])), v(&["git", "ram", "position", "indent", "language", "terminal", "debug"]));
+        assert_eq!(
+            normalize_status_order(&v(&["git", "bogus", "git", "sidebar", "ram"])),
+            v(&["git", "ram", "position", "indent", "language", "terminal", "debug"])
+        );
         assert_eq!(Config::default().status_order, v(STATUS_RIGHT));
     }
 
@@ -487,7 +601,10 @@ mod tests {
         let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let mut c = Config::default();
         assert_eq!(c.status_left_order, v(STATUS_LEFT));
-        assert_eq!(normalize_left_order(&v(&["problems", "x", "problems", "ram"])), v(&["problems", "sidebar", "search"]));
+        assert_eq!(
+            normalize_left_order(&v(&["problems", "x", "problems", "ram"])),
+            v(&["problems", "sidebar", "search"])
+        );
         assert!(c.move_status("search", -1));
         assert_eq!(c.status_left_order, v(&["search", "sidebar", "problems"]));
         assert!(c.move_status_to("sidebar", 2));
@@ -535,7 +652,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lumen-cfg-pull-{}", std::process::id()));
         let p = dir.join("config.json");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&p, r#"{"git_pull_strategy": "merge", "tab_width": 2, "status_left_order": ["problems"]}"#).unwrap();
+        std::fs::write(&p, r#"{"git_pull_strategy": "merge", "tab_width": 2, "status_left_order": ["problems"]}"#)
+            .unwrap();
         let c = Config::load_from(&p);
         assert_eq!((c.git_pull_strategy.as_str(), c.tab_width), ("merge", 2));
         assert_eq!(c.status_left_order, ["problems", "sidebar", "search"]);

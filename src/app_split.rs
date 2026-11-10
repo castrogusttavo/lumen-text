@@ -130,10 +130,18 @@ impl Grid {
                 ((1..=2).contains(&n) && vratio.is_finite()).then(|| Col { n, vratio: vratio.clamp(0.05, 0.95) })
             })
             .collect::<Option<_>>()?;
-        let widths: Vec<f32> = v["widths"].as_array()?.iter().map(|w| w.as_f64().map(|w| w as f32).filter(|w| w.is_finite() && *w > 0.0)).collect::<Option<_>>()?;
+        let widths: Vec<f32> = v["widths"]
+            .as_array()?
+            .iter()
+            .map(|w| w.as_f64().map(|w| w as f32).filter(|w| w.is_finite() && *w > 0.0))
+            .collect::<Option<_>>()?;
         let g = Grid { cols, widths: Vec::new() };
         let stacked = g.stacked();
-        if g.cols.is_empty() || widths.len() != g.cols.len() || g.panes() > MAX_PANES || g.cols.len() > if stacked { MAX_GRID_COLS } else { MAX_ROW_COLS } {
+        if g.cols.is_empty()
+            || widths.len() != g.cols.len()
+            || g.panes() > MAX_PANES
+            || g.cols.len() > if stacked { MAX_GRID_COLS } else { MAX_ROW_COLS }
+        {
             return None;
         }
         let sum: f32 = widths.iter().sum();
@@ -321,8 +329,17 @@ impl PaneView {
                 let nl = buf.line_count();
                 let line = line.min(nl - 1);
                 let (new_row, total) = if self.view.active() && self.view.map.line_count() == nl {
-                    let h = self.view.folds.hidden_ranges().iter().find(|r| r.0 <= line && line <= r.1).map_or(line, |r| r.0 - 1);
-                    (self.view.map.row_of(h) + asub.min(self.view.map.rows_in(h).saturating_sub(1)), self.view.map.total_rows())
+                    let h = self
+                        .view
+                        .folds
+                        .hidden_ranges()
+                        .iter()
+                        .find(|r| r.0 <= line && line <= r.1)
+                        .map_or(line, |r| r.0 - 1);
+                    (
+                        self.view.map.row_of(h) + asub.min(self.view.map.rows_in(h).saturating_sub(1)),
+                        self.view.map.total_rows(),
+                    )
                 } else {
                     (line, nl)
                 };
@@ -444,7 +461,15 @@ pub struct Split {
 impl Split {
     /// A split of one pane on `doc` (the caller adds the second one).
     fn new(doc: usize, view: PaneView) -> Split {
-        Split { panes: vec![Pane { doc, view }], focus: 0, grid: Grid::single(), rects: Vec::new(), divs: Vec::new(), drag: None, diff_at: None }
+        Split {
+            panes: vec![Pane { doc, view }],
+            focus: 0,
+            grid: Grid::single(),
+            rects: Vec::new(),
+            divs: Vec::new(),
+            drag: None,
+            diff_at: None,
+        }
     }
 
     /// Document shown by pane `i` when `active` is the focused pane's.
@@ -532,7 +557,8 @@ fn share_lsp_folds(docs: &[Doc], sp: &mut Split, di: usize) {
 /// Trim the edit logs: every buffer keeps only what some stashed pane still has to follow.
 fn trim_logs(docs: &mut [Doc], sp: &Split) {
     for (di, d) in docs.iter_mut().enumerate() {
-        let min = sp.panes.iter().enumerate().filter(|&(i, p)| i != sp.focus && p.doc == di).map(|(_, p)| p.view.seen).min();
+        let min =
+            sp.panes.iter().enumerate().filter(|&(i, p)| i != sp.focus && p.doc == di).map(|(_, p)| p.view.seen).min();
         d.buf.log_trim(min);
     }
 }
@@ -588,7 +614,10 @@ impl App {
         }
         let mut shown = Vec::with_capacity(items.len());
         for it in items {
-            let doc = it["file"].as_u64().and_then(|f| opened.get(f as usize).copied().flatten()).filter(|&d| d < self.docs.len());
+            let doc = it["file"]
+                .as_u64()
+                .and_then(|f| opened.get(f as usize).copied().flatten())
+                .filter(|&d| d < self.docs.len());
             let Some(doc) = doc else { return };
             let n = |k: &str| it[k].as_u64().unwrap_or(0) as usize;
             shown.push((doc, n("line"), n("col"), it["top"].as_f64().unwrap_or(0.0).max(0.0)));
@@ -610,7 +639,15 @@ impl App {
         self.docs[fd].reveal = false;
         panes[focus].view = theirs;
         self.activate(fd);
-        self.split = Some(Box::new(Split { panes, focus, grid, rects: Vec::new(), divs: Vec::new(), drag: None, diff_at: None }));
+        self.split = Some(Box::new(Split {
+            panes,
+            focus,
+            grid,
+            rects: Vec::new(),
+            divs: Vec::new(),
+            drag: None,
+            diff_at: None,
+        }));
         self.split_layout();
     }
 
@@ -696,9 +733,17 @@ impl App {
         let msg = if sp.panes.len() >= MAX_PANES {
             Some("Maximum of 6 panes")
         } else if below && !grid.can_split_below(sp.focus) {
-            Some(if grid.cols.len() > MAX_GRID_COLS { "Splitting down only works with up to 3 columns (grid of at most 3x2)" } else { "This pane is already split below" })
+            Some(if grid.cols.len() > MAX_GRID_COLS {
+                "Splitting down only works with up to 3 columns (grid of at most 3x2)"
+            } else {
+                "This pane is already split below"
+            })
         } else if !below && !grid.can_split_right() {
-            Some(if grid.stacked() { "With stacked panes, splitting right only works up to 3 columns (grid of at most 3x2)" } else { "Maximum of 4 columns" })
+            Some(if grid.stacked() {
+                "With stacked panes, splitting right only works up to 3 columns (grid of at most 3x2)"
+            } else {
+                "Maximum of 4 columns"
+            })
         } else {
             None
         };
@@ -792,7 +837,9 @@ impl App {
 
     /// Ctrl+1..4: focus pane number `n` (0-based).
     pub fn focus_pane_n(&mut self, n: usize) {
-        let Some(count) = self.split.as_ref().map(|s| s.panes.len()) else { return self.say("The editor is not split (Ctrl+\\ splits)") };
+        let Some(count) = self.split.as_ref().map(|s| s.panes.len()) else {
+            return self.say("The editor is not split (Ctrl+\\ splits)");
+        };
         if n >= count {
             return self.say(format!("There is no pane {} (the editor has {count})", n + 1));
         }
@@ -801,7 +848,9 @@ impl App {
 
     /// Focus the next (`delta` 1) or previous (-1) pane, wrapping around.
     pub fn focus_next_pane(&mut self, delta: isize) {
-        let Some((f, n)) = self.split.as_ref().map(|s| (s.focus, s.panes.len())) else { return self.say("The editor is not split (Ctrl+\\ splits)") };
+        let Some((f, n)) = self.split.as_ref().map(|s| (s.focus, s.panes.len())) else {
+            return self.say("The editor is not split (Ctrl+\\ splits)");
+        };
         self.split_focus_idx((f as isize + delta).rem_euclid(n as isize) as usize);
     }
 
@@ -873,12 +922,17 @@ impl App {
         if let Some(k) = sp.drag {
             return Some(if matches!(k, DivKind::Col(_)) { CursorIcon::ColResize } else { CursorIcon::RowResize });
         }
-        sp.divs.iter().find(|d| grab_rect(d).contains(x, y)).map(|d| if matches!(d.kind, DivKind::Col(_)) { CursorIcon::ColResize } else { CursorIcon::RowResize })
+        sp.divs
+            .iter()
+            .find(|d| grab_rect(d).contains(x, y))
+            .map(|d| if matches!(d.kind, DivKind::Col(_)) { CursorIcon::ColResize } else { CursorIcon::RowResize })
     }
 
     /// Is (x, y) inside a pane that is not focused?
     pub fn split_in_other(&self, x: f64, y: f64) -> bool {
-        self.split.as_ref().is_some_and(|sp| sp.rects.iter().enumerate().any(|(i, r)| i != sp.focus && r.contains(x, y)))
+        self.split
+            .as_ref()
+            .is_some_and(|sp| sp.rects.iter().enumerate().any(|(i, r)| i != sp.focus && r.contains(x, y)))
     }
 
     /// Draw the unfocused panes and the dividers. Runs BEFORE the focused pane, so that when two
@@ -902,7 +956,13 @@ impl App {
                     d.cell_w = self.tx.cell_w;
                     let reveal = std::mem::replace(&mut d.reveal, false);
                     d.swap_pane_view(&mut sp.panes[i].view);
-                    busy |= d.draw(cv, &mut self.tx, &self.theme, r, &DrawOpts { dt, find: &find, find_cur, focused: false });
+                    busy |= d.draw(
+                        cv,
+                        &mut self.tx,
+                        &self.theme,
+                        r,
+                        &DrawOpts { dt, find: &find, find_cur, focused: false },
+                    );
                     d.swap_pane_view(&mut sp.panes[i].view);
                     d.reveal = reveal;
                 } else {
@@ -956,7 +1016,11 @@ impl App {
     /// Wheel over an unfocused pane scrolls it without moving the focus.
     pub fn split_wheel(&mut self, delta: MouseScrollDelta) -> bool {
         let (x, y) = self.mouse;
-        let Some(i) = self.split.as_ref().and_then(|sp| sp.rects.iter().enumerate().find(|&(i, r)| i != sp.focus && r.contains(x, y)).map(|(i, _)| i)) else { return false };
+        let Some(i) = self.split.as_ref().and_then(|sp| {
+            sp.rects.iter().enumerate().find(|&(i, r)| i != sp.focus && r.contains(x, y)).map(|(i, _)| i)
+        }) else {
+            return false;
+        };
         let w = self.wheel_in(delta);
         let Some(mut sp) = self.split.take() else { return false };
         if let Some(d) = self.docs.get_mut(sp.panes[i].doc) {
@@ -1112,7 +1176,8 @@ mod tests {
             assert!(Grid::from_json(&bad).is_none(), "{bad}");
         }
         // widths are renormalized and ratios kept inside the divider limits
-        let g = Grid::from_json(&serde_json::json!({"cols": [{"n": 2, "v": 7.0}, {"n": 1}], "widths": [3.0, 1.0]})).unwrap();
+        let g = Grid::from_json(&serde_json::json!({"cols": [{"n": 2, "v": 7.0}, {"n": 1}], "widths": [3.0, 1.0]}))
+            .unwrap();
         assert!((g.widths[0] - 0.75).abs() < 1e-6 && (g.widths.iter().sum::<f32>() - 1.0).abs() < 1e-6);
         assert!(g.cols[0].vratio <= 0.95 && g.cols[1].vratio == 0.5);
     }
@@ -1259,7 +1324,10 @@ mod tests {
         let (mut active, mut sp) = two(&mut docs, 0, 0);
         // pane 0 (focused): type two new lines at the top
         put_cursor(&mut docs[0], 0, 0);
-        { let d = &mut docs[0]; d.ed.paste(&mut d.buf, "// a\n// b\n"); }
+        {
+            let d = &mut docs[0];
+            d.ed.paste(&mut d.buf, "// a\n// b\n");
+        }
         assert!(docs[0].sync_edits());
         // while stashed, pane 1 has not noticed yet; focusing it catches it up
         focus_to(&mut docs, &mut active, &mut sp, 1);
@@ -1269,7 +1337,10 @@ mod tests {
         assert_eq!(docs[0].total_rows(), docs[0].buf.line_count() - 1);
         // the other direction: delete those lines again from pane 1; pane 0 follows
         put_cursor(&mut docs[0], 0, 0);
-        { let d = &mut docs[0]; d.ed.delete_lines(&mut d.buf, 0, 1); }
+        {
+            let d = &mut docs[0];
+            d.ed.delete_lines(&mut d.buf, 0, 1);
+        }
         docs[0].sync_edits();
         focus_to(&mut docs, &mut active, &mut sp, 0);
         assert_eq!(docs[0].view.folds.regions(), &[(6, 7)]);
@@ -1283,7 +1354,10 @@ mod tests {
         docs[0].target = 100.0;
         let (mut active, mut sp) = two(&mut docs, 0, 0);
         put_cursor(&mut docs[0], 0, 0);
-        { let d = &mut docs[0]; d.ed.paste(&mut d.buf, "a\nb\nc\n"); }
+        {
+            let d = &mut docs[0];
+            d.ed.paste(&mut d.buf, "a\nb\nc\n");
+        }
         docs[0].sync_edits();
         focus_to(&mut docs, &mut active, &mut sp, 1);
         assert_eq!(docs[0].top, 103.0, "same text at the top of the pane");
@@ -1304,7 +1378,10 @@ mod tests {
         assert_eq!(docs[0].view.folds.regions(), &[(6, 7)], "a swap above the fold does not move it");
         focus_to(&mut docs, &mut active, &mut sp, 0);
         // undo in pane 0
-        { let d = &mut docs[0]; d.ed.undo(&mut d.buf); }
+        {
+            let d = &mut docs[0];
+            d.ed.undo(&mut d.buf);
+        }
         docs[0].sync_edits();
         focus_to(&mut docs, &mut active, &mut sp, 1);
         assert_eq!(docs[0].view.folds.regions(), &[(6, 7)]);
@@ -1355,7 +1432,12 @@ mod tests {
         focus_to(&mut docs, &mut active, &mut sp, 1);
         assert!(docs[0].is_foldable(0), "the second pane sees the language server's range");
         assert!(docs[0].fold_regions().contains(&(0, 2)));
-        assert!(docs[0].fold_at_cursor() || { put_cursor(&mut docs[0], 0, 0); docs[0].fold_at_cursor() });
+        assert!(
+            docs[0].fold_at_cursor() || {
+                put_cursor(&mut docs[0], 0, 0);
+                docs[0].fold_at_cursor()
+            }
+        );
         assert_eq!(docs[0].view.folds.regions(), &[(0, 2)]);
         // a pane on another document is left alone
         let mut sp2 = Split::new(1, docs[1].pane_view());
@@ -1371,7 +1453,10 @@ mod tests {
         let mut docs = vec![doc(&lines(10))];
         let (mut active, mut sp) = two(&mut docs, 0, 0);
         put_cursor(&mut docs[0], 0, 0);
-        { let d = &mut docs[0]; d.ed.paste(&mut d.buf, "x"); }
+        {
+            let d = &mut docs[0];
+            d.ed.paste(&mut d.buf, "x");
+        }
         docs[0].sync_edits();
         assert!(docs[0].buf.log_seq() > 0);
         trim_logs(&mut docs, &sp);

@@ -13,8 +13,8 @@ use crate::{
     field::TextField,
     fuzzy::fuzzy,
     git,
-    tree::Tree,
     scrollreg::Reg,
+    tree::Tree,
     ui::{Canvas, Rect},
 };
 use std::{
@@ -95,7 +95,11 @@ pub fn parse_branches(out: &str) -> Vec<Branch> {
     let mut remote = Vec::new();
     for line in out.lines() {
         let mut it = line.splitn(5, '\t');
-        let (Some(refname), Some(head), Some(author), Some(when), Some(subject)) = (it.next(), it.next(), it.next(), it.next(), it.next()) else { continue };
+        let (Some(refname), Some(head), Some(author), Some(when), Some(subject)) =
+            (it.next(), it.next(), it.next(), it.next(), it.next())
+        else {
+            continue;
+        };
         let (name, is_remote) = if let Some(n) = refname.strip_prefix("refs/heads/") {
             (n, false)
         } else if let Some(n) = refname.strip_prefix("refs/remotes/") {
@@ -106,7 +110,14 @@ pub fn parse_branches(out: &str) -> Vec<Branch> {
         } else {
             continue;
         };
-        let b = Branch { name: name.to_string(), remote: is_remote, current: head.trim() == "*", author: author.to_string(), when: when.trim().parse().unwrap_or(0), subject: subject.to_string() };
+        let b = Branch {
+            name: name.to_string(),
+            remote: is_remote,
+            current: head.trim() == "*",
+            author: author.to_string(),
+            when: when.trim().parse().unwrap_or(0),
+            subject: subject.to_string(),
+        };
         if is_remote { remote.push(b) } else { local.push(b) }
     }
     local.extend(remote);
@@ -125,7 +136,9 @@ pub fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 pub fn list_branches(dir: &Path) -> Vec<Branch> {
     let fmt = "--format=%(refname)%09%(HEAD)%09%(authorname)%09%(committerdate:unix)%09%(subject)";
-    run_git(dir, &["for-each-ref", "--sort=-committerdate", fmt, "refs/heads", "refs/remotes"]).map(|o| parse_branches(&o)).unwrap_or_default()
+    run_git(dir, &["for-each-ref", "--sort=-committerdate", fmt, "refs/heads", "refs/remotes"])
+        .map(|o| parse_branches(&o))
+        .unwrap_or_default()
 }
 
 /// `list` with `p` moved to the front (no duplicates), at most `max` entries.
@@ -136,7 +149,9 @@ pub fn push_recent(list: &mut Vec<PathBuf>, p: &Path, max: usize) {
 }
 
 fn recents_file() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))?;
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))?;
     Some(base.join("lumen-text").join("recent-projects.json"))
 }
 
@@ -192,7 +207,18 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 
 impl TopMenu {
     pub fn new(kind: MenuKind, anchor: Rect, entries: Vec<Entry>, dir: PathBuf) -> Self {
-        let mut m = TopMenu { kind, anchor, field: TextField::default(), entries, filtered: Vec::new(), sel: 0, scroll: 0, dir, rows: Vec::new(), now: now_secs() };
+        let mut m = TopMenu {
+            kind,
+            anchor,
+            field: TextField::default(),
+            entries,
+            filtered: Vec::new(),
+            sel: 0,
+            scroll: 0,
+            dir,
+            rows: Vec::new(),
+            now: now_secs(),
+        };
         m.refilter();
         m
     }
@@ -344,7 +370,12 @@ impl App {
 
     /// Palette entry points: open the menu hanging from its button.
     pub fn open_topmenu_cmd(&mut self, kind: MenuKind) {
-        let r = self.layout.top_btns.iter().find(|(_, k)| *k == kind).map(|(r, _)| *r).unwrap_or(Rect::new(10, 4, 140, TOP_H - 9));
+        let r = self.layout.top_btns.iter().find(|(_, k)| *k == kind).map(|(r, _)| *r).unwrap_or(Rect::new(
+            10,
+            4,
+            140,
+            TOP_H - 9,
+        ));
         self.open_topmenu(kind, r);
     }
 
@@ -570,11 +601,12 @@ impl App {
                 if let Some(t) = paste {
                     m.field.insert(&t.replace(['\n', '\r'], " "));
                     changed = true;
-                } else if let (false, false, Some(t)) = (ctrl, alt, ev.text.as_deref()) {
-                    if !t.is_empty() && !t.chars().any(char::is_control) {
-                        m.field.insert(t);
-                        changed = true;
-                    }
+                } else if let (false, false, Some(t)) = (ctrl, alt, ev.text.as_deref())
+                    && !t.is_empty()
+                    && !t.chars().any(char::is_control)
+                {
+                    m.field.insert(t);
+                    changed = true;
                 }
             }
         }
@@ -655,7 +687,9 @@ impl App {
         }
         // A remote branch whose local twin exists just switches to the twin.
         let twin = if b.remote { b.name.split_once('/').map(|x| x.1.to_string()) } else { None };
-        let has_twin = twin.as_ref().is_some_and(|t| all.iter().any(|e| matches!(e, Entry::Branch(x) if !x.remote && &x.name == t)));
+        let has_twin = twin
+            .as_ref()
+            .is_some_and(|t| all.iter().any(|e| matches!(e, Entry::Branch(x) if !x.remote && &x.name == t)));
         let (res, shown) = if b.remote && !has_twin {
             (run_git(&self.root, &["checkout", "--track", &b.name]), b.name.clone())
         } else {
@@ -732,7 +766,16 @@ fn status_gap(a: StatusBtn, b: StatusBtn) -> i32 {
 
 impl App {
     /// One button of the bottom bar at `x`; returns the x after it.
-    fn status_btn(&mut self, cv: &mut Canvas, x: i32, icon: &str, label: &str, tint: crate::theme::Rgba, active: bool, kind: StatusBtn) -> i32 {
+    fn status_btn(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        icon: &str,
+        label: &str,
+        tint: crate::theme::Rgba,
+        active: bool,
+        kind: StatusBtn,
+    ) -> i32 {
         let c = self.theme.chrome;
         let r = self.layout.status;
         let lw = if label.is_empty() { 0 } else { self.tx.ui_width(label, false) + 6 };
@@ -767,7 +810,8 @@ impl App {
         let y = r.y + (r.h - 18) / 2;
         let dim = c.tab_inactive_fg;
         let vis = |id: &str| self.config.status_visible(id);
-        let (v_search, v_problems, v_term, v_dbg, v_git, v_ram) = (vis("search"), vis("problems"), vis("terminal"), vis("debug"), vis("git"), vis("ram"));
+        let (v_search, v_problems, v_term, v_dbg, v_git, v_ram) =
+            (vis("search"), vis("problems"), vis("terminal"), vis("debug"), vis("git"), vis("ram"));
         let (v_pos, v_indent, v_lang) = (vis("position"), vis("indent"), vis("language"));
 
         // Left group, in `config.status_left_order` (the sidebar toggle is always shown).
@@ -775,7 +819,11 @@ impl App {
         for id in self.config.status_left_order.clone() {
             match id.as_str() {
                 "sidebar" => {
-                    let side_icon = if self.sidebar_open { "ui/threads_sidebar_left_open" } else { "ui/threads_sidebar_left_closed" };
+                    let side_icon = if self.sidebar_open {
+                        "ui/threads_sidebar_left_open"
+                    } else {
+                        "ui/threads_sidebar_left_closed"
+                    };
                     x = self.status_btn(cv, x, side_icon, "", dim, self.sidebar_open, StatusBtn::Sidebar);
                 }
                 "search" if v_search => {
@@ -788,11 +836,27 @@ impl App {
                         x = self.status_btn(cv, x, "ui/check", "", dim, false, StatusBtn::Problems);
                         x += 8;
                     } else {
-                        x = self.status_btn(cv, x, "ui/x_circle", &e.to_string(), if e > 0 { c.error } else { dim }, false, StatusBtn::Problems);
+                        x = self.status_btn(
+                            cv,
+                            x,
+                            "ui/x_circle",
+                            &e.to_string(),
+                            if e > 0 { c.error } else { dim },
+                            false,
+                            StatusBtn::Problems,
+                        );
                         // The warning count is part of the same button (same hit target).
                         let warn_label = w.to_string();
                         let ww = self.tx.ui_width(&warn_label, false);
-                        self.tx.icon(cv, "ui/warning", x, r.y + (r.h - 14) / 2, 14, if w > 0 { c.warning } else { dim }, r);
+                        self.tx.icon(
+                            cv,
+                            "ui/warning",
+                            x,
+                            r.y + (r.h - 14) / 2,
+                            14,
+                            if w > 0 { c.warning } else { dim },
+                            r,
+                        );
                         self.tx.draw_ui(cv, x + 20, y, &warn_label, if w > 0 { c.warning } else { dim }, r, false);
                         if let Some((b, _)) = self.layout.status_btns.last_mut() {
                             b.w = (x + 20 + ww + 8) - b.x;
@@ -829,25 +893,35 @@ impl App {
         let doc_texts: Option<(String, String, String)> = self.docs.get(self.active).map(|d| {
             let (l, col) = d.buf.line_col(d.ed.head());
             let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
-            let sel = if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
-            (format!("{sel}Ln {}, Col {}", l + 1, vc), if d.ed.indent.contains('\t') { "Tab".to_string() } else { format!("Spaces: {}", d.ed.indent.len()) }, d.lang.unwrap_or("text").to_string())
+            let sel =
+                if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
+            (
+                format!("{sel}Ln {}, Col {}", l + 1, vc),
+                if d.ed.indent.contains('\t') { "Tab".to_string() } else { format!("Spaces: {}", d.ed.indent.len()) },
+                d.lang.unwrap_or("text").to_string(),
+            )
         });
         let mut items: Vec<(StatusBtn, i32)> = Vec::new();
         for id in self.config.status_order.clone() {
             let item = match id.as_str() {
                 "position" if v_pos => doc_texts.as_ref().map(|t| (StatusBtn::Position, self.tx.ui_width(&t.0, false))),
                 "indent" if v_indent => doc_texts.as_ref().map(|t| (StatusBtn::Indent, self.tx.ui_width(&t.1, false))),
-                "language" if v_lang => doc_texts.as_ref().map(|t| (StatusBtn::Language, self.tx.ui_width(&t.2, false))),
+                "language" if v_lang => {
+                    doc_texts.as_ref().map(|t| (StatusBtn::Language, self.tx.ui_width(&t.2, false)))
+                }
                 "terminal" if v_term => Some((StatusBtn::Terminal, self.status_btn_width(""))),
                 "debug" if v_dbg => Some((StatusBtn::Debug, self.status_btn_width(""))),
                 "git" if v_git => Some((StatusBtn::Git, self.status_btn_width(&git_label))),
-                "ram" if v_ram => Some((StatusBtn::Ram, if short { RAM_ICON_W } else { self.tx.ui_width(&memtxt, false) })),
+                "ram" if v_ram => {
+                    Some((StatusBtn::Ram, if short { RAM_ICON_W } else { self.tx.ui_width(&memtxt, false) }))
+                }
                 _ => None,
             };
             items.extend(item);
         }
         let kinds: Vec<StatusBtn> = items.iter().map(|i| i.0).collect();
-        let total: i32 = items.iter().map(|i| i.1).sum::<i32>() + (1..kinds.len()).map(|k| status_gap(kinds[k - 1], kinds[k])).sum::<i32>();
+        let total: i32 = items.iter().map(|i| i.1).sum::<i32>()
+            + (1..kinds.len()).map(|k| status_gap(kinds[k - 1], kinds[k])).sum::<i32>();
         let mut right_min = r.right() - 10;
         if let Some(&last) = kinds.last() {
             let mut ix = r.right() - if is_status_button(last) { 10 } else { 16 } - total;
@@ -857,20 +931,50 @@ impl App {
             for (k, &(kind, w)) in items.iter().enumerate() {
                 match kind {
                     StatusBtn::Terminal => {
-                        self.status_btn(cv, ix, "ui/terminal", "", if term_on { c.accent_text } else { dim }, term_on, kind);
+                        self.status_btn(
+                            cv,
+                            ix,
+                            "ui/terminal",
+                            "",
+                            if term_on { c.accent_text } else { dim },
+                            term_on,
+                            kind,
+                        );
                     }
                     StatusBtn::Debug => {
-                        self.status_btn(cv, ix, "ui/debug", "", if dbg_on || self.dbg.is_some() { c.accent_text } else { dim }, dbg_on, kind);
+                        self.status_btn(
+                            cv,
+                            ix,
+                            "ui/debug",
+                            "",
+                            if dbg_on || self.dbg.is_some() { c.accent_text } else { dim },
+                            dbg_on,
+                            kind,
+                        );
                     }
                     StatusBtn::Git => {
                         let git_on = self.gitpanel.is_some();
-                        self.status_btn(cv, ix, "ui/git_graph", &git_label, if changed > 0 || git_on { c.accent_text } else { dim }, git_on, kind);
+                        self.status_btn(
+                            cv,
+                            ix,
+                            "ui/git_graph",
+                            &git_label,
+                            if changed > 0 || git_on { c.accent_text } else { dim },
+                            git_on,
+                            kind,
+                        );
                     }
                     StatusBtn::Ram => {
                         if short {
                             self.tx.icon(cv, "hugeicons/cpu", ix, r.y + (r.h - 14) / 2, 14, dim, r);
                             let mb = memory_mb(&memtxt);
-                            let dot = if mb < 400.0 { c.git_added } else if mb < 900.0 { c.warning } else { c.error };
+                            let dot = if mb < 400.0 {
+                                c.git_added
+                            } else if mb < 900.0 {
+                                c.warning
+                            } else {
+                                c.error
+                            };
                             cv.fill_round(Rect::new(ix + 14 + 4, r.y + (r.h - 5) / 2, 5, 5), 2, dot.with_alpha(0xc8));
                         } else {
                             self.tx.draw_ui(cv, ix, y, &memtxt, dim, r, false);
@@ -901,13 +1005,13 @@ impl App {
         // A git command left running by a closed panel: spinner first, then the message.
         let x = x + self.draw_git_bg(cv, x, r, right_min - 16 - x);
         // Transient message gets whatever room is left between the corners, ellipsized.
-        if let Some((m, t)) = &self.status {
-            if t.elapsed() < std::time::Duration::from_secs(6) {
-                let room = right_min - 16 - x;
-                let msg = fit(&mut self.tx, m, room);
-                if room > 40 {
-                    self.tx.draw_ui(cv, x, y, &msg, c.status_fg, Rect::new(x, r.y, room.max(0), r.h), false);
-                }
+        if let Some((m, t)) = &self.status
+            && t.elapsed() < std::time::Duration::from_secs(6)
+        {
+            let room = right_min - 16 - x;
+            let msg = fit(&mut self.tx, m, room);
+            if room > 40 {
+                self.tx.draw_ui(cv, x, y, &msg, c.status_fg, Rect::new(x, r.y, room.max(0), r.h), false);
             }
         }
     }
@@ -932,7 +1036,9 @@ impl App {
         if !self.layout.status.contains(x, y) {
             return false;
         }
-        let Some((_, kind)) = self.layout.status_btns.iter().find(|(r, _)| r.contains(x, y)).copied() else { return true };
+        let Some((_, kind)) = self.layout.status_btns.iter().find(|(r, _)| r.contains(x, y)).copied() else {
+            return true;
+        };
         use crate::app_panel::PanelTab;
         match kind {
             StatusBtn::Sidebar => {
@@ -972,7 +1078,8 @@ impl App {
 // ───────────── indentation / language of the current document ─────────────
 
 /// Entries of the indentation picker: (label, spec).
-pub const INDENT_CHOICES: &[(&str, &str)] = &[("Spaces: 2", "2"), ("Spaces: 4", "4"), ("Spaces: 8", "8"), ("Tab", "tab")];
+pub const INDENT_CHOICES: &[(&str, &str)] =
+    &[("Spaces: 2", "2"), ("Spaces: 4", "4"), ("Spaces: 8", "8"), ("Tab", "tab")];
 
 /// "2" / "4" / "8" -> that many spaces, "tab" -> a tab; anything else -> `None`.
 pub fn indent_from_spec(spec: &str) -> Option<String> {
@@ -990,7 +1097,10 @@ pub fn indent_spec(indent: &str) -> String {
 /// Line comment prefix for a language id ("" = none: toggling comments does nothing).
 pub fn comment_for_lang(lang: Option<&str>) -> &'static str {
     match lang {
-        Some("python" | "shellscript" | "toml" | "yaml" | "ruby" | "dockerfile" | "makefile" | "perl" | "r" | "powershell" | "properties" | "ini" | "nix" | "elixir" | "julia") => "#",
+        Some(
+            "python" | "shellscript" | "toml" | "yaml" | "ruby" | "dockerfile" | "makefile" | "perl" | "r"
+            | "powershell" | "properties" | "ini" | "nix" | "elixir" | "julia",
+        ) => "#",
         Some("lua" | "sql" | "haskell" | "ada" | "plsql") => "--",
         Some("css" | "scss" | "less" | "html" | "markdown" | "json" | "xml" | "jsonc") => "",
         _ => "//",
@@ -1042,7 +1152,11 @@ pub fn parse_indent_action(spec: &str) -> Option<IndentAction> {
         return indent_from_spec(rest).map(|_| IndentAction::Reindent(rest.to_string()));
     }
     if let Some(rest) = spec.strip_prefix("tabw:") {
-        return rest.parse::<usize>().ok().filter(|n| crate::config::TAB_WIDTHS.contains(n)).map(IndentAction::TabWidth);
+        return rest
+            .parse::<usize>()
+            .ok()
+            .filter(|n| crate::config::TAB_WIDTHS.contains(n))
+            .map(IndentAction::TabWidth);
     }
     indent_from_spec(spec).map(|_| IndentAction::Set(spec.to_string()))
 }
@@ -1203,7 +1317,11 @@ impl App {
         let cur = indent_spec(&d.ed.indent);
         let mut items: Vec<Item> = INDENT_CHOICES
             .iter()
-            .map(|(label, spec)| Item { label: label.to_string(), detail: if *spec == cur { "current".into() } else { "only changes the setting".into() }, action: Action::SetIndent(spec.to_string()) })
+            .map(|(label, spec)| Item {
+                label: label.to_string(),
+                detail: if *spec == cur { "current".into() } else { "only changes the setting".into() },
+                action: Action::SetIndent(spec.to_string()),
+            })
             .collect();
         items.extend(INDENT_CHOICES.iter().map(|(label, spec)| Item {
             label: format!("Re-indent file to: {label}"),
@@ -1224,7 +1342,11 @@ impl App {
         use crate::app_overlay::{Action, Item};
         let Some(d) = self.docs.get(self.active) else { return };
         let cur = d.lang;
-        let mut items = vec![Item { label: "Plain text".into(), detail: if cur.is_none() { "current".into() } else { String::new() }, action: Action::SetLang(None) }];
+        let mut items = vec![Item {
+            label: "Plain text".into(),
+            detail: if cur.is_none() { "current".into() } else { String::new() },
+            action: Action::SetLang(None),
+        }];
         let mut sel = 0;
         for (id, name) in language_choices(&self.assets) {
             if Some(id.as_str()) == cur {
@@ -1250,7 +1372,10 @@ impl App {
                 if let Some(p) = self.pick_entry(i) {
                     p.indent = Some(s.clone());
                 }
-                self.say(format!("indentation: {}", if s == "tab" { "tabs".to_string() } else { format!("{s} spaces") }));
+                self.say(format!(
+                    "indentation: {}",
+                    if s == "tab" { "tabs".to_string() } else { format!("{s} spaces") }
+                ));
             }
             IndentAction::Reindent(s) => {
                 let Some(to) = indent_from_spec(&s) else { return };
@@ -1266,7 +1391,11 @@ impl App {
                     p.indent = Some(s.clone());
                 }
                 let what = if s == "tab" { "tabs".to_string() } else { format!("{s} spaces") };
-                self.say(if lines == 0 { format!("indentation: {what} (the file already used it)") } else { format!("re-indented to {what}: {lines} lines") });
+                self.say(if lines == 0 {
+                    format!("indentation: {what} (the file already used it)")
+                } else {
+                    format!("re-indented to {what}: {lines} lines")
+                });
             }
             IndentAction::TabWidth(w) => {
                 self.docs[i].ed.tab_w = w;
@@ -1294,14 +1423,17 @@ impl App {
         let lang = id.as_deref().map(static_lang);
         let mut note = None;
         let hl = lang.and_then(|l| {
-            let tk = crate::textmate::Registry::new(&self.assets).ok().and_then(|reg| reg.scope_for_language(l)).and_then(|scope| {
-                if let Some(t) = self.tokenizers.get(&scope) {
-                    return Some(t.clone());
-                }
-                let t = crate::highlight::make_tokenizer(&self.assets, &scope)?;
-                self.tokenizers.insert(scope, t.clone());
-                Some(t)
-            });
+            let tk = crate::textmate::Registry::new(&self.assets)
+                .ok()
+                .and_then(|reg| reg.scope_for_language(l))
+                .and_then(|scope| {
+                    if let Some(t) = self.tokenizers.get(&scope) {
+                        return Some(t.clone());
+                    }
+                    let t = crate::highlight::make_tokenizer(&self.assets, &scope)?;
+                    self.tokenizers.insert(scope, t.clone());
+                    Some(t)
+                });
             if tk.is_none() {
                 note = Some(format!("no grammar for {l}"));
             }
@@ -1395,12 +1527,23 @@ mod tests {
     }
 
     fn br(name: &str, author: &str, subject: &str, remote: bool) -> Entry {
-        Entry::Branch(Branch { name: name.into(), remote, current: false, author: author.into(), when: 0, subject: subject.into() })
+        Entry::Branch(Branch {
+            name: name.into(),
+            remote,
+            current: false,
+            author: author.into(),
+            when: 0,
+            subject: subject.into(),
+        })
     }
 
     #[test]
     fn branch_search_matches_name_author_and_subject_and_wraps_selection() {
-        let e = vec![br("main", "Ana", "init", false), br("feat/login", "Beto", "add form", false), br("origin/feat/login", "Beto", "add form", true)];
+        let e = vec![
+            br("main", "Ana", "init", false),
+            br("feat/login", "Beto", "add form", false),
+            br("origin/feat/login", "Beto", "add form", true),
+        ];
         let mut m = TopMenu::new(MenuKind::Branch, Rect::new(0, 0, 10, 10), e, "/w".into());
         assert_eq!(m.filtered, [0, 1, 2]);
         m.field = TextField::with("login");

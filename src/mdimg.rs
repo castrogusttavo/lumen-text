@@ -16,7 +16,7 @@ use std::{
     io::{Cursor, Read},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::mpsc::{channel, Receiver, Sender},
+    sync::mpsc::{Receiver, Sender, channel},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -87,14 +87,18 @@ fn sniff(b: &[u8]) -> Option<Fmt> {
     } else {
         let head = &b[..b.len().min(4096)];
         let s = String::from_utf8_lossy(head);
-        (s.contains("<svg") || (s.trim_start_matches('\u{feff}').trim_start().starts_with("<?xml") && s.contains("svg"))).then_some(Fmt::Svg)
+        (s.contains("<svg")
+            || (s.trim_start_matches('\u{feff}').trim_start().starts_with("<?xml") && s.contains("svg")))
+        .then_some(Fmt::Svg)
     }
 }
 
 /// Size from the header (`b` is a prefix of the file; SVG needs the whole file).
 fn header_size(b: &[u8]) -> Option<(u32, u32)> {
     let (w, h) = match sniff(b)? {
-        Fmt::Png => (u32::from_be_bytes(b.get(16..20)?.try_into().ok()?), u32::from_be_bytes(b.get(20..24)?.try_into().ok()?)),
+        Fmt::Png => {
+            (u32::from_be_bytes(b.get(16..20)?.try_into().ok()?), u32::from_be_bytes(b.get(20..24)?.try_into().ok()?))
+        }
         Fmt::Gif => (le16(b, 6)?, le16(b, 8)?),
         Fmt::Jpeg => {
             let mut i = 2;
@@ -294,6 +298,7 @@ impl Decoded {
         }
     }
 
+    #[cfg(test)]
     /// The first frame.
     pub fn first(self) -> Option<Pix> {
         match self {
@@ -304,7 +309,11 @@ impl Decoded {
 }
 
 /// Collect the frames an `each` source produces, scaled to `tw` x `th`, within the animation caps.
-fn collect_frames(each: impl FnOnce(&mut dyn FnMut(Pix, u32) -> bool) -> Option<()>, tw: u32, th: u32) -> Option<Decoded> {
+fn collect_frames(
+    each: impl FnOnce(&mut dyn FnMut(Pix, u32) -> bool) -> Option<()>,
+    tw: u32,
+    th: u32,
+) -> Option<Decoded> {
     let mut frames: Vec<(Pix, u32)> = Vec::new();
     let (mut bytes, mut over) = (0usize, false);
     each(&mut |p, ms| {
@@ -341,13 +350,15 @@ pub fn decode_any(path: &Path, tw: u32, th: u32) -> Option<Decoded> {
     }
     match fmt {
         Fmt::Gif => collect_frames(|sink| gif_each(&bytes, sink), tw, th),
-        Fmt::Webp => collect_frames(|sink| webp_each(&bytes, sink), tw, th).or_else(|| decode_webp(&bytes).map(|p| Decoded::Still(scale_to(p, tw, th)))),
+        Fmt::Webp => collect_frames(|sink| webp_each(&bytes, sink), tw, th)
+            .or_else(|| decode_webp(&bytes).map(|p| Decoded::Still(scale_to(p, tw, th)))),
         Fmt::Png => decode_png(&bytes).map(|p| Decoded::Still(scale_to(p, tw, th))),
         Fmt::Jpeg => decode_jpeg(&bytes).map(|p| Decoded::Still(scale_to(p, tw, th))),
         Fmt::Svg => None,
     }
 }
 
+#[cfg(test)]
 /// Decode `path` and scale it to exactly `tw` x `th` pixels (first frame of an animation).
 pub fn decode(path: &Path, tw: u32, th: u32) -> Option<Pix> {
     decode_any(path, tw, th)?.first()
@@ -382,7 +393,10 @@ pub fn scale_to(src: Pix, tw: u32, th: u32) -> Pix {
                         n += 1;
                     }
                 }
-                out[dy * tw_ + dx] = if sa == 0 { 0 } else { argb((sr / sa) as u8, (sg / sa) as u8, (sb / sa) as u8, (sa / n) as u8) };
+                out[dy * tw_ + dx] = match (sr.checked_div(sa), sg.checked_div(sa), sb.checked_div(sa)) {
+                    (Some(r), Some(g), Some(b)) => argb(r as u8, g as u8, b as u8, (sa / n) as u8),
+                    _ => 0,
+                };
             }
         }
     } else {
@@ -396,7 +410,12 @@ pub fn scale_to(src: Pix, tw: u32, th: u32) -> Pix {
                 let sx = ((dx as f32 + 0.5) * fx - 0.5).clamp(0.0, (sw - 1) as f32);
                 let (x0, tx) = (sx as usize, sx.fract());
                 let x1 = (x0 + 1).min(sw - 1);
-                let q = [(src.px[y0 * sw + x0], (1.0 - tx) * (1.0 - ty)), (src.px[y0 * sw + x1], tx * (1.0 - ty)), (src.px[y1 * sw + x0], (1.0 - tx) * ty), (src.px[y1 * sw + x1], tx * ty)];
+                let q = [
+                    (src.px[y0 * sw + x0], (1.0 - tx) * (1.0 - ty)),
+                    (src.px[y0 * sw + x1], tx * (1.0 - ty)),
+                    (src.px[y1 * sw + x0], (1.0 - tx) * ty),
+                    (src.px[y1 * sw + x1], tx * ty),
+                ];
                 let (mut a, mut r, mut g, mut b) = (0f32, 0f32, 0f32, 0f32);
                 for (p, wgt) in q {
                     let pa = (p >> 24) as f32 * wgt;
@@ -405,7 +424,8 @@ pub fn scale_to(src: Pix, tw: u32, th: u32) -> Pix {
                     g += ((p >> 8) & 0xff) as f32 * pa;
                     b += (p & 0xff) as f32 * pa;
                 }
-                out[dy * tw_ + dx] = if a <= 0.0 { 0 } else { argb((r / a) as u8, (g / a) as u8, (b / a) as u8, a.round() as u8) };
+                out[dy * tw_ + dx] =
+                    if a <= 0.0 { 0 } else { argb((r / a) as u8, (g / a) as u8, (b / a) as u8, a.round() as u8) };
             }
         }
     }
@@ -433,7 +453,9 @@ pub fn blit(cv: &mut Canvas, x: i32, y: i32, pix: &Pix, clip: Rect) {
                 *d = s & 0x00ff_ffff;
             } else {
                 let mix = |dc: u32, sc: u32| (dc * (255 - a) + sc * a) / 255;
-                *d = (mix((*d >> 16) & 0xff, (s >> 16) & 0xff) << 16) | (mix((*d >> 8) & 0xff, (s >> 8) & 0xff) << 8) | mix(*d & 0xff, s & 0xff);
+                *d = (mix((*d >> 16) & 0xff, (s >> 16) & 0xff) << 16)
+                    | (mix((*d >> 8) & 0xff, (s >> 8) & 0xff) << 8)
+                    | mix(*d & 0xff, s & 0xff);
             }
         }
     }
@@ -462,7 +484,13 @@ pub struct Anim {
 impl Anim {
     fn new(frames: Vec<(Pix, u32)>) -> Self {
         let mut t = 0u64;
-        let ends = frames.iter().map(|(_, ms)| { t += *ms as u64; t }).collect();
+        let ends = frames
+            .iter()
+            .map(|(_, ms)| {
+                t += *ms as u64;
+                t
+            })
+            .collect();
         Anim { frames: frames.into_iter().map(|(p, _)| Rc::new(p)).collect(), ends }
     }
 
@@ -552,12 +580,15 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' {
-            if let Some(v) = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && let Some(v) = b
+                .get(i + 1..i + 3)
+                .and_then(|h| std::str::from_utf8(h).ok())
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;
@@ -568,7 +599,23 @@ fn percent_decode(s: &str) -> String {
 impl ImgStore {
     pub fn new() -> Self {
         let (tx, rx) = channel();
-        ImgStore { base: None, paths: vec![], ids: HashMap::new(), sizes: HashMap::new(), stamps: HashMap::new(), gens: HashMap::new(), tex: HashMap::new(), jobs: VecDeque::new(), inflight: 0, tx, rx, clock: 0, bytes: 0, anim_due: None, playing: 0 }
+        ImgStore {
+            base: None,
+            paths: vec![],
+            ids: HashMap::new(),
+            sizes: HashMap::new(),
+            stamps: HashMap::new(),
+            gens: HashMap::new(),
+            tex: HashMap::new(),
+            jobs: VecDeque::new(),
+            inflight: 0,
+            tx,
+            rx,
+            clock: 0,
+            bytes: 0,
+            anim_due: None,
+            playing: 0,
+        }
     }
 
     /// Directory relative image paths are resolved against. True when it changed.
@@ -587,7 +634,10 @@ impl ImgStore {
         if url.is_empty() || url.starts_with('/') || url.starts_with('#') || url.starts_with('\\') {
             return None;
         }
-        if url.find(':').is_some_and(|i| i > 1 && url[..i].chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))) {
+        if url
+            .find(':')
+            .is_some_and(|i| i > 1 && url[..i].chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)))
+        {
             return None;
         }
         let path = url.split(['?', '#']).next().unwrap_or("");
@@ -601,10 +651,6 @@ impl ImgStore {
                 i
             }
         })
-    }
-
-    pub fn path(&self, id: u32) -> Option<&Path> {
-        self.paths.get(id as usize).map(PathBuf::as_path)
     }
 
     /// Natural size of image `id` (header probe, cached; `None` when missing or unreadable).
@@ -621,7 +667,12 @@ impl ImgStore {
     /// Forget what is cached about images whose file changed since it was probed (size, decoded
     /// pixels, queued and running decodes). True when any did: the layout has to be redone.
     pub fn changed_on_disk(&mut self) -> bool {
-        let stale: Vec<u32> = self.stamps.iter().filter(|(id, st)| self.paths.get(**id as usize).is_none_or(|p| stamp_of(p) != **st)).map(|(id, _)| *id).collect();
+        let stale: Vec<u32> = self
+            .stamps
+            .iter()
+            .filter(|(id, st)| self.paths.get(**id as usize).is_none_or(|p| stamp_of(p) != **st))
+            .map(|(id, _)| *id)
+            .collect();
         for id in &stale {
             self.sizes.remove(id);
             self.stamps.remove(id);
@@ -711,7 +762,8 @@ impl ImgStore {
         let mut any = false;
         while let Ok((key, gen_, out)) = self.rx.try_recv() {
             self.inflight = self.inflight.saturating_sub(1);
-            if gen_ != self.gens.get(&key.0).copied().unwrap_or(0) || !matches!(self.tex.get(&key), Some(Slot::Pending)) {
+            if gen_ != self.gens.get(&key.0).copied().unwrap_or(0) || !matches!(self.tex.get(&key), Some(Slot::Pending))
+            {
                 continue; // the file changed while this was decoding: a newer request owns the slot
             }
             any = true;
@@ -751,6 +803,7 @@ impl ImgStore {
         }
     }
 
+    #[cfg(test)]
     /// Bytes of decoded pixels held (diagnostics / tests).
     pub fn cached_bytes(&self) -> usize {
         self.bytes
@@ -762,14 +815,18 @@ impl ImgStore {
 // masks, clip paths or real gradients (a gradient paints its first stop color).
 
 pub mod svg {
-    use super::{argb, Pix};
+    use super::{Pix, argb};
     use std::collections::HashMap;
     use tiny_skia::{Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
     /// `width` / `height` / `viewBox` of the root, in px.
     pub fn size(b: &[u8]) -> Option<(u32, u32)> {
         let text = std::str::from_utf8(b).ok()?;
-        let doc = roxmltree::Document::parse_with_options(text, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).ok()?;
+        let doc = roxmltree::Document::parse_with_options(
+            text,
+            roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() },
+        )
+        .ok()?;
         let root = doc.root_element();
         if root.tag_name().name() != "svg" {
             return None;
@@ -811,7 +868,12 @@ pub mod svg {
     }
 
     fn view_box(n: &roxmltree::Node) -> Option<[f32; 4]> {
-        let v: Vec<f32> = n.attribute("viewBox")?.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).filter_map(|s| s.parse().ok()).collect();
+        let v: Vec<f32> = n
+            .attribute("viewBox")?
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.parse().ok())
+            .collect();
         (v.len() == 4 && v[2] > 0.0 && v[3] > 0.0).then(|| [v[0], v[1], v[2], v[3]])
     }
 
@@ -881,8 +943,13 @@ pub mod svg {
                 _ => None,
             };
         }
-        if let Some(inner) = l.strip_prefix("rgb").and_then(|r| r.trim_start_matches('a').strip_prefix('(')).and_then(|r| r.strip_suffix(')')) {
-            let parts: Vec<&str> = inner.split(|c: char| c == ',' || c == '/' || c.is_whitespace()).filter(|x| !x.is_empty()).collect();
+        if let Some(inner) = l
+            .strip_prefix("rgb")
+            .and_then(|r| r.trim_start_matches('a').strip_prefix('('))
+            .and_then(|r| r.strip_suffix(')'))
+        {
+            let parts: Vec<&str> =
+                inner.split(|c: char| c == ',' || c == '/' || c.is_whitespace()).filter(|x| !x.is_empty()).collect();
             let ch = |x: &str| -> Option<u8> {
                 match x.strip_suffix('%') {
                     Some(p) => Some((p.parse::<f32>().ok()? * 2.55).round().clamp(0.0, 255.0) as u8),
@@ -910,10 +977,10 @@ pub mod svg {
     fn prop(n: &roxmltree::Node, name: &str) -> Option<String> {
         if let Some(st) = n.attribute("style") {
             for decl in st.split(';') {
-                if let Some((k, v)) = decl.split_once(':') {
-                    if k.trim() == name {
-                        return Some(v.trim().to_string());
-                    }
+                if let Some((k, v)) = decl.split_once(':')
+                    && k.trim() == name
+                {
+                    return Some(v.trim().to_string());
                 }
             }
         }
@@ -930,7 +997,11 @@ pub mod svg {
         while let Some(open) = rest.find('(') {
             let name = rest[..open].trim().trim_start_matches(|c: char| c == ',' || c.is_whitespace());
             let Some(close) = rest[open..].find(')') else { break };
-            let args: Vec<f32> = rest[open + 1..open + close].split(|c: char| c == ',' || c.is_whitespace()).filter(|x| !x.is_empty()).filter_map(|x| x.parse().ok()).collect();
+            let args: Vec<f32> = rest[open + 1..open + close]
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|x| !x.is_empty())
+                .filter_map(|x| x.parse().ok())
+                .collect();
             let a = |i: usize| args.get(i).copied().unwrap_or(0.0);
             let t = match name {
                 "matrix" if args.len() == 6 => Transform::from_row(a(0), a(1), a(2), a(3), a(4), a(5)),
@@ -968,15 +1039,15 @@ pub mod svg {
             }
             color(v, st.color)
         };
-        if let Some(v) = prop(n, "fill") {
-            if let Some(c) = paint(&v, st, cx) {
-                st.fill = c;
-            }
+        if let Some(v) = prop(n, "fill")
+            && let Some(c) = paint(&v, st, cx)
+        {
+            st.fill = c;
         }
-        if let Some(v) = prop(n, "stroke") {
-            if let Some(c) = paint(&v, st, cx) {
-                st.stroke = c;
-            }
+        if let Some(v) = prop(n, "stroke")
+            && let Some(c) = paint(&v, st, cx)
+        {
+            st.stroke = c;
         }
         if let Some(v) = prop(n, "stroke-width").and_then(|v| length(&v)) {
             st.sw = v;
@@ -1037,7 +1108,7 @@ pub mod svg {
         if rx <= 0.0 || ry <= 0.0 {
             pb.push_rect(tiny_skia::Rect::from_xywh(x, y, w, h)?);
         } else {
-            const K: f32 = 0.552_284_75;
+            const K: f32 = 0.552_284_8;
             pb.move_to(x + rx, y);
             pb.line_to(x + w - rx, y);
             pb.cubic_to(x + w - rx + rx * K, y, x + w, y + ry - ry * K, x + w, y + ry);
@@ -1053,13 +1124,17 @@ pub mod svg {
     }
 
     fn points(s: &str, close: bool) -> Option<tiny_skia::Path> {
-        let v: Vec<f32> = s.split(|c: char| c == ',' || c.is_whitespace()).filter(|x| !x.is_empty()).filter_map(|x| x.parse().ok()).collect();
+        let v: Vec<f32> = s
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|x| !x.is_empty())
+            .filter_map(|x| x.parse().ok())
+            .collect();
         if v.len() < 4 {
             return None;
         }
         let mut pb = PathBuilder::new();
         pb.move_to(v[0], v[1]);
-        for p in v[2..].chunks_exact(2) {
+        for p in v[2..].as_chunks::<2>().0 {
             pb.line_to(p[0], p[1]);
         }
         if close {
@@ -1073,7 +1148,26 @@ pub mod svg {
             return;
         }
         let tag = n.tag_name().name();
-        if matches!(tag, "defs" | "clipPath" | "mask" | "symbol" | "title" | "desc" | "metadata" | "style" | "linearGradient" | "radialGradient" | "pattern" | "filter" | "marker" | "text" | "image" | "script" | "foreignObject") {
+        if matches!(
+            tag,
+            "defs"
+                | "clipPath"
+                | "mask"
+                | "symbol"
+                | "title"
+                | "desc"
+                | "metadata"
+                | "style"
+                | "linearGradient"
+                | "radialGradient"
+                | "pattern"
+                | "filter"
+                | "marker"
+                | "text"
+                | "image"
+                | "script"
+                | "foreignObject"
+        ) {
             return;
         }
         if prop(&n, "display").as_deref() == Some("none") || prop(&n, "visibility").as_deref() == Some("hidden") {
@@ -1090,7 +1184,8 @@ pub mod svg {
                 cx.depth -= 1;
             }
             "use" => {
-                let href = n.attribute("href").or_else(|| n.attributes().find(|a| a.name() == "href").map(|a| a.value()));
+                let href =
+                    n.attribute("href").or_else(|| n.attributes().find(|a| a.name() == "href").map(|a| a.value()));
                 if let Some(target) = href.and_then(|h| h.strip_prefix('#')).and_then(|id| cx.ids.get(id)).copied() {
                     st.ts = st.ts.pre_translate(num(&n, "x"), num(&n, "y"));
                     cx.depth += 1;
@@ -1113,7 +1208,9 @@ pub mod svg {
                 if n.attribute("ry").is_none() {
                     ry = rx;
                 }
-                if let Some(p) = (w > 0.0 && h > 0.0).then(|| rect_path(num(&n, "x"), num(&n, "y"), w, h, rx, ry)).flatten() {
+                if let Some(p) =
+                    (w > 0.0 && h > 0.0).then(|| rect_path(num(&n, "x"), num(&n, "y"), w, h, rx, ry)).flatten()
+                {
                     draw_path(pm, &p, &st);
                 }
             }
@@ -1124,7 +1221,9 @@ pub mod svg {
             }
             "ellipse" => {
                 let (cx_, cy, rx, ry) = (num(&n, "cx"), num(&n, "cy"), num(&n, "rx"), num(&n, "ry"));
-                if let Some(p) = tiny_skia::Rect::from_xywh(cx_ - rx, cy - ry, rx * 2.0, ry * 2.0).and_then(PathBuilder::from_oval) {
+                if let Some(p) =
+                    tiny_skia::Rect::from_xywh(cx_ - rx, cy - ry, rx * 2.0, ry * 2.0).and_then(PathBuilder::from_oval)
+                {
                     draw_path(pm, &p, &st);
                 }
             }
@@ -1184,7 +1283,9 @@ pub mod svg {
                     break;
                 }
             }
-            if matches!(s.get(self.i), Some(b'e' | b'E')) && matches!(s.get(self.i + 1), Some(b'0'..=b'9' | b'+' | b'-')) {
+            if matches!(s.get(self.i), Some(b'e' | b'E'))
+                && matches!(s.get(self.i + 1), Some(b'0'..=b'9' | b'+' | b'-'))
+            {
                 self.i += 2;
                 while s.get(self.i).is_some_and(u8::is_ascii_digit) {
                     self.i += 1;
@@ -1206,7 +1307,18 @@ pub mod svg {
 
     /// SVG arc (endpoint form) as cubic Béziers (SVG 1.1 appendix F.6).
     #[allow(clippy::too_many_arguments)]
-    fn arc(pb: &mut PathBuilder, x0: f32, y0: f32, mut rx: f32, mut ry: f32, rot: f32, large: bool, sweep: bool, x: f32, y: f32) {
+    fn arc(
+        pb: &mut PathBuilder,
+        x0: f32,
+        y0: f32,
+        mut rx: f32,
+        mut ry: f32,
+        rot: f32,
+        large: bool,
+        sweep: bool,
+        x: f32,
+        y: f32,
+    ) {
         if (x0 - x).abs() < 1e-6 && (y0 - y).abs() < 1e-6 {
             return;
         }
@@ -1234,10 +1346,7 @@ pub mod svg {
         }
         let (cxp, cyp) = (co * rx * y1 / ry, -co * ry * x1 / rx);
         let (cx, cy) = (cp * cxp - sp * cyp + (x0 + x) / 2.0, sp * cxp + cp * cyp + (y0 + y) / 2.0);
-        let ang = |ux: f32, uy: f32, vx: f32, vy: f32| {
-            let a = (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
-            a
-        };
+        let ang = |ux: f32, uy: f32, vx: f32, vy: f32| (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
         let th1 = ang(1.0, 0.0, (x1 - cxp) / rx, (y1 - cyp) / ry);
         let mut dth = ang((x1 - cxp) / rx, (y1 - cyp) / ry, (-x1 - cxp) / rx, (-y1 - cyp) / ry);
         if !sweep && dth > 0.0 {
@@ -1322,7 +1431,11 @@ pub mod svg {
                 }
                 b'S' => {
                     let v = [sc.num()?, sc.num()?, sc.num()?, sc.num()?];
-                    let (x1, y1) = if matches!(prev.to_ascii_uppercase(), b'C' | b'S') { (2.0 * cx - lcx, 2.0 * cy - lcy) } else { (cx, cy) };
+                    let (x1, y1) = if matches!(prev.to_ascii_uppercase(), b'C' | b'S') {
+                        (2.0 * cx - lcx, 2.0 * cy - lcy)
+                    } else {
+                        (cx, cy)
+                    };
                     pb.cubic_to(x1, y1, v[0] + ox, v[1] + oy, v[2] + ox, v[3] + oy);
                     (lcx, lcy) = (v[0] + ox, v[1] + oy);
                     (cx, cy) = (v[2] + ox, v[3] + oy);
@@ -1335,7 +1448,11 @@ pub mod svg {
                 }
                 b'T' => {
                     let v = [sc.num()?, sc.num()?];
-                    let (x1, y1) = if matches!(prev.to_ascii_uppercase(), b'Q' | b'T') { (2.0 * cx - lcx, 2.0 * cy - lcy) } else { (cx, cy) };
+                    let (x1, y1) = if matches!(prev.to_ascii_uppercase(), b'Q' | b'T') {
+                        (2.0 * cx - lcx, 2.0 * cy - lcy)
+                    } else {
+                        (cx, cy)
+                    };
                     pb.quad_to(x1, y1, v[0] + ox, v[1] + oy);
                     (lcx, lcy) = (x1, y1);
                     (cx, cy) = (v[0] + ox, v[1] + oy);
@@ -1363,19 +1480,38 @@ pub mod svg {
     /// Rasterize at exactly `tw` x `th` pixels.
     pub fn render(b: &[u8], tw: u32, th: u32) -> Option<Pix> {
         let text = std::str::from_utf8(b).ok()?;
-        let doc = roxmltree::Document::parse_with_options(text, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).ok()?;
+        let doc = roxmltree::Document::parse_with_options(
+            text,
+            roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() },
+        )
+        .ok()?;
         let root = doc.root_element();
         let (nw, nh) = size(b)?;
         let vb = view_box(&root).unwrap_or([0.0, 0.0, nw as f32, nh as f32]);
         let mut pm = Pixmap::new(tw, th)?;
         let ts = Transform::from_scale(tw as f32 / vb[2], th as f32 / vb[3]).pre_translate(-vb[0], -vb[1]);
-        let ids: HashMap<&str, roxmltree::Node> = doc.descendants().filter(|n| n.is_element()).filter_map(|n| n.attribute("id").map(|i| (i, n))).collect();
+        let ids: HashMap<&str, roxmltree::Node> =
+            doc.descendants().filter(|n| n.is_element()).filter_map(|n| n.attribute("id").map(|i| (i, n))).collect();
         let mut cx = Ctx { ids, depth: 0 };
-        let base = St { fill: Some([0, 0, 0, 255]), stroke: None, sw: 1.0, even_odd: false, cap: LineCap::Butt, join: LineJoin::Miter, opacity: 1.0, fill_op: 1.0, stroke_op: 1.0, color: [0, 0, 0, 255], ts };
+        let base = St {
+            fill: Some([0, 0, 0, 255]),
+            stroke: None,
+            sw: 1.0,
+            even_odd: false,
+            cap: LineCap::Butt,
+            join: LineJoin::Miter,
+            opacity: 1.0,
+            fill_op: 1.0,
+            stroke_op: 1.0,
+            color: [0, 0, 0, 255],
+            ts,
+        };
         walk(root, &base, &mut pm, &mut cx);
         let px = pm
             .data()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| {
                 let a = p[3] as u32;
                 if a == 0 {
@@ -1433,7 +1569,8 @@ mod tests {
     fn gif_probe_and_decode() {
         // 2x2 GIF89a: palette red/green/blue/white, indices 0 1 / 2 3.
         let gif: [u8; 35] = [
-            b'G', b'I', b'F', b'8', b'9', b'a', 2, 0, 2, 0, 0xf1, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255, 0x2c, 0, 0, 0, 0, 2, 0, 2, 0, 0,
+            b'G', b'I', b'F', b'8', b'9', b'a', 2, 0, 2, 0, 0xf1, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255,
+            0x2c, 0, 0, 0, 0, 2, 0, 2, 0, 0,
         ];
         let mut data = gif.to_vec();
         data.extend_from_slice(&[2, 3, 0x44, 0x34, 0x05, 0, 0x3b]);
@@ -1506,7 +1643,16 @@ mod tests {
         s.set_base(Some(&dir()));
         assert!(s.resolve("a.png").is_some());
         assert!(s.resolve("sub/../a%20b.png?x=1#f").is_some());
-        for bad in ["https://x.io/a.png", "http://x/a.png", "data:image/png;base64,AA", "/etc/a.png", "//cdn/a.png", "#frag", "", "file:///x.png"] {
+        for bad in [
+            "https://x.io/a.png",
+            "http://x/a.png",
+            "data:image/png;base64,AA",
+            "/etc/a.png",
+            "//cdn/a.png",
+            "#frag",
+            "",
+            "file:///x.png",
+        ] {
             assert_eq!(s.resolve(bad), None, "{bad}");
         }
         assert_eq!(s.resolve("a.png"), s.resolve("a.png"));
@@ -1599,7 +1745,11 @@ mod tests {
         std::fs::write(&p, out).unwrap();
         let Some(Decoded::Anim(f)) = decode_any(&p, 2, 2) else { panic!("animation") };
         assert_eq!(f[0].0.px, vec![0xffff0000; 4]);
-        assert_eq!(f[1].0.px, vec![0xffff0000, 0xffff0000, 0xffff0000, 0xff0000ff], "the patch lands on the previous canvas");
+        assert_eq!(
+            f[1].0.px,
+            vec![0xffff0000, 0xffff0000, 0xffff0000, 0xff0000ff],
+            "the patch lands on the previous canvas"
+        );
         assert_eq!(f[2].0.px, vec![0xffff0000; 4], "disposal `previous` restored the canvas before the third frame");
     }
 
@@ -1662,12 +1812,18 @@ mod tests {
         assert_eq!((f[0].1, f[1].1), (120, 120));
         // (the decoder's alpha blending may be off by one in a channel)
         let near = |a: u32, b: u32| (0..4).all(|i| ((a >> (8 * i)) & 0xff).abs_diff((b >> (8 * i)) & 0xff) <= 1);
-        assert!(near(f[0].0.px[0], 0xffff0000) && near(f[1].0.px[0], 0xff0000ff), "{:08x} {:08x}", f[0].0.px[0], f[1].0.px[0]);
+        assert!(
+            near(f[0].0.px[0], 0xffff0000) && near(f[1].0.px[0], 0xff0000ff),
+            "{:08x} {:08x}",
+            f[0].0.px[0],
+            f[1].0.px[0]
+        );
     }
 
     #[test]
     fn animation_clock_picks_frames_and_loops() {
-        let mk = |ms: &[u32]| Anim::new(ms.iter().map(|&m| (Pix { w: 1, h: 1, px: vec![0xff000000 | m] }, m)).collect());
+        let mk =
+            |ms: &[u32]| Anim::new(ms.iter().map(|&m| (Pix { w: 1, h: 1, px: vec![0xff000000 | m] }, m)).collect());
         let a = mk(&[100, 100, 100]);
         let at = |t| (a.frame_at(t), a.until_next(t));
         assert_eq!([at(0), at(99), at(100), at(250), at(299)], [(0, 100), (0, 1), (1, 100), (2, 50), (2, 1)]);
@@ -1710,7 +1866,11 @@ mod tests {
         for &id in &ids {
             kinds.push(matches!(s.texture(id, 4, 4), Tex::Ready(_)));
         }
-        assert_eq!(kinds, [true, true, true, true, false], "at most {MAX_PLAYING} play at once; the rest show the badge");
+        assert_eq!(
+            kinds,
+            [true, true, true, true, false],
+            "at most {MAX_PLAYING} play at once; the rest show the badge"
+        );
         let due = s.anim_due().expect("a playing animation asks for its next frame");
         assert!(due <= Instant::now() + Duration::from_millis(100), "frames are 100 ms apart");
         // After the first delay the next frame is the one drawn.
@@ -1753,7 +1913,11 @@ mod tests {
     fn blit_blends_and_clips() {
         let mut px = vec![0x00101010u32; 8 * 8];
         let mut cv = Canvas { px: &mut px, w: 8, h: 8 };
-        let img = Pix { w: 4, h: 4, px: vec![0xffff0000, 0x00000000, 0x80ffffff, 0xff00ff00].into_iter().cycle().take(16).collect() };
+        let img = Pix {
+            w: 4,
+            h: 4,
+            px: vec![0xffff0000, 0x00000000, 0x80ffffff, 0xff00ff00].into_iter().cycle().take(16).collect(),
+        };
         blit(&mut cv, 6, 6, &img, Rect::new(0, 0, 8, 8));
         assert_eq!(px[6 * 8 + 6], 0x00ff0000);
         assert_eq!(px[6 * 8 + 7], 0x00101010, "transparent pixel leaves the canvas alone");

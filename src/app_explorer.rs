@@ -57,7 +57,15 @@ impl App {
         }
         let Some(row) = self.tree.rows.get(i).cloned() else { return };
         let sel = self.tree.selection();
-        let mk = |paths: Vec<PathBuf>, click_row, toggled| Drag { origin: (x, y), paths, active: false, click_row, toggled, over: None, copy: false };
+        let mk = |paths: Vec<PathBuf>, click_row, toggled| Drag {
+            origin: (x, y),
+            paths,
+            active: false,
+            click_row,
+            toggled,
+            over: None,
+            copy: false,
+        };
         if sel.len() > 1 && self.tree.is_selected(&row.path) {
             // Keep the selection: this press may start dragging all of it. Released without
             // moving, it is a click and collapses the selection to this row.
@@ -101,10 +109,10 @@ impl App {
             }
             d.active = true;
             // The press toggled a folder open / closed; undo that, the user is dragging it.
-            if let Some(p) = d.toggled.take() {
-                if let Some(k) = self.tree.rows.iter().position(|r| r.path == p) {
-                    self.tree.toggle(k);
-                }
+            if let Some(p) = d.toggled.take()
+                && let Some(k) = self.tree.rows.iter().position(|r| r.path == p)
+            {
+                self.tree.toggle(k);
             }
         }
         let paths = self.tree.drag.as_ref().map(|d| d.paths.clone()).unwrap_or_default();
@@ -173,7 +181,11 @@ impl App {
         match (err, done.len()) {
             (Some(e), _) => self.say(format!("error while {}: {e}", if cut { "moving" } else { "pasting" })),
             (None, 0) => self.say("already in this folder"),
-            (None, n) => self.say(format!("{} {}", if n == 1 { "1 item".to_string() } else { format!("{n} itens") }, if cut { "movido(s)" } else { "copiado(s)" })),
+            (None, n) => self.say(format!(
+                "{} {}",
+                if n == 1 { "1 item".to_string() } else { format!("{n} itens") },
+                if cut { "movido(s)" } else { "copiado(s)" }
+            )),
         }
         done
     }

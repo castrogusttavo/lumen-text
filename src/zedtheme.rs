@@ -48,7 +48,7 @@
 //! entries come first so that more specific ones (e.g. `function.method`) can override.
 #![allow(dead_code)]
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -172,13 +172,34 @@ const COLOR_MAP: &[(&str, &[&str])] = &[
 const SYNTAX_MAP: &[(&str, &[&str])] = &[
     ("variable", &["variable", "variable.other", "variable.parameter", "meta.definition.variable"]),
     ("variable.special", &["variable.language", "variable.other.constant", "support.variable"]),
-    ("property", &["variable.other.property", "support.variable.property", "meta.object-literal.key", "support.type.property-name", "entity.name.tag.yaml"]),
+    (
+        "property",
+        &[
+            "variable.other.property",
+            "support.variable.property",
+            "meta.object-literal.key",
+            "support.type.property-name",
+            "entity.name.tag.yaml",
+        ],
+    ),
     ("attribute", &["entity.other.attribute-name", "meta.attribute", "entity.other.inherited-class"]),
     ("punctuation", &["punctuation", "meta.brace", "meta.delimiter"]),
-    ("punctuation.bracket", &["punctuation.definition.block", "punctuation.definition.parameters", "punctuation.section", "meta.brace.round", "meta.brace.square"]),
+    (
+        "punctuation.bracket",
+        &[
+            "punctuation.definition.block",
+            "punctuation.definition.parameters",
+            "punctuation.section",
+            "meta.brace.round",
+            "meta.brace.square",
+        ],
+    ),
     ("punctuation.delimiter", &["punctuation.separator", "punctuation.terminator", "punctuation.accessor"]),
     ("punctuation.special", &["punctuation.definition.template-expression", "punctuation.definition.interpolation"]),
-    ("punctuation.list_marker", &["punctuation.definition.list.begin.markdown", "markup.list punctuation.definition.list"]),
+    (
+        "punctuation.list_marker",
+        &["punctuation.definition.list.begin.markdown", "markup.list punctuation.definition.list"],
+    ),
     ("operator", &["keyword.operator"]),
     ("keyword", &["keyword", "storage", "storage.type", "storage.modifier", "keyword.control"]),
     ("number", &["constant.numeric"]),
@@ -268,7 +289,7 @@ fn convert_theme(t: &Value) -> Result<(String, String), String> {
             if e.get("font_style").and_then(Value::as_str) == Some("italic") {
                 fs.push("italic");
             }
-            if e.get("font_weight").and_then(Value::as_f64).map_or(false, |w| w >= 600.0) {
+            if e.get("font_weight").and_then(Value::as_f64).is_some_and(|w| w >= 600.0) {
                 fs.push("bold");
             }
             if !fs.is_empty() {
@@ -404,7 +425,7 @@ fn list_json_in(dir: &Path) -> Vec<(String, PathBuf)> {
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().map_or(false, |x| x.eq_ignore_ascii_case("json")))
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("json")))
         .filter_map(|p| Some((p.file_stem()?.to_string_lossy().into_owned(), p)))
         .collect();
     v.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then(a.1.cmp(&b.1)));
@@ -457,10 +478,8 @@ pub fn install_zed_themes(zed_dirs: &[PathBuf], out_dir: &Path) -> Vec<String> {
                 let target = out_dir.join(format!("zed-{s}.json"));
                 let out_time = fs::metadata(&target).and_then(|m| m.modified()).ok();
                 let fresh = matches!((src_time, out_time), (Some(a), Some(b)) if b > a);
-                if !fresh {
-                    if fs::create_dir_all(out_dir).is_err() || fs::write(&target, json).is_err() {
-                        continue;
-                    }
+                if !fresh && (fs::create_dir_all(out_dir).is_err() || fs::write(&target, json).is_err()) {
+                    continue;
                 }
                 names.push(name);
             }
@@ -593,7 +612,8 @@ mod tests {
     fn maps_syntax_with_italic_and_bold() {
         let v = val(&convert(SAMPLE).unwrap()[0].1);
         let rules = v["tokenColors"].as_array().unwrap();
-        let find = |scope: &str| rules.iter().find(|r| r["scope"].as_array().unwrap().iter().any(|s| s == scope)).unwrap();
+        let find =
+            |scope: &str| rules.iter().find(|r| r["scope"].as_array().unwrap().iter().any(|s| s == scope)).unwrap();
         let c = find("comment");
         assert_eq!(c["settings"]["foreground"], "#667788");
         assert_eq!(c["settings"]["fontStyle"], "italic");

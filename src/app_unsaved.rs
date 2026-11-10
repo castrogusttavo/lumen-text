@@ -102,7 +102,14 @@ impl Unsaved {
             body.push(format!("{}{more}", shown.join(", ")));
         }
         if self.debug {
-            body.push(if n == 0 { "It will be stopped when you switch projects." } else { "The running debug session will also be stopped." }.into());
+            body.push(
+                if n == 0 {
+                    "It will be stopped when you switch projects."
+                } else {
+                    "The running debug session will also be stopped."
+                }
+                .into(),
+            );
         }
         if matches!(self.pending, Pending::SwitchProject(_)) {
             body.push("Open tabs will be closed when you switch projects.".into());
@@ -153,7 +160,8 @@ pub fn tabs_to_close(pinned: &[bool], dirty: &[bool], keep: Option<usize>) -> (V
 /// are not closed, but the user is asked about them and may save them); "Close others" only lists
 /// what it closes.
 pub fn tabs_to_ask(pinned: &[bool], dirty: &[bool], keep: Option<usize>) -> (Vec<usize>, usize) {
-    let mut v: Vec<usize> = (0..pinned.len()).filter(|&i| dirty[i] && Some(i) != keep && (!pinned[i] || keep.is_none())).collect();
+    let mut v: Vec<usize> =
+        (0..pinned.len()).filter(|&i| dirty[i] && Some(i) != keep && (!pinned[i] || keep.is_none())).collect();
     v.sort_unstable();
     let kept = v.iter().filter(|&&i| pinned[i]).count();
     (v, kept)
@@ -292,10 +300,10 @@ impl App {
             self.say(format!("already exists: {}", path.display()));
             return self.ask_save_as(i, rest, then, text);
         }
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return self.say(format!("could not create {}: {e}", parent.display()));
-            }
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return self.say(format!("could not create {}: {e}", parent.display()));
         }
         self.set_doc_path(i, &path);
         if let Err(e) = self.save_doc(i) {
@@ -620,7 +628,10 @@ mod tests {
         let u = untitled(&mut app, "x");
         app.save_as_answer(u, vec![], None, "seed.txt".into());
         assert_eq!(std::fs::read_to_string(dir.join("seed.txt")).unwrap(), "seed\n", "never overwrites");
-        assert!(matches!(&app.overlay, Overlay::Prompt(p) if p.field.text == "seed.txt"), "asks again with the text kept");
+        assert!(
+            matches!(&app.overlay, Overlay::Prompt(p) if p.field.text == "seed.txt"),
+            "asks again with the text kept"
+        );
         app.overlay = Overlay::None;
         app.save_as_answer(u, vec![], None, "  ".into());
         assert!(app.docs[u].path().is_none() && matches!(app.overlay, Overlay::None));

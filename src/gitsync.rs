@@ -32,10 +32,15 @@ pub fn parse_counts(out: &str) -> Option<(usize, usize)> {
 }
 
 pub fn info(top: &Path) -> SyncInfo {
-    let Some((ahead, behind)) = git_run(top, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]).ok().and_then(|o| parse_counts(&o)) else {
+    let Some((ahead, behind)) =
+        git_run(top, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]).ok().and_then(|o| parse_counts(&o))
+    else {
         return SyncInfo::default();
     };
-    let upstream = git_run(top, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let upstream = git_run(top, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     SyncInfo { upstream, ahead, behind }
 }
 
@@ -58,13 +63,21 @@ pub fn rewrote_published(top: &Path) -> bool {
 /// Remote a branch without upstream should be published to: `branch.<b>.pushRemote`,
 /// `remote.pushDefault`, `origin`, else the only / first remote. None = no remotes at all.
 pub fn default_remote(top: &Path, branch: &str) -> Option<String> {
-    let remotes: Vec<String> = git_run(top, &["remote"]).ok()?.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
-    pick_remote(&remotes, git_run(top, &["config", "--get", &format!("branch.{branch}.pushRemote")]).ok().as_deref(), git_run(top, &["config", "--get", "remote.pushDefault"]).ok().as_deref())
+    let remotes: Vec<String> =
+        git_run(top, &["remote"]).ok()?.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    pick_remote(
+        &remotes,
+        git_run(top, &["config", "--get", &format!("branch.{branch}.pushRemote")]).ok().as_deref(),
+        git_run(top, &["config", "--get", "remote.pushDefault"]).ok().as_deref(),
+    )
 }
 
 pub fn pick_remote(remotes: &[String], branch_push: Option<&str>, push_default: Option<&str>) -> Option<String> {
     let known = |n: Option<&str>| n.map(str::trim).filter(|n| remotes.iter().any(|r| r == n)).map(str::to_string);
-    known(branch_push).or_else(|| known(push_default)).or_else(|| known(Some("origin"))).or_else(|| remotes.first().cloned())
+    known(branch_push)
+        .or_else(|| known(push_default))
+        .or_else(|| known(Some("origin")))
+        .or_else(|| remotes.first().cloned())
 }
 
 /// Message of the last commit (what "Amend" prefills).
@@ -79,7 +92,8 @@ pub fn commit_amend(top: &Path, msg: &str) -> Result<String, String> {
     if msg.trim().is_empty() {
         return Err("write a commit message".into());
     }
-    git_run(top, &["commit", "--amend", "-m", msg.trim()]).map(|o| o.lines().next().unwrap_or("commit amended").to_string())
+    git_run(top, &["commit", "--amend", "-m", msg.trim()])
+        .map(|o| o.lines().next().unwrap_or("commit amended").to_string())
 }
 
 /// How a pull integrates the remote commits.
@@ -139,7 +153,10 @@ pub enum Op {
     /// fetch left it.
     ForcePush,
     /// First push of a branch: `push --set-upstream <remote> <branch>`.
-    Publish { remote: String, branch: String },
+    Publish {
+        remote: String,
+        branch: String,
+    },
 }
 
 impl Op {
@@ -221,28 +238,73 @@ pub struct Fail {
 pub fn classify(lines: &[String]) -> Fail {
     let all = lines.join("\n");
     let has = |s: &str| all.contains(s);
-    let (kind, text) = if has("has no upstream branch") || has("no upstream configured") || has("There is no tracking information") {
+    let (kind, text) = if has("has no upstream branch")
+        || has("no upstream configured")
+        || has("There is no tracking information")
+    {
         (FailKind::NoUpstream, "The branch has no upstream yet")
     } else if has("stale info") {
-        (FailKind::StaleLease, "The remote changed since the last fetch: fetch and check what arrived before forcing again")
-    } else if has("[rejected]") || has("non-fast-forward") || has("fetch first") || has("[remote rejected]") && has("fetch first") {
-        (FailKind::Rejected, "Rejected: the remote has commits you do not have (or you rewrote commits that were already published)")
+        (
+            FailKind::StaleLease,
+            "The remote changed since the last fetch: fetch and check what arrived before forcing again",
+        )
+    } else if has("[rejected]")
+        || has("non-fast-forward")
+        || has("fetch first")
+        || has("[remote rejected]") && has("fetch first")
+    {
+        (
+            FailKind::Rejected,
+            "Rejected: the remote has commits you do not have (or you rewrote commits that were already published)",
+        )
     } else if has("CONFLICT") || has("Automatic merge failed") || has("Could not apply") || has("could not apply") {
-        let how = if has("rebase") { "resolve the files and run git rebase --continue (or --abort) in the terminal" } else { "resolve the marked files and commit (or git merge --abort)" };
+        let how = if has("rebase") {
+            "resolve the files and run git rebase --continue (or --abort) in the terminal"
+        } else {
+            "resolve the marked files and commit (or git merge --abort)"
+        };
         return Fail { kind: FailKind::Conflict, text: format!("Conflicts while integrating: {how}") };
-    } else if has("Not possible to fast-forward") || has("divergent branches") || has("need to specify how to reconcile") {
+    } else if has("Not possible to fast-forward")
+        || has("divergent branches")
+        || has("need to specify how to reconcile")
+    {
         (FailKind::Diverged, "The branches have diverged: choose how to integrate (merge, rebase or fast-forward only)")
-    } else if has("Authentication failed") || has("could not read Username") || has("could not read Password") || has("Permission denied") || has("terminal prompts disabled") || has("Host key verification failed") {
-        (FailKind::Auth, "Authentication failed: the editor does not ask for passwords; set up ssh-agent or a credential helper")
-    } else if has("Could not resolve host") || has("Could not read from remote repository") || has("unable to access") || has("Connection timed out") || has("Network is unreachable") || has("Connection refused") {
+    } else if has("Authentication failed")
+        || has("could not read Username")
+        || has("could not read Password")
+        || has("Permission denied")
+        || has("terminal prompts disabled")
+        || has("Host key verification failed")
+    {
+        (
+            FailKind::Auth,
+            "Authentication failed: the editor does not ask for passwords; set up ssh-agent or a credential helper",
+        )
+    } else if has("Could not resolve host")
+        || has("Could not read from remote repository")
+        || has("unable to access")
+        || has("Connection timed out")
+        || has("Network is unreachable")
+        || has("Connection refused")
+    {
         (FailKind::Network, "Cannot reach the remote (network or address)")
-    } else if has("would be overwritten") || has("commit your changes or stash") || has("You have unstaged changes") || has("unmerged files") {
+    } else if has("would be overwritten")
+        || has("commit your changes or stash")
+        || has("You have unstaged changes")
+        || has("unmerged files")
+    {
         (FailKind::Dirty, "Local changes block the operation: commit or discard them first")
     } else if has("terminated by signal") || has("Terminated") {
         (FailKind::Cancelled, "Cancelled")
     } else {
-        let pick = lines.iter().rev().find(|l| l.starts_with("fatal:") || l.starts_with("error:")).or(lines.iter().rev().find(|l| !l.trim().is_empty()));
-        let t = pick.map(|l| l.trim_start_matches("fatal:").trim_start_matches("error:").trim().to_string()).unwrap_or_else(|| "git failed".into());
+        let pick = lines
+            .iter()
+            .rev()
+            .find(|l| l.starts_with("fatal:") || l.starts_with("error:"))
+            .or(lines.iter().rev().find(|l| !l.trim().is_empty()));
+        let t = pick
+            .map(|l| l.trim_start_matches("fatal:").trim_start_matches("error:").trim().to_string())
+            .unwrap_or_else(|| "git failed".into());
         return Fail { kind: FailKind::Other, text: t };
     };
     Fail { kind, text: text.to_string() }
@@ -252,9 +314,17 @@ pub fn classify(lines: &[String]) -> Fail {
 pub fn summarize(op: &Op, stdout: &str, stderr: &[String]) -> String {
     let err = stderr.join("\n");
     match op {
-        Op::Pull | Op::PullWith(_) if stdout.contains("Already up to date") || stdout.contains("Already up-to-date") => "Already up to date".into(),
+        Op::Pull | Op::PullWith(_)
+            if stdout.contains("Already up to date") || stdout.contains("Already up-to-date") =>
+        {
+            "Already up to date".into()
+        }
         Op::Push | Op::ForcePush if err.contains("Everything up-to-date") => "Nothing to push".into(),
-        Op::PullWith(PullStrategy::Rebase) if stdout.contains("Successfully rebased") || err.contains("Successfully rebased") => "Pull complete (rebase)".into(),
+        Op::PullWith(PullStrategy::Rebase)
+            if stdout.contains("Successfully rebased") || err.contains("Successfully rebased") =>
+        {
+            "Pull complete (rebase)".into()
+        }
         Op::Publish { remote, branch } => format!("Branch published: {remote}/{branch}"),
         _ => op.done().to_string(),
     }
@@ -316,10 +386,18 @@ fn finish(tx: &Sender<Msg>, wake: &(dyn Fn() + Send + Sync), r: Result<String, F
 /// redraws. git never prompts: no terminal (new session) and `GIT_TERMINAL_PROMPT=0`.
 pub fn spawn(top: &Path, op: Op, wake: crate::lsp::Wake) -> Job {
     let (tx, rx) = channel();
-    let pull_configured = git_run(top, &["config", "--get", "pull.rebase"]).is_ok() || git_run(top, &["config", "--get", "pull.ff"]).is_ok();
+    let pull_configured = git_run(top, &["config", "--get", "pull.rebase"]).is_ok()
+        || git_run(top, &["config", "--get", "pull.ff"]).is_ok();
     let args = args_for(&op, pull_configured);
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(top).args(&args).env("GIT_TERMINAL_PROMPT", "0").env("LC_ALL", "C").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.arg("-C")
+        .arg(top)
+        .args(&args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     // SAFETY: setsid is async-signal-safe and runs in the forked child before exec.
     unsafe {
         cmd.pre_exec(|| {
@@ -327,7 +405,8 @@ pub fn spawn(top: &Path, op: Op, wake: crate::lsp::Wake) -> Job {
             Ok(())
         });
     }
-    let mut job = Job { op: op.clone(), started: Instant::now(), rx, progress: String::new(), pid: 0, cancelled: false };
+    let mut job =
+        Job { op: op.clone(), started: Instant::now(), rx, progress: String::new(), pid: 0, cancelled: false };
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -375,7 +454,12 @@ pub fn spawn(top: &Path, op: Op, wake: crate::lsp::Wake) -> Job {
         let stdout = out_thread.join().unwrap_or_default();
         let ok = status.as_ref().is_ok_and(|s| s.success());
         // Progress percentages are noise in an error message.
-        let keep: Vec<String> = lines.into_iter().filter(|l| !l.contains("% (") && !l.starts_with("remote: Counting") && !l.starts_with("remote: Compressing")).collect();
+        let keep: Vec<String> = lines
+            .into_iter()
+            .filter(|l| {
+                !l.contains("% (") && !l.starts_with("remote: Counting") && !l.starts_with("remote: Compressing")
+            })
+            .collect();
         let res = if ok {
             Ok(summarize(&op, &stdout, &keep))
         } else {
@@ -451,15 +535,35 @@ mod tests {
     #[test]
     fn errors_are_classified() {
         let l = |s: &str| s.lines().map(str::to_string).collect::<Vec<_>>();
-        assert_eq!(classify(&l("fatal: The current branch x has no upstream branch.\nTo push the current branch...")).kind, FailKind::NoUpstream);
-        assert_eq!(classify(&l("To /tmp/r\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs")).kind, FailKind::Rejected);
+        assert_eq!(
+            classify(&l("fatal: The current branch x has no upstream branch.\nTo push the current branch...")).kind,
+            FailKind::NoUpstream
+        );
+        assert_eq!(
+            classify(&l("To /tmp/r\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs"))
+                .kind,
+            FailKind::Rejected
+        );
         assert_eq!(classify(&l("fatal: Not possible to fast-forward, aborting.")).kind, FailKind::Diverged);
-        assert_eq!(classify(&l("fatal: could not read Username for 'https://x': terminal prompts disabled")).kind, FailKind::Auth);
-        assert_eq!(classify(&l("fatal: unable to access 'https://x/': Could not resolve host: x")).kind, FailKind::Network);
-        assert_eq!(classify(&l("error: Your local changes to the following files would be overwritten by merge:\n\ta.ts")).kind, FailKind::Dirty);
+        assert_eq!(
+            classify(&l("fatal: could not read Username for 'https://x': terminal prompts disabled")).kind,
+            FailKind::Auth
+        );
+        assert_eq!(
+            classify(&l("fatal: unable to access 'https://x/': Could not resolve host: x")).kind,
+            FailKind::Network
+        );
+        assert_eq!(
+            classify(&l("error: Your local changes to the following files would be overwritten by merge:\n\ta.ts"))
+                .kind,
+            FailKind::Dirty
+        );
         let o = classify(&l("hint: foo\nfatal: something odd"));
         assert_eq!((o.kind, o.text.as_str()), (FailKind::Other, "something odd"));
-        assert_eq!(split_progress("Receiving objects:  45% (9/20)\rReceiving objects: 100% (20/20)\nDone\n"), ["Receiving objects:  45% (9/20)", "Receiving objects: 100% (20/20)", "Done"]);
+        assert_eq!(
+            split_progress("Receiving objects:  45% (9/20)\rReceiving objects: 100% (20/20)\nDone\n"),
+            ["Receiving objects:  45% (9/20)", "Receiving objects: 100% (20/20)", "Done"]
+        );
     }
 
     #[test]
@@ -475,8 +579,14 @@ mod tests {
         assert!(has(PullStrategy::FfOnly, "--ff-only"));
         assert_eq!(args_for(&Op::ForcePush, false), ["push", "--progress", "--force-with-lease"]);
         let l = |s: &str| s.lines().map(str::to_string).collect::<Vec<_>>();
-        assert_eq!(classify(&l(" ! [rejected]        main -> main (stale info)\nerror: failed to push")).kind, FailKind::StaleLease);
-        assert_eq!(classify(&l("CONFLICT (content): Merge conflict in a.txt\nAutomatic merge failed; fix conflicts")).kind, FailKind::Conflict);
+        assert_eq!(
+            classify(&l(" ! [rejected]        main -> main (stale info)\nerror: failed to push")).kind,
+            FailKind::StaleLease
+        );
+        assert_eq!(
+            classify(&l("CONFLICT (content): Merge conflict in a.txt\nAutomatic merge failed; fix conflicts")).kind,
+            FailKind::Conflict
+        );
         assert_eq!(classify(&l("error: could not apply 1234abc... local\nhint: Resolve all conflicts manually, then run \"git rebase --continue\"")).kind, FailKind::Conflict);
     }
 
@@ -500,7 +610,13 @@ mod tests {
         assert_eq!(wait(spawn(&a, Op::ForcePush, noop())).unwrap(), "Nothing to push");
 
         // Someone else pushes after our last fetch: the lease protects their commit.
-        assert!(Command::new("git").args(["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()]).status().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args(["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()])
+                .status()
+                .unwrap()
+                .success()
+        );
         for kv in [["user.email", "t@t"], ["user.name", "Beto"], ["commit.gpgsign", "false"]] {
             git_run(&b, &["config", kv[0], kv[1]]).unwrap();
         }
@@ -509,7 +625,11 @@ mod tests {
         commit_amend(&a, "reworded again").unwrap();
         let e = wait(spawn(&a, Op::ForcePush, noop())).unwrap_err();
         assert_eq!(e.kind, FailKind::StaleLease, "{e:?}");
-        assert_eq!(git_run(&remote, &["log", "-1", "--format=%s", "main"]).unwrap().trim(), "theirs", "their commit survived");
+        assert_eq!(
+            git_run(&remote, &["log", "-1", "--format=%s", "main"]).unwrap().trim(),
+            "theirs",
+            "their commit survived"
+        );
         // After fetching, their commit shows up on the remote side and is not ours: no force offered.
         wait(spawn(&a, Op::Fetch, noop())).unwrap();
         assert!(!rewrote_published(&a), "somebody else's commit is among the ones a force would drop");
@@ -519,7 +639,9 @@ mod tests {
     #[test]
     fn diverged_pull_works_with_each_strategy() {
         // Merge and rebase integrate; ff-only refuses.
-        for (name, st) in [("merge", PullStrategy::Merge), ("rebase", PullStrategy::Rebase), ("ff", PullStrategy::FfOnly)] {
+        for (name, st) in
+            [("merge", PullStrategy::Merge), ("rebase", PullStrategy::Rebase), ("ff", PullStrategy::FfOnly)]
+        {
             let base = tmp(&format!("strat-{name}"));
             let (remote, a, b) = (base.join("remote.git"), base.join("a"), base.join("b"));
             init(&remote, true);
@@ -527,7 +649,13 @@ mod tests {
             git_run(&a, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
             commit_file(&a, "f.txt", "one\n", "first");
             wait(spawn(&a, Op::Publish { remote: "origin".into(), branch: "main".into() }, noop())).unwrap();
-            assert!(Command::new("git").args(["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()]).status().unwrap().success());
+            assert!(
+                Command::new("git")
+                    .args(["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
             for kv in [["user.email", "t@t"], ["user.name", "Beto"], ["commit.gpgsign", "false"]] {
                 git_run(&b, &["config", kv[0], kv[1]]).unwrap();
             }
@@ -542,7 +670,14 @@ mod tests {
                     assert!(a.join("b.txt").exists() && a.join("a.txt").exists());
                     let merges = git_run(&a, &["rev-list", "--merges", "--count", "HEAD"]).unwrap();
                     assert_eq!(merges.trim(), if st == PullStrategy::Merge { "1" } else { "0" }, "{name}");
-                    assert_eq!(info(&a), SyncInfo { upstream: Some("origin/main".into()), ahead: if st == PullStrategy::Merge { 2 } else { 1 }, behind: 0 });
+                    assert_eq!(
+                        info(&a),
+                        SyncInfo {
+                            upstream: Some("origin/main".into()),
+                            ahead: if st == PullStrategy::Merge { 2 } else { 1 },
+                            behind: 0
+                        }
+                    );
                 }
             }
             std::fs::remove_dir_all(&base).ok();
@@ -553,7 +688,10 @@ mod tests {
     fn pull_args_respect_configuration() {
         assert!(args_for(&Op::Pull, false).contains(&"--ff-only".to_string()));
         assert!(!args_for(&Op::Pull, true).contains(&"--ff-only".to_string()));
-        assert_eq!(args_for(&Op::Publish { remote: "o".into(), branch: "b".into() }, false), ["push", "--progress", "--set-upstream", "o", "b"]);
+        assert_eq!(
+            args_for(&Op::Publish { remote: "o".into(), branch: "b".into() }, false),
+            ["push", "--progress", "--set-upstream", "o", "b"]
+        );
     }
 
     #[test]
@@ -583,7 +721,13 @@ mod tests {
         assert_eq!(wait(spawn(&a, Op::Push, noop())).unwrap(), "Nothing to push");
 
         // Second clone pushes a commit; `a` sees it only after the fetch, then pulls it.
-        assert!(Command::new("git").args(["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()]).status().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args(["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()])
+                .status()
+                .unwrap()
+                .success()
+        );
         for kv in [["user.email", "t@t"], ["user.name", "Beto"], ["commit.gpgsign", "false"]] {
             git_run(&b, &["config", kv[0], kv[1]]).unwrap();
         }
@@ -618,7 +762,11 @@ mod tests {
         commit_amend(&d, "fixed message").unwrap();
         assert_eq!(last_message(&d).as_deref(), Some("fixed message"));
         assert_eq!(git_run(&d, &["rev-list", "--count", "HEAD"]).unwrap().trim(), "1", "amend, not a new commit");
-        assert_eq!(git_run(&d, &["show", "--name-only", "--format=", "HEAD"]).unwrap().lines().count(), 2, "staged file joined the commit");
+        assert_eq!(
+            git_run(&d, &["show", "--name-only", "--format=", "HEAD"]).unwrap().lines().count(),
+            2,
+            "staged file joined the commit"
+        );
         // Message-only amend with nothing staged.
         commit_amend(&d, "reworded").unwrap();
         assert_eq!(last_message(&d).as_deref(), Some("reworded"));

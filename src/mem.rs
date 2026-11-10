@@ -12,12 +12,7 @@ pub struct MemSnapshot {
 pub fn snapshot() -> Option<MemSnapshot> {
     let text = fs::read_to_string("/proc/self/smaps_rollup").ok()?;
     let field = |name: &str| -> Option<u64> {
-        text.lines()
-            .find(|l| l.starts_with(name))?
-            .split_whitespace()
-            .nth(1)?
-            .parse()
-            .ok()
+        text.lines().find(|l| l.starts_with(name))?.split_whitespace().nth(1)?.parse().ok()
     };
     Some(MemSnapshot { pss_kb: field("Pss:")?, rss_kb: field("Rss:")? })
 }

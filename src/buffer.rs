@@ -8,7 +8,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Sel {
     pub anchor: usize,
@@ -477,7 +476,17 @@ impl Buffer {
             self.rope.insert(at, text);
         }
         let n2 = self.rope.len_lines();
-        let rec = EditRec { at, removed: n_rem, inserted: n_ins, line, col, rem_lines: n0.saturating_sub(n1), ins_lines: n2.saturating_sub(n1), tail_empty, shape };
+        let rec = EditRec {
+            at,
+            removed: n_rem,
+            inserted: n_ins,
+            line,
+            col,
+            rem_lines: n0.saturating_sub(n1),
+            ins_lines: n2.saturating_sub(n1),
+            tail_empty,
+            shape,
+        };
         if self.log_on {
             self.log.push(rec);
         }
@@ -501,7 +510,14 @@ impl Buffer {
             || (self.open && kind != EditKind::Other && self.hist.cur_group().is_some_and(|g| g.kind == kind));
         if !merge {
             self.counter += 1;
-            let g = Group { edits: Vec::new(), before, after: before, kind, ver_before: self.version, ver_after: self.version };
+            let g = Group {
+                edits: Vec::new(),
+                before,
+                after: before,
+                kind,
+                ver_before: self.version,
+                ver_after: self.version,
+            };
             self.hist.push(g);
         }
         self.open = true;
@@ -555,7 +571,14 @@ impl Buffer {
         self.compound = false;
         self.open = false;
         self.counter += 1;
-        self.hist.push(Group { edits: Vec::new(), before, after: before, kind, ver_before: self.version, ver_after: self.version });
+        self.hist.push(Group {
+            edits: Vec::new(),
+            before,
+            after: before,
+            kind,
+            ver_before: self.version,
+            ver_after: self.version,
+        });
         self.compound = true;
         self.open = true;
     }
@@ -685,9 +708,14 @@ impl Buffer {
         self.saved_version = self.version;
         Ok(())
     }
+}
 
-    pub fn to_string(&self) -> String {
-        self.rope.to_string()
+impl std::fmt::Display for Buffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for chunk in self.rope.chunks() {
+            f.write_str(chunk)?;
+        }
+        Ok(())
     }
 }
 
@@ -726,11 +754,41 @@ mod edit_log_tests {
 
     #[test]
     fn positions_and_lines_map_through_an_edit() {
-        let r = EditRec { at: 10, removed: 4, inserted: 1, line: 2, col: 0, rem_lines: 0, ins_lines: 0, tail_empty: false, shape: EditShape::Splice };
+        let r = EditRec {
+            at: 10,
+            removed: 4,
+            inserted: 1,
+            line: 2,
+            col: 0,
+            rem_lines: 0,
+            ins_lines: 0,
+            tail_empty: false,
+            shape: EditShape::Splice,
+        };
         assert_eq!((r.map_pos(5), r.map_pos(10), r.map_pos(12), r.map_pos(14), r.map_pos(20)), (5, 10, 10, 11, 17));
-        let ins = EditRec { at: 3, removed: 0, inserted: 4, line: 0, col: 3, rem_lines: 0, ins_lines: 2, tail_empty: false, shape: EditShape::Splice };
+        let ins = EditRec {
+            at: 3,
+            removed: 0,
+            inserted: 4,
+            line: 0,
+            col: 3,
+            rem_lines: 0,
+            ins_lines: 2,
+            tail_empty: false,
+            shape: EditShape::Splice,
+        };
         assert_eq!((ins.map_line(0), ins.map_line(1), ins.map_line(5)), (0, 3, 7));
-        let del = EditRec { at: 0, removed: 6, inserted: 0, line: 0, col: 0, rem_lines: 2, ins_lines: 0, tail_empty: false, shape: EditShape::Splice };
+        let del = EditRec {
+            at: 0,
+            removed: 6,
+            inserted: 0,
+            line: 0,
+            col: 0,
+            rem_lines: 2,
+            ins_lines: 0,
+            tail_empty: false,
+            shape: EditShape::Splice,
+        };
         assert_eq!((del.map_line(0), del.map_line(1), del.map_line(2), del.map_line(5)), (0, 0, 0, 3));
     }
 
@@ -746,11 +804,18 @@ mod edit_log_tests {
         assert_eq!(r[0].line_ops(), vec![LineOp::Swap { first: 0, a_lines: 1, b_lines: 2 }]);
         assert_eq!((r[0].map_line(0), r[0].map_line(1), r[0].map_line(2), r[0].map_line(3)), (2, 0, 1, 3));
         // chars: "aa" (0..2) -> after "bbb\nc\n"; "bbb" -> start; the break after "aa" -> after "bbb\nc"
-        assert_eq!((r[0].map_pos(0), r[0].map_pos(1), r[0].map_pos(3), r[0].map_pos(5), r[0].map_pos(9)), (6, 7, 0, 2, 9));
+        assert_eq!(
+            (r[0].map_pos(0), r[0].map_pos(1), r[0].map_pos(3), r[0].map_pos(5), r[0].map_pos(9)),
+            (6, 7, 0, 2, 9)
+        );
         b.undo();
         assert_eq!(b.to_string(), "aa\nbbb\nc\nd");
         let u = b.take_edits();
-        assert_eq!(u[0].line_ops(), vec![LineOp::Swap { first: 0, a_lines: 2, b_lines: 1 }], "undo swaps the blocks back");
+        assert_eq!(
+            u[0].line_ops(),
+            vec![LineOp::Swap { first: 0, a_lines: 2, b_lines: 1 }],
+            "undo swaps the blocks back"
+        );
         assert_eq!(u[0].map_line(0), 1);
         b.redo();
         assert_eq!(b.take_edits()[0].line_ops(), vec![LineOp::Swap { first: 0, a_lines: 1, b_lines: 2 }]);

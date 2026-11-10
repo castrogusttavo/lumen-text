@@ -24,7 +24,8 @@ use std::{
 };
 
 pub const REPO: &str = "castrogusttavo/lumen-text";
-pub const DEFAULT_MANIFEST_URL: &str = "https://github.com/castrogusttavo/lumen-text/releases/latest/download/latest.json";
+pub const DEFAULT_MANIFEST_URL: &str =
+    "https://github.com/castrogusttavo/lumen-text/releases/latest/download/latest.json";
 /// The minisign public key every release file must be signed with.
 const PUBLIC_KEY: &str = include_str!("update_key.pub");
 
@@ -225,10 +226,12 @@ pub fn detect_kind(exe: &Path, appimage_env: Option<&str>, data_home: Option<&Pa
         let root = data.join("lumen-text");
         if let Ok(rel) = exe.strip_prefix(&root) {
             let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-            if let [ver, bin, name] = parts.as_slice() {
-                if bin == "bin" && name == "lumen-text" && (ver == "current" || Version::parse(ver).is_some()) {
-                    return InstallKind::User(root);
-                }
+            if let [ver, bin, name] = parts.as_slice()
+                && bin == "bin"
+                && name == "lumen-text"
+                && (ver == "current" || Version::parse(ver).is_some())
+            {
+                return InstallKind::User(root);
             }
         }
     }
@@ -262,10 +265,10 @@ impl PkgFormat {
 pub fn pkg_format(os_release: &str) -> PkgFormat {
     let mut ids: Vec<String> = Vec::new();
     for line in os_release.lines() {
-        if let Some((k, v)) = line.split_once('=') {
-            if k == "ID" || k == "ID_LIKE" {
-                ids.extend(v.trim().trim_matches('"').trim_matches('\'').split_whitespace().map(|s| s.to_lowercase()));
-            }
+        if let Some((k, v)) = line.split_once('=')
+            && (k == "ID" || k == "ID_LIKE")
+        {
+            ids.extend(v.trim().trim_matches('"').trim_matches('\'').split_whitespace().map(|s| s.to_lowercase()));
         }
     }
     let has = |names: &[&str]| ids.iter().any(|i| names.contains(&i.as_str()));
@@ -328,7 +331,14 @@ pub fn release_page(version: &str) -> String {
 }
 
 /// `None` when `m` is not newer than `current`.
-pub fn evaluate(m: &Manifest, current: &str, kind: &InstallKind, arch: &str, pkg: PkgFormat, https_only: bool) -> Option<Release> {
+pub fn evaluate(
+    m: &Manifest,
+    current: &str,
+    kind: &InstallKind,
+    arch: &str,
+    pkg: PkgFormat,
+    https_only: bool,
+) -> Option<Release> {
     if !is_newer(&m.version, current) {
         return None;
     }
@@ -343,7 +353,14 @@ pub fn evaluate(m: &Manifest, current: &str, kind: &InstallKind, arch: &str, pkg
         InstallKind::System => plat.and_then(|p| install_command(pkg, &p.url)),
         _ => None,
     };
-    Some(Release { version: m.version.trim_start_matches('v').to_string(), notes: m.notes.clone(), pub_date: m.pub_date.clone(), page: release_page(m.version.trim_start_matches('v')), asset, command })
+    Some(Release {
+        version: m.version.trim_start_matches('v').to_string(),
+        notes: m.notes.clone(),
+        pub_date: m.pub_date.clone(),
+        page: release_page(m.version.trim_start_matches('v')),
+        asset,
+        command,
+    })
 }
 
 /// First meaningful lines of the (markdown) release notes, for the update card.
@@ -410,7 +427,12 @@ pub fn expected_comment(version: &str, file: &str) -> String {
 /// The keys in a public key text: one or more minisign `.pub` files concatenated (a comment line
 /// plus a base64 line each) or bare base64 lines. Several keys allow rotating the signing key.
 fn parse_public_keys(text: &str) -> Result<Vec<minisign_verify::PublicKey>, String> {
-    let keys: Result<Vec<_>, _> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("untrusted comment:")).map(minisign_verify::PublicKey::from_base64).collect();
+    let keys: Result<Vec<_>, _> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("untrusted comment:"))
+        .map(minisign_verify::PublicKey::from_base64)
+        .collect();
     let keys = keys.map_err(|e| format!("bad public key: {e}"))?;
     if keys.is_empty() {
         return Err("no public key".into());
@@ -424,7 +446,10 @@ pub fn verify_file(pubkey: &str, sig: &str, path: &Path, comment: Option<&str>) 
     let keys = parse_public_keys(pubkey)?;
     let sig = minisign_verify::Signature::decode(&signature_text(sig)?).map_err(|e| format!("bad signature: {e}"))?;
     // The signature names the key that made it; only that one can verify it.
-    let mut v = keys.iter().find_map(|k| k.verify_stream(&sig).ok()).ok_or("signature rejected: it was not made by a key this app trusts")?;
+    let mut v = keys
+        .iter()
+        .find_map(|k| k.verify_stream(&sig).ok())
+        .ok_or("signature rejected: it was not made by a key this app trusts")?;
     let mut f = fs::File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut buf = vec![0u8; 64 * 1024];
     loop {
@@ -435,10 +460,10 @@ pub fn verify_file(pubkey: &str, sig: &str, path: &Path, comment: Option<&str>) 
         v.update(&buf[..n]);
     }
     v.finalize().map_err(|e| format!("signature does not match the file: {e}"))?;
-    if let Some(want) = comment {
-        if sig.trusted_comment() != want {
-            return Err(format!("signature is for another file or version ({:?})", sig.trusted_comment()));
-        }
+    if let Some(want) = comment
+        && sig.trusted_comment() != want
+    {
+        return Err(format!("signature is for another file or version ({:?})", sig.trusted_comment()));
     }
     Ok(())
 }
@@ -447,7 +472,14 @@ pub fn verify_file(pubkey: &str, sig: &str, path: &Path, comment: Option<&str>) 
 
 /// Download `url` to `dest` with curl (or wget when curl is missing). Aborts when the file grows
 /// past `cap` bytes or the transfer takes longer than `timeout`. `progress` receives the size so far.
-pub fn download(url: &str, dest: &Path, cap: u64, timeout: Duration, https_only: bool, progress: Option<&AtomicU64>) -> Result<u64, String> {
+pub fn download(
+    url: &str,
+    dest: &Path,
+    cap: u64,
+    timeout: Duration,
+    https_only: bool,
+    progress: Option<&AtomicU64>,
+) -> Result<u64, String> {
     if !url_ok(url, https_only) {
         return Err(format!("refusing to download {url}"));
     }
@@ -457,8 +489,17 @@ pub fn download(url: &str, dest: &Path, cap: u64, timeout: Duration, https_only:
     let _ = fs::remove_file(dest);
     let ua = format!("lumen-text/{}", current_version());
     let secs = timeout.as_secs().max(1).to_string();
-    let mut curl: Vec<String> = ["-fsSL", "--connect-timeout", "15", "--max-time"].iter().map(|s| s.to_string()).collect();
-    curl.extend([secs.clone(), "--max-filesize".into(), cap.to_string(), "--retry".into(), "1".into(), "-A".into(), ua.clone()]);
+    let mut curl: Vec<String> =
+        ["-fsSL", "--connect-timeout", "15", "--max-time"].iter().map(|s| s.to_string()).collect();
+    curl.extend([
+        secs.clone(),
+        "--max-filesize".into(),
+        cap.to_string(),
+        "--retry".into(),
+        "1".into(),
+        "-A".into(),
+        ua.clone(),
+    ]);
     if https_only {
         curl.extend(["--proto".into(), "=https".into(), "--proto-redir".into(), "=https".into()]);
     }
@@ -470,7 +511,13 @@ pub fn download(url: &str, dest: &Path, cap: u64, timeout: Duration, https_only:
     wget.extend(["-O".into(), dest.display().to_string(), url.into()]);
 
     for (bin, args) in [("curl", curl), ("wget", wget)] {
-        let mut child = match Command::new(bin).args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        let mut child = match Command::new(bin)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(format!("cannot run {bin}: {e}")),
@@ -504,7 +551,10 @@ pub fn download(url: &str, dest: &Path, cap: u64, timeout: Duration, https_only:
         let len = fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
         if !status.success() {
             let _ = fs::remove_file(dest);
-            return Err(format!("{bin} failed ({})", status.code().map_or("signal".to_string(), |c| format!("exit {c}"))));
+            return Err(format!(
+                "{bin} failed ({})",
+                status.code().map_or("signal".to_string(), |c| format!("exit {c}"))
+            ));
         }
         if len == 0 || len > cap {
             let _ = fs::remove_file(dest);
@@ -537,12 +587,19 @@ pub struct Env {
 }
 
 pub fn cache_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache"))).unwrap_or_else(|| PathBuf::from("."));
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache")))
+        .unwrap_or_else(|| PathBuf::from("."));
     base.join("lumen-text").join("update")
 }
 
 pub fn data_home() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))
 }
 
 fn pubkey_from_env(v: &str) -> String {
@@ -564,7 +621,10 @@ impl Env {
             https_only: url_override.is_none(),
             forced: url_override.is_some() || std::env::var("LUMEN_UPDATE_FORCE").is_ok_and(|v| v == "1"),
             manifest_url: url_override.unwrap_or_else(|| DEFAULT_MANIFEST_URL.to_string()),
-            pubkey: std::env::var("LUMEN_UPDATE_PUBKEY").ok().filter(|v| !v.is_empty()).map_or_else(|| PUBLIC_KEY.to_string(), |v| pubkey_from_env(&v)),
+            pubkey: std::env::var("LUMEN_UPDATE_PUBKEY")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map_or_else(|| PUBLIC_KEY.to_string(), |v| pubkey_from_env(&v)),
             cache: cache_dir(),
             arch: std::env::consts::ARCH.to_string(),
             exe,
@@ -641,10 +701,10 @@ pub fn install(env: &Env, rel: &Release, staged: &Path) -> Result<PathBuf, Strin
 pub fn update(env: &Env, rel: &Release, progress: Option<&AtomicU64>) -> Result<PathBuf, String> {
     let staged = stage(env, rel, progress)?;
     let res = install(env, rel, &staged);
-    if res.is_ok() {
-        if let Some(dir) = staged.parent() {
-            let _ = fs::remove_dir_all(dir);
-        }
+    if res.is_ok()
+        && let Some(dir) = staged.parent()
+    {
+        let _ = fs::remove_dir_all(dir);
     }
     res
 }
@@ -712,7 +772,7 @@ pub fn prune_versions(root: &Path, keep: &[String]) {
             Version::parse(&n).map(|v| (v, n))
         })
         .collect();
-    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    dirs.sort_by_key(|a| std::cmp::Reverse(a.0));
     for (i, (_, name)) in dirs.iter().enumerate() {
         if i >= 2 && !keep.contains(name) {
             let _ = fs::remove_dir_all(root.join(name));
@@ -729,7 +789,15 @@ pub fn apply_user(staged: &Path, version: &str, root: &Path, running: Option<&st
     let tmp = root.join(format!(".{version}.tmp"));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).map_err(|e| format!("mkdir: {e}"))?;
-    let out = Command::new("tar").arg("-xzf").arg(staged).arg("-C").arg(&tmp).args(["--strip-components=1", "--no-same-owner"]).stdin(Stdio::null()).output().map_err(|e| format!("cannot run tar: {e}"))?;
+    let out = Command::new("tar")
+        .arg("-xzf")
+        .arg(staged)
+        .arg("-C")
+        .arg(&tmp)
+        .args(["--strip-components=1", "--no-same-owner"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run tar: {e}"))?;
     if !out.status.success() {
         let _ = fs::remove_dir_all(&tmp);
         return Err(format!("tar failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
@@ -835,11 +903,16 @@ pub fn install_user(exe: &Path, assets: &Path, version: &str, home: &Path, data:
     // Launcher entry + icon.
     let apps = data.join("applications");
     let icons = data.join("icons/hicolor/scalable/apps");
-    fs::create_dir_all(&apps).and_then(|_| fs::create_dir_all(&icons)).map_err(|e| format!("cannot create desktop directories: {e}"))?;
+    fs::create_dir_all(&apps)
+        .and_then(|_| fs::create_dir_all(&icons))
+        .map_err(|e| format!("cannot create desktop directories: {e}"))?;
     let desktop = apps.join("lumen-text.desktop");
     fs::write(&desktop, desktop_entry(&link)).map_err(|e| format!("cannot write {}: {e}", desktop.display()))?;
     fs::write(icons.join("lumen-text.svg"), ICON_SVG).map_err(|e| format!("cannot write the icon: {e}"))?;
-    for (cmd, args) in [("update-desktop-database", vec![apps.display().to_string()]), ("gtk-update-icon-cache", vec!["-f".into(), "-t".into(), data.join("icons/hicolor").display().to_string()])] {
+    for (cmd, args) in [
+        ("update-desktop-database", vec![apps.display().to_string()]),
+        ("gtk-update-icon-cache", vec!["-f".into(), "-t".into(), data.join("icons/hicolor").display().to_string()]),
+    ] {
         let _ = Command::new(cmd).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
     let mut keep = vec![version.to_string()];
@@ -899,7 +972,10 @@ pub fn cli_check(apply: bool) -> i32 {
     if !env.kind.can_self_update() || rel.asset.is_none() {
         match (&rel.command, env.kind.can_self_update()) {
             (Some(c), _) => println!("This installation is managed by your package manager. Run:\n  {c}"),
-            (None, false) => println!("This installation can't update itself. Download {} or run `lumen-text --install-user` from it for automatic updates.", rel.page),
+            (None, false) => println!(
+                "This installation can't update itself. Download {} or run `lumen-text --install-user` from it for automatic updates.",
+                rel.page
+            ),
             _ => println!("This release has no file for this installation: {}", rel.page),
         }
         return 10;
@@ -921,7 +997,9 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-tmp").join(format!("upd-{name}-{}", std::process::id()));
+        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/test-tmp")
+            .join(format!("upd-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
@@ -1042,18 +1120,35 @@ mod tests {
         assert_eq!(r.page, "https://github.com/castrogusttavo/lumen-text/releases/tag/v2026.11.10.1");
 
         let user = InstallKind::User(PathBuf::from("/home/u/.local/share/lumen-text"));
-        assert_eq!(eval(&user, PkgFormat::Deb, "2026.11.9.3").unwrap().asset.unwrap().name, "lumen-text-2026.11.10.1-linux-x86_64.tar.gz");
+        assert_eq!(
+            eval(&user, PkgFormat::Deb, "2026.11.9.3").unwrap().asset.unwrap().name,
+            "lumen-text-2026.11.10.1-linux-x86_64.tar.gz"
+        );
 
         let sys = eval(&InstallKind::System, PkgFormat::Deb, "2026.11.9.3").unwrap();
         assert!(sys.asset.is_none(), "system installs never self-modify");
-        assert_eq!(sys.command.as_deref(), Some("curl -fLO https://h/lumen-text_2026.11.10.1-1_amd64.deb && sudo apt install ./lumen-text_2026.11.10.1-1_amd64.deb"));
-        assert_eq!(eval(&InstallKind::System, PkgFormat::Arch, "2026.11.9").unwrap().command.unwrap(), "sudo pacman -U https://h/lumen-text-bin-2026.11.10.1-1-x86_64.pkg.tar.zst");
-        assert_eq!(eval(&InstallKind::System, PkgFormat::Rpm, "2026.11.9").unwrap().command.unwrap(), "sudo dnf install https://h/lumen-text-2026.11.10.1-1.x86_64.rpm");
+        assert_eq!(
+            sys.command.as_deref(),
+            Some(
+                "curl -fLO https://h/lumen-text_2026.11.10.1-1_amd64.deb && sudo apt install ./lumen-text_2026.11.10.1-1_amd64.deb"
+            )
+        );
+        assert_eq!(
+            eval(&InstallKind::System, PkgFormat::Arch, "2026.11.9").unwrap().command.unwrap(),
+            "sudo pacman -U https://h/lumen-text-bin-2026.11.10.1-1-x86_64.pkg.tar.zst"
+        );
+        assert_eq!(
+            eval(&InstallKind::System, PkgFormat::Rpm, "2026.11.9").unwrap().command.unwrap(),
+            "sudo dnf install https://h/lumen-text-2026.11.10.1-1.x86_64.rpm"
+        );
         assert!(eval(&InstallKind::System, PkgFormat::Unknown, "2026.11.9").unwrap().command.is_none());
 
         assert!(eval(&appimage, PkgFormat::Deb, "2026.11.10.1").is_none(), "up to date");
         assert!(eval(&appimage, PkgFormat::Deb, "2026.12.1.1").is_none(), "local build newer than the release");
-        assert!(evaluate(&m, "2026.11.9", &appimage, "aarch64", PkgFormat::Deb, true).unwrap().asset.is_none(), "no aarch64 file: still announced, not installable");
+        assert!(
+            evaluate(&m, "2026.11.9", &appimage, "aarch64", PkgFormat::Deb, true).unwrap().asset.is_none(),
+            "no aarch64 file: still announced, not installable"
+        );
     }
 
     #[test]
@@ -1068,9 +1163,18 @@ mod tests {
     fn install_kind_comes_from_the_executable() {
         let data = PathBuf::from("/home/u/.local/share");
         let k = |exe: &str, ai: Option<&str>| detect_kind(Path::new(exe), ai, Some(&data));
-        assert_eq!(k("/tmp/.mount_x/usr/bin/lumen-text", Some("/home/u/Apps/L.AppImage")), InstallKind::AppImage("/home/u/Apps/L.AppImage".into()));
-        assert_eq!(k("/home/u/.local/share/lumen-text/2026.11.10.1/bin/lumen-text", None), InstallKind::User("/home/u/.local/share/lumen-text".into()));
-        assert_eq!(k("/home/u/.local/share/lumen-text/current/bin/lumen-text", None), InstallKind::User("/home/u/.local/share/lumen-text".into()));
+        assert_eq!(
+            k("/tmp/.mount_x/usr/bin/lumen-text", Some("/home/u/Apps/L.AppImage")),
+            InstallKind::AppImage("/home/u/Apps/L.AppImage".into())
+        );
+        assert_eq!(
+            k("/home/u/.local/share/lumen-text/2026.11.10.1/bin/lumen-text", None),
+            InstallKind::User("/home/u/.local/share/lumen-text".into())
+        );
+        assert_eq!(
+            k("/home/u/.local/share/lumen-text/current/bin/lumen-text", None),
+            InstallKind::User("/home/u/.local/share/lumen-text".into())
+        );
         assert_eq!(k("/home/u/.local/share/lumen-text/tsgo/bin/lumen-text", None), InstallKind::Other);
         assert_eq!(k("/usr/bin/lumen-text", None), InstallKind::System);
         assert_eq!(k("/usr/local/bin/lumen-text", None), InstallKind::Other);
@@ -1091,7 +1195,10 @@ mod tests {
         assert_eq!(f("ID=endeavouros\nID_LIKE=arch\n"), PkgFormat::Arch);
         assert_eq!(f("ID=gentoo\n"), PkgFormat::Unknown);
         assert_eq!(f(""), PkgFormat::Unknown);
-        assert_eq!(install_command(PkgFormat::Zypper, "https://h/x.rpm").unwrap(), "sudo zypper install https://h/x.rpm");
+        assert_eq!(
+            install_command(PkgFormat::Zypper, "https://h/x.rpm").unwrap(),
+            "sudo zypper install https://h/x.rpm"
+        );
     }
 
     #[test]
@@ -1129,7 +1236,9 @@ mod tests {
         assert!(verify_file(TEST_PUB, TEST_SIG_B64, &f, None).is_err(), "modified file");
         fs::write(&f, "lumen test payload\n").unwrap();
         // Right file, but the signature says another version or name.
-        assert!(verify_file(TEST_PUB, TEST_SIG_B64, &f, Some(&expected_comment("2026.11.11.1", "payload.bin"))).is_err());
+        assert!(
+            verify_file(TEST_PUB, TEST_SIG_B64, &f, Some(&expected_comment("2026.11.11.1", "payload.bin"))).is_err()
+        );
         assert!(verify_file(TEST_PUB, TEST_SIG_B64, &f, Some(&expected_comment("2026.11.10.1", "other.bin"))).is_err());
         // Wrong key (the real release key is not the test key).
         assert!(verify_file(PUBLIC_KEY, TEST_SIG_B64, &f, None).is_err());
@@ -1196,7 +1305,14 @@ mod tests {
         fs::write(top.join("bin/lumen-text"), marker).unwrap();
         fs::write(top.join("share/lumen-text/assets/language-manifest.json"), "{}").unwrap();
         let tar = dir.join(format!("{name}.tar.gz"));
-        let st = Command::new("tar").arg("-czf").arg(&tar).arg("-C").arg(top.parent().unwrap()).arg(top.file_name().unwrap()).status().unwrap();
+        let st = Command::new("tar")
+            .arg("-czf")
+            .arg(&tar)
+            .arg("-C")
+            .arg(top.parent().unwrap())
+            .arg(top.file_name().unwrap())
+            .status()
+            .unwrap();
         assert!(st.success());
         tar
     }
@@ -1211,13 +1327,16 @@ mod tests {
             assert_eq!(fs::read_link(root.join("current")).unwrap(), Path::new(v));
             assert_eq!(fs::read_to_string(root.join("current/bin/lumen-text")).unwrap(), format!("bin-{i}"));
         }
-        let mut dirs: Vec<String> = fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let mut dirs: Vec<String> =
+            fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         dirs.sort();
         assert_eq!(dirs, vec!["2026.11.2.1", "2026.11.3.1", "current"], "oldest pruned, previous kept");
         // The running version's directory is never pruned, even when it is old.
         let tar = fake_release_tar(&d, "2026.11.4.1", "bin-3");
         apply_user(&tar, "2026.11.4.1", &root, Some("2026.11.2.1")).unwrap();
-        assert!(root.join("2026.11.2.1").is_dir() && root.join("2026.11.3.1").is_dir() && root.join("2026.11.4.1").is_dir());
+        assert!(
+            root.join("2026.11.2.1").is_dir() && root.join("2026.11.3.1").is_dir() && root.join("2026.11.4.1").is_dir()
+        );
         assert!(!root.join("2026.11.1.1").exists());
         // Garbage archives leave everything untouched.
         let bad = d.join("bad.tar.gz");

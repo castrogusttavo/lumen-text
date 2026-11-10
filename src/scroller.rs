@@ -60,11 +60,31 @@ impl Default for Scroller {
 
 impl Scroller {
     pub fn new(eps: f64) -> Self {
-        Self { pos: 0.0, target: 0.0, tau: WHEEL_TAU, eps, vel: 0.0, spin: 0.0, dir: 0.0, last_t: -10.0, pvel: 0.0, last_px_t: -10.0, glide: None }
+        Self {
+            pos: 0.0,
+            target: 0.0,
+            tau: WHEEL_TAU,
+            eps,
+            vel: 0.0,
+            spin: 0.0,
+            dir: 0.0,
+            last_t: -10.0,
+            pvel: 0.0,
+            last_px_t: -10.0,
+            glide: None,
+        }
     }
 
     /// Follow a container that was moved from outside: if `pos` is not where this scroller left it,
     /// forget the animation and continue from there.
+    /// Keep everything inside `0..=max` (content shrank, window resized).
+    #[cfg(test)]
+    pub fn clamp(&mut self, max: f64) {
+        let max = max.max(0.0);
+        self.pos = self.pos.clamp(0.0, max);
+        self.target = self.target.clamp(0.0, max);
+    }
+
     pub fn adopt(&mut self, pos: f64) {
         if (pos - self.pos).abs() > 1e-6 {
             self.pos = pos;
@@ -95,13 +115,6 @@ impl Scroller {
 
     pub fn settled(&self) -> bool {
         self.vel == 0.0 && self.glide.is_none() && (self.target - self.pos).abs() < self.eps.max(1e-9)
-    }
-
-    /// Keep everything inside `0..=max` (content shrank, window resized).
-    pub fn clamp(&mut self, max: f64) {
-        let max = max.max(0.0);
-        self.pos = self.pos.clamp(0.0, max);
-        self.target = self.target.clamp(0.0, max);
     }
 
     /// Mouse wheel: `notches` (positive = forward in the positive direction) of `step` units each.

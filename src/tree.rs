@@ -5,7 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const HIDDEN_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", ".next", ".turbo", ".cache", "__pycache__", ".stryker"];
+const HIDDEN_DIRS: &[&str] =
+    &[".git", "node_modules", "target", "dist", ".next", ".turbo", ".cache", "__pycache__", ".stryker"];
 
 #[derive(Clone, Debug)]
 pub struct Row {
@@ -54,7 +55,17 @@ pub struct Tree {
 
 impl Tree {
     pub fn new(root: PathBuf) -> Self {
-        let mut t = Self { root: root.clone(), expanded: HashSet::new(), rows: Vec::new(), sel: 0, scroll: 0.0, hscroll: 0.0, selected: HashSet::new(), anchor: None, drag: None };
+        let mut t = Self {
+            root: root.clone(),
+            expanded: HashSet::new(),
+            rows: Vec::new(),
+            sel: 0,
+            scroll: 0.0,
+            hscroll: 0.0,
+            selected: HashSet::new(),
+            anchor: None,
+            drag: None,
+        };
         t.expanded.insert(root);
         t.rebuild();
         t
@@ -66,7 +77,8 @@ impl Tree {
             .flatten()
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().into_owned();
-                let is_dir = e.file_type().map(|t| t.is_dir() || (t.is_symlink() && e.path().is_dir())).unwrap_or(false);
+                let is_dir =
+                    e.file_type().map(|t| t.is_dir() || (t.is_symlink() && e.path().is_dir())).unwrap_or(false);
                 if is_dir && HIDDEN_DIRS.contains(&name.as_str()) {
                     return None;
                 }
@@ -130,11 +142,19 @@ impl Tree {
 
     /// Is row `k` drawn as selected?
     pub fn row_selected(&self, k: usize) -> bool {
-        if self.selected.is_empty() { k == self.sel } else { self.rows.get(k).is_some_and(|r| self.selected.contains(&r.path)) }
+        if self.selected.is_empty() {
+            k == self.sel
+        } else {
+            self.rows.get(k).is_some_and(|r| self.selected.contains(&r.path))
+        }
     }
 
     pub fn is_selected(&self, p: &Path) -> bool {
-        if self.selected.is_empty() { self.rows.get(self.sel).is_some_and(|r| r.path == p) } else { self.selected.contains(p) }
+        if self.selected.is_empty() {
+            self.rows.get(self.sel).is_some_and(|r| r.path == p)
+        } else {
+            self.selected.contains(p)
+        }
     }
 
     /// The selected paths in row order. Items inside another selected folder are left out
@@ -177,7 +197,11 @@ impl Tree {
             return;
         }
         let i = i.min(self.rows.len() - 1);
-        let a = self.anchor.as_ref().and_then(|p| self.rows.iter().position(|r| &r.path == p)).unwrap_or(self.sel.min(self.rows.len() - 1));
+        let a = self
+            .anchor
+            .as_ref()
+            .and_then(|p| self.rows.iter().position(|r| &r.path == p))
+            .unwrap_or(self.sel.min(self.rows.len() - 1));
         let (lo, hi) = (a.min(i), a.max(i));
         self.anchor = Some(self.rows[a].path.clone());
         self.selected = self.rows[lo..=hi].iter().map(|r| r.path.clone()).collect();
@@ -300,7 +324,10 @@ mod tests {
     fn ctrl_shift_click_and_keyboard_selection() {
         let (root, mut t) = sample_tree("sel");
         // rows: d1, x.ts, d2, a.ts, b.ts, c.ts
-        assert_eq!(t.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["d1", "x.ts", "d2", "a.ts", "b.ts", "c.ts"]);
+        assert_eq!(
+            t.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["d1", "x.ts", "d2", "a.ts", "b.ts", "c.ts"]
+        );
         t.select_only(3);
         assert_eq!(names(&t), ["a.ts"]);
         t.toggle_select(5);

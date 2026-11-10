@@ -11,7 +11,7 @@ use crate::{
     app::{App, Focus},
     doc::Doc,
     mdview::MdView,
-    ui::{line_h, Canvas, Rect},
+    ui::{Canvas, Rect, line_h},
 };
 use std::{
     collections::HashMap,
@@ -40,7 +40,17 @@ pub struct MdState {
 
 impl MdState {
     pub fn new() -> Self {
-        MdState { view: MdView::new(), scroll: 0.0, rect: Rect::default(), ver: 0, top_seen: -1.0, fresh: true, anchor: None, dragging: false, img_check: std::time::Instant::now() }
+        MdState {
+            view: MdView::new(),
+            scroll: 0.0,
+            rect: Rect::default(),
+            ver: 0,
+            top_seen: -1.0,
+            fresh: true,
+            anchor: None,
+            dragging: false,
+            img_check: std::time::Instant::now(),
+        }
     }
 }
 
@@ -65,12 +75,17 @@ pub fn md_rects(card: Rect, ratio: f32) -> Option<(Rect, Rect, Rect)> {
     }
     let avail = card.w - 1;
     let lw = ((avail as f32 * ratio).round() as i32).clamp(MIN_PANE, avail - MIN_PANE);
-    Some((Rect::new(card.x, card.y, lw, card.h), Rect::new(card.x + lw, card.y, 1, card.h), Rect::new(card.x + lw + 1, card.y, avail - lw, card.h)))
+    Some((
+        Rect::new(card.x, card.y, lw, card.h),
+        Rect::new(card.x + lw, card.y, 1, card.h),
+        Rect::new(card.x + lw + 1, card.y, avail - lw, card.h),
+    ))
 }
 
 /// Source-side share that puts the divider under window x (kept inside the configured range).
 pub fn md_ratio_at(card: Rect, x: f64) -> f32 {
-    (((x - card.x as f64) / (card.w - 1).max(1) as f64) as f32).clamp(crate::config::MD_SPLIT_RANGE.0, crate::config::MD_SPLIT_RANGE.1)
+    (((x - card.x as f64) / (card.w - 1).max(1) as f64) as f32)
+        .clamp(crate::config::MD_SPLIT_RANGE.0, crate::config::MD_SPLIT_RANGE.1)
 }
 
 pub fn is_markdown_name(name: &str) -> bool {
@@ -141,12 +156,15 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' {
-            if let Some(v) = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && let Some(v) = b
+                .get(i + 1..i + 3)
+                .and_then(|h| std::str::from_utf8(h).ok())
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;
@@ -159,7 +177,8 @@ pub fn classify_link(url: &str, base_dir: Option<&Path>) -> LinkAction {
     if let Some(frag) = url.strip_prefix('#') {
         return LinkAction::Anchor(percent_decode(frag).to_lowercase());
     }
-    let scheme_len = url.find(':').filter(|&i| i > 1 && url[..i].chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)));
+    let scheme_len =
+        url.find(':').filter(|&i| i > 1 && url[..i].chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)));
     if scheme_len.is_some() {
         return LinkAction::Web(url.to_string());
     }
@@ -183,7 +202,12 @@ fn find_anchor(v: &MdView, name: &str) -> Option<i32> {
 fn open_external(url: &str) {
     let url = url.to_string();
     std::thread::spawn(move || {
-        let child = std::process::Command::new("xdg-open").arg(&url).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+        let child = std::process::Command::new("xdg-open")
+            .arg(&url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
         if let Ok(mut c) = child {
             let _ = c.wait();
         }
@@ -304,7 +328,9 @@ impl App {
     pub fn md_place(&mut self, area: Rect) {
         self.layout.md = Rect::default();
         self.layout.divider = Rect::default();
-        if (self.diff.is_some() && self.diff_area() == self.layout.editor) || !self.docs.get(self.active).is_some_and(|d| d.md.is_some()) {
+        if (self.diff.is_some() && self.diff_area() == self.layout.editor)
+            || !self.docs.get(self.active).is_some_and(|d| d.md.is_some())
+        {
             return;
         }
         if let Some((ed, dv, md)) = md_rects(area, self.config.md_split) {
@@ -332,7 +358,10 @@ impl App {
 
     /// Mouse release: ends a divider drag and keeps the ratio in config.json.
     pub fn md_release(&mut self) {
-        let was = self.docs.iter_mut().filter_map(|d| d.md.as_mut()).fold(false, |a, st| std::mem::replace(&mut st.dragging, false) || a);
+        let mut was = false;
+        for st in self.docs.iter_mut().filter_map(|d| d.md.as_mut()) {
+            was |= std::mem::replace(&mut st.dragging, false);
+        }
         if was {
             self.config.save();
         }
@@ -362,17 +391,17 @@ impl App {
 
         let mut busy = false;
         let mut moved = false;
-        if let Some(a) = st.anchor.take() {
-            if let Some(y) = find_anchor(&st.view, &a) {
-                st.scroll = (y as f64).clamp(0.0, max_scroll);
-                let top = scroll_to_top(&st.view, st.scroll, max_top, max_scroll);
-                d.top = top;
-                d.target = top;
-                d.animating = false;
-                st.top_seen = top;
-                moved = true;
-                busy = true;
-            }
+        if let Some(a) = st.anchor.take()
+            && let Some(y) = find_anchor(&st.view, &a)
+        {
+            st.scroll = (y as f64).clamp(0.0, max_scroll);
+            let top = scroll_to_top(&st.view, st.scroll, max_top, max_scroll);
+            d.top = top;
+            d.target = top;
+            d.animating = false;
+            st.top_seen = top;
+            moved = true;
+            busy = true;
         }
         if !moved && (text_changed || r.w != st.rect.w || (d.top - st.top_seen).abs() > 1e-6) {
             st.scroll = top_to_scroll(&st.view, d.top, max_top, max_scroll);
@@ -430,11 +459,14 @@ impl App {
     /// Click inside the preview: follows links. False when the click is not on the preview.
     pub fn md_mouse_down(&mut self, x: f64, y: f64, button: MouseButton) -> bool {
         let dv = self.layout.divider;
-        if button == MouseButton::Left && self.layout.md.w > 0 && dv.w > 0 && Rect::new(dv.x - GRAB, dv.y, dv.w + 2 * GRAB, dv.h).contains(x, y) {
-            if let Some(st) = self.docs.get_mut(self.active).and_then(|d| d.md.as_mut()) {
-                st.dragging = true;
-                return true;
-            }
+        if button == MouseButton::Left
+            && self.layout.md.w > 0
+            && dv.w > 0
+            && Rect::new(dv.x - GRAB, dv.y, dv.w + 2 * GRAB, dv.h).contains(x, y)
+            && let Some(st) = self.docs.get_mut(self.active).and_then(|d| d.md.as_mut())
+        {
+            st.dragging = true;
+            return true;
         }
         let r = self.layout.md;
         if r.w <= 0 || !r.contains(x, y) {
@@ -516,7 +548,9 @@ mod tests {
     fn doc_text() -> String {
         let mut s = String::new();
         for i in 0..40 {
-            s.push_str(&format!("## Seção {i}\n\nParágrafo {i} com algum texto para ocupar espaço.\n\n- item a\n- item b\n\n"));
+            s.push_str(&format!(
+                "## Seção {i}\n\nParágrafo {i} com algum texto para ocupar espaço.\n\n- item a\n- item b\n\n"
+            ));
         }
         s
     }
@@ -593,7 +627,10 @@ mod tests {
         assert_eq!(classify_link("mailto:a@b.c", Some(base)), LinkAction::Web("mailto:a@b.c".into()));
         assert_eq!(classify_link("#Instala%C3%A7%C3%A3o", Some(base)), LinkAction::Anchor("instalação".into()));
         assert_eq!(classify_link("guia.md", Some(base)), LinkAction::File("/p/docs/guia.md".into(), None));
-        assert_eq!(classify_link("../README.md#Uso", Some(base)), LinkAction::File("/p/docs/../README.md".into(), Some("uso".into())));
+        assert_eq!(
+            classify_link("../README.md#Uso", Some(base)),
+            LinkAction::File("/p/docs/../README.md".into(), Some("uso".into()))
+        );
         assert_eq!(classify_link("a%20b.md", Some(base)), LinkAction::File("/p/docs/a b.md".into(), None));
         assert_eq!(classify_link("/abs/x.md", Some(base)), LinkAction::File("/abs/x.md".into(), None));
     }

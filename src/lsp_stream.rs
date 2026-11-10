@@ -13,8 +13,8 @@
 //! The policy for a response is chosen by the request's method ([`policy_for`]), registered by the
 //! sender under the request id; the reader looks it up when it meets the `result` key.
 
-use crate::lsp::Msg;
 use crate::doc::Sym;
+use crate::lsp::Msg;
 use serde::{
     Deserialize,
     de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor},
@@ -67,7 +67,14 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { stream_above: 256 * 1024, max_value: 4 * 1024 * 1024, max_symbols: 50_000, symbol_levels: 3, max_token_ints: 4_000_000, max_folds: 50_000 }
+        Limits {
+            stream_above: 256 * 1024,
+            max_value: 4 * 1024 * 1024,
+            max_symbols: 50_000,
+            symbol_levels: 3,
+            max_token_ints: 4_000_000,
+            max_folds: 50_000,
+        }
     }
 }
 
@@ -170,8 +177,12 @@ impl Parsed {
     fn into_frame(self, len: usize) -> Frame {
         let id_i64 = self.id.as_ref().and_then(Value::as_i64);
         match (self.method, self.id) {
-            (Some(method), Some(id)) if !self.dropped => Msg::Request { id, method, params: self.params.unwrap_or(Value::Null) }.into(),
-            (Some(method), None) if !self.dropped => Msg::Notification { method, params: self.params.unwrap_or(Value::Null) }.into(),
+            (Some(method), Some(id)) if !self.dropped => {
+                Msg::Request { id, method, params: self.params.unwrap_or(Value::Null) }.into()
+            }
+            (Some(method), None) if !self.dropped => {
+                Msg::Notification { method, params: self.params.unwrap_or(Value::Null) }.into()
+            }
             (Some(_), _) => Frame::Skipped, // oversized request / notification
             (None, Some(_)) => {
                 let Some(id) = id_i64 else { return Frame::Skipped };
@@ -497,7 +508,9 @@ impl<'de> Visitor<'de> for SymItem<'_> {
                     o[i].sel_l = r.start.line as usize;
                     o[i].sel_c = r.start.character as usize;
                 }
-                "children" if depth + 1 < lim.symbol_levels => map.next_value_seed(SymList { depth: depth + 1, lim, out })?,
+                "children" if depth + 1 < lim.symbol_levels => {
+                    map.next_value_seed(SymList { depth: depth + 1, lim, out })?
+                }
                 _ => {
                     map.next_value::<IgnoredAny>()?;
                 }
@@ -566,7 +579,14 @@ mod tests {
     }
 
     fn small_lim() -> Limits {
-        Limits { stream_above: 64, max_value: 4096, max_symbols: 100, symbol_levels: 3, max_token_ints: 1000, max_folds: 50 }
+        Limits {
+            stream_above: 64,
+            max_value: 4096,
+            max_symbols: 100,
+            symbol_levels: 3,
+            max_token_ints: 1000,
+            max_folds: 50,
+        }
     }
 
     fn next(r: &mut impl BufRead, lim: &Limits, pol: &dyn Fn(i64) -> Policy) -> Msg {
@@ -618,7 +638,10 @@ mod tests {
         let lim = small_lim();
         let Msg::Response { id: 7, result: Ok(v) } = next(&mut r, &lim, &never) else { panic!() };
         assert_eq!(v["items"].as_array().unwrap().len(), 50);
-        assert!(matches!(next(&mut r, &lim, &never), Msg::Notification { method, .. } if method == "after"), "framing stays in sync");
+        assert!(
+            matches!(next(&mut r, &lim, &never), Msg::Notification { method, .. } if method == "after"),
+            "framing stays in sync"
+        );
     }
 
     #[test]
@@ -630,7 +653,9 @@ mod tests {
         bytes.extend(crate::lsp::frame(&json!({"id": 10, "result": 1})));
         let mut r = Cursor::new(bytes);
         let lim = small_lim();
-        let Msg::Response { id: 9, result: Err(e) } = next(&mut r, &lim, &never) else { panic!("expected a synthesized error") };
+        let Msg::Response { id: 9, result: Err(e) } = next(&mut r, &lim, &never) else {
+            panic!("expected a synthesized error")
+        };
         assert_eq!(e["data"]["tooLarge"], true);
         assert!(matches!(next(&mut r, &lim, &never), Msg::Response { id: 10, result: Ok(_) }));
     }
@@ -638,8 +663,10 @@ mod tests {
     #[test]
     fn oversized_notification_and_request_are_skipped() {
         let big = "x".repeat(8000);
-        let n = json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"blob": big}}).to_string();
-        let rq = json!({"jsonrpc": "2.0", "id": 3, "method": "workspace/configuration", "params": {"blob": big}}).to_string();
+        let n =
+            json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"blob": big}}).to_string();
+        let rq = json!({"jsonrpc": "2.0", "id": 3, "method": "workspace/configuration", "params": {"blob": big}})
+            .to_string();
         let mut bytes = framed(&n);
         bytes.extend(framed(&rq));
         bytes.extend(crate::lsp::frame(&json!({"method": "small"})));
@@ -652,7 +679,8 @@ mod tests {
 
     #[test]
     fn error_responses_pass_through_when_streamed() {
-        let body = json!({"jsonrpc": "2.0", "id": 4, "error": {"code": -32603, "message": "m".repeat(200)}}).to_string();
+        let body =
+            json!({"jsonrpc": "2.0", "id": 4, "error": {"code": -32603, "message": "m".repeat(200)}}).to_string();
         let mut r = Cursor::new(framed(&body));
         let Msg::Response { id: 4, result: Err(e) } = next(&mut r, &small_lim(), &never) else { panic!() };
         assert_eq!(e["code"], -32603);
@@ -689,7 +717,8 @@ mod tests {
 
     #[test]
     fn streamed_and_small_symbol_paths_agree() {
-        let top: Vec<Value> = (0..4).map(|i| sym(i * 10, vec![sym(i * 10 + 1, vec![sym(i * 10 + 2, vec![])])])).collect();
+        let top: Vec<Value> =
+            (0..4).map(|i| sym(i * 10, vec![sym(i * 10 + 1, vec![sym(i * 10 + 2, vec![])])])).collect();
         let body = json!({"jsonrpc": "2.0", "id": 1, "result": top}).to_string();
         let mut r = Cursor::new(framed(&body));
         let streamed = syms_of(next(&mut r, &small_lim(), &sym_policy));
@@ -721,7 +750,9 @@ mod tests {
 
     #[test]
     fn folding_ranges_keep_only_their_lines_and_are_capped() {
-        let ranges: Vec<Value> = (0..200).map(|i| json!({"startLine": i, "endLine": i + 5, "startCharacter": 3, "kind": "region"})).collect();
+        let ranges: Vec<Value> = (0..200)
+            .map(|i| json!({"startLine": i, "endLine": i + 5, "startCharacter": 3, "kind": "region"}))
+            .collect();
         let body = json!({"jsonrpc": "2.0", "id": 1, "result": ranges}).to_string();
         let mut r = Cursor::new(framed(&body));
         let Msg::Response { result: Ok(v), .. } = next(&mut r, &small_lim(), &|_| Policy::Folds) else { panic!() };
@@ -737,7 +768,9 @@ mod tests {
     #[test]
     fn semantic_tokens_are_packed_whether_small_or_streamed() {
         let small = json!({"jsonrpc": "2.0", "id": 5, "result": {"data": [0, 1, 2, 3, 4]}}).to_string();
-        let big = json!({"jsonrpc": "2.0", "id": 6, "result": {"resultId": "r", "data": (0..300u32).collect::<Vec<_>>()}}).to_string();
+        let big =
+            json!({"jsonrpc": "2.0", "id": 6, "result": {"resultId": "r", "data": (0..300u32).collect::<Vec<_>>()}})
+                .to_string();
         let mut bytes = framed(&small);
         bytes.extend(framed(&big));
         bytes.extend(framed(&json!({"jsonrpc": "2.0", "id": 8, "result": null}).to_string()));
@@ -749,7 +782,8 @@ mod tests {
         assert_eq!(data.len(), 300);
         assert_eq!(data[299], 299);
         // A null result (no tokens) stays a plain response.
-        let framed_null = framed(&json!({"jsonrpc": "2.0", "id": 8, "result": null, "pad": "q".repeat(100)}).to_string());
+        let framed_null =
+            framed(&json!({"jsonrpc": "2.0", "id": 8, "result": null, "pad": "q".repeat(100)}).to_string());
         let mut r = Cursor::new(framed_null);
         assert!(matches!(next(&mut r, &lim, &tok_policy), Msg::Response { id: 8, result: Ok(Value::Null) }));
     }
@@ -776,11 +810,17 @@ mod tests {
 
     impl SymGen {
         fn class_json(i: usize, m: usize) -> String {
-            let r = |l: usize| format!(r#"{{"start":{{"line":{l},"character":0}},"end":{{"line":{},"character":1}}}}"#, l + 20);
+            let r = |l: usize| {
+                format!(r#"{{"start":{{"line":{l},"character":0}},"end":{{"line":{},"character":1}}}}"#, l + 20)
+            };
             let methods: Vec<String> = (0..m)
                 .map(|k| format!(r#"{{"name":"method{k}","kind":6,"detail":"(a: number) => string","range":{r},"selectionRange":{r},"children":[{{"name":"inner","kind":13,"range":{r},"selectionRange":{r},"children":[{{"name":"deep","kind":13,"range":{r},"selectionRange":{r},"children":[]}}]}}]}}"#, r = r(i * 30 + k)))
                 .collect();
-            format!(r#"{{"name":"Class{i}","kind":5,"range":{r},"selectionRange":{r},"children":[{}]}}"#, methods.join(","), r = r(i * 30))
+            format!(
+                r#"{{"name":"Class{i}","kind":5,"range":{r},"selectionRange":{r},"children":[{}]}}"#,
+                methods.join(","),
+                r = r(i * 30)
+            )
         }
     }
 

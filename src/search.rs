@@ -26,7 +26,10 @@ fn walker(root: &Path) -> ignore::Walk {
         .git_ignore(true)
         .git_global(false)
         .require_git(false)
-        .filter_entry(|e| !(e.file_type().is_some_and(|t| t.is_dir()) && SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref())))
+        .filter_entry(|e| {
+            !(e.file_type().is_some_and(|t| t.is_dir())
+                && SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref()))
+        })
         .build()
 }
 
@@ -40,7 +43,16 @@ pub fn list_files(root: &Path, limit: usize) -> Vec<PathBuf> {
 }
 
 /// Streams hits through `tx` in batches; stops early when `generation` no longer equals `my_gen`.
-pub fn search(root: &Path, query: &str, case_sensitive: bool, is_regex: bool, generation: Arc<AtomicUsize>, my_gen: usize, tx: Sender<(usize, Vec<Hit>)>, wake: impl Fn()) {
+pub fn search(
+    root: &Path,
+    query: &str,
+    case_sensitive: bool,
+    is_regex: bool,
+    generation: Arc<AtomicUsize>,
+    my_gen: usize,
+    tx: Sender<(usize, Vec<Hit>)>,
+    wake: impl Fn(),
+) {
     if query.is_empty() {
         return;
     }
@@ -67,7 +79,12 @@ pub fn search(root: &Path, query: &str, case_sensitive: bool, is_regex: bool, ge
         for (ln, line) in text.lines().enumerate() {
             if let Some(m) = re.find(line) {
                 let col = line[..m.start()].chars().count();
-                batch.push(Hit { path: entry.path().to_path_buf(), line: ln, col, text: line.trim().chars().take(200).collect() });
+                batch.push(Hit {
+                    path: entry.path().to_path_buf(),
+                    line: ln,
+                    col,
+                    text: line.trim().chars().take(200).collect(),
+                });
                 total += 1;
                 if total >= 2000 {
                     break;
@@ -93,7 +110,8 @@ mod tests {
     use std::sync::mpsc::channel;
 
     fn project() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("lumen-search-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let root =
+            std::env::temp_dir().join(format!("lumen-search-{}-{:?}", std::process::id(), std::thread::current().id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
@@ -110,7 +128,8 @@ mod tests {
     fn file_index_respects_ignores() {
         let root = project();
         let files = list_files(&root, 100);
-        let names: Vec<String> = files.iter().map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> =
+            files.iter().map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().into_owned()).collect();
         assert!(names.contains(&"src/a.ts".to_string()), "{names:?}");
         assert!(!names.iter().any(|n| n.contains("node_modules") || n.starts_with("ignored")), "{names:?}");
         std::fs::remove_dir_all(&root).ok();

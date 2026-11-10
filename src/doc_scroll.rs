@@ -5,7 +5,7 @@
 use crate::{
     doc::Doc,
     editor::visual_col,
-    scroller::{WHEEL_ROWS, Scroller},
+    scroller::{Scroller, WHEEL_ROWS},
     ui::line_h,
 };
 
@@ -59,7 +59,11 @@ impl Doc {
             // Giant (minified) lines: the char count stands in for the visual width (no tab scan).
             let width = |l: usize| {
                 let n = self.buf.line_len(l);
-                if n > 4000 { n } else { visual_col(&self.buf.line(l), usize::MAX, tab) + self.inlay.hints.extra_before(l, usize::MAX, true) }
+                if n > 4000 {
+                    n
+                } else {
+                    visual_col(&self.buf.line(l), usize::MAX, tab) + self.inlay.hints.extra_before(l, usize::MAX, true)
+                }
             };
             let cols = (lo..hi).map(width).max().unwrap_or(0);
             self.scr.wide.set((self.version, lo, hi, cols, tab));

@@ -9,7 +9,7 @@ use crate::{
     fuzzy::fuzzy,
     lsp::{self, DefKind, Lsp, Msg, Pending},
     theme::Rgba,
-    ui::{Canvas, line_h, Rect},
+    ui::{Canvas, Rect, line_h},
 };
 use serde_json::{Value, json};
 use std::{
@@ -109,7 +109,9 @@ impl App {
             return None;
         };
         // Narrow mode: the server runs in a mirror whose tsconfig includes only the open files.
-        let narrow = self.config.lsp_narrow && root.join("tsconfig.json").exists() && std::env::var_os("LUMEN_NO_MIRROR").is_none();
+        let narrow = self.config.lsp_narrow
+            && root.join("tsconfig.json").exists()
+            && std::env::var_os("LUMEN_NO_MIRROR").is_none();
         let includes = self.ts_includes(&root);
         let mirror = if narrow {
             let m = lsp::mirror_dir(&root);
@@ -120,7 +122,15 @@ impl App {
         if let Some(m) = &mirror {
             crate::doc::register_mirror(m.clone(), root.clone());
         }
-        match Lsp::spawn("tsgo", &bin, &["--lsp", "--stdio"], &root, mirror.as_deref().unwrap_or(&root), MEM_LIMIT_MIB, self.wake()) {
+        match Lsp::spawn(
+            "tsgo",
+            &bin,
+            &["--lsp", "--stdio"],
+            &root,
+            mirror.as_deref().unwrap_or(&root),
+            MEM_LIMIT_MIB,
+            self.wake(),
+        ) {
             Ok(mut l) => {
                 l.mirror = mirror;
                 l.includes = includes;
@@ -148,7 +158,11 @@ impl App {
         }
         self.completion = None;
         let on = self.auto_import;
-        self.say(if on { "auto-import in completion: on (slower, uses more RAM)" } else { "auto-import in completion: off" });
+        self.say(if on {
+            "auto-import in completion: on (slower, uses more RAM)"
+        } else {
+            "auto-import in completion: off"
+        });
     }
 
     /// Real paths of the TS/JS documents belonging to `root`.
@@ -191,7 +205,14 @@ impl App {
         self.config.save();
         let src = self.config.tsgo_source.clone();
         self.restart_lsp();
-        self.say(format!("tsgo: {src} — {}", match src.as_str() { "project" => "only the version installed in the project", "bundled" => "only the editor's version", _ => "the project's if present, otherwise the editor's" }));
+        self.say(format!(
+            "tsgo: {src} — {}",
+            match src.as_str() {
+                "project" => "only the version installed in the project",
+                "bundled" => "only the editor's version",
+                _ => "the project's if present, otherwise the editor's",
+            }
+        ));
     }
 
     pub fn toggle_narrow(&mut self) {
@@ -199,7 +220,11 @@ impl App {
         self.config.save();
         let on = self.config.lsp_narrow;
         self.restart_lsp();
-        self.say(if on { "tsgo in lean mode (open files only): less RAM" } else { "tsgo in full-project mode: sees the whole project, uses more RAM" });
+        self.say(if on {
+            "tsgo in lean mode (open files only): less RAM"
+        } else {
+            "tsgo in full-project mode: sees the whole project, uses more RAM"
+        });
     }
 
     pub fn restart_lsp(&mut self) {
@@ -232,10 +257,11 @@ impl App {
     fn biome_root_for(&mut self, doc: usize) -> Option<PathBuf> {
         let d = self.docs.get_mut(doc)?;
         if d.biome_root.is_none() {
-            let found = d
-                .path()
-                .and_then(|p| p.parent())
-                .and_then(|dir| dir.ancestors().find(|a| a.join("biome.json").exists() || a.join("biome.jsonc").exists()).map(std::path::Path::to_path_buf));
+            let found = d.path().and_then(|p| p.parent()).and_then(|dir| {
+                dir.ancestors()
+                    .find(|a| a.join("biome.json").exists() || a.join("biome.jsonc").exists())
+                    .map(std::path::Path::to_path_buf)
+            });
             d.biome_root = Some(found);
         }
         d.biome_root.clone().flatten()
@@ -243,7 +269,9 @@ impl App {
 
     /// The Biome language server for this document's project (spawned on demand).
     fn ensure_biome(&mut self, doc: usize) -> Option<usize> {
-        if self.biome_disabled || !matches!(self.docs.get(doc)?.lang, Some("typescript" | "tsx" | "javascript" | "jsx" | "json" | "css")) {
+        if self.biome_disabled
+            || !matches!(self.docs.get(doc)?.lang, Some("typescript" | "tsx" | "javascript" | "jsx" | "json" | "css"))
+        {
             return None;
         }
         let root = self.biome_root_for(doc)?;
@@ -292,19 +320,22 @@ impl App {
     fn biome_close(&mut self, i: usize) {
         let Some(lb) = self.biome_index(i) else { return };
         let d = &self.docs[i];
-        if d.biome_open {
-            if let Some(uri) = d.real_uri() {
-                self.lsps[lb].notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
-            }
+        if d.biome_open
+            && let Some(uri) = d.real_uri()
+        {
+            self.lsps[lb].notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
         }
         let root = self.lsps[lb].root.clone();
-        let others = self.docs.iter().enumerate().any(|(j, x)| j != i && x.biome_open && x.biome_root.clone().flatten().as_ref() == Some(&root));
+        let others = self
+            .docs
+            .iter()
+            .enumerate()
+            .any(|(j, x)| j != i && x.biome_open && x.biome_root.clone().flatten().as_ref() == Some(&root));
         if !others {
             let mut l = self.lsps.remove(lb);
             l.shutdown();
         }
     }
-
 
     /// Open new TS documents, send debounced changes, and pull diagnostics.
     pub fn lsp_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
@@ -351,7 +382,11 @@ impl App {
                         if self.lsps[li].caps["semanticTokensProvider"].is_object() {
                             if self.docs[i].buf.line_count() <= crate::bigfile::BIG_LINES {
                                 if let Some(uri) = self.docs[i].uri() {
-                                    self.lsps[li].request("textDocument/semanticTokens/full", json!({"textDocument": {"uri": uri}}), Pending::SemTokens { uri });
+                                    self.lsps[li].request(
+                                        "textDocument/semanticTokens/full",
+                                        json!({"textDocument": {"uri": uri}}),
+                                        Pending::SemTokens { uri },
+                                    );
                                 }
                             } else {
                                 // Big files: only a window around the viewport (below), never the whole document.
@@ -362,7 +397,10 @@ impl App {
                         want(t);
                     }
                 }
-                if i == self.active && self.docs[i].buf.line_count() > crate::bigfile::BIG_LINES && self.docs[i].sem_due.is_none() {
+                if i == self.active
+                    && self.docs[i].buf.line_count() > crate::bigfile::BIG_LINES
+                    && self.docs[i].sem_due.is_none()
+                {
                     let range = &self.lsps[li].caps["semanticTokensProvider"]["range"];
                     if !range.is_null() && range.as_bool() != Some(false) {
                         self.sem_range_tick(i, li, now, want);
@@ -371,10 +409,15 @@ impl App {
                 if let Some(t) = self.docs[i].lens_due {
                     if t <= now {
                         self.docs[i].lens_due = None;
-                        if self.config.code_lens && self.lsps[li].caps["codeLensProvider"].is_object() {
-                            if let Some(uri) = self.docs[i].uri() {
-                                self.lsps[li].request("textDocument/codeLens", json!({"textDocument": {"uri": uri}}), Pending::CodeLens { uri });
-                            }
+                        if self.config.code_lens
+                            && self.lsps[li].caps["codeLensProvider"].is_object()
+                            && let Some(uri) = self.docs[i].uri()
+                        {
+                            self.lsps[li].request(
+                                "textDocument/codeLens",
+                                json!({"textDocument": {"uri": uri}}),
+                                Pending::CodeLens { uri },
+                            );
                         }
                     } else {
                         want(t);
@@ -390,9 +433,19 @@ impl App {
                 if t <= now {
                     self.docs[i].symbols_due = None;
                     if let Some(uri) = self.docs[i].uri() {
-                        self.lsps[li].request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri}}), Pending::SymbolsCache { uri: uri.clone() });
-                        if self.lsps[li].caps["foldingRangeProvider"].as_bool() != Some(false) && !self.lsps[li].caps["foldingRangeProvider"].is_null() {
-                            self.lsps[li].request("textDocument/foldingRange", json!({"textDocument": {"uri": uri}}), Pending::Folding { uri });
+                        self.lsps[li].request(
+                            "textDocument/documentSymbol",
+                            json!({"textDocument": {"uri": uri}}),
+                            Pending::SymbolsCache { uri: uri.clone() },
+                        );
+                        if self.lsps[li].caps["foldingRangeProvider"].as_bool() != Some(false)
+                            && !self.lsps[li].caps["foldingRangeProvider"].is_null()
+                        {
+                            self.lsps[li].request(
+                                "textDocument/foldingRange",
+                                json!({"textDocument": {"uri": uri}}),
+                                Pending::Folding { uri },
+                            );
                         }
                     }
                 } else {
@@ -426,7 +479,11 @@ impl App {
         if d.inlay.due.is_none() && d.inlay.needs_request(vf, vl, count) {
             // The viewport itself has no hints yet (fast scroll): ask at once (at most every 60 ms);
             // a margin refresh waits for the scroll to settle.
-            let wait = if d.inlay.viewport_uncovered(vf, vl, count) { d.inlay.since_last_request().map_or(0, |e| 60u64.saturating_sub(e.as_millis() as u64)) } else { 180 };
+            let wait = if d.inlay.viewport_uncovered(vf, vl, count) {
+                d.inlay.since_last_request().map_or(0, |e| 60u64.saturating_sub(e.as_millis() as u64))
+            } else {
+                180
+            };
             d.inlay.due = Some(now + Duration::from_millis(wait));
         }
         let Some(t) = d.inlay.due else { return };
@@ -502,7 +559,11 @@ impl App {
                 continue;
             }
             let Some(uri) = d.uri() else { continue };
-            self.lsps[li].request("textDocument/diagnostic", json!({"textDocument": {"uri": uri}}), Pending::Diagnostic { uri });
+            self.lsps[li].request(
+                "textDocument/diagnostic",
+                json!({"textDocument": {"uri": uri}}),
+                Pending::Diagnostic { uri },
+            );
         }
     }
 
@@ -521,10 +582,10 @@ impl App {
     pub fn lsp_notify_close(&mut self, i: usize) {
         let Some(li) = self.doc_lsp(i) else { return };
         let d = &self.docs[i];
-        if d.lsp_open {
-            if let Some(uri) = d.uri() {
-                self.lsps[li].notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
-            }
+        if d.lsp_open
+            && let Some(uri) = d.uri()
+        {
+            self.lsps[li].notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
         }
     }
 
@@ -540,10 +601,16 @@ impl App {
         let mut items: Vec<Item> = Vec::new();
         for s in v.as_array().into_iter().flatten().take(300) {
             let name = s["name"].as_str().unwrap_or("?");
-            let Some((uri, l, c)) = lsp::locations(&json!([s["location"].clone()])).into_iter().next() else { continue };
+            let Some((uri, l, c)) = lsp::locations(&json!([s["location"].clone()])).into_iter().next() else {
+                continue;
+            };
             let Some(path) = uri_to_path(&uri) else { continue };
             let container = s["containerName"].as_str().unwrap_or("");
-            let detail = if container.is_empty() { format!("{}:{}", self.rel(&path), l + 1) } else { format!("{container} · {}:{}", self.rel(&path), l + 1) };
+            let detail = if container.is_empty() {
+                format!("{}:{}", self.rel(&path), l + 1)
+            } else {
+                format!("{container} · {}:{}", self.rel(&path), l + 1)
+            };
             items.push(Item { label: name.to_string(), detail, action: Action::Open(path, Some((l, c))) });
         }
         if let crate::app_overlay::Overlay::Picker(p) = &mut self.overlay {
@@ -559,14 +626,15 @@ impl App {
         self.biome_close(i);
         let Some(li) = self.doc_lsp(i) else { return };
         let d = &self.docs[i];
-        if d.lsp_open {
-            if let Some(uri) = d.uri() {
-                self.lsps[li].notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
-            }
+        if d.lsp_open
+            && let Some(uri) = d.uri()
+        {
+            self.lsps[li].notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
         }
         // Last TS document of this project gone: shut the server down and give the RAM back.
         let root = self.lsps[li].root.clone();
-        let others = self.docs.iter().enumerate().any(|(j, x)| j != i && x.lsp_open && x.lsp_root.as_ref() == Some(&root));
+        let others =
+            self.docs.iter().enumerate().any(|(j, x)| j != i && x.lsp_open && x.lsp_root.as_ref() == Some(&root));
         if !others {
             let mut l = self.lsps.remove(li);
             crate::doc::unregister_mirror(&l.root);
@@ -672,10 +740,15 @@ impl App {
                     "preferences": {"includeCompletionsForModuleExports": auto, "includePackageJsonAutoImports": if auto { "auto" } else { "off" }}
                 });
                 let items = params["items"].as_array().cloned().unwrap_or_default();
-                Value::Array(items.iter().map(|it| match it["section"].as_str() {
-                    Some("js/ts" | "typescript" | "javascript") => ts.clone(),
-                    _ => Value::Null,
-                }).collect())
+                Value::Array(
+                    items
+                        .iter()
+                        .map(|it| match it["section"].as_str() {
+                            Some("js/ts" | "typescript" | "javascript") => ts.clone(),
+                            _ => Value::Null,
+                        })
+                        .collect(),
+                )
             }
             "workspace/applyEdit" => {
                 self.apply_workspace_edit(&params["edit"]);
@@ -709,8 +782,8 @@ impl App {
             ) else {
                 continue;
             };
-            let a = d.from_lsp_pos(sl as usize, sc as usize);
-            let b = d.from_lsp_pos(el as usize, ec as usize);
+            let a = d.pos_from_lsp(sl as usize, sc as usize);
+            let b = d.pos_from_lsp(el as usize, ec as usize);
             let (l0, c0) = d.buf.line_col(a);
             let (l1, c1) = d.buf.line_col(b);
             let code = match &it["code"] {
@@ -750,11 +823,22 @@ impl App {
                     eprintln!("[lsp] error response for {what:?}: {e}");
                 }
                 let msg = e["message"].as_str().unwrap_or("error").to_string();
-                if matches!(what, Pending::CodeActions { .. }) {
+                if matches!(what, Pending::CodeActions) {
                     return self.actions_response(Vec::new());
                 }
                 self.sem_range_failed(&what);
-                if !matches!(what, Pending::Diagnostic { .. } | Pending::Hover { .. } | Pending::HoverExtra { .. } | Pending::Completion { .. } | Pending::Signature { .. } | Pending::SymbolsCache { .. } | Pending::Folding { .. } | Pending::SemTokens { .. } | Pending::SemRange { .. }) {
+                if !matches!(
+                    what,
+                    Pending::Diagnostic { .. }
+                        | Pending::Hover { .. }
+                        | Pending::HoverExtra { .. }
+                        | Pending::Completion { .. }
+                        | Pending::Signature { .. }
+                        | Pending::SymbolsCache { .. }
+                        | Pending::Folding { .. }
+                        | Pending::SemTokens { .. }
+                        | Pending::SemRange { .. }
+                ) {
                     self.say(format!("LSP: {msg}"));
                 }
                 return;
@@ -814,9 +898,11 @@ impl App {
                     }
                 }
             }
-            Pending::CodeActions { .. } => self.on_code_actions(li, &v),
+            Pending::CodeActions => self.on_code_actions(li, &v),
             Pending::Signature { uri } => self.on_signature(&uri, &v),
-            what @ (Pending::Symbols { .. } | Pending::SymbolsCache { .. }) => self.on_symbol_list(what, crate::doc::flatten_symbols(&v)),
+            what @ (Pending::Symbols { .. } | Pending::SymbolsCache { .. }) => {
+                self.on_symbol_list(what, crate::doc::flatten_symbols(&v))
+            }
             Pending::ResolveCompletion { uri, version } => {
                 if let Some(i) = self.doc_by_uri(&uri) {
                     let extra = parse_edits(&v["additionalTextEdits"]);
@@ -842,7 +928,10 @@ impl App {
             }
             what @ (Pending::SemTokens { .. } | Pending::SemRange { .. }) => {
                 // Normally delivered packed as `Msg::Tokens`; a null result lands here.
-                let data: Vec<u32> = v["data"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect()).unwrap_or_default();
+                let data: Vec<u32> = v["data"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect())
+                    .unwrap_or_default();
                 self.on_tokens(li, what, data);
             }
             Pending::CodeLens { uri } => {
@@ -851,10 +940,21 @@ impl App {
                     for it in v.as_array().into_iter().flatten() {
                         let r = &it["range"]["start"];
                         let title = it["command"]["title"].as_str().map(str::to_string);
-                        lenses.push(crate::doc::Lens { line: r["line"].as_u64().unwrap_or(0) as usize, col: r["character"].as_u64().unwrap_or(0) as usize, title, raw: it.clone() });
+                        lenses.push(crate::doc::Lens {
+                            line: r["line"].as_u64().unwrap_or(0) as usize,
+                            col: r["character"].as_u64().unwrap_or(0) as usize,
+                            title,
+                            raw: it.clone(),
+                        });
                     }
                     // Counts need a resolve round-trip; ask for the first batch.
-                    let pending: Vec<(usize, Value)> = lenses.iter().enumerate().filter(|(_, l)| l.title.is_none()).take(120).map(|(k, l)| (k, l.raw.clone())).collect();
+                    let pending: Vec<(usize, Value)> = lenses
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, l)| l.title.is_none())
+                        .take(120)
+                        .map(|(k, l)| (k, l.raw.clone()))
+                        .collect();
                     self.docs[i].lenses = lenses;
                     for (_, raw) in pending {
                         let line = raw["range"]["start"]["line"].as_u64().unwrap_or(0) as usize;
@@ -863,14 +963,16 @@ impl App {
                 }
             }
             Pending::ResolveLens { uri, line } => {
-                if let Some(i) = self.doc_by_uri(&uri) {
-                    if let Some(title) = v["command"]["title"].as_str() {
-                        let c = v["range"]["start"]["character"].as_u64().unwrap_or(0) as usize;
-                        if let Some(l) = self.docs[i].lenses.iter_mut().find(|l| l.line == line && l.col == c && l.title.is_none()) {
-                            l.title = Some(title.to_string());
-                        }
-                        self.request_redraw();
+                if let Some(i) = self.doc_by_uri(&uri)
+                    && let Some(title) = v["command"]["title"].as_str()
+                {
+                    let c = v["range"]["start"]["character"].as_u64().unwrap_or(0) as usize;
+                    if let Some(l) =
+                        self.docs[i].lenses.iter_mut().find(|l| l.line == line && l.col == c && l.title.is_none())
+                    {
+                        l.title = Some(title.to_string());
                     }
+                    self.request_redraw();
                 }
             }
             Pending::InlayHint { uri, version, first, last } => self.on_inlay_hints(&uri, version, first, last, &v),
@@ -1030,7 +1132,8 @@ impl App {
         }
         let Some((i, li)) = self.with_server() else { return };
         let uri = self.docs[i].uri().unwrap_or_default();
-        let params = json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": col}, "newName": name});
+        let params =
+            json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": col}, "newName": name});
         self.lsps[li].request("textDocument/rename", params, Pending::Rename);
     }
 
@@ -1072,7 +1175,9 @@ impl App {
     }
 
     pub fn organize_imports(&mut self) {
-        let Some((i, li)) = self.with_server() else { return self.say("organize imports needs the language server (TS/JS file)") };
+        let Some((i, li)) = self.with_server() else {
+            return self.say("organize imports needs the language server (TS/JS file)");
+        };
         let d = &self.docs[i];
         let at = d.ed.head();
         let range = lsp_range(d, at, at);
@@ -1085,7 +1190,9 @@ impl App {
         if self.format_external_active(false) {
             return;
         }
-        let Some((i, li)) = self.with_server() else { return self.say("format needs the language server (TS/JS file)") };
+        let Some((i, li)) = self.with_server() else {
+            return self.say("format needs the language server (TS/JS file)");
+        };
         let d = &self.docs[i];
         let uri = d.uri().unwrap_or_default();
         let version = d.version;
@@ -1095,9 +1202,15 @@ impl App {
     }
 
     pub fn open_symbols(&mut self) {
-        let Some((i, li)) = self.with_server() else { return self.say("symbols need the language server (TS/JS file)") };
+        let Some((i, li)) = self.with_server() else {
+            return self.say("symbols need the language server (TS/JS file)");
+        };
         let uri = self.docs[i].uri().unwrap_or_default();
-        self.lsps[li].request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri}}), Pending::Symbols { uri });
+        self.lsps[li].request(
+            "textDocument/documentSymbol",
+            json!({"textDocument": {"uri": uri}}),
+            Pending::Symbols { uri },
+        );
     }
 
     /// A flattened outline arrived: for breadcrumbs / sticky scroll, or for the "go to symbol" picker.
@@ -1123,9 +1236,27 @@ impl App {
         let mut items: Vec<Item> = Vec::with_capacity(syms.len());
         for s in syms {
             let kind = match s.kind {
-                2 => "module", 5 => "class", 6 => "method", 7 => "property", 8 => "field", 9 => "constructor", 10 => "enum", 11 => "interface", 12 => "function", 13 => "variable", 14 => "constant", 22 => "enum member", 23 => "struct", 26 => "type", _ => "",
+                2 => "module",
+                5 => "class",
+                6 => "method",
+                7 => "property",
+                8 => "field",
+                9 => "constructor",
+                10 => "enum",
+                11 => "interface",
+                12 => "function",
+                13 => "variable",
+                14 => "constant",
+                22 => "enum member",
+                23 => "struct",
+                26 => "type",
+                _ => "",
             };
-            items.push(Item { label: format!("{}{}", "  ".repeat(s.depth), s.name), detail: kind.to_string(), action: Action::Goto(d.from_lsp_pos(s.sel_l, s.sel_c)) });
+            items.push(Item {
+                label: format!("{}{}", "  ".repeat(s.depth), s.name),
+                detail: kind.to_string(),
+                action: Action::Goto(d.pos_from_lsp(s.sel_l, s.sel_c)),
+            });
         }
         if items.is_empty() {
             return self.say("no symbols");
@@ -1158,11 +1289,11 @@ impl App {
         self.actions_items.clear();
         self.actions_expected = 0;
         if let Some((_, li)) = self.with_server() {
-            self.lsps[li].request("textDocument/codeAction", mk(&ts_uri), Pending::CodeActions { uri: ts_uri.clone() });
+            self.lsps[li].request("textDocument/codeAction", mk(&ts_uri), Pending::CodeActions);
             self.actions_expected += 1;
         }
         if let Some(lb) = self.biome_index(i) {
-            self.lsps[lb].request("textDocument/codeAction", mk(&real_uri), Pending::CodeActions { uri: real_uri.clone() });
+            self.lsps[lb].request("textDocument/codeAction", mk(&real_uri), Pending::CodeActions);
             self.actions_expected += 1;
         }
         if self.actions_expected == 0 {
@@ -1208,7 +1339,11 @@ impl App {
             self.lsps[li].request("codeAction/resolve", action.clone(), Pending::ResolveAction);
         } else if action["command"].is_object() {
             let cmd = &action["command"];
-            self.lsps[li].request("workspace/executeCommand", json!({"command": cmd["command"], "arguments": cmd["arguments"]}), Pending::ExecuteCommand);
+            self.lsps[li].request(
+                "workspace/executeCommand",
+                json!({"command": cmd["command"], "arguments": cmd["arguments"]}),
+                Pending::ExecuteCommand,
+            );
         }
     }
 
@@ -1224,11 +1359,11 @@ impl App {
     }
 
     pub fn shrink_selection(&mut self) {
-        if let Some(d) = self.docs.get_mut(self.active) {
-            if let Some(s) = d.sel_stack.pop() {
-                d.ed.sel = s;
-                d.reveal = true;
-            }
+        if let Some(d) = self.docs.get_mut(self.active)
+            && let Some(s) = d.sel_stack.pop()
+        {
+            d.ed.sel = s;
+            d.reveal = true;
         }
     }
 
@@ -1238,8 +1373,13 @@ impl App {
         let mut node = v.get(0);
         while let Some(n) = node {
             let r = &n["range"];
-            if let (Some(sl), Some(sc), Some(el), Some(ec)) = (r["start"]["line"].as_u64(), r["start"]["character"].as_u64(), r["end"]["line"].as_u64(), r["end"]["character"].as_u64()) {
-                let (s, e) = (d.from_lsp_pos(sl as usize, sc as usize), d.from_lsp_pos(el as usize, ec as usize));
+            if let (Some(sl), Some(sc), Some(el), Some(ec)) = (
+                r["start"]["line"].as_u64(),
+                r["start"]["character"].as_u64(),
+                r["end"]["line"].as_u64(),
+                r["end"]["character"].as_u64(),
+            ) {
+                let (s, e) = (d.pos_from_lsp(sl as usize, sc as usize), d.pos_from_lsp(el as usize, ec as usize));
                 if s <= cur.start() && e >= cur.end() && (s, e) != (cur.start(), cur.end()) {
                     d.sel_stack.push(cur);
                     d.ed.sel = crate::buffer::Sel { anchor: s, head: e };
@@ -1259,7 +1399,9 @@ impl App {
     }
 
     fn on_prepare_calls(&mut self, incoming: bool, v: &Value) {
-        let Some(item) = v.as_array().and_then(|a| a.first()).cloned() else { return self.say("no function/method under the cursor") };
+        let Some(item) = v.as_array().and_then(|a| a.first()).cloned() else {
+            return self.say("no function/method under the cursor");
+        };
         let Some((_, li)) = self.with_server() else { return };
         let method = if incoming { "callHierarchy/incomingCalls" } else { "callHierarchy/outgoingCalls" };
         self.lsps[li].request(method, json!({"item": item}), Pending::Calls { incoming });
@@ -1273,7 +1415,11 @@ impl App {
             let Some(path) = uri_to_path(uri) else { continue };
             let r = &it["selectionRange"]["start"];
             let (l, col) = (r["line"].as_u64().unwrap_or(0) as usize, r["character"].as_u64().unwrap_or(0) as usize);
-            items.push(Item { label: name.to_string(), detail: format!("{}:{}", self.rel(&path), l + 1), action: Action::Open(path, Some((l, col))) });
+            items.push(Item {
+                label: name.to_string(),
+                detail: format!("{}:{}", self.rel(&path), l + 1),
+                action: Action::Open(path, Some((l, col))),
+            });
         }
         if items.is_empty() {
             return self.say(if incoming { "nothing calls this" } else { "calls nothing" });
@@ -1296,7 +1442,11 @@ impl App {
         let label = sig["label"].as_str().unwrap_or("");
         let doc = lsp::hover_text(&json!({"contents": sig["documentation"].clone()}));
         let _ = i;
-        let text = if doc.is_empty() { format!("```typescript\n{label}\n```") } else { format!("```typescript\n{label}\n```\n\n{doc}") };
+        let text = if doc.is_empty() {
+            format!("```typescript\n{label}\n```")
+        } else {
+            format!("```typescript\n{label}\n```\n\n{doc}")
+        };
         self.hover_set_markdown(&text);
     }
 
@@ -1307,7 +1457,7 @@ impl App {
         self.push_nav();
         if let Some(i) = self.open_path(&path, None) {
             let d = &mut self.docs[i];
-            let p = d.from_lsp_pos(loc.1, loc.2);
+            let p = d.pos_from_lsp(loc.1, loc.2);
             d.ed.click(&mut d.buf, p, false);
             d.reveal = true;
         }
@@ -1320,12 +1470,18 @@ impl App {
             let Some(path) = uri_to_path(uri) else { continue };
             let text = cache
                 .entry(path.clone())
-                .or_insert_with(|| std::fs::read_to_string(&path).map(|s| s.lines().map(str::to_string).collect()).unwrap_or_default())
+                .or_insert_with(|| {
+                    std::fs::read_to_string(&path).map(|s| s.lines().map(str::to_string).collect()).unwrap_or_default()
+                })
                 .get(*line)
                 .map(|l| l.trim().to_string())
                 .unwrap_or_default();
             // Columns here are UTF-16; for display and cursor placement treat them as char columns.
-            items.push(Item { label: text, detail: format!("{}:{}", self.rel(&path), line + 1), action: Action::Open(path, Some((*line, *col))) });
+            items.push(Item {
+                label: text,
+                detail: format!("{}:{}", self.rel(&path), line + 1),
+                action: Action::Open(path, Some((*line, *col))),
+            });
         }
         self.open_locations(title, items);
     }
@@ -1407,17 +1563,25 @@ impl App {
             };
             scored.push((score, it));
         }
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|a| std::cmp::Reverse(a.0));
         scored.truncate(1500);
 
         let mut items: Vec<CItem> = Vec::with_capacity(scored.len());
         for (_, it) in scored {
             let label = it["label"].as_str().unwrap_or("");
             let te = it.get("textEdit").filter(|t| t.is_object() && t.get("range").is_some());
-            let insert = te.and_then(|t| t["newText"].as_str()).or_else(|| it["insertText"].as_str()).unwrap_or(label).to_string();
+            let insert = te
+                .and_then(|t| t["newText"].as_str())
+                .or_else(|| it["insertText"].as_str())
+                .unwrap_or(label)
+                .to_string();
             items.push(CItem {
                 label: label.to_string(),
-                detail: it["detail"].as_str().or_else(|| it["labelDetails"]["description"].as_str()).unwrap_or("").to_string(),
+                detail: it["detail"]
+                    .as_str()
+                    .or_else(|| it["labelDetails"]["description"].as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 insert,
                 kind: it["kind"].as_u64().unwrap_or(0) as u32,
                 sort: it["sortText"].as_str().unwrap_or(label).to_string(),
@@ -1429,7 +1593,8 @@ impl App {
             self.completion = None;
             return;
         }
-        let mut c = Completion { items, filtered: Vec::new(), sel: 0, scroll: 0, start, seed_len: prefix.chars().count() };
+        let mut c =
+            Completion { items, filtered: Vec::new(), sel: 0, scroll: 0, start, seed_len: prefix.chars().count() };
         self.refilter_completion_into(&mut c);
         self.completion = if c.filtered.is_empty() { None } else { Some(c) };
         release_memory();
@@ -1486,7 +1651,9 @@ impl App {
                     }
                 }
                 // Deleted past the prefix the list was fetched for: ask the server again.
-                None if still && head > c.start => self.comp_due = Some((Instant::now() + Duration::from_millis(90), None)),
+                None if still && head > c.start => {
+                    self.comp_due = Some((Instant::now() + Duration::from_millis(90), None))
+                }
                 _ => {}
             }
         }
@@ -1556,7 +1723,7 @@ impl App {
         let d = &mut self.docs[i];
         let head = d.ed.head();
         let (s, e) = match &item.range {
-            Some(r) => (d.from_lsp_pos(r.sl, r.sc), d.from_lsp_pos(r.el, r.ec).max(head)),
+            Some(r) => (d.pos_from_lsp(r.sl, r.sc), d.pos_from_lsp(r.el, r.ec).max(head)),
             None => (c.start, head),
         };
         d.buf.close_group();
@@ -1577,7 +1744,11 @@ impl App {
         } else if let Some(li) = self.doc_lsp(i) {
             let can = self.lsps[li].caps["completionProvider"]["resolveProvider"].as_bool().unwrap_or(false);
             if can {
-                self.lsps[li].request("completionItem/resolve", item.raw.clone(), Pending::ResolveCompletion { uri, version });
+                self.lsps[li].request(
+                    "completionItem/resolve",
+                    item.raw.clone(),
+                    Pending::ResolveCompletion { uri, version },
+                );
             }
         }
     }
@@ -1605,7 +1776,13 @@ impl App {
         let go_below = below >= 22 * 4 || below >= above;
         let room = if go_below { below } else { above };
         let rows = c.filtered.len().min(10).min((room / 22).max(1) as usize);
-        let widest = c.filtered.iter().map(|&i| c.items[i].label.chars().count() + c.items[i].detail.chars().count().min(30) + 4).max().unwrap_or(20).clamp(24, 70);
+        let widest = c
+            .filtered
+            .iter()
+            .map(|&i| c.items[i].label.chars().count() + c.items[i].detail.chars().count().min(30) + 4)
+            .max()
+            .unwrap_or(20)
+            .clamp(24, 70);
         let w = (widest as f32 * cell) as i32 + 28;
         let h = rows as i32 * 22 + 6;
         let ry = if go_below { y + line_h() as i32 + 2 } else { y - h - 2 };
@@ -1641,7 +1818,16 @@ impl App {
         let (total, pos) = (c.filtered.len(), c.scroll);
         self.layout.completion_rows = layout_rows;
         if total > rows {
-            self.region_bar(cv, crate::scrollreg::Reg::Completion, r, total as f64, rows as f64, pos as f64, 22.0, true);
+            self.region_bar(
+                cv,
+                crate::scrollreg::Reg::Completion,
+                r,
+                total as f64,
+                rows as f64,
+                pos as f64,
+                22.0,
+                true,
+            );
         }
     }
 }
@@ -1656,7 +1842,7 @@ pub fn release_memory() {
 fn kind_glyph(kind: u32, t: &crate::theme::Theme) -> (&'static str, Rgba) {
     let c = &t.chrome;
     match kind {
-        2 | 3 | 4 => ("ƒ", Rgba(0xb1, 0x80, 0xd7, 0xff)),
+        2..=4 => ("ƒ", Rgba(0xb1, 0x80, 0xd7, 0xff)),
         5 | 10 => ("o", Rgba(0x75, 0xbe, 0xff, 0xff)),
         6 => ("x", Rgba(0x75, 0xbe, 0xff, 0xff)),
         7 | 22 => ("C", Rgba(0xee, 0x9d, 0x28, 0xff)),

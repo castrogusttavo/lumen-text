@@ -46,12 +46,15 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' {
-            if let Some(v) = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && let Some(v) = b
+                .get(i + 1..i + 3)
+                .and_then(|h| std::str::from_utf8(h).ok())
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;
@@ -83,7 +86,8 @@ pub fn parse_files(mime: &str, text: &str) -> Option<FileList> {
         }
         first = lines.next();
     }
-    let paths: Vec<PathBuf> = first.into_iter().chain(lines).filter(|l| !l.starts_with('#')).filter_map(uri_to_path).collect();
+    let paths: Vec<PathBuf> =
+        first.into_iter().chain(lines).filter(|l| !l.starts_with('#')).filter_map(uri_to_path).collect();
     (!paths.is_empty()).then_some(FileList { paths, cut })
 }
 
@@ -98,7 +102,14 @@ pub fn offer_mime(desktop: &str, forced: Option<&str>) -> &'static str {
         _ => {}
     }
     let d = desktop.to_ascii_lowercase();
-    if ["gnome", "unity", "pantheon", "budgie", "cinnamon", "mate", "xfce", "x-cinnamon"].iter().any(|n| d.split(':').any(|p| p == *n)) { GNOME_FILES } else { URI_LIST }
+    if ["gnome", "unity", "pantheon", "budgie", "cinnamon", "mate", "xfce", "x-cinnamon"]
+        .iter()
+        .any(|n| d.split(':').any(|p| p == *n))
+    {
+        GNOME_FILES
+    } else {
+        URI_LIST
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -145,7 +156,9 @@ impl Default for Clipboard {
 fn command(b: Backend, primary: bool, write: bool) -> Option<(&'static str, Vec<&'static str>)> {
     Some(match (b, write) {
         (Backend::Wayland, true) => ("wl-copy", if primary { vec!["--primary"] } else { vec![] }),
-        (Backend::Wayland, false) => ("wl-paste", if primary { vec!["--primary", "--no-newline"] } else { vec!["--no-newline"] }),
+        (Backend::Wayland, false) => {
+            ("wl-paste", if primary { vec!["--primary", "--no-newline"] } else { vec!["--no-newline"] })
+        }
         (Backend::Xclip, true) => ("xclip", vec!["-selection", if primary { "primary" } else { "clipboard" }, "-i"]),
         (Backend::Xclip, false) => ("xclip", vec!["-selection", if primary { "primary" } else { "clipboard" }, "-o"]),
         (Backend::Xsel, true) => ("xsel", vec![if primary { "-ip" } else { "-ib" }]),
@@ -158,7 +171,9 @@ fn command(b: Backend, primary: bool, write: bool) -> Option<(&'static str, Vec<
 fn typed_write(b: Backend, mime: &str) -> Option<(&'static str, Vec<String>)> {
     Some(match b {
         Backend::Wayland => ("wl-copy", vec!["--type".into(), mime.into()]),
-        Backend::Xclip => ("xclip", vec!["-selection".into(), "clipboard".into(), "-t".into(), mime.into(), "-i".into()]),
+        Backend::Xclip => {
+            ("xclip", vec!["-selection".into(), "clipboard".into(), "-t".into(), mime.into(), "-i".into()])
+        }
         Backend::Xsel | Backend::None => return None,
     })
 }
@@ -168,8 +183,12 @@ fn typed_read(b: Backend, mime: Option<&str>) -> Option<(&'static str, Vec<Strin
     Some(match (b, mime) {
         (Backend::Wayland, Some(m)) => ("wl-paste", vec!["--no-newline".into(), "--type".into(), m.into()]),
         (Backend::Wayland, None) => ("wl-paste", vec!["--list-types".into()]),
-        (Backend::Xclip, Some(m)) => ("xclip", vec!["-selection".into(), "clipboard".into(), "-t".into(), m.into(), "-o".into()]),
-        (Backend::Xclip, None) => ("xclip", vec!["-selection".into(), "clipboard".into(), "-t".into(), "TARGETS".into(), "-o".into()]),
+        (Backend::Xclip, Some(m)) => {
+            ("xclip", vec!["-selection".into(), "clipboard".into(), "-t".into(), m.into(), "-o".into()])
+        }
+        (Backend::Xclip, None) => {
+            ("xclip", vec!["-selection".into(), "clipboard".into(), "-t".into(), "TARGETS".into(), "-o".into()])
+        }
         (Backend::Xsel | Backend::None, _) => return None,
     })
 }
@@ -197,7 +216,12 @@ impl Clipboard {
         script("wl-copy", &format!("echo \"$2\" > {d}/mime; cat > {d}/data"));
         script("wl-paste", &format!("case \"$1\" in --list-types) cat {d}/mime;; *) cat {d}/data;; esac"));
         let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default());
-        Clipboard { backend: Backend::Wayland, internal: String::new(), internal_primary: String::new(), tool_path: Some(path.into()) }
+        Clipboard {
+            backend: Backend::Wayland,
+            internal: String::new(),
+            internal_primary: String::new(),
+            tool_path: Some(path.into()),
+        }
     }
 
     fn tool(&self, prog: &str) -> Command {
@@ -210,7 +234,9 @@ impl Clipboard {
 
     fn write(&self, primary: bool, text: &str) {
         let Some((prog, args)) = command(self.backend, primary, true) else { return };
-        let Ok(mut child) = self.tool(prog).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
+        let Ok(mut child) =
+            self.tool(prog).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        else {
             return;
         };
         if let Some(mut stdin) = child.stdin.take() {
@@ -259,7 +285,9 @@ impl Clipboard {
         if files.paths.is_empty() {
             return false;
         }
-        let Ok(mut child) = self.tool(prog).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
+        let Ok(mut child) =
+            self.tool(prog).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        else {
             return false;
         };
         if let Some(mut stdin) = child.stdin.take() {
@@ -282,10 +310,10 @@ impl Clipboard {
         let has = |m: &str| types.lines().any(|t| t.trim() == m);
         // The GNOME flavor knows about "cut"; prefer it when both are offered.
         for mime in [GNOME_FILES, URI_LIST] {
-            if has(mime) {
-                if let Some(list) = run(typed_read(self.backend, Some(mime))?).and_then(|t| parse_files(mime, &t)) {
-                    return Some(list);
-                }
+            if has(mime)
+                && let Some(list) = run(typed_read(self.backend, Some(mime))?).and_then(|t| parse_files(mime, &t))
+            {
+                return Some(list);
             }
         }
         None
@@ -309,7 +337,10 @@ mod tests {
     fn uris_round_trip_with_odd_characters() {
         for p in ["/home/a/b.txt", "/home/a/with space/é ü#%?.ts", "/x/a+b (cópia).md"] {
             let uri = path_to_uri(Path::new(p));
-            assert!(uri.starts_with("file:///") && !uri.contains(' ') && !uri.contains('#') && !uri[7..].contains('?'), "{uri}");
+            assert!(
+                uri.starts_with("file:///") && !uri.contains(' ') && !uri.contains('#') && !uri[7..].contains('?'),
+                "{uri}"
+            );
             assert_eq!(uri_to_path(&uri), Some(PathBuf::from(p)), "{uri}");
         }
         assert_eq!(path_to_uri(Path::new("/a b")), "file:///a%20b");
@@ -330,7 +361,10 @@ mod tests {
         assert_eq!(parse_files(GNOME_FILES, &encode_files(GNOME_FILES, &files)), Some(files.clone()));
         assert_eq!(parse_files(GNOME_FILES, &encode_files(GNOME_FILES, &cut)), Some(cut));
         // Comments, blank lines and non-file URIs (a browser's link) are ignored.
-        assert_eq!(parse_files(URI_LIST, "# comment\r\nfile:///x/y\r\nhttps://a.b/c\r\n\r\n").map(|f| f.paths), Some(vec![PathBuf::from("/x/y")]));
+        assert_eq!(
+            parse_files(URI_LIST, "# comment\r\nfile:///x/y\r\nhttps://a.b/c\r\n\r\n").map(|f| f.paths),
+            Some(vec![PathBuf::from("/x/y")])
+        );
         assert_eq!(parse_files(URI_LIST, "https://a.b/c\r\n"), None);
         assert_eq!(parse_files(URI_LIST, "just text"), None);
         assert_eq!(parse_files(GNOME_FILES, "file:///x\n"), None, "the GNOME flavor needs its copy/cut line");
@@ -350,7 +384,10 @@ mod tests {
 
     #[test]
     fn typed_commands_per_backend() {
-        assert_eq!(typed_write(Backend::Wayland, URI_LIST), Some(("wl-copy", vec!["--type".to_string(), URI_LIST.to_string()])));
+        assert_eq!(
+            typed_write(Backend::Wayland, URI_LIST),
+            Some(("wl-copy", vec!["--type".to_string(), URI_LIST.to_string()]))
+        );
         assert_eq!(typed_write(Backend::Xclip, GNOME_FILES).map(|c| c.0), Some("xclip"));
         assert_eq!(typed_write(Backend::Xsel, URI_LIST), None);
         assert_eq!(typed_read(Backend::Wayland, None), Some(("wl-paste", vec!["--list-types".to_string()])));

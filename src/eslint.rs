@@ -20,8 +20,16 @@ pub struct Msg {
 }
 
 const CONFIGS: &[&str] = &[
-    "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts", ".eslintrc", ".eslintrc.js", ".eslintrc.cjs",
-    ".eslintrc.json", ".eslintrc.yaml", ".eslintrc.yml",
+    "eslint.config.js",
+    "eslint.config.mjs",
+    "eslint.config.cjs",
+    "eslint.config.ts",
+    ".eslintrc",
+    ".eslintrc.js",
+    ".eslintrc.cjs",
+    ".eslintrc.json",
+    ".eslintrc.yaml",
+    ".eslintrc.yml",
 ];
 
 /// (project root, eslint binary) when the project is configured for ESLint and has it installed.
@@ -94,7 +102,11 @@ mod tests {
         assert_eq!(m.len(), 2);
         assert_eq!((m[0].line, m[0].col, m[0].end_col, m[0].severity), (3, 7, 8, 2));
         assert_eq!(m[0].rule, "no-unused-vars");
-        assert_eq!((m[1].end_line, m[1].end_col, m[1].rule.as_str()), (1, 2, ""), "missing end positions default to one column");
+        assert_eq!(
+            (m[1].end_line, m[1].end_col, m[1].rule.as_str()),
+            (1, 2, ""),
+            "missing end positions default to one column"
+        );
         assert!(parse("garbage").is_empty());
     }
 

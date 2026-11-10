@@ -3,10 +3,10 @@
 use crate::{
     app::{App, Focus},
     app_overlay::{Action, Item},
+    scrollreg::Reg,
     tasks::{self, Ansi, Event, Pm, Running, Segs},
     theme::Rgba,
-    scrollreg::Reg,
-    ui::{Canvas, line_h, Rect},
+    ui::{Canvas, Rect, line_h},
 };
 use std::{path::PathBuf, time::Instant};
 use winit::event::MouseScrollDelta;
@@ -85,7 +85,10 @@ impl App {
 
     pub fn open_terminal(&mut self) {
         if self.term.is_none() {
-            let (rows, cols) = ((self.panel.height - PANEL_HEADER) / line_h() as i32, (self.size.0 as i32 - 40) / self.tx.cell_w as i32);
+            let (rows, cols) = (
+                (self.panel.height - PANEL_HEADER) / line_h() as i32,
+                (self.size.0 as i32 - 40) / self.tx.cell_w as i32,
+            );
             match crate::terminal::Term::spawn(&self.root, rows.max(4) as usize, cols.max(20) as usize, self.wake()) {
                 Ok(t) => self.term = Some(t),
                 Err(e) => return self.say(format!("could not open the terminal: {e}")),
@@ -157,17 +160,20 @@ impl App {
         };
         let app_cursor = self.term.as_ref().is_some_and(|t| t.grid.app_cursor);
         // Shift+PageUp/PageDown scroll the terminal's own history instead of going to the shell.
-        if shift && matches!(named.as_deref(), Some("PageUp" | "PageDown")) && self.term.as_ref().is_some_and(|t| !t.alt_screen()) {
+        if shift
+            && matches!(named.as_deref(), Some("PageUp" | "PageDown"))
+            && self.term.as_ref().is_some_and(|t| !t.alt_screen())
+        {
             let rows = self.term.as_ref().map_or(10, |t| t.grid.rows as isize);
             if let Some(t) = self.term.as_mut() {
                 t.scroll_view(if named.as_deref() == Some("PageUp") { rows - 1 } else { -(rows - 1) });
             }
             return true;
         }
-        if let Some(bytes) = crate::terminal::key_bytes_app(named.as_deref(), text.as_deref(), ctrl, alt, app_cursor) {
-            if let Some(t) = self.term.as_mut() {
-                t.write(&bytes);
-            }
+        if let Some(bytes) = crate::terminal::key_bytes_app(named.as_deref(), text.as_deref(), ctrl, alt, app_cursor)
+            && let Some(t) = self.term.as_mut()
+        {
+            t.write(&bytes);
         }
         true
     }
@@ -235,7 +241,7 @@ impl App {
             while let Ok(ev) = r.rx.try_recv() {
                 match ev {
                     Event::Line(l) => lines.push(l),
-                    Event::Done(_) => done = true,
+                    Event::Done => done = true,
                 }
             }
         }
@@ -247,7 +253,12 @@ impl App {
                 self.apply_test_marks(&json, &file);
             }
             if let Some(prog) = self.pending_native.take() {
-                let ok = self.panel.running.as_mut().and_then(|r| r.child.try_wait().ok().flatten()).is_none_or(|s| s.success());
+                let ok = self
+                    .panel
+                    .running
+                    .as_mut()
+                    .and_then(|r| r.child.try_wait().ok().flatten())
+                    .is_none_or(|s| s.success());
                 if ok {
                     self.start_native_debug(prog);
                 }
@@ -289,7 +300,8 @@ impl App {
                 }
             }
         }
-        let (p, f) = (marks.iter().filter(|m| m.1 == Some(true)).count(), marks.iter().filter(|m| m.1 == Some(false)).count());
+        let (p, f) =
+            (marks.iter().filter(|m| m.1 == Some(true)).count(), marks.iter().filter(|m| m.1 == Some(false)).count());
         d.test_marks = marks;
         self.say(format!("testes: {p} passaram, {f} falharam"));
     }
@@ -323,7 +335,11 @@ impl App {
             let pm = Pm::detect(&self.root);
             let exec = pm.exec();
             let name = if at_cursor { tasks::test_name_at(&lines, cur_line) } else { None };
-            let base = if runner == "vitest" { format!("{exec} vitest run {}", tasks::shell_quote(&rel)) } else { format!("{exec} jest {}", tasks::shell_quote(&rel)) };
+            let base = if runner == "vitest" {
+                format!("{exec} vitest run {}", tasks::shell_quote(&rel))
+            } else {
+                format!("{exec} jest {}", tasks::shell_quote(&rel))
+            };
             match name {
                 Some(n) => format!("{base} -t {}", tasks::shell_quote(&regex::escape(&n))),
                 None => base,
@@ -336,7 +352,10 @@ impl App {
         let cmd = if ext == "rs" {
             cmd
         } else if tasks::test_runner(&self.root) == Some("vitest") {
-            format!("{cmd} --reporter=default --reporter=json --outputFile.json={}", tasks::shell_quote(&json.to_string_lossy()))
+            format!(
+                "{cmd} --reporter=default --reporter=json --outputFile.json={}",
+                tasks::shell_quote(&json.to_string_lossy())
+            )
         } else {
             format!("{cmd} --json --outputFile={}", tasks::shell_quote(&json.to_string_lossy()))
         };
@@ -407,10 +426,10 @@ impl App {
                 MouseScrollDelta::LineDelta(_, dy) => (dy * 3.0) as isize,
                 MouseScrollDelta::PixelDelta(p) => (p.y / line_h() as f64) as isize,
             };
-            if let Some(t) = self.term.as_mut() {
-                if !t.alt_screen() {
-                    t.scroll_view(lines);
-                }
+            if let Some(t) = self.term.as_mut()
+                && !t.alt_screen()
+            {
+                t.scroll_view(lines);
             }
             return true;
         }
@@ -439,7 +458,8 @@ impl App {
         let head = Rect::new(r.x, r.y + 1, r.w, PANEL_HEADER - 1);
         let ty = r.y + (PANEL_HEADER - 18) / 2 + 1;
         let mut x = r.x + 14;
-        for (label, tab) in [("Output", PanelTab::Output), ("Terminal", PanelTab::Terminal), ("Debug", PanelTab::Debug)] {
+        for (label, tab) in [("Output", PanelTab::Output), ("Terminal", PanelTab::Terminal), ("Debug", PanelTab::Debug)]
+        {
             let w = self.tx.ui_width(label, true);
             let active = self.panel.tab == tab;
             self.tx.draw_ui(cv, x, ty, label, if active { fg } else { dim }, head, active);
@@ -511,7 +531,15 @@ impl App {
         let focused = self.focus == Focus::Terminal;
         let (fg, bg, cursor) = (self.theme.foreground, self.theme.background, self.theme.cursor);
         let Some(term) = self.term.as_mut() else {
-            self.tx.draw_ui(cv, body.x + 14, body.y + 10, "Terminal closed — Ctrl+` opens a new one", self.theme.chrome.tab_inactive_fg, body, false);
+            self.tx.draw_ui(
+                cv,
+                body.x + 14,
+                body.y + 10,
+                "Terminal closed — Ctrl+` opens a new one",
+                self.theme.chrome.tab_inactive_fg,
+                body,
+                false,
+            );
             return;
         };
         term.resize(rows, cols);
@@ -523,7 +551,11 @@ impl App {
             let mut c = 0;
             while c < g.cols.min(cols) {
                 let cell = g.view_cell(r, c, offset);
-                let (cfg, cbg) = if cell.inverse { (cell.bg.unwrap_or(bg), cell.fg.unwrap_or(fg)) } else { (cell.fg.unwrap_or(fg), cell.bg.unwrap_or(bg)) };
+                let (cfg, cbg) = if cell.inverse {
+                    (cell.bg.unwrap_or(bg), cell.fg.unwrap_or(fg))
+                } else {
+                    (cell.fg.unwrap_or(fg), cell.bg.unwrap_or(bg))
+                };
                 let has_bg = cell.inverse || cell.bg.is_some();
                 // Group a run of cells with identical styling.
                 let mut end = c + 1;
@@ -555,7 +587,16 @@ impl App {
         let (hist, off) = (term.grid.history_len(), term.scroll_offset);
         if !alt {
             // Rows are the unit: the bar counts from the oldest line, the live screen is the bottom.
-            self.region_bar(cv, Reg::Terminal, body, (hist + rows) as f64, rows as f64, (hist - off.min(hist)) as f64, lh as f64, false);
+            self.region_bar(
+                cv,
+                Reg::Terminal,
+                body,
+                (hist + rows) as f64,
+                rows as f64,
+                (hist - off.min(hist)) as f64,
+                lh as f64,
+                false,
+            );
         }
     }
 }

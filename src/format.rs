@@ -27,16 +27,32 @@ fn local_bin(from: &Path, name: &str) -> Option<PathBuf> {
 pub fn detect(file: &Path) -> Option<Formatter> {
     let dir = file.parent()?;
     let path = file.to_string_lossy().into_owned();
-    if let Some(root) = find_up(dir, &["biome.json", "biome.jsonc"]) {
-        if let Some(bin) = local_bin(&root, "biome") {
-            return Some(Formatter { name: "biome", bin, args: vec!["format".into(), format!("--stdin-file-path={path}")] });
-        }
+    if let Some(root) = find_up(dir, &["biome.json", "biome.jsonc"])
+        && let Some(bin) = local_bin(&root, "biome")
+    {
+        return Some(Formatter {
+            name: "biome",
+            bin,
+            args: vec!["format".into(), format!("--stdin-file-path={path}")],
+        });
     }
-    let prettier_cfgs = [".prettierrc", ".prettierrc.json", ".prettierrc.yaml", ".prettierrc.yml", ".prettierrc.js", ".prettierrc.cjs", ".prettierrc.mjs", "prettier.config.js", "prettier.config.cjs", "prettier.config.mjs", "prettier.config.ts"];
-    if let Some(root) = find_up(dir, &prettier_cfgs) {
-        if let Some(bin) = local_bin(&root, "prettier") {
-            return Some(Formatter { name: "prettier", bin, args: vec![format!("--stdin-filepath={path}")] });
-        }
+    let prettier_cfgs = [
+        ".prettierrc",
+        ".prettierrc.json",
+        ".prettierrc.yaml",
+        ".prettierrc.yml",
+        ".prettierrc.js",
+        ".prettierrc.cjs",
+        ".prettierrc.mjs",
+        "prettier.config.js",
+        "prettier.config.cjs",
+        "prettier.config.mjs",
+        "prettier.config.ts",
+    ];
+    if let Some(root) = find_up(dir, &prettier_cfgs)
+        && let Some(bin) = local_bin(&root, "prettier")
+    {
+        return Some(Formatter { name: "prettier", bin, args: vec![format!("--stdin-filepath={path}")] });
     }
     None
 }
@@ -93,7 +109,8 @@ mod tests {
         assert_eq!(run(&f, Path::new("/tmp"), "hello\n").unwrap(), "HELLO\n");
         let big = "x".repeat(2_000_000);
         assert_eq!(run(&f, Path::new("/tmp"), &big).unwrap().len(), 2_000_000, "no pipe deadlock");
-        let bad = Formatter { name: "sh", bin: PathBuf::from("sh"), args: vec!["-c".into(), "echo boom >&2; exit 3".into()] };
+        let bad =
+            Formatter { name: "sh", bin: PathBuf::from("sh"), args: vec!["-c".into(), "echo boom >&2; exit 3".into()] };
         assert!(run(&bad, Path::new("/tmp"), "").unwrap_err().contains("boom"));
     }
 }

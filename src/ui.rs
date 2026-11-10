@@ -3,7 +3,8 @@
 
 use crate::theme::Rgba;
 use cosmic_text::{
-    Attrs, Buffer as TextBuf, Color, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping, SwashCache, UnderlineStyle, Wrap, fontdb,
+    Attrs, Buffer as TextBuf, Color, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping, SwashCache,
+    UnderlineStyle, Wrap, fontdb,
 };
 use std::{
     path::{Path, PathBuf},
@@ -322,16 +323,6 @@ impl Canvas<'_> {
             self.fill_round(g, rad + i, Rgba(0, 0, 0, 3));
         }
     }
-
-    /// 1px border inside `r`.
-    pub fn stroke(&mut self, r: Rect, c: Rgba) {
-        let (d, hl) = (self.to_dev(r), hairline());
-        let all = self.dev_bounds();
-        self.fill_dev(Rect::new(d.x, d.y, d.w, hl), c, all);
-        self.fill_dev(Rect::new(d.x, d.bottom() - hl, d.w, hl), c, all);
-        self.fill_dev(Rect::new(d.x, d.y, hl, d.h), c, all);
-        self.fill_dev(Rect::new(d.right() - hl, d.y, hl, d.h), c, all);
-    }
 }
 
 /// A thin overlay scrollbar: `track` is the (wider) hit area at the right edge, `thumb` the handle.
@@ -362,7 +353,13 @@ impl VBar {
     /// Draw the handle: faint at rest, a bit wider and stronger when the pointer is near or dragging.
     pub fn draw(&self, cv: &mut Canvas, fg: Rgba, hot: bool, active: bool) {
         let w = if hot || active { 8 } else { 5 };
-        let a = if active { 0x78 } else if hot { 0x55 } else { 0x2c };
+        let a = if active {
+            0x78
+        } else if hot {
+            0x55
+        } else {
+            0x2c
+        };
         let r = Rect::new(self.track.right() - w - 3, self.thumb.y + 2, w, self.thumb.h - 4);
         cv.fill_round_clip(r, w / 2, fg.with_alpha(a), self.track);
     }
@@ -397,7 +394,13 @@ impl HBar {
     /// Draw the handle: faint at rest, a bit thicker and stronger when the pointer is near or dragging.
     pub fn draw(&self, cv: &mut Canvas, fg: Rgba, hot: bool, active: bool) {
         let h = if hot || active { 8 } else { 5 };
-        let a = if active { 0x78 } else if hot { 0x55 } else { 0x2c };
+        let a = if active {
+            0x78
+        } else if hot {
+            0x55
+        } else {
+            0x2c
+        };
         let r = Rect::new(self.thumb.x + 2, self.track.bottom() - h - 3, self.thumb.w - 4, h);
         cv.fill_round_clip(r, h / 2, fg.with_alpha(a), self.track);
     }
@@ -580,7 +583,10 @@ fn fallback_candidates(loaded: &[PathBuf]) -> Vec<PathBuf> {
             if !covering.contains(&p) {
                 continue;
             }
-            if !loaded.contains(&p) && !out.contains(&p) && std::fs::metadata(&p).is_ok_and(|m| m.len() <= MAX_FALLBACK_BYTES) {
+            if !loaded.contains(&p)
+                && !out.contains(&p)
+                && std::fs::metadata(&p).is_ok_and(|m| m.len() <= MAX_FALLBACK_BYTES)
+            {
                 out.push(p);
             }
             break; // this class is satisfied (possibly by an already loaded file)
@@ -632,7 +638,9 @@ impl TextCtx {
         let (mut fonts, family, ui_family, loaded) = single_font_system(found.as_deref());
         if fonts.db().faces().next().is_none() {
             // cosmic-text would panic ("no default font found") on the first shaped glyph.
-            eprintln!("lumen-text: no fonts found. Install fontconfig and a font (e.g. DejaVu Sans Mono: `apt install fonts-dejavu-core`, `dnf install dejavu-sans-mono-fonts`, `pacman -S ttf-dejavu`).");
+            eprintln!(
+                "lumen-text: no fonts found. Install fontconfig and a font (e.g. DejaVu Sans Mono: `apt install fonts-dejavu-core`, `dnf install dejavu-sans-mono-fonts`, `pacman -S ttf-dejavu`)."
+            );
             std::process::exit(1);
         }
         let attrs = family_attrs(&family);
@@ -732,7 +740,15 @@ impl TextCtx {
         self.draw_spans_scaled(cv, x, y, pieces, clip, 1.0);
     }
 
-    fn draw_spans_scaled(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(&str, Rgba, u8)], clip: Rect, mul: f32) {
+    fn draw_spans_scaled(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        pieces: &[(&str, Rgba, u8)],
+        clip: Rect,
+        mul: f32,
+    ) {
         if pieces.is_empty() || clip.w <= 0 || clip.h <= 0 {
             return;
         }
@@ -746,7 +762,11 @@ impl TextCtx {
             attrs = attrs.font_features(plain_features());
         }
         let s = scale();
-        self.buf.set_metrics_and_size(Metrics::new(font_size() * s * mul, line_h() * s), Some(4000.0 * s), Some((clip.h as f32 + 2.0 * line_h()) * s));
+        self.buf.set_metrics_and_size(
+            Metrics::new(font_size() * s * mul, line_h() * s),
+            Some(4000.0 * s),
+            Some((clip.h as f32 + 2.0 * line_h()) * s),
+        );
         self.buf.set_wrap(Wrap::None);
         let spans: Vec<(&str, Attrs)> = pieces.iter().map(|(s, c, f)| (*s, styled(&attrs, *c, *f))).collect();
         self.buf.set_rich_text(spans, &attrs, if wide { Shaping::Advanced } else { Shaping::Basic }, None);
@@ -771,14 +791,6 @@ impl TextCtx {
                 }
             }
         });
-    }
-
-    fn ui_attrs(&self, bold: bool) -> Attrs<'_> {
-        let a = match &self.ui_family {
-            Some(f) => Attrs::new().family(Family::Name(f)),
-            None => Attrs::new().family(Family::SansSerif),
-        };
-        if bold { a.weight(cosmic_text::Weight::SEMIBOLD) } else { a }
     }
 
     /// Width in px of `text` in the UI font.
@@ -871,14 +883,31 @@ impl TextCtx {
     }
 
     /// Draw UI-font runs on one line at (x, y) (top-left), clipped.
-    pub fn draw_ui_pieces(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(String, Rgba)], clip: Rect, bold: bool) {
+    pub fn draw_ui_pieces(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        pieces: &[(String, Rgba)],
+        clip: Rect,
+        bold: bool,
+    ) {
         self.draw_ui_pieces_i(cv, x, y, pieces, clip, bold, false);
     }
 
     /// [`draw_ui_pieces`](Self::draw_ui_pieces) with an `italic` switch. The UI family has no italic
     /// face, so cosmic-text slants the upright glyphs (`CacheKeyFlags::FAKE_ITALIC`); advances are
     /// unchanged, which keeps `ui_width` valid for italic text.
-    pub fn draw_ui_pieces_i(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(String, Rgba)], clip: Rect, bold: bool, italic: bool) {
+    pub fn draw_ui_pieces_i(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        pieces: &[(String, Rgba)],
+        clip: Rect,
+        bold: bool,
+        italic: bool,
+    ) {
         if pieces.is_empty() || clip.w <= 0 || clip.h <= 0 {
             return;
         }
@@ -897,9 +926,14 @@ impl TextCtx {
             base = base.style(cosmic_text::Style::Italic);
         }
         let s = scale();
-        self.ui_buf.set_metrics_and_size(Metrics::new(UI_SIZE * s, UI_LINE * s), Some(4000.0 * s), Some(UI_LINE * 2.0 * s));
+        self.ui_buf.set_metrics_and_size(
+            Metrics::new(UI_SIZE * s, UI_LINE * s),
+            Some(4000.0 * s),
+            Some(UI_LINE * 2.0 * s),
+        );
         self.ui_buf.set_wrap(Wrap::None);
-        let spans: Vec<(&str, Attrs)> = pieces.iter().map(|(s, c)| (s.as_str(), base.clone().color(to_color(*c)))).collect();
+        let spans: Vec<(&str, Attrs)> =
+            pieces.iter().map(|(s, c)| (s.as_str(), base.clone().color(to_color(*c)))).collect();
         self.ui_buf.set_rich_text(spans, &base, Shaping::Advanced, None);
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
         let (x, y) = (sc(x), sc(y));
@@ -940,7 +974,7 @@ impl TextCtx {
         }
         let white = Rgba(255, 255, 255, 255);
         let clip = Rect::new(0, 0, 80, 30);
-        let mut render = |ctx: &mut TextCtx, italic: bool| {
+        let render = |ctx: &mut TextCtx, italic: bool| {
             let mut px = vec![0u32; 80 * 30];
             let mut cv = Canvas { px: &mut px, w: 80, h: 30 };
             ctx.draw_ui_pieces_i(&mut cv, 2, 2, &[("Hlfi".to_string(), white)], clip, false, italic);
@@ -969,13 +1003,34 @@ impl TextCtx {
 
     /// Draw `text` in the UI font at an arbitrary `size` (line height `round(size * 1.4)`) with its
     /// top-left at (x, y), clipped. Same family / weight rules as [`draw_ui`](Self::draw_ui).
-    pub fn draw_ui_sized(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool, size: f32) {
+    pub fn draw_ui_sized(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        text: &str,
+        color: Rgba,
+        clip: Rect,
+        bold: bool,
+        size: f32,
+    ) {
         self.draw_ui_sized_i(cv, x, y, text, color, clip, bold, false, size);
     }
 
     /// [`draw_ui_sized`](Self::draw_ui_sized) with an `italic` switch (synthetic slant, see
     /// [`draw_ui_pieces_i`](Self::draw_ui_pieces_i)).
-    pub fn draw_ui_sized_i(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool, italic: bool, size: f32) {
+    pub fn draw_ui_sized_i(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        text: &str,
+        color: Rgba,
+        clip: Rect,
+        bold: bool,
+        italic: bool,
+        size: f32,
+    ) {
         if text.is_empty() || clip.w <= 0 || clip.h <= 0 {
             return;
         }
@@ -1100,7 +1155,9 @@ mod tests {
     fn has(ctx: &TextCtx, bold: bool, italic: bool) -> bool {
         let fam = ctx.family.as_deref().unwrap_or("");
         ctx.fonts.db().faces().any(|f| {
-            f.families.iter().any(|(n, _)| n == fam) && (f.weight.0 >= 600) == bold && (f.style != fontdb::Style::Normal) == italic
+            f.families.iter().any(|(n, _)| n == fam)
+                && (f.weight.0 >= 600) == bold
+                && (f.style != fontdb::Style::Normal) == italic
         })
     }
 
@@ -1250,7 +1307,8 @@ mod tests {
         let (px, _) = canvas_ink(&mut ctx, &[("😀".into(), Rgba(255, 255, 255, 255), 0)]);
         // Only meaningful with a *color* emoji font (e.g. Noto Color Emoji); CI runners often have
         // a monochrome font that merely covers the code point.
-        let color_font = ctx.fonts.db().faces().any(|f| f.families.iter().any(|(n, _)| n.to_lowercase().contains("emoji")));
+        let color_font =
+            ctx.fonts.db().faces().any(|f| f.families.iter().any(|(n, _)| n.to_lowercase().contains("emoji")));
         // CI runners ship emoji fonts in formats this renderer may not rasterize in color, so the
         // check is only run on developer machines.
         if std::env::var_os("CI").is_some() || !covered_by_loaded(&ctx, '😀') || !color_font {
@@ -1286,7 +1344,10 @@ mod tests {
         canvas_ink(&mut ctx, &[("fn main() { println!(\"hi\"); }".into(), white, 0)]);
         let m1 = crate::mem::snapshot().unwrap();
         ctx.load_variants();
-        canvas_ink(&mut ctx, &[("fn".into(), white, BOLD), (" main".into(), white, ITALIC), ("()".into(), white, BOLD | ITALIC)]);
+        canvas_ink(
+            &mut ctx,
+            &[("fn".into(), white, BOLD), (" main".into(), white, ITALIC), ("()".into(), white, BOLD | ITALIC)],
+        );
         let m2 = crate::mem::snapshot().unwrap();
         ctx.ensure_fallbacks();
         canvas_ink(&mut ctx, &[("a ✓ → 日本 😀 ─".into(), white, 0)]);

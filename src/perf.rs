@@ -4,8 +4,18 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{buffer::{Buffer, EditKind, Sel}, editor::Editor, highlight::{make_tokenizer, Highlighter}, mem, textmate::{Registry, Tokenizer}, theme::Theme};
-    use std::{path::{Path, PathBuf}, time::Instant};
+    use crate::{
+        buffer::{Buffer, EditKind, Sel},
+        editor::Editor,
+        highlight::{Highlighter, make_tokenizer},
+        mem,
+        textmate::{Registry, Tokenizer},
+        theme::Theme,
+    };
+    use std::{
+        path::{Path, PathBuf},
+        time::Instant,
+    };
 
     struct Rng(u64);
     impl Rng {
@@ -181,12 +191,34 @@ mod tests {
         let t0 = Instant::now();
         ed.select_all_occurrences(&mut buf);
         let el = t0.elapsed();
-        eprintln!("[perf] select_all_occurrences 20k lines: {:.1} ms ({} cursors)", el.as_secs_f64() * 1e3, ed.extra.len() + 1);
+        eprintln!(
+            "[perf] select_all_occurrences 20k lines: {:.1} ms ({} cursors)",
+            el.as_secs_f64() * 1e3,
+            ed.extra.len() + 1
+        );
         assert!(el.as_millis() < 300, "select_all_occurrences too slow: {el:?}");
     }
 
+    /// PSS is a whole-process number, so under a parallel `cargo test` other tests' fixtures would
+    /// inflate it. The measurement therefore runs in a fresh child process (this same test binary,
+    /// re-run with a marker variable), which holds nothing but this test's data.
     #[test]
     fn memory_100k_buffer_and_tokenizer() {
+        if std::env::var_os("LUMEN_PERF_CHILD").is_some() {
+            return memory_100k_measure();
+        }
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .args(["perf::tests::memory_100k_buffer_and_tokenizer", "--exact", "--nocapture", "--test-threads=1"])
+            .env("LUMEN_PERF_CHILD", "1")
+            .output()
+            .expect("spawn child test process");
+        eprint!("{}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "child measurement failed:\n{}", String::from_utf8_lossy(&out.stdout));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "child did not run the test");
+    }
+
+    fn memory_100k_measure() {
         // The whole process is measured: wait for any `App` fixture of another test to finish.
         let _g = crate::app_unsaved::testkit::lock();
         let (_dir, buf, _) = big_file();

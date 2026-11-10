@@ -71,8 +71,12 @@ pub fn marks(base: &str, current: &str) -> Vec<GitMark> {
     for op in diff.ops() {
         match *op {
             DiffOp::Equal { .. } => {}
-            DiffOp::Insert { new_index, new_len, .. } => out.push(GitMark { line: new_index, len: new_len, kind: GitKind::Added }),
-            DiffOp::Replace { new_index, new_len, .. } => out.push(GitMark { line: new_index, len: new_len, kind: GitKind::Modified }),
+            DiffOp::Insert { new_index, new_len, .. } => {
+                out.push(GitMark { line: new_index, len: new_len, kind: GitKind::Added })
+            }
+            DiffOp::Replace { new_index, new_len, .. } => {
+                out.push(GitMark { line: new_index, len: new_len, kind: GitKind::Modified })
+            }
             DiffOp::Delete { new_index, .. } => out.push(GitMark { line: new_index, len: 0, kind: GitKind::Deleted }),
         }
     }

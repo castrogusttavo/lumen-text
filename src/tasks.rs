@@ -102,7 +102,8 @@ impl Ansi {
     }
 
     fn sgr(&mut self, params: &str) {
-        let nums: Vec<u32> = if params.is_empty() { vec![0] } else { params.split(';').map(|p| p.parse().unwrap_or(0)).collect() };
+        let nums: Vec<u32> =
+            if params.is_empty() { vec![0] } else { params.split(';').map(|p| p.parse().unwrap_or(0)).collect() };
         let mut i = 0;
         while i < nums.len() {
             match nums[i] {
@@ -157,7 +158,13 @@ pub fn find_links(text: &str) -> Vec<Link> {
                 let m = c.get(0).unwrap();
                 let line = c[2].parse::<usize>().unwrap_or(1).saturating_sub(1);
                 let col = c.get(3).and_then(|v| v.as_str().parse::<usize>().ok()).unwrap_or(1).saturating_sub(1);
-                out.push(Link { start: to_chars(m.start()), end: to_chars(m.end()), path: c[1].to_string(), line, col });
+                out.push(Link {
+                    start: to_chars(m.start()),
+                    end: to_chars(m.end()),
+                    path: c[1].to_string(),
+                    line,
+                    col,
+                });
             }
         });
     }
@@ -208,14 +215,14 @@ impl Pm {
 /// (name, command) pairs the palette offers for this project.
 pub fn project_tasks(root: &Path) -> Vec<(String, String)> {
     let mut v = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(root.join("package.json")) {
-        if let Ok(j) = serde_json::from_str::<serde_json::Value>(&text) {
-            let pm = Pm::detect(root);
-            if let Some(scripts) = j["scripts"].as_object() {
-                for (k, body) in scripts {
-                    v.push((format!("{} {k}", pm.run("").trim()), pm.run(k)));
-                    let _ = body;
-                }
+    if let Ok(text) = std::fs::read_to_string(root.join("package.json"))
+        && let Ok(j) = serde_json::from_str::<serde_json::Value>(&text)
+    {
+        let pm = Pm::detect(root);
+        if let Some(scripts) = j["scripts"].as_object() {
+            for (k, body) in scripts {
+                v.push((format!("{} {k}", pm.run("").trim()), pm.run(k)));
+                let _ = body;
             }
         }
     }
@@ -249,7 +256,9 @@ pub fn test_name_at(lines: &[String], line: usize) -> Option<String> {
         static RE: Regex = Regex::new(r#"\b(?:it|test)(?:\.(?:only|skip|concurrent))?\s*\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`)"#).unwrap();
     }
     for l in (0..=line.min(lines.len().saturating_sub(1))).rev() {
-        if let Some(c) = RE.with(|re| re.captures(&lines[l]).map(|c| (1..=3).find_map(|i| c.get(i)).map(|m| m.as_str().to_string()))) {
+        if let Some(c) =
+            RE.with(|re| re.captures(&lines[l]).map(|c| (1..=3).find_map(|i| c.get(i)).map(|m| m.as_str().to_string())))
+        {
             return c;
         }
     }
@@ -258,14 +267,16 @@ pub fn test_name_at(lines: &[String], line: usize) -> Option<String> {
 
 /// Line of the `it(...)`/`test(...)` call whose title is `title`.
 pub fn find_test_line(lines: &[String], title: &str) -> Option<usize> {
-    lines.iter().position(|l| (l.contains("it(") || l.contains("test(") || l.contains("it.") || l.contains("test.")) && l.contains(title))
+    lines.iter().position(|l| {
+        (l.contains("it(") || l.contains("test(") || l.contains("it.") || l.contains("test.")) && l.contains(title)
+    })
 }
 
 // ───────────── running ─────────────
 
 pub enum Event {
     Line(String),
-    Done(Option<i32>),
+    Done,
 }
 
 pub struct Running {
@@ -295,7 +306,13 @@ pub fn spawn(cmd: &str, cwd: &Path, wake: crate::lsp::Wake) -> std::io::Result<R
     let pid = child.id() as i32;
     let (tx, rx) = channel();
     let mut readers = Vec::new();
-    for stream in [child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>), child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>)].into_iter().flatten() {
+    for stream in [
+        child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+        child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    {
         let (tx, wake) = (tx.clone(), wake.clone());
         readers.push(thread::spawn(move || {
             for line in BufReader::new(stream).split(b'\n').map_while(Result::ok) {
@@ -314,7 +331,7 @@ pub fn spawn(cmd: &str, cwd: &Path, wake: crate::lsp::Wake) -> std::io::Result<R
             let _ = r.join();
         }
         // Exit status is collected by the main thread through `try_wait`; signal completion here.
-        let _ = waiter_tx.send(Event::Done(None));
+        let _ = waiter_tx.send(Event::Done);
         waiter_wake();
         let _ = wpid;
     });
@@ -375,7 +392,18 @@ mod tests {
 
     #[test]
     fn test_name_search_goes_upwards() {
-        let src: Vec<String> = ["describe('suite', () => {", "  it('does a thing', async () => {", "    const x = 1", "    expect(x).toBe(1)", "  })", "  test.skip(\"second one\", () => {})", "})"].iter().map(|s| s.to_string()).collect();
+        let src: Vec<String> = [
+            "describe('suite', () => {",
+            "  it('does a thing', async () => {",
+            "    const x = 1",
+            "    expect(x).toBe(1)",
+            "  })",
+            "  test.skip(\"second one\", () => {})",
+            "})",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         assert_eq!(test_name_at(&src, 3).as_deref(), Some("does a thing"));
         assert_eq!(test_name_at(&src, 5).as_deref(), Some("second one"));
         assert_eq!(test_name_at(&src, 0), None);
@@ -383,7 +411,11 @@ mod tests {
 
     #[test]
     fn finds_the_line_of_a_test_by_title() {
-        let src: Vec<String> = ["describe('s', () => {", "  it('adds numbers', () => {})", "  test.skip(\"later\", () => {})"].iter().map(|s| s.to_string()).collect();
+        let src: Vec<String> =
+            ["describe('s', () => {", "  it('adds numbers', () => {})", "  test.skip(\"later\", () => {})"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         assert_eq!(find_test_line(&src, "adds numbers"), Some(1));
         assert_eq!(find_test_line(&src, "later"), Some(2));
         assert_eq!(find_test_line(&src, "nope"), None);
@@ -394,7 +426,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("lumen-tasks-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("pnpm-lock.yaml"), "").unwrap();
-        std::fs::write(root.join("package.json"), r#"{"scripts":{"dev":"next dev","test":"vitest"},"devDependencies":{"vitest":"1"}}"#).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"scripts":{"dev":"next dev","test":"vitest"},"devDependencies":{"vitest":"1"}}"#,
+        )
+        .unwrap();
         assert_eq!(Pm::detect(&root), Pm::Pnpm);
         assert_eq!(test_runner(&root), Some("vitest"));
         let t = project_tasks(&root);
@@ -414,7 +450,7 @@ mod tests {
         loop {
             match r.rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap() {
                 Event::Line(l) => lines.push(l),
-                Event::Done(_) => break,
+                Event::Done => break,
             }
         }
         lines.sort();

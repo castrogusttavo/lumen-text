@@ -67,7 +67,11 @@ fn strip_copy_suffix(stem: &str) -> &str {
     let found = [" (copy", " (cópia"].iter().filter_map(|m| stem.rfind(m).map(|i| (i, m.len()))).max();
     if let Some((open, mlen)) = found {
         let tail = &stem[open + mlen..];
-        let ok = tail == ")" || (tail.starts_with(' ') && tail.ends_with(')') && tail[1..tail.len() - 1].chars().all(|c| c.is_ascii_digit()) && tail.len() > 2);
+        let ok = tail == ")"
+            || (tail.starts_with(' ')
+                && tail.ends_with(')')
+                && tail[1..tail.len() - 1].chars().all(|c| c.is_ascii_digit())
+                && tail.len() > 2);
         if ok {
             return &stem[..open];
         }
@@ -138,7 +142,10 @@ pub fn move_path(from: &Path, to: &Path) -> io::Result<()> {
 /// folder it already lives in); `Ok(Some(to))` = the new path.
 pub fn paste_one(from: &Path, dir: &Path, cut: bool) -> Result<Option<PathBuf>, String> {
     if !taken(from) {
-        return Err(format!("{} no longer exists", from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        return Err(format!(
+            "{} no longer exists",
+            from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        ));
     }
     if from.is_dir() && dir.starts_with(from) {
         return Err("cannot paste a folder into itself".into());
@@ -170,7 +177,15 @@ fn local_stamp() -> String {
         let t = libc::time(std::ptr::null_mut());
         let mut tm: libc::tm = std::mem::zeroed();
         libc::localtime_r(&t, &mut tm);
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            tm.tm_year + 1900,
+            tm.tm_mon + 1,
+            tm.tm_mday,
+            tm.tm_hour,
+            tm.tm_min,
+            tm.tm_sec
+        )
     }
 }
 
@@ -181,10 +196,15 @@ pub fn trash_into(path: &Path, trash: &Path) -> io::Result<PathBuf> {
     fs::create_dir_all(&files)?;
     fs::create_dir_all(&info)?;
     let name = abs.file_name().ok_or_else(|| io::Error::other("invalid path"))?.to_string_lossy().into_owned();
-    let info_of = |p: &Path| info.join(format!("{}.trashinfo", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    let info_of = |p: &Path| {
+        info.join(format!("{}.trashinfo", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))
+    };
     let dest = unique_dest_by(&files, &name, |p| taken(p) || taken(&info_of(p)));
     let info_file = info_of(&dest);
-    fs::write(&info_file, format!("[Trash Info]\nPath={}\nDeletionDate={}\n", pct_encode(&abs.to_string_lossy()), local_stamp()))?;
+    fs::write(
+        &info_file,
+        format!("[Trash Info]\nPath={}\nDeletionDate={}\n", pct_encode(&abs.to_string_lossy()), local_stamp()),
+    )?;
     if let Err(e) = move_path(&abs, &dest) {
         let _ = fs::remove_file(&info_file);
         return Err(e);
@@ -193,13 +213,24 @@ pub fn trash_into(path: &Path, trash: &Path) -> io::Result<PathBuf> {
 }
 
 fn user_trash() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
     Some(base.join("Trash"))
 }
 
 /// Move to the trash: `gio trash`, else the freedesktop trash by hand.
 pub fn trash_path(path: &Path) -> Result<(), String> {
-    let ok = Command::new("gio").arg("trash").arg("--").arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    let ok = Command::new("gio")
+        .arg("trash")
+        .arg("--")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
     if ok && !taken(path) {
         return Ok(());
     }
@@ -297,7 +328,11 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
     let delete = || Entry::Item { act: Act::Delete, label: "Delete", icon: "ui/delete", key: "Del", danger: true };
     let v = match t {
         Target::Folder(_) | Target::Root(_) => {
-            let mut v = vec![item(Act::NewFile, "New File", "hugeicons/plus", "A"), item(Act::NewFolder, "New Folder", "ui/folder_add", "Shift+A"), sep()];
+            let mut v = vec![
+                item(Act::NewFile, "New File", "hugeicons/plus", "A"),
+                item(Act::NewFolder, "New Folder", "ui/folder_add", "Shift+A"),
+                sep(),
+            ];
             if matches!(t, Target::Folder(_)) {
                 v.extend([item(Act::Cut, "Cut", "ui/scissors", ""), item(Act::Copy, "Copy", "hugeicons/copy", "")]);
             }
@@ -305,7 +340,14 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
                 v.push(item(Act::Paste, "Paste", "hugeicons/download", ""));
             }
             if matches!(t, Target::Folder(_)) {
-                v.extend([sep(), item(Act::Duplicate, "Duplicate", "ui/file_multiple", ""), item(Act::Rename, "Rename", "hugeicons/edit", "F2"), sep(), trash(), delete()]);
+                v.extend([
+                    sep(),
+                    item(Act::Duplicate, "Duplicate", "ui/file_multiple", ""),
+                    item(Act::Rename, "Rename", "hugeicons/edit", "F2"),
+                    sep(),
+                    trash(),
+                    delete(),
+                ]);
             }
             v
         }
@@ -344,14 +386,23 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
                 item(Act::CloseOthers, "Close Others", "ui/x_circle", ""),
                 item(Act::CloseAll, "Close All", "ui/list_x", ""),
                 sep(),
-                if f.pinned { item(Act::TogglePin, "Unpin Tab", "ui/unpin", "") } else { item(Act::TogglePin, "Pin Tab", "ui/pin", "") },
+                if f.pinned {
+                    item(Act::TogglePin, "Unpin Tab", "ui/unpin", "")
+                } else {
+                    item(Act::TogglePin, "Pin Tab", "ui/pin", "")
+                },
                 sep(),
             ];
             if f.has_path {
                 v.push(item(Act::CopyPath, "Copy Path", "hugeicons/link", ""));
             }
             if let Some(open) = f.md {
-                v.push(item(Act::Markdown, if open { "Close Markdown Preview" } else { "Open Markdown Preview" }, "ui/file_markdown", "Ctrl+Shift+V"));
+                v.push(item(
+                    Act::Markdown,
+                    if open { "Close Markdown Preview" } else { "Open Markdown Preview" },
+                    "ui/file_markdown",
+                    "Ctrl+Shift+V",
+                ));
             }
             v
         }
@@ -456,7 +507,11 @@ impl App {
     }
 
     pub fn open_ctxmenu(&mut self, target: Target, at: (i32, i32)) {
-        let mut f = Flags { has_clip: !self.file_clip.paths.is_empty() || self.clip.get_files().is_some(), split: self.split.is_some(), ..Flags::default() };
+        let mut f = Flags {
+            has_clip: !self.file_clip.paths.is_empty() || self.clip.get_files().is_some(),
+            split: self.split.is_some(),
+            ..Flags::default()
+        };
         if let Target::Tab(i) = &target {
             let Some(d) = self.docs.get(*i) else { return };
             f.pinned = d.pinned;
@@ -464,7 +519,16 @@ impl App {
             f.md = crate::app_md::is_markdown_name(&d.name).then(|| d.md.is_some());
         }
         let entries = entries_for(&target, &f);
-        self.overlay = Overlay::Ctx(Box::new(CtxMenu { target, entries, at, sel: None, rects: Vec::new(), card: Rect::default(), confirm: None, unsaved: None }));
+        self.overlay = Overlay::Ctx(Box::new(CtxMenu {
+            target,
+            entries,
+            at,
+            sel: None,
+            rects: Vec::new(),
+            card: Rect::default(),
+            confirm: None,
+            unsaved: None,
+        }));
     }
 
     pub fn ctxmenu_key(&mut self, ev: &crate::app::KeyIn) {
@@ -666,13 +730,18 @@ impl App {
             return self.ctx_run_multi(act, paths.clone());
         }
         let path = self.ctx_path(&t);
-        let name = path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name =
+            path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         match act {
             Act::NewFile | Act::NewFolder => {
                 let Some(dir) = path else { return };
                 let is_dir = act == Act::NewFolder;
                 let rel = self.rel(&dir);
-                let title = format!("{} in {}", if is_dir { "New Folder" } else { "New File" }, if rel.is_empty() { "." } else { &rel });
+                let title = format!(
+                    "{} in {}",
+                    if is_dir { "New Folder" } else { "New File" },
+                    if rel.is_empty() { "." } else { &rel }
+                );
                 let kind = if is_dir { PromptKind::NewDir { dir } } else { PromptKind::NewFile { dir } };
                 self.overlay = Overlay::Prompt(Prompt { kind, title, field: TextField::default() });
             }
@@ -693,7 +762,10 @@ impl App {
                 match paste_one(&p, &dir, false) {
                     Ok(Some(to)) => {
                         self.after_fs_change(&to);
-                        self.say(format!("duplicated: {}", to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                        self.say(format!(
+                            "duplicated: {}",
+                            to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                        ));
                     }
                     Ok(None) => {}
                     Err(e) => self.say(format!("error duplicating: {e}")),
@@ -701,7 +773,11 @@ impl App {
             }
             Act::Rename => {
                 let Some(p) = path else { return };
-                self.overlay = Overlay::Prompt(Prompt { title: format!("Rename {name}"), kind: PromptKind::RenamePath { from: p }, field: TextField::with(&name) });
+                self.overlay = Overlay::Prompt(Prompt {
+                    title: format!("Rename {name}"),
+                    kind: PromptKind::RenamePath { from: p },
+                    field: TextField::with(&name),
+                });
             }
             Act::Trash => {
                 let Some(p) = path else { return };
@@ -753,12 +829,13 @@ impl App {
                 self.close_tabs_request(keep);
             }
             Act::TogglePin => {
-                if let Target::Tab(i) = t {
-                    if let Some(d) = self.docs.get_mut(i) {
-                        d.pinned = !d.pinned;
-                        let msg = if d.pinned { format!("tab pinned: {}", d.name) } else { format!("tab unpinned: {}", d.name) };
-                        self.say(msg);
-                    }
+                if let Target::Tab(i) = t
+                    && let Some(d) = self.docs.get_mut(i)
+                {
+                    d.pinned = !d.pinned;
+                    let msg =
+                        if d.pinned { format!("tab pinned: {}", d.name) } else { format!("tab unpinned: {}", d.name) };
+                    self.say(msg);
                 }
             }
             Act::Markdown => {
@@ -828,7 +905,9 @@ impl App {
 
     /// Open `path` in the pane that is not focused (needs the split editor).
     fn open_beside(&mut self, path: &Path) {
-        let Some(prev) = self.split.as_ref().map(|_| self.active) else { return self.say("split the editor first (Ctrl+\\)") };
+        let Some(prev) = self.split.as_ref().map(|_| self.active) else {
+            return self.say("split the editor first (Ctrl+\\)");
+        };
         let Some(idx) = self.open_path(path, None) else { return };
         self.activate(prev);
         self.split_set_other_doc(idx);
@@ -878,7 +957,11 @@ impl App {
             let r = Rect::new((sw - w) / 2, 70, w, 124);
             cv.shadow(r, 12);
             cv.card(r, 12, c.widget_bg, c.border);
-            let title = clip_text(&mut self.tx, &if many { format!("Delete {name}?") } else { format!("Delete “{name}”?") }, r.w - 32);
+            let title = clip_text(
+                &mut self.tx,
+                &if many { format!("Delete {name}?") } else { format!("Delete “{name}”?") },
+                r.w - 32,
+            );
             self.tx.draw_ui(cv, r.x + 16, r.y + 14, &title, fg, r, true);
             let what = if many {
                 "The items (and everything inside folders) will be deleted."
@@ -947,7 +1030,15 @@ impl App {
                         cv.fill_round(rr, 7, tint);
                     }
                     let col = if *danger { c.error } else { fg };
-                    self.tx.icon(cv, icon, rr.x + 10, cy + (ITEM_H - 16) / 2, 16, if *danger { c.error } else { dim }, rr);
+                    self.tx.icon(
+                        cv,
+                        icon,
+                        rr.x + 10,
+                        cy + (ITEM_H - 16) / 2,
+                        16,
+                        if *danger { c.error } else { dim },
+                        rr,
+                    );
                     self.tx.draw_ui(cv, rr.x + 36, cy + (ITEM_H - 18) / 2, label, col, rr, false);
                     if !key.is_empty() {
                         let kw = self.tx.ui_width(key, false);
@@ -981,7 +1072,9 @@ mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        let base = std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache/lumen-agents")).unwrap_or_else(std::env::temp_dir);
+        let base = std::env::var_os("HOME")
+            .map(|h| Path::new(&h).join(".cache/lumen-agents"))
+            .unwrap_or_else(std::env::temp_dir);
         let d = base.join(format!("ctxmenu-test-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
@@ -1102,7 +1195,10 @@ mod tests {
     fn menus_have_the_right_items() {
         let folder = Target::Folder("/p/src".into());
         let f = Flags::default();
-        assert_eq!(labels(&entries_for(&folder, &f)), ["New File", "New Folder", "-", "Cut", "Copy", "-", "Duplicate", "Rename", "-", "Move to Trash", "Delete"]);
+        assert_eq!(
+            labels(&entries_for(&folder, &f)),
+            ["New File", "New Folder", "-", "Cut", "Copy", "-", "Duplicate", "Rename", "-", "Move to Trash", "Delete"]
+        );
         let with_clip = Flags { has_clip: true, ..f };
         assert!(labels(&entries_for(&folder, &with_clip)).contains(&"Paste"));
         let file = Target::File("/p/a.ts".into());
@@ -1123,7 +1219,10 @@ mod tests {
         assert_eq!(labels(&entries_for(&Target::Root("/p".into()), &f)), ["New File", "New Folder"]);
         // Several rows: no rename / new / open-beside, plural "Copy Paths".
         let multi = Target::Multi(vec!["/p/a.ts".into(), "/p/b.ts".into()]);
-        assert_eq!(labels(&entries_for(&multi, &f)), ["Cut", "Copy", "-", "Duplicate", "-", "Move to Trash", "Delete", "-", "Copy Paths"]);
+        assert_eq!(
+            labels(&entries_for(&multi, &f)),
+            ["Cut", "Copy", "-", "Duplicate", "-", "Move to Trash", "Delete", "-", "Copy Paths"]
+        );
     }
 
     #[test]
@@ -1135,7 +1234,10 @@ mod tests {
             fs::write(d.join("src").join(f), f).unwrap();
         }
         fs::write(d.join("dest/a.ts"), "old").unwrap();
-        let moved: Vec<PathBuf> = [d.join("src/a.ts"), d.join("src/b.ts")].iter().filter_map(|p| paste_one(p, &d.join("dest"), true).unwrap()).collect();
+        let moved: Vec<PathBuf> = [d.join("src/a.ts"), d.join("src/b.ts")]
+            .iter()
+            .filter_map(|p| paste_one(p, &d.join("dest"), true).unwrap())
+            .collect();
         assert_eq!(moved, [d.join("dest/a (copy).ts"), d.join("dest/b.ts")]);
         assert!(!d.join("src/a.ts").exists() && !d.join("src/b.ts").exists());
         assert_eq!(fs::read_to_string(d.join("dest/a.ts")).unwrap(), "old");

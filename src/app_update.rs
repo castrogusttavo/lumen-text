@@ -3,8 +3,8 @@
 
 use crate::{
     app::App,
-    update::{self, Announcer, Env, InstallKind, Release, Schedule},
     ui::{Canvas, Rect, TextCtx},
+    update::{self, Announcer, Env, InstallKind, Release, Schedule},
 };
 use std::{
     path::PathBuf,
@@ -86,7 +86,10 @@ pub struct UpdateUi {
 impl UpdateUi {
     pub fn new() -> Self {
         let (tx, rx) = channel();
-        let delay = std::env::var("LUMEN_UPDATE_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()).map_or(update::STARTUP_DELAY, Duration::from_millis);
+        let delay = std::env::var("LUMEN_UPDATE_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map_or(update::STARTUP_DELAY, Duration::from_millis);
         UpdateUi {
             env: Env::detect(),
             phase: Phase::Idle,
@@ -153,7 +156,13 @@ fn wrap(tx: &mut TextCtx, text: &str, max: i32, bold: bool) -> Vec<String> {
 }
 
 fn open_url(url: &str) {
-    if let Ok(mut child) = std::process::Command::new("xdg-open").arg(url).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
+    if let Ok(mut child) = std::process::Command::new("xdg-open")
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
         std::thread::spawn(move || {
             let _ = child.wait();
         });
@@ -178,7 +187,8 @@ impl App {
         }
         self.upd.busy = true;
         self.upd.progress.store(0, Ordering::Relaxed);
-        let (env, tx, progress, wake) = (self.upd.env.clone(), self.upd.tx.clone(), self.upd.progress.clone(), self.wake());
+        let (env, tx, progress, wake) =
+            (self.upd.env.clone(), self.upd.tx.clone(), self.upd.progress.clone(), self.wake());
         let skip = self.upd.installed.clone();
         let manual = matches!(job, Job::Check { manual: true, .. });
         let spawned = std::thread::Builder::new().name("update".into()).stack_size(1 << 20).spawn(move || {
@@ -305,7 +315,9 @@ impl App {
     pub fn update_indicator_tip(&self) -> (String, Option<String>) {
         match &self.upd.phase {
             Phase::Ready(r) => (format!("Lumen {} is ready", r.version), Some("Click to restart and update".into())),
-            Phase::Available(r) => (format!("Lumen {} available", r.version), Some("Click to see how to update".into())),
+            Phase::Available(r) => {
+                (format!("Lumen {} available", r.version), Some("Click to see how to update".into()))
+            }
             Phase::Idle => ("Updates".into(), None),
         }
     }
@@ -352,25 +364,40 @@ impl App {
             }
             Card::UpToDate => {
                 let local = if update::is_release_build(&env.current) { "" } else { " (local build)" };
-                ("Lumen is up to date".into(), vec![format!("Version {}{local}", env.current)], vec![(Btn::Close, "Close", true)], None)
+                (
+                    "Lumen is up to date".into(),
+                    vec![format!("Version {}{local}", env.current)],
+                    vec![(Btn::Close, "Close", true)],
+                    None,
+                )
             }
             Card::Ready(r) => {
                 let mut body = vec!["Restart to update. Your tabs and session are restored.".to_string()];
                 body.extend(notes(r));
-                (format!("Lumen {} is ready — Restart to update", r.version), body, vec![(Btn::Close, "Later", false), (Btn::Restart, "Restart now", true)], Some((Btn::Notes, "Release notes")))
+                (
+                    format!("Lumen {} is ready — Restart to update", r.version),
+                    body,
+                    vec![(Btn::Close, "Later", false), (Btn::Restart, "Restart now", true)],
+                    Some((Btn::Notes, "Release notes")),
+                )
             }
             Card::Available(r) => {
                 let mut body = Vec::new();
                 let mut buttons = vec![(Btn::Close, "Later", false)];
                 if env.kind.can_self_update() && r.asset.is_some() {
-                    body.push("The new version will be downloaded, verified and installed in the background.".to_string());
+                    body.push(
+                        "The new version will be downloaded, verified and installed in the background.".to_string(),
+                    );
                     buttons.push((Btn::Install, "Update now", true));
                 } else if let Some(cmd) = &r.command {
                     body.push("Installed by the package manager. To update, run:".to_string());
                     body.push(format!("\u{1}{cmd}"));
                     buttons.push((Btn::CopyCommand, "Copy command", true));
                 } else if matches!(env.kind, InstallKind::System) {
-                    body.push("Installed by the package manager: download the new version's package from the releases page.".to_string());
+                    body.push(
+                        "Installed by the package manager: download the new version's package from the releases page."
+                            .to_string(),
+                    );
                     buttons.push((Btn::Notes, "Open page", true));
                 } else {
                     body.push("Download the new version from the releases page, or run \"lumen-text --install-user\" from it to get automatic updates.".to_string());
@@ -379,15 +406,33 @@ impl App {
                 body.extend(notes(r));
                 (format!("Lumen {} available", r.version), body, buttons, Some((Btn::Notes, "Release notes")))
             }
-            Card::Error(e) => ("Could not check for updates".into(), vec![e.clone()], vec![(Btn::Close, "Close", false), (Btn::CheckAgain, "Try again", true)], None),
+            Card::Error(e) => (
+                "Could not check for updates".into(),
+                vec![e.clone()],
+                vec![(Btn::Close, "Close", false), (Btn::CheckAgain, "Try again", true)],
+                None,
+            ),
             Card::About => {
                 let mode = match self.config.updates.as_str() {
                     "off" => "off",
                     "notify" => "notify only",
                     _ => "automatic",
                 };
-                let how = if env.kind.can_self_update() { env.kind.label().to_string() } else { format!("{} (no self-update)", env.kind.label()) };
-                (format!("Lumen {}", env.current), vec![format!("Installation: {how}"), format!("Updates: {mode}"), format!("github.com/{}", update::REPO)], vec![(Btn::Close, "Close", false), (Btn::CheckAgain, "Check for updates", true)], None)
+                let how = if env.kind.can_self_update() {
+                    env.kind.label().to_string()
+                } else {
+                    format!("{} (no self-update)", env.kind.label())
+                };
+                (
+                    format!("Lumen {}", env.current),
+                    vec![
+                        format!("Installation: {how}"),
+                        format!("Updates: {mode}"),
+                        format!("github.com/{}", update::REPO),
+                    ],
+                    vec![(Btn::Close, "Close", false), (Btn::CheckAgain, "Check for updates", true)],
+                    None,
+                )
             }
         }
     }
@@ -413,7 +458,11 @@ impl App {
         }
         let has_row = !buttons.is_empty() || link.is_some();
         let btn_h = 30;
-        let h = 14 + title_lines.len() as i32 * 22 + if lines.is_empty() { 0 } else { 6 + lines.len() as i32 * 20 } + if has_row { 14 + btn_h } else { 0 } + 14;
+        let h = 14
+            + title_lines.len() as i32 * 22
+            + if lines.is_empty() { 0 } else { 6 + lines.len() as i32 * 20 }
+            + if has_row { 14 + btn_h } else { 0 }
+            + 14;
         let r = Rect::new(sw - w - 12, (self.layout.status.y - h - 10).max(0), w, h);
         cv.shadow(r, 12);
         cv.card(r, 12, c.widget_bg, c.border);
@@ -453,7 +502,15 @@ impl App {
                     cv.card(rect, 8, if hot { c.list_hover_bg } else { c.widget_bg }, c.border);
                 }
                 let tw = self.tx.ui_width(label, *primary);
-                self.tx.draw_ui(cv, rect.x + (rect.w - tw) / 2, rect.y + (btn_h - 18) / 2, label, if *primary { c.on_accent } else { fg }, rect, *primary);
+                self.tx.draw_ui(
+                    cv,
+                    rect.x + (rect.w - tw) / 2,
+                    rect.y + (btn_h - 18) / 2,
+                    label,
+                    if *primary { c.on_accent } else { fg },
+                    rect,
+                    *primary,
+                );
                 self.upd.rects.push((rect, *btn));
                 x -= 8;
             }
@@ -462,7 +519,15 @@ impl App {
                 let rect = Rect::new(r.x + 16, by, lw, btn_h);
                 if x - (r.x + 16) >= lw {
                     let hot = rect.contains(self.mouse.0, self.mouse.1);
-                    self.tx.draw_ui(cv, rect.x, rect.y + (btn_h - 18) / 2, label, if hot { fg } else { c.accent_text }, rect, false);
+                    self.tx.draw_ui(
+                        cv,
+                        rect.x,
+                        rect.y + (btn_h - 18) / 2,
+                        label,
+                        if hot { fg } else { c.accent_text },
+                        rect,
+                        false,
+                    );
                     if hot {
                         cv.fill(Rect::new(rect.x, rect.y + (btn_h + 18) / 2, lw, 1), fg);
                     }
@@ -486,7 +551,10 @@ impl App {
 
     /// Escape closes the card (when nothing modal is open).
     pub fn update_card_key(&mut self, key: &Key) -> bool {
-        if self.upd.card.is_some() && matches!(key, Key::Named(NamedKey::Escape)) && !matches!(self.upd.card, Some(Card::Checking | Card::Downloading(_))) {
+        if self.upd.card.is_some()
+            && matches!(key, Key::Named(NamedKey::Escape))
+            && !matches!(self.upd.card, Some(Card::Checking | Card::Downloading(_)))
+        {
             self.upd.card = None;
             return true;
         }

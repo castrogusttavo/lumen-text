@@ -231,7 +231,11 @@ impl Theme {
         let line_highlight = tint(if dark { 0.05 } else { 0.04 });
         let accent_raw = ck("focusBorder", Rgba(0x00, 0x7a, 0xcc, 0xff));
         // The accent is a non-text UI part (check boxes, underlines, rings): WCAG asks 3:1 on the editor.
-        let accent_raw = if fix && accent_raw.over(background).contrast(background) < 3.0 { accent_raw.over(background).readable_on(&[background], 3.0) } else { accent_raw };
+        let accent_raw = if fix && accent_raw.over(background).contrast(background) < 3.0 {
+            accent_raw.over(background).readable_on(&[background], 3.0)
+        } else {
+            accent_raw
+        };
         // Surfaces text can sit on. Every UI text color is nudged (toward black/white, keeping its hue)
         // until it reads (>= 4.5:1, WCAG AA) on all of them: editor, sidebar, tabs, widgets, inputs and
         // the selected / hovered row. The tests in `mod tests` (accessibility) guard it.
@@ -245,7 +249,13 @@ impl Theme {
             tint(if dark { 0.06 } else { 0.04 }),
             line_highlight,
         ];
-        let ok = |c: Rgba, min: f32| if !fix || surfaces.iter().all(|b| c.over(*b).contrast(*b) >= min) { c } else { c.readable_on(&surfaces, min) };
+        let ok = |c: Rgba, min: f32| {
+            if !fix || surfaces.iter().all(|b| c.over(*b).contrast(*b) >= min) {
+                c
+            } else {
+                c.readable_on(&surfaces, min)
+            }
+        };
         // Translucent highlight (selection, search match) under `fg`: weaken it until `fg` reads on it.
         let tame = |c: Rgba, base: Rgba, fg: Rgba, floor: u8| {
             let mut c = c;
@@ -257,14 +267,21 @@ impl Theme {
         let fg_ui = ok(foreground, 4.5);
         // `readable_on` blends toward black/white without alpha; bake the translucency in first.
         let soft = |a: u8| ok(background.mix(foreground, a as f32 / 255.0), 4.5);
-        let line_number = if fix { ok(tint(if dark { 0.38 } else { 0.42 }), 4.5) } else { tint(if dark { 0.38 } else { 0.42 }) };
-        let line_number_active = if fix { ok(tint(if dark { 0.78 } else { 0.8 }), 4.5) } else { tint(if dark { 0.78 } else { 0.8 }) };
+        let line_number =
+            if fix { ok(tint(if dark { 0.38 } else { 0.42 }), 4.5) } else { tint(if dark { 0.38 } else { 0.42 }) };
+        let line_number_active =
+            if fix { ok(tint(if dark { 0.78 } else { 0.8 }), 4.5) } else { tint(if dark { 0.78 } else { 0.8 }) };
         let selection = tame(selection_raw, background, fg_ui, 0x30);
-        let find_match = tame(ck("editor.findMatchHighlightBackground", Rgba(0xea, 0x5c, 0x00, 0x55)), background, fg_ui, 0x08);
-        let find_match_current = tame(ck("editor.findMatchBackground", Rgba(0x51, 0xc0, 0xa8, 0x80)), background, fg_ui, 0x08);
+        let find_match =
+            tame(ck("editor.findMatchHighlightBackground", Rgba(0xea, 0x5c, 0x00, 0x55)), background, fg_ui, 0x08);
+        let find_match_current =
+            tame(ck("editor.findMatchBackground", Rgba(0x51, 0xc0, 0xa8, 0x80)), background, fg_ui, 0x08);
         let foreground = fg_ui;
         let sem_raw = |key: &str, fb: Rgba| ok(ck(key, fb), 4.5);
-        let (git_added, git_deleted) = (sem_raw("editorGutter.addedBackground", Rgba(0x58, 0xa6, 0x4a, 0xff)), sem_raw("editorGutter.deletedBackground", Rgba(0xf8, 0x51, 0x49, 0xff)));
+        let (git_added, git_deleted) = (
+            sem_raw("editorGutter.addedBackground", Rgba(0x58, 0xa6, 0x4a, 0xff)),
+            sem_raw("editorGutter.deletedBackground", Rgba(0xf8, 0x51, 0x49, 0xff)),
+        );
         let diff_add = tame(git_added.with_alpha(0x26), background, fg_ui, 0x00);
         let diff_del = tame(git_deleted.with_alpha(0x26), background, fg_ui, 0x00);
         let diff_add_word = tame(git_added.with_alpha(0x55), background, fg_ui, 0x00);
@@ -315,7 +332,9 @@ impl Theme {
             diff_del_word,
         };
         if own_chrome && fix {
-            let opt = |keys: &[&str]| keys.iter().find_map(|k| raw.colors.get(*k).and_then(|c| c.as_str()).and_then(Rgba::parse));
+            let opt = |keys: &[&str]| {
+                keys.iter().find_map(|k| raw.colors.get(*k).and_then(|c| c.as_str()).and_then(Rgba::parse))
+            };
             apply_theme_chrome(&mut chrome, background, line_highlight, foreground, opt);
         }
 
@@ -330,7 +349,11 @@ impl Theme {
             // Syntax colors under 4.5:1 on the editor (comments are the usual offenders) are nudged
             // toward black/white, keeping their hue, just enough to pass WCAG AA.
             let tok_fg = r.settings.foreground.as_deref().and_then(Rgba::parse).map(|c| {
-                if fix && c.over(background).contrast(background) < 4.5 { c.over(background).readable_on(&[background, line_highlight], 4.5) } else { c }
+                if fix && c.over(background).contrast(background) < 4.5 {
+                    c.over(background).readable_on(&[background, line_highlight], 4.5)
+                } else {
+                    c
+                }
             });
             let style = Style {
                 fg: tok_fg,
@@ -346,7 +369,18 @@ impl Theme {
             }
         }
 
-        Ok(Self { name: raw.name.unwrap_or_default(), background, foreground, selection, cursor, line_highlight, line_number, line_number_active, chrome, rules })
+        Ok(Self {
+            name: raw.name.unwrap_or_default(),
+            background,
+            foreground,
+            selection,
+            cursor,
+            line_highlight,
+            line_number,
+            line_number_active,
+            chrome,
+            rules,
+        })
     }
 
     /// Resolve a style for a scope stack (outermost first), e.g.
@@ -382,10 +416,31 @@ fn reads(fg: Rgba, bg: Rgba, min: f32) -> bool {
 
 /// Swap the derived chrome surfaces and chrome text colors for the theme's own where they pass.
 /// `opt` looks a VS Code color key up (first key present wins).
-fn apply_theme_chrome(c: &mut Chrome, background: Rgba, line_highlight: Rgba, foreground: Rgba, opt: impl Fn(&[&str]) -> Option<Rgba>) {
+fn apply_theme_chrome(
+    c: &mut Chrome,
+    background: Rgba,
+    line_highlight: Rgba,
+    foreground: Rgba,
+    opt: impl Fn(&[&str]) -> Option<Rgba>,
+) {
     // Every UI text color has to keep reading on a surface for it to be adopted: the derived text
     // colors are left alone (the editor keeps its look), the surface is what gives way.
-    let texts = |c: &Chrome| [c.tab_inactive_fg, c.tab_active_fg, c.status_fg, c.sidebar_fg, c.accent_text, foreground, c.error, c.warning, c.info, c.git_added, c.git_modified, c.git_deleted];
+    let texts = |c: &Chrome| {
+        [
+            c.tab_inactive_fg,
+            c.tab_active_fg,
+            c.status_fg,
+            c.sidebar_fg,
+            c.accent_text,
+            foreground,
+            c.error,
+            c.warning,
+            c.info,
+            c.git_added,
+            c.git_modified,
+            c.git_deleted,
+        ]
+    };
     let fits = |c: &Chrome, bg: Rgba| texts(c).iter().all(|f| reads(*f, bg, 4.5));
     let surface = |keys: &[&str]| opt(keys).map(|s| s.over(background));
     if let Some(s) = surface(&["sideBar.background"]).filter(|s| fits(c, *s)) {
@@ -402,8 +457,22 @@ fn apply_theme_chrome(c: &mut Chrome, background: Rgba, line_highlight: Rgba, fo
         c.status_bg = s;
     }
     // The theme's own text colors, only when they read on every surface the app can put them on.
-    let surfaces = [background, c.sidebar_bg, c.tab_active_bg, c.widget_bg, c.list_active_bg, c.list_hover_bg, c.input_bg, line_highlight, c.tabbar_bg, c.tab_inactive_bg, c.status_bg];
-    let text = |keys: &[&str], cur: Rgba| opt(keys).map(|t| t.over(background)).filter(|t| surfaces.iter().all(|s| reads(*t, *s, 4.5))).unwrap_or(cur);
+    let surfaces = [
+        background,
+        c.sidebar_bg,
+        c.tab_active_bg,
+        c.widget_bg,
+        c.list_active_bg,
+        c.list_hover_bg,
+        c.input_bg,
+        line_highlight,
+        c.tabbar_bg,
+        c.tab_inactive_bg,
+        c.status_bg,
+    ];
+    let text = |keys: &[&str], cur: Rgba| {
+        opt(keys).map(|t| t.over(background)).filter(|t| surfaces.iter().all(|s| reads(*t, *s, 4.5))).unwrap_or(cur)
+    };
     c.sidebar_fg = text(&["sideBar.foreground"], c.sidebar_fg);
     c.tab_active_fg = text(&["tab.activeForeground"], c.tab_active_fg);
     c.tab_inactive_fg = text(&["tab.inactiveForeground"], c.tab_inactive_fg);
@@ -433,10 +502,35 @@ impl Chrome {
     fn test_default() -> Chrome {
         let c = Rgba(0, 0, 0, 255);
         Chrome {
-            sidebar_bg: c, sidebar_fg: c, tabbar_bg: c, tab_active_bg: c, tab_inactive_bg: c, tab_active_fg: c,
-            tab_inactive_fg: c, status_bg: c, status_fg: c, border: c, widget_bg: c, list_active_bg: c,
-            list_hover_bg: c, input_bg: c, accent: c, accent_text: c, on_accent: c, error: c, warning: c, info: c, git_added: c,
-            git_modified: c, git_deleted: c, find_match: c, find_match_current: c, diff_add: c, diff_del: c, diff_add_word: c, diff_del_word: c,
+            sidebar_bg: c,
+            sidebar_fg: c,
+            tabbar_bg: c,
+            tab_active_bg: c,
+            tab_inactive_bg: c,
+            tab_active_fg: c,
+            tab_inactive_fg: c,
+            status_bg: c,
+            status_fg: c,
+            border: c,
+            widget_bg: c,
+            list_active_bg: c,
+            list_hover_bg: c,
+            input_bg: c,
+            accent: c,
+            accent_text: c,
+            on_accent: c,
+            error: c,
+            warning: c,
+            info: c,
+            git_added: c,
+            git_modified: c,
+            git_deleted: c,
+            find_match: c,
+            find_match_current: c,
+            diff_add: c,
+            diff_del: c,
+            diff_add_word: c,
+            diff_del_word: c,
         }
     }
 }
@@ -484,10 +578,7 @@ mod tests {
     fn parent_selector_must_match() {
         let t = theme(&[("meta.function entity.name", "#444444")]);
         assert!(t.resolve(&["entity.name.function"]).fg == Some(Rgba(1, 1, 1, 255)));
-        assert_eq!(
-            t.resolve(&["meta.function.ts", "entity.name.function"]).fg,
-            Rgba::parse("#444444")
-        );
+        assert_eq!(t.resolve(&["meta.function.ts", "entity.name.function"]).fg, Rgba::parse("#444444"));
     }
 
     #[test]
@@ -515,7 +606,9 @@ mod tests {
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .map(|p| (p.file_stem().unwrap().to_string_lossy().into_owned(), Theme::load_mode(&p, fix, own_chrome).unwrap()))
+            .map(|p| {
+                (p.file_stem().unwrap().to_string_lossy().into_owned(), Theme::load_mode(&p, fix, own_chrome).unwrap())
+            })
             .collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
@@ -528,7 +621,19 @@ mod tests {
         let c = t.chrome;
         let mut pair = |label: String, fg: Rgba, bg: Rgba, min: f32| out.push((label, fg.over(bg).contrast(bg), min));
         // Chrome text on every surface it can sit on.
-        let bgs = [("background", t.background), ("sidebar_bg", c.sidebar_bg), ("tab_active_bg", c.tab_active_bg), ("widget_bg", c.widget_bg), ("list_active_bg", c.list_active_bg), ("list_hover_bg", c.list_hover_bg), ("input_bg", c.input_bg), ("line_highlight", t.line_highlight), ("tabbar_bg", c.tabbar_bg), ("tab_inactive_bg", c.tab_inactive_bg), ("status_bg", c.status_bg)];
+        let bgs = [
+            ("background", t.background),
+            ("sidebar_bg", c.sidebar_bg),
+            ("tab_active_bg", c.tab_active_bg),
+            ("widget_bg", c.widget_bg),
+            ("list_active_bg", c.list_active_bg),
+            ("list_hover_bg", c.list_hover_bg),
+            ("input_bg", c.input_bg),
+            ("line_highlight", t.line_highlight),
+            ("tabbar_bg", c.tabbar_bg),
+            ("tab_inactive_bg", c.tab_inactive_bg),
+            ("status_bg", c.status_bg),
+        ];
         let fgs = [
             ("tab_inactive_fg", c.tab_inactive_fg),
             ("tab_active_fg", c.tab_active_fg),
@@ -554,7 +659,15 @@ mod tests {
             pair(format!("line_number_active on {bn}"), t.line_number_active, bg, 4.5);
         }
         // Text under translucent highlights: selection, search matches, diff additions/removals.
-        for (n, hl) in [("selection", t.selection), ("find_match", c.find_match), ("find_match_current", c.find_match_current), ("diff removed", c.diff_del), ("diff added", c.diff_add), ("diff removed (word)", c.diff_del_word), ("diff added (word)", c.diff_add_word)] {
+        for (n, hl) in [
+            ("selection", t.selection),
+            ("find_match", c.find_match),
+            ("find_match_current", c.find_match_current),
+            ("diff removed", c.diff_del),
+            ("diff added", c.diff_add),
+            ("diff removed (word)", c.diff_del_word),
+            ("diff added (word)", c.diff_add_word),
+        ] {
             pair(format!("foreground on {n}"), t.foreground, hl.over(t.background), 4.5);
         }
         // Matched letters of the pickers sit on the selected / hovered row.
@@ -612,7 +725,11 @@ mod tests {
             // Derived chrome never moves the bars off the editor background.
             assert_eq!(d.chrome.status_bg, d.background);
             assert_eq!(d.chrome.tabbar_bg, d.background);
-            if t.chrome.sidebar_bg != d.chrome.sidebar_bg || t.chrome.tab_active_bg != d.chrome.tab_active_bg || t.chrome.tabbar_bg != d.chrome.tabbar_bg || t.chrome.status_bg != d.chrome.status_bg {
+            if t.chrome.sidebar_bg != d.chrome.sidebar_bg
+                || t.chrome.tab_active_bg != d.chrome.tab_active_bg
+                || t.chrome.tabbar_bg != d.chrome.tabbar_bg
+                || t.chrome.status_bg != d.chrome.status_bg
+            {
                 changed += 1;
             } else {
                 kept += 1;
@@ -641,7 +758,12 @@ mod tests {
         let (before, after) = (bundled_with(false), bundled_with(true));
         for ((name, tb), (_, ta)) in before.iter().zip(after.iter()) {
             let (ab, aa) = (audit(tb), audit(ta));
-            let worst = ab.iter().enumerate().min_by(|x, y| (x.1.1 / x.1.2).partial_cmp(&(y.1.1 / y.1.2)).unwrap()).map(|(i, _)| i).unwrap();
+            let worst = ab
+                .iter()
+                .enumerate()
+                .min_by(|x, y| (x.1.1 / x.1.2).partial_cmp(&(y.1.1 / y.1.2)).unwrap())
+                .map(|(i, _)| i)
+                .unwrap();
             let after_worst = aa.iter().map(|x| x.1 / x.2).fold(f32::MAX, f32::min);
             let _ = after_worst;
             println!("| {name} | {} | {:.2} | {:.2} |", ab[worst].0, ab[worst].1, aa.get(worst).map_or(0.0, |x| x.1));

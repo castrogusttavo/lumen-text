@@ -19,8 +19,8 @@ use crate::{
     doc::{Diag, uri_to_path},
     hover_md::{self as md, Blk, JsTag, Kind, ListItem, Span},
     lsp::{self, DefKind, Pending},
-    theme::{Rgba, Theme},
     scroller::{self, Scroller},
+    theme::{Rgba, Theme},
     ui::{Canvas, Rect, TextCtx, VBar, font_size, line_h},
 };
 use serde_json::{Value, json};
@@ -312,10 +312,10 @@ impl HoverTip {
 
     /// Plain text for "Copy type".
     pub fn type_text(&self) -> String {
-        if let Some(d) = &self.extra.decl {
-            if matches!(d.kind, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias) {
-                return d.text.clone();
-            }
+        if let Some(d) = &self.extra.decl
+            && matches!(d.kind, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias)
+        {
+            return d.text.clone();
         }
         self.sig.clone()
     }
@@ -338,15 +338,22 @@ impl HoverTip {
         }
         out.extend(key_doc.desc);
         if let Some((lit, what)) = &x.literal {
-            out.push(Blk::Kv { key: "Value".into(), val: vec![Span::code(lit.clone()), Span::plain(format!("  {what}"))] });
+            out.push(Blk::Kv {
+                key: "Value".into(),
+                val: vec![Span::code(lit.clone()), Span::plain(format!("  {what}"))],
+            });
         }
 
         // Signature: the full declaration when we have it.
-        let full = x.decl.as_ref().filter(|d| matches!(d.kind, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias));
+        let full =
+            x.decl.as_ref().filter(|d| matches!(d.kind, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias));
         if let Some(d) = full {
             out.push(Blk::Code { text: d.text.clone(), lang: "ts".into() });
             if d.more > 0 {
-                out.push(Blk::Dim(vec![Span { text: format!("… {} more lines — ", d.more), ..Default::default() }, Span { text: "view definition".into(), link: Some("lumen:more".into()), ..Default::default() }]));
+                out.push(Blk::Dim(vec![
+                    Span { text: format!("… {} more lines — ", d.more), ..Default::default() },
+                    Span { text: "view definition".into(), link: Some("lumen:more".into()), ..Default::default() },
+                ]));
             }
         } else {
             for b in &self.head {
@@ -368,10 +375,10 @@ impl HoverTip {
                 out.push(Blk::Dim(vec![Span::plain(format!("… and {} more", x.overloads.len() - 8))]));
             }
         }
-        if let Some(v) = &x.value {
-            if !self.sig.trim_end().ends_with(v.as_str()) {
-                out.push(Blk::Kv { key: "Value".into(), val: vec![Span::code(v.clone())] });
-            }
+        if let Some(v) = &x.value
+            && !self.sig.trim_end().ends_with(v.as_str())
+        {
+            out.push(Blk::Kv { key: "Value".into(), val: vec![Span::code(v.clone())] });
         }
         if let Some((code, more)) = &x.snippet {
             out.push(Blk::Label("Declaration".into()));
@@ -383,7 +390,10 @@ impl HoverTip {
         if let Some(m) = &x.module {
             out.push(Blk::Kv { key: "Module".into(), val: vec![Span::code(m.spec.clone())] });
             if let Some(f) = &m.file {
-                out.push(Blk::Kv { key: "File".into(), val: vec![Span { text: f.clone(), link: x.origin.as_ref().map(origin_link), ..Default::default() }] });
+                out.push(Blk::Kv {
+                    key: "File".into(),
+                    val: vec![Span { text: f.clone(), link: x.origin.as_ref().map(origin_link), ..Default::default() }],
+                });
             }
             if let Some(p) = &m.pkg {
                 out.push(Blk::Kv { key: "Package".into(), val: vec![Span::plain(p.clone())] });
@@ -395,13 +405,20 @@ impl HoverTip {
         // Parameters: the signature's, with the @param descriptions merged in.
         let fnlike = matches!(self.kind, Kind::Function | Kind::Method | Kind::Constructor);
         let sig = if fnlike { md::parse_sig(&self.sig) } else { None };
-        let params: Vec<&JsTag> = self.doc.tags.iter().filter(|t| matches!(t.tag.as_str(), "param" | "arg" | "argument" | "prop" | "property")).collect();
+        let params: Vec<&JsTag> = self
+            .doc
+            .tags
+            .iter()
+            .filter(|t| matches!(t.tag.as_str(), "param" | "arg" | "argument" | "prop" | "property"))
+            .collect();
         let mut items: Vec<Blk> = Vec::new();
         let mut used = vec![false; params.len()];
         if let Some(s) = &sig {
             for p in &s.params {
                 let bare = p.name.trim_start_matches("...");
-                let k = params.iter().position(|t| t.name.as_deref().map(|n| n.trim_start_matches("...").trim_matches(['[', ']'])) == Some(bare));
+                let k = params.iter().position(|t| {
+                    t.name.as_deref().map(|n| n.trim_start_matches("...").trim_matches(['[', ']'])) == Some(bare)
+                });
                 let mut body = vec![];
                 let mut extra = vec![];
                 if let Some(k) = k {
@@ -433,15 +450,20 @@ impl HoverTip {
             out.push(Blk::Label("Parameters".into()));
             out.extend(items);
         }
-        let tmpl: Vec<&JsTag> = self.doc.tags.iter().filter(|t| matches!(t.tag.as_str(), "template" | "typeParam" | "typeparam")).collect();
+        let tmpl: Vec<&JsTag> =
+            self.doc.tags.iter().filter(|t| matches!(t.tag.as_str(), "template" | "typeParam" | "typeparam")).collect();
         if !tmpl.is_empty() {
             out.push(Blk::Label("Type parameters".into()));
             for t in tmpl {
                 out.push(Blk::Item { head: t.name.clone(), body: t.body.clone(), extra: t.extra.clone() });
             }
         }
-        let rets: Vec<&JsTag> = self.doc.tags.iter().filter(|t| matches!(t.tag.as_str(), "returns" | "return")).collect();
-        let ret_ty = sig.as_ref().and_then(|s| s.ret.clone()).filter(|r| (r != "void" || !rets.is_empty()) && self.kind != Kind::Constructor);
+        let rets: Vec<&JsTag> =
+            self.doc.tags.iter().filter(|t| matches!(t.tag.as_str(), "returns" | "return")).collect();
+        let ret_ty = sig
+            .as_ref()
+            .and_then(|s| s.ret.clone())
+            .filter(|r| (r != "void" || !rets.is_empty()) && self.kind != Kind::Constructor);
         if !rets.is_empty() || ret_ty.is_some() {
             out.push(Blk::Label("Returns".into()));
             if rets.is_empty() {
@@ -461,10 +483,16 @@ impl HoverTip {
             for t in ex {
                 if !t.body.is_empty() {
                     // The title of an example (`@example Basic usage`) reads as a caption: italic.
-                    out.push(Blk::Para(t.body.iter().cloned().map(|mut s| {
-                        s.italic = true;
-                        s
-                    }).collect()));
+                    out.push(Blk::Para(
+                        t.body
+                            .iter()
+                            .cloned()
+                            .map(|mut s| {
+                                s.italic = true;
+                                s
+                            })
+                            .collect(),
+                    ));
                 }
                 out.extend(t.extra.iter().cloned());
             }
@@ -476,7 +504,27 @@ impl HoverTip {
                 out.push(Blk::Para(t.body.clone()));
             }
         }
-        for t in self.doc.tags.iter().filter(|t| !matches!(t.tag.as_str(), "param" | "arg" | "argument" | "prop" | "property" | "template" | "typeParam" | "typeparam" | "returns" | "return" | "throws" | "exception" | "example" | "see" | "link" | "deprecated")) {
+        for t in self.doc.tags.iter().filter(|t| {
+            !matches!(
+                t.tag.as_str(),
+                "param"
+                    | "arg"
+                    | "argument"
+                    | "prop"
+                    | "property"
+                    | "template"
+                    | "typeParam"
+                    | "typeparam"
+                    | "returns"
+                    | "return"
+                    | "throws"
+                    | "exception"
+                    | "example"
+                    | "see"
+                    | "link"
+                    | "deprecated"
+            )
+        }) {
             let mut val = t.body.clone();
             if let Some(n) = &t.name {
                 val.insert(0, Span::code(n.clone()));
@@ -490,13 +538,27 @@ impl HoverTip {
             out.push(Blk::Label(name.clone()));
             out.push(Blk::Code { text: d.text.clone(), lang: "ts".into() });
             if d.more > 0 {
-                out.push(Blk::Dim(vec![Span { text: format!("… {} more lines — ", d.more), ..Default::default() }, Span { text: "view type definition".into(), link: Some("lumen:more-type".into()), ..Default::default() }]));
+                out.push(Blk::Dim(vec![
+                    Span { text: format!("… {} more lines — ", d.more), ..Default::default() },
+                    Span {
+                        text: "view type definition".into(),
+                        link: Some("lumen:more-type".into()),
+                        ..Default::default()
+                    },
+                ]));
             }
         }
-        if let Some(o) = &x.origin {
-            if x.module.is_none() {
-                out.push(Blk::Kv { key: "Defined in".into(), val: vec![Span { text: format!("{}:{}", o.label, o.line + 1), link: Some(origin_link(o)), ..Default::default() }] });
-            }
+        if let Some(o) = &x.origin
+            && x.module.is_none()
+        {
+            out.push(Blk::Kv {
+                key: "Defined in".into(),
+                val: vec![Span {
+                    text: format!("{}:{}", o.label, o.line + 1),
+                    link: Some(origin_link(o)),
+                    ..Default::default()
+                }],
+            });
         }
         self.blocks = out;
         self.blocks_ver += 1;
@@ -623,7 +685,16 @@ fn tokenize(spans: &[Span], force_bold: bool) -> Vec<Tok> {
     let mut out = Vec::new();
     let mut pending = false;
     for s in spans {
-        let mk = |text: String, sp: bool, brk: bool| Tok { text, sp, brk, bold: s.bold || force_bold, italic: s.italic, code: s.code, strike: s.strike, link: s.link.clone() };
+        let mk = |text: String, sp: bool, brk: bool| Tok {
+            text,
+            sp,
+            brk,
+            bold: s.bold || force_bold,
+            italic: s.italic,
+            code: s.code,
+            strike: s.strike,
+            link: s.link.clone(),
+        };
         if s.code {
             for (k, part) in s.text.split('\n').enumerate() {
                 if k > 0 {
@@ -733,7 +804,18 @@ fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i32, color: 
                 let wd = row[i].w;
                 let li = lk.as_deref().map(|u| b.url(u));
                 b.decos.push(Deco { x, y: y + 1, w: wd, h: PROSE_LH - 2, kind: DecoKind::Fill(env.pal.chip_bg, 3) });
-                segs.push(Seg { x: x + 3, w: wd - 6, text: t.text.clone(), color: if li.is_some() { env.pal.link } else { env.pal.fg }, bold: false, italic: false, mono: true, strike: t.strike, link: li, size: None });
+                segs.push(Seg {
+                    x: x + 3,
+                    w: wd - 6,
+                    text: t.text.clone(),
+                    color: if li.is_some() { env.pal.link } else { env.pal.fg },
+                    bold: false,
+                    italic: false,
+                    mono: true,
+                    strike: t.strike,
+                    link: li,
+                    size: None,
+                });
                 if let Some(li) = li {
                     b.links.push((Rect::new(x, y, wd, PROSE_LH), li));
                 }
@@ -766,7 +848,18 @@ fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i32, color: 
                 color
             };
             plain.push_str(&text);
-            segs.push(Seg { x, w: wd, text, color: c, bold: t.bold, italic: t.italic && slant, mono: false, strike: t.strike, link: li, size: None });
+            segs.push(Seg {
+                x,
+                w: wd,
+                text,
+                color: c,
+                bold: t.bold,
+                italic: t.italic && slant,
+                mono: false,
+                strike: t.strike,
+                link: li,
+                size: None,
+            });
             if let Some(li) = li {
                 b.links.push((Rect::new(x, y, wd, PROSE_LH), li));
             }
@@ -791,10 +884,11 @@ fn code_chars(text: &str, spans: Option<&Vec<(usize, usize, Rgba, u8)>>, fg: Rgb
             while k < sp.len() && sp[k].1 <= bi {
                 k += 1;
             }
-            if let Some(s) = sp.get(k) {
-                if s.0 <= bi && bi < s.1 {
-                    col = (s.2, s.3);
-                }
+            if let Some(s) = sp.get(k)
+                && s.0 <= bi
+                && bi < s.1
+            {
+                col = (s.2, s.3);
             }
         }
         out.push((ch, col.0, col.1));
@@ -831,7 +925,12 @@ pub fn wrap_code(chars: Vec<CharRun>, cols: usize) -> Vec<Vec<CharRun>> {
             break;
         }
         let lo = room / 2;
-        let cut = (lo..room).rev().find(|&i| rest[i - 1].0 == ',' && rest[i].0 == ' ').map(|i| i + 1).or_else(|| (lo..room).rev().find(|&i| rest[i].0 == ' ').map(|i| i + 1)).unwrap_or(room);
+        let cut = (lo..room)
+            .rev()
+            .find(|&i| rest[i - 1].0 == ',' && rest[i].0 == ' ')
+            .map(|i| i + 1)
+            .or_else(|| (lo..room).rev().find(|&i| rest[i].0 == ' ').map(|i| i + 1))
+            .unwrap_or(room);
         let mut tail = rest.split_off(cut.min(rest.len()));
         while rest.last().is_some_and(|c| c.0 == ' ') {
             rest.pop();
@@ -885,7 +984,25 @@ fn label(env: &mut Env, b: &mut Builder, text: &str, x0: i32) {
     };
     let wd = env.tx.ui_width_sized(&up, true, 10.5);
     b.right = b.right.max(x0 + wd);
-    b.lines.push(LLine { y: b.y, h: LABEL_LH, segs: vec![Seg { x: x0, w: wd, text: up.clone(), color: env.pal.dim, bold: true, italic: false, mono: false, strike: false, link: None, size: Some(10.5) }], x0: 0, runs: vec![], plain: text.to_string() });
+    b.lines.push(LLine {
+        y: b.y,
+        h: LABEL_LH,
+        segs: vec![Seg {
+            x: x0,
+            w: wd,
+            text: up.clone(),
+            color: env.pal.dim,
+            bold: true,
+            italic: false,
+            mono: false,
+            strike: false,
+            link: None,
+            size: Some(10.5),
+        }],
+        x0: 0,
+        runs: vec![],
+        plain: text.to_string(),
+    });
     b.y += LABEL_LH;
 }
 
@@ -899,7 +1016,25 @@ fn block(env: &mut Env, b: &mut Builder, blk: &Blk, x0: i32, w: i32) {
                 let ind = x0 + *depth as i32 * 14;
                 let y = b.y;
                 let mw = env.tx.ui_width(marker, false);
-                b.lines.push(LLine { y, h: PROSE_LH, segs: vec![Seg { x: ind + 12 - mw, w: mw, text: marker.clone(), color: env.pal.dim, bold: false, italic: false, mono: false, strike: false, link: None, size: None }], x0: 0, runs: vec![], plain: String::new() });
+                b.lines.push(LLine {
+                    y,
+                    h: PROSE_LH,
+                    segs: vec![Seg {
+                        x: ind + 12 - mw,
+                        w: mw,
+                        text: marker.clone(),
+                        color: env.pal.dim,
+                        bold: false,
+                        italic: false,
+                        mono: false,
+                        strike: false,
+                        link: None,
+                        size: None,
+                    }],
+                    x0: 0,
+                    runs: vec![],
+                    plain: String::new(),
+                });
                 let n0 = b.lines.len();
                 flow(env, b, spans, ind + 16, w - ind - 16 + x0, fg, false);
                 // the marker line shares its row with the first text line
@@ -916,7 +1051,13 @@ fn block(env: &mut Env, b: &mut Builder, blk: &Blk, x0: i32, w: i32) {
         Blk::Quote(sp) => {
             let top = b.y;
             flow(env, b, sp, x0 + 10, w - x0 - 10, env.pal.dim, false);
-            b.decos.push(Deco { x: x0, y: top + 1, w: 3, h: b.y - top - 2, kind: DecoKind::Fill(env.pal.rule.with_alpha(0x66), 1) });
+            b.decos.push(Deco {
+                x: x0,
+                y: top + 1,
+                w: 3,
+                h: b.y - top - 2,
+                kind: DecoKind::Fill(env.pal.rule.with_alpha(0x66), 1),
+            });
         }
         Blk::Rule => {
             b.y += 3;
@@ -947,7 +1088,11 @@ fn block(env: &mut Env, b: &mut Builder, blk: &Blk, x0: i32, w: i32) {
             let mut spans = vec![Span::plain(msg.clone())];
             if !code.is_empty() {
                 spans.push(Span::plain(" "));
-                spans.push(Span { text: if code.chars().all(|c| c.is_ascii_digit()) { format!("TS{code}") } else { code.clone() }, link: url.clone(), ..Default::default() });
+                spans.push(Span {
+                    text: if code.chars().all(|c| c.is_ascii_digit()) { format!("TS{code}") } else { code.clone() },
+                    link: url.clone(),
+                    ..Default::default()
+                });
             }
             flow(env, b, &spans, x0 + 10, w - x0 - 10 - 4, fg, false);
             b.y += 4;
@@ -975,7 +1120,18 @@ fn block(env: &mut Env, b: &mut Builder, blk: &Blk, x0: i32, w: i32) {
             let n0 = b.lines.len();
             flow(env, b, val, x0 + kw, w - x0 - kw, fg, false);
             let kwid = env.tx.ui_width_sized(key, true, 11.5);
-            let seg = Seg { x: x0, w: kwid, text: key.clone(), color: env.pal.dim, bold: true, italic: false, mono: false, strike: false, link: None, size: Some(11.5) };
+            let seg = Seg {
+                x: x0,
+                w: kwid,
+                text: key.clone(),
+                color: env.pal.dim,
+                bold: true,
+                italic: false,
+                mono: false,
+                strike: false,
+                link: None,
+                size: Some(11.5),
+            };
             if b.lines.len() > n0 {
                 b.lines[n0].segs.insert(0, seg);
                 b.lines[n0].plain = format!("{key}: {}", b.lines[n0].plain);
@@ -998,7 +1154,15 @@ pub fn layout(blocks: &[Blk], w: i32, env: &mut Env) -> Laid {
     for (i, blk) in blocks.iter().enumerate() {
         if i > 0 {
             let is_item = matches!(blk, Blk::Item { .. });
-            b.y += if prev_label { 3 } else if matches!(blk, Blk::Label(_)) { GAP + 2 } else if is_item { 5 } else { GAP };
+            b.y += if prev_label {
+                3
+            } else if matches!(blk, Blk::Label(_)) {
+                GAP + 2
+            } else if is_item {
+                5
+            } else {
+                GAP
+            };
         }
         block(env, &mut b, blk, 0, w);
         prev_label = matches!(blk, Blk::Label(_));
@@ -1095,7 +1259,10 @@ fn package_of(path: &std::path::Path) -> Option<String> {
     let first = it.next()?;
     let name = if first.starts_with('@') { format!("{first}/{}", it.next()?) } else { first.to_string() };
     let pj = std::path::Path::new(&s[..i + "/node_modules/".len()]).join(&name).join("package.json");
-    let ver = std::fs::read_to_string(pj).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v["version"].as_str().map(str::to_string));
+    let ver = std::fs::read_to_string(pj)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["version"].as_str().map(str::to_string));
     Some(match ver {
         Some(v) => format!("{name}@{v}"),
         None => name,
@@ -1148,7 +1315,8 @@ fn literal_at(line: &str, col: usize) -> Option<(usize, usize)> {
                 i += 1;
             }
             let word: String = cs[s..i].iter().collect();
-            let lit = matches!(word.as_str(), "true" | "false" | "null") || word.chars().next().is_some_and(|c| c.is_ascii_digit());
+            let lit = matches!(word.as_str(), "true" | "false" | "null")
+                || word.chars().next().is_some_and(|c| c.is_ascii_digit());
             if lit && (s..i).contains(&col) {
                 return Some((s, i));
             }
@@ -1163,7 +1331,8 @@ fn literal_at(line: &str, col: usize) -> Option<(usize, usize)> {
 fn find_type_decl(text: &str, name: &str) -> Option<(usize, Kind)> {
     let re = regex::Regex::new(&format!(r"(?m)^[ \t]*(?:export\s+)?(?:declare\s+)?(?:default\s+)?(?:abstract\s+)?(?:const\s+)?(?:interface|type|class|enum)\s+({})\b", regex::escape(name))).ok()?;
     let m = re.captures(text)?.get(1)?;
-    let k = md::decl_kind_at(text, m.start()).filter(|k| matches!(k, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias))?;
+    let k = md::decl_kind_at(text, m.start())
+        .filter(|k| matches!(k, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias))?;
     Some((m.start(), k))
 }
 
@@ -1172,7 +1341,13 @@ fn describe_literal(text: &str) -> String {
     match t.chars().next() {
         Some('"' | '\'') => format!("string · {} caracteres", t.chars().count().saturating_sub(2)),
         Some('`') => format!("template · {} caracteres", t.chars().count().saturating_sub(2)),
-        Some(c) if c.is_ascii_digit() => if t.ends_with('n') { "bigint".to_string() } else { "number".to_string() },
+        Some(c) if c.is_ascii_digit() => {
+            if t.ends_with('n') {
+                "bigint".to_string()
+            } else {
+                "number".to_string()
+            }
+        }
         _ if t == "null" => "null".to_string(),
         _ => "boolean".to_string(),
     }
@@ -1185,11 +1360,15 @@ impl App {
         let (l, c) = d.buf.line_col(at);
         d.diags
             .iter()
-            .filter(|g: &&Diag| (g.sl, g.sc) <= (l, c) && (l, c) < (g.el, g.ec.max(g.sc + 1)) || (g.sl == l && g.sc <= c && c <= g.ec.max(g.sc + 1) && g.el == l))
+            .filter(|g: &&Diag| {
+                (g.sl, g.sc) <= (l, c) && (l, c) < (g.el, g.ec.max(g.sc + 1))
+                    || (g.sl == l && g.sc <= c && c <= g.ec.max(g.sc + 1) && g.el == l)
+            })
             .map(|g| DiagInfo {
                 sev: g.severity,
                 msg: g.message.clone(),
-                url: (!g.code.is_empty() && g.code.chars().all(|c| c.is_ascii_digit())).then(|| format!("https://typescript.tv/errors/#TS{}", g.code)),
+                url: (!g.code.is_empty() && g.code.chars().all(|c| c.is_ascii_digit()))
+                    .then(|| format!("https://typescript.tv/errors/#TS{}", g.code)),
                 code: g.code.clone(),
                 line: g.sl,
                 col: g.sc,
@@ -1219,7 +1398,15 @@ impl App {
         let i = self.active;
         let Some(d) = self.docs.get(i) else { return false };
         let (uri, ver) = (d.uri().unwrap_or_default(), d.version);
-        let Some(mut tip) = self.hv.cache.iter().find(|c| c.uri == uri && c.ver == ver && c.anchor.0 <= at && at <= c.anchor.1).cloned() else { return false };
+        let Some(mut tip) = self
+            .hv
+            .cache
+            .iter()
+            .find(|c| c.uri == uri && c.ver == ver && c.anchor.0 <= at && at <= c.anchor.1)
+            .cloned()
+        else {
+            return false;
+        };
         let Some(pos) = d.screen_pos(tip.anchor.0) else { return false };
         tip.at = pos;
         tip.scroll = 0.0;
@@ -1270,7 +1457,9 @@ impl App {
         let d = &self.docs[i];
         let range = v["range"].as_object().map(|_| {
             let r = &v["range"];
-            let f = |p: &Value| d.from_lsp_pos(p["line"].as_u64().unwrap_or(0) as usize, p["character"].as_u64().unwrap_or(0) as usize);
+            let f = |p: &Value| {
+                d.pos_from_lsp(p["line"].as_u64().unwrap_or(0) as usize, p["character"].as_u64().unwrap_or(0) as usize)
+            };
             (f(&r["start"]), f(&r["end"]))
         });
         let anchor = range.unwrap_or_else(|| self.word_range(i, at));
@@ -1292,10 +1481,10 @@ impl App {
         // import / require statements: module and resolved file
         let spec = self.import_at(i, at);
         let is_module = tip.kind == Kind::Module;
-        if let Some((s, _, _)) = &spec {
-            if is_module || md_text.contains("(alias)") || tip.kind == Kind::Other {
-                tip.extra.module = Some(ModInfo { spec: s.clone(), file: None, pkg: None });
-            }
+        if let Some((s, _, _)) = &spec
+            && (is_module || md_text.contains("(alias)") || tip.kind == Kind::Other)
+        {
+            tip.extra.module = Some(ModInfo { spec: s.clone(), file: None, pkg: None });
         }
         tip.compose();
         self.hover_show(tip);
@@ -1340,13 +1529,13 @@ impl App {
         let ask = |app: &mut App, what: HoverWhat, params: Value, method: &str| {
             app.lsps[li].request(method, params, Pending::HoverExtra { uri: uri.clone(), at: anchor, serial, what });
         };
-        if kind == Kind::Module || (spec.is_some() && self.hover.as_ref().is_some_and(|t| t.extra.module.is_some())) {
-            if let Some((_, line, col)) = &spec {
-                let d = &self.docs[i];
-                let p = d.buf.pos(*line, *col + 1);
-                let params = self.hover_pos_params(i, p);
-                ask(self, HoverWhat::Module, params, "textDocument/definition");
-            }
+        if (kind == Kind::Module || (spec.is_some() && self.hover.as_ref().is_some_and(|t| t.extra.module.is_some())))
+            && let Some((_, line, col)) = &spec
+        {
+            let d = &self.docs[i];
+            let p = d.buf.pos(*line, *col + 1);
+            let params = self.hover_pos_params(i, p);
+            ask(self, HoverWhat::Module, params, "textDocument/definition");
         }
         if kind.wants_def() && kind != Kind::Module {
             let params = self.hover_pos_params(i, anchor);
@@ -1392,26 +1581,26 @@ impl App {
         match what {
             HoverWhat::KeyType => {
                 let m = hover_markdown(v);
-                if !m.is_empty() {
-                    if let Some(t) = &mut self.hover {
-                        t.extra.key_md = Some(m);
-                        changed = true;
-                    }
+                if !m.is_empty()
+                    && let Some(t) = &mut self.hover
+                {
+                    t.extra.key_md = Some(m);
+                    changed = true;
                 }
             }
             HoverWhat::Module => {
-                if let Some((turi, ..)) = lsp::locations(v).into_iter().next() {
-                    if let Some(path) = uri_to_path(&turi) {
-                        let label = self.rel(&path);
-                        let pkg = package_of(&path);
-                        if let Some(t) = &mut self.hover {
-                            if let Some(m) = &mut t.extra.module {
-                                m.file = Some(label.clone());
-                                m.pkg = pkg;
-                            }
-                            t.extra.origin = Some(Origin { path, label, line: 0, col: 0 });
-                            changed = true;
+                if let Some((turi, ..)) = lsp::locations(v).into_iter().next()
+                    && let Some(path) = uri_to_path(&turi)
+                {
+                    let label = self.rel(&path);
+                    let pkg = package_of(&path);
+                    if let Some(t) = &mut self.hover {
+                        if let Some(m) = &mut t.extra.module {
+                            m.file = Some(label.clone());
+                            m.pkg = pkg;
                         }
+                        t.extra.origin = Some(Origin { path, label, line: 0, col: 0 });
+                        changed = true;
                     }
                 }
             }
@@ -1452,7 +1641,9 @@ impl App {
         let mut snippet = None;
         match kind {
             Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias => {
-                let k = at_kind.filter(|k| matches!(k, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias)).unwrap_or(kind);
+                let k = at_kind
+                    .filter(|k| matches!(k, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias))
+                    .unwrap_or(kind);
                 if let Some((text, more)) = md::render_decl(&text, off, k, DECL_LINES) {
                     decl = Some(Decl { text, more, kind: k });
                 }
@@ -1464,14 +1655,14 @@ impl App {
                 for p in sig.iter().flat_map(|s| s.params.iter()) {
                     let ty = p.ty.trim().trim_end_matches("[]");
                     let base = ty.split('<').next().unwrap_or("");
-                    if base.is_empty() || !base.chars().all(|c| is_ident(c)) || !base.starts_with(|c: char| c.is_uppercase()) {
+                    if base.is_empty() || !base.chars().all(is_ident) || !base.starts_with(|c: char| c.is_uppercase()) {
                         continue;
                     }
-                    if let Some((o, k)) = find_type_decl(&text, base) {
-                        if let Some((body, more)) = md::render_decl(&text, o, k, DECL_LINES) {
-                            class_decl = Some((format!("Type {base}"), Decl { text: body, more, kind: k }));
-                            break;
-                        }
+                    if let Some((o, k)) = find_type_decl(&text, base)
+                        && let Some((body, more)) = md::render_decl(&text, o, k, DECL_LINES)
+                    {
+                        class_decl = Some((format!("Type {base}"), Decl { text: body, more, kind: k }));
+                        break;
                     }
                 }
             }
@@ -1491,7 +1682,8 @@ impl App {
         }
         let is_current = self.docs.get(self.active).and_then(|d| d.path()).is_some_and(|p| p == path);
         let Some(t) = &mut self.hover else { return false };
-        let ok = decl.is_some() || !overloads.is_empty() || value.is_some() || class_decl.is_some() || snippet.is_some();
+        let ok =
+            decl.is_some() || !overloads.is_empty() || value.is_some() || class_decl.is_some() || snippet.is_some();
         t.extra.snippet = snippet;
         t.extra.type_decl = class_decl.or(t.extra.type_decl.take());
         t.extra.decl = decl;
@@ -1510,7 +1702,11 @@ impl App {
             return false;
         }
         let Some(off) = byte_off(&text, line, col) else { return false };
-        let Some(k) = md::decl_kind_at(&text, off).filter(|k| matches!(k, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias)) else { return false };
+        let Some(k) = md::decl_kind_at(&text, off)
+            .filter(|k| matches!(k, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias))
+        else {
+            return false;
+        };
         let name: String = text[off..].chars().take_while(|c| is_ident(*c)).collect();
         let Some(t) = &self.hover else { return false };
         if name.is_empty() || !t.sig.contains(&name) || t.name == name {
@@ -1578,7 +1774,11 @@ impl App {
             let Some((_, li)) = self.hover_server(i) else { return Some(()) };
             let params = self.hover_pos_params(i, ka);
             let (serial, uri) = self.hover.as_ref().map(|t| (t.serial, t.uri.clone()))?;
-            self.lsps[li].request("textDocument/hover", params, Pending::HoverExtra { uri, at: a, serial, what: HoverWhat::KeyType });
+            self.lsps[li].request(
+                "textDocument/hover",
+                params,
+                Pending::HoverExtra { uri, at: a, serial, what: HoverWhat::KeyType },
+            );
         }
         Some(())
     }
@@ -1591,7 +1791,8 @@ impl App {
         let (x, y) = self.mouse;
         if let Some(h) = &self.hover {
             let inside = h.rect.contains(x, y);
-            let on_symbol = p.is_some_and(|p| h.anchor.0 <= p && p <= h.anchor.1.max(h.anchor.0 + 1) && self.over_anchor_line(h));
+            let on_symbol =
+                p.is_some_and(|p| h.anchor.0 <= p && p <= h.anchor.1.max(h.anchor.0 + 1) && self.over_anchor_line(h));
             if inside || on_symbol {
                 self.hv.hide_at = None;
                 self.hover_probe = None;
@@ -1792,7 +1993,15 @@ impl App {
     /// commands work on the caret).
     pub fn hover_run(&mut self, act: Act) {
         let Some(h) = self.hover.take() else { return };
-        let target = if act == Act::QuickFix { h.extra.diags.first().and_then(|d| self.docs.get(self.active).map(|doc| doc.buf.pos(d.line, d.col))).unwrap_or(h.anchor.0) } else { h.anchor.0 };
+        let target = if act == Act::QuickFix {
+            h.extra
+                .diags
+                .first()
+                .and_then(|d| self.docs.get(self.active).map(|doc| doc.buf.pos(d.line, d.col)))
+                .unwrap_or(h.anchor.0)
+        } else {
+            h.anchor.0
+        };
         if act == Act::CopyType {
             let text = h.type_text();
             self.clip.set(&text);
@@ -1830,7 +2039,10 @@ impl App {
             // `file:///x.ts#18,13-18,17`: 1-based line and column
             let (p, frag) = rest.split_once('#').unwrap_or((rest, ""));
             let nums: Vec<usize> = frag.split(|c: char| !c.is_ascii_digit()).filter_map(|v| v.parse().ok()).collect();
-            let (l, c) = (nums.first().copied().unwrap_or(1).saturating_sub(1), nums.get(1).copied().unwrap_or(1).saturating_sub(1));
+            let (l, c) = (
+                nums.first().copied().unwrap_or(1).saturating_sub(1),
+                nums.get(1).copied().unwrap_or(1).saturating_sub(1),
+            );
             if let Some(path) = uri_to_path(&format!("file://{p}")) {
                 self.hover = None;
                 self.push_nav();
@@ -1858,7 +2070,8 @@ impl App {
         let ed = self.layout.editor.intersect(&cv.bounds());
         let maxw = (ed.w - 40).clamp(240, 640);
         let inner_w = maxw - 2 * PAD_X;
-        let key: LayKey = (inner_w, font_size().to_bits(), self.tx.cell_w.to_bits(), crate::ui::scale().to_bits(), h.blocks_ver);
+        let key: LayKey =
+            (inner_w, font_size().to_bits(), self.tx.cell_w.to_bits(), crate::ui::scale().to_bits(), h.blocks_ver);
         if h.laid.as_ref().is_none_or(|(k, _)| *k != key) {
             let lang_blocks = h.blocks.clone();
             let App { tx, theme, tokenizers, assets, .. } = &mut *self;
@@ -1901,7 +2114,7 @@ impl App {
 
         cv.shadow(rect, 10);
         cv.card(rect, 10, chrome.widget_bg, chrome.border);
-        let laid = &h.laid.as_ref().unwrap().1;
+        let _laid = &h.laid.as_ref().unwrap().1;
         let oy = view.y - h.scroll.round() as i32;
         let clip = Rect::new(rect.x + 1, view.y, rect.w - 2, view.h);
         let (vt, vb) = (h.scroll.round() as i32, h.scroll.round() as i32 + view.h);
@@ -1945,7 +2158,11 @@ impl App {
                     self.tx.draw_ui(cv, x, y, &s.text, s.color, clip, s.bold);
                 }
                 if s.link.is_some() {
-                    cv.fill_clip(Rect::new(x, y + l.h - 4, s.w, 1), s.color.with_alpha(if hot_link { 0xff } else { 0x70 }), clip);
+                    cv.fill_clip(
+                        Rect::new(x, y + l.h - 4, s.w, 1),
+                        s.color.with_alpha(if hot_link { 0xff } else { 0x70 }),
+                        clip,
+                    );
                 }
                 if s.strike {
                     cv.fill_clip(Rect::new(x, y + l.h / 2, s.w, 1), s.color.with_alpha(0xc0), clip);
@@ -2044,10 +2261,11 @@ pub fn line_boxes(tx: &mut TextCtx, l: &LLine) -> Vec<CharBox> {
         if seg.text.is_empty() {
             continue;
         }
-        if let Some(last) = out.last().copied() {
-            if seg.x > last.x1 + 1 && !last.ch.is_whitespace() {
-                out.push(CharBox { ch: ' ', x0: last.x1, x1: seg.x });
-            }
+        if let Some(last) = out.last().copied()
+            && seg.x > last.x1 + 1
+            && !last.ch.is_whitespace()
+        {
+            out.push(CharBox { ch: ' ', x0: last.x1, x1: seg.x });
         }
         if seg.mono {
             for (k, ch) in seg.text.chars().enumerate() {
@@ -2138,7 +2356,12 @@ pub fn sel_text(h: &mut HoverTip, tx: &mut TextCtx) -> Option<String> {
 fn open_external(url: &str) {
     let url = url.to_string();
     std::thread::spawn(move || {
-        let child = std::process::Command::new("xdg-open").arg(&url).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+        let child = std::process::Command::new("xdg-open")
+            .arg(&url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
         if let Ok(mut c) = child {
             let _ = c.wait();
         }
@@ -2167,7 +2390,10 @@ mod tests {
     #[test]
     fn prose_wraps_to_width_and_keeps_links() {
         let long = "palavra ".repeat(60);
-        let blocks = vec![Blk::Para(vec![Span::plain(long), Span { text: "link".into(), link: Some("http://x".into()), ..Default::default() }])];
+        let blocks = vec![Blk::Para(vec![
+            Span::plain(long),
+            Span { text: "link".into(), link: Some("http://x".into()), ..Default::default() },
+        ])];
         let l = laid(&blocks, 300);
         assert!(l.lines.len() > 3, "wrapped into {} lines", l.lines.len());
         for ln in &l.lines {
@@ -2187,7 +2413,11 @@ mod tests {
         for p in &parts {
             assert!(p.len() <= 40);
         }
-        let joined: String = parts.iter().map(|p| p.iter().map(|c| c.0).collect::<String>().trim().to_string()).collect::<Vec<_>>().join(" ");
+        let joined: String = parts
+            .iter()
+            .map(|p| p.iter().map(|c| c.0).collect::<String>().trim().to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
         assert_eq!(joined.split_whitespace().collect::<Vec<_>>().join(" "), line);
         assert!(parts[0].iter().map(|c| c.0).collect::<String>().trim_end().ends_with(','));
     }
@@ -2230,7 +2460,7 @@ mod tests {
     }
 
     #[test]
-    fn byte_offsets_from_lsp_positions() {
+    fn byte_offsets_pos_from_lspitions() {
         let t = "ab\ncdé😀x\nz";
         assert_eq!(byte_off(t, 0, 1), Some(1));
         assert_eq!(byte_off(t, 1, 0), Some(3));
@@ -2262,7 +2492,11 @@ mod tests {
         let t = HoverTip::new(md, (0, 3), (0, 0));
         assert_eq!(t.kind, Kind::Function);
         assert!(matches!(t.blocks[0], Blk::Note { .. }), "deprecated first: {:?}", t.blocks[0]);
-        let heads: Vec<String> = t.blocks.iter().filter_map(|b| if let Blk::Item { head: Some(h), .. } = b { Some(h.clone()) } else { None }).collect();
+        let heads: Vec<String> = t
+            .blocks
+            .iter()
+            .filter_map(|b| if let Blk::Item { head: Some(h), .. } = b { Some(h.clone()) } else { None })
+            .collect();
         assert_eq!(heads, ["a: number", "b?: number", "number"]);
         let acts = t.actions();
         assert_eq!(acts, [Act::Definition, Act::References, Act::CopyType]);
@@ -2275,7 +2509,11 @@ mod tests {
         assert_eq!(t.kind, Kind::Interface);
         t.extra.decl = Some(Decl { text: "interface User {\n  id: number;\n}".into(), more: 3, kind: Kind::Interface });
         t.compose();
-        let codes: Vec<&str> = t.blocks.iter().filter_map(|b| if let Blk::Code { text, .. } = b { Some(text.as_str()) } else { None }).collect();
+        let codes: Vec<&str> = t
+            .blocks
+            .iter()
+            .filter_map(|b| if let Blk::Code { text, .. } = b { Some(text.as_str()) } else { None })
+            .collect();
         assert_eq!(codes, ["interface User {\n  id: number;\n}"]);
         assert!(t.blocks.iter().any(|b| matches!(b, Blk::Dim(_))));
         assert_eq!(t.type_text(), "interface User {\n  id: number;\n}");
@@ -2283,7 +2521,18 @@ mod tests {
 
     #[test]
     fn diagnostics_come_first_with_quick_fix() {
-        let mut t = HoverTip::diag_only(vec![DiagInfo { sev: 1, msg: "Wrong type".into(), code: "2322".into(), url: Some("https://typescript.tv/errors/#TS2322".into()), line: 0, col: 0 }], (0, 1), (0, 0));
+        let mut t = HoverTip::diag_only(
+            vec![DiagInfo {
+                sev: 1,
+                msg: "Wrong type".into(),
+                code: "2322".into(),
+                url: Some("https://typescript.tv/errors/#TS2322".into()),
+                line: 0,
+                col: 0,
+            }],
+            (0, 1),
+            (0, 0),
+        );
         assert!(matches!(&t.blocks[0], Blk::Diag { code, .. } if code == "2322"));
         assert_eq!(t.actions(), [Act::QuickFix]);
         t.extra.diags.clear();
@@ -2322,11 +2571,17 @@ mod tests {
     #[test]
     fn selection_is_per_character_and_copies_exactly() {
         let mut tx = TextCtx::new(None);
-        let blocks = vec![Blk::Para(vec![Span::plain("hello wonderful world")]), Blk::Code { text: "const a = 1;\nconst b = 22;".into(), lang: "ts".into() }];
+        let blocks = vec![
+            Blk::Para(vec![Span::plain("hello wonderful world")]),
+            Blk::Code { text: "const a = 1;\nconst b = 22;".into(), lang: "ts".into() },
+        ];
         let mut t = tip_with(&blocks, &mut tx);
         let boxes = boxes_of(&mut t, &mut tx, 0).to_vec();
         assert_eq!(boxes.iter().map(|b| b.ch).collect::<String>(), "hello wonderful world");
-        assert!(boxes.windows(2).all(|w| w[0].x0 < w[1].x0 && w[0].x1 <= w[1].x0 + 1), "chars advance left to right: {boxes:?}");
+        assert!(
+            boxes.windows(2).all(|w| w[0].x0 < w[1].x0 && w[0].x1 <= w[1].x0 + 1),
+            "chars advance left to right: {boxes:?}"
+        );
         // inside one line
         t.sel = Some(((0, 6), (0, 15)));
         assert_eq!(sel_text(&mut t, &mut tx).as_deref(), Some("wonderful"));
@@ -2375,7 +2630,13 @@ mod tests {
     #[test]
     fn inline_code_and_styled_runs_keep_their_text() {
         let mut tx = TextCtx::new(None);
-        let sp = vec![Span::plain("use "), Span::code("add"), Span::plain(" or "), Span { text: "sum".into(), bold: true, ..Default::default() }, Span::plain(" now")];
+        let sp = vec![
+            Span::plain("use "),
+            Span::code("add"),
+            Span::plain(" or "),
+            Span { text: "sum".into(), bold: true, ..Default::default() },
+            Span::plain(" now"),
+        ];
         let mut t = tip_with(&[Blk::Para(sp)], &mut tx);
         let b = boxes_of(&mut t, &mut tx, 0).to_vec();
         assert_eq!(b.iter().map(|c| c.ch).collect::<String>(), "use add or sum now");

@@ -4,14 +4,14 @@
 //! rule-scoped `repository` shadowing (nested repositories are merged into the
 //! grammar-level one).
 
-use onig::{Region, Regex, RegexOptions, SearchOptions, Syntax};
+use onig::{Regex, RegexOptions, Region, SearchOptions, Syntax};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicI64, Ordering::Relaxed},
         Arc, OnceLock,
+        atomic::{AtomicI64, Ordering::Relaxed},
     },
 };
 
@@ -177,7 +177,6 @@ pub struct Registry {
     dyn_src: HashMap<String, Arc<Source>>,
     scope_names: Vec<Arc<str>>,
     scope_ids: HashMap<Arc<str>, u32>,
-    root_dir: PathBuf,
 }
 
 impl Registry {
@@ -205,7 +204,6 @@ impl Registry {
             dyn_src: HashMap::new(),
             scope_names: Vec::new(),
             scope_ids: HashMap::new(),
-            root_dir: assets.to_path_buf(),
         })
     }
 
@@ -341,7 +339,15 @@ impl Registry {
         let content_name = v["contentName"].as_str().map(str::to_string);
         let s = |k: &str| v[k].as_str();
 
-        let mut rule = Rule { grammar: g, name, content_name, kind: Kind::Container, patterns: vec![], caps_a: vec![], caps_b: vec![] };
+        let mut rule = Rule {
+            grammar: g,
+            name,
+            content_name,
+            kind: Kind::Container,
+            patterns: vec![],
+            caps_a: vec![],
+            caps_b: vec![],
+        };
 
         if let Some(inc) = s("include") {
             rule.kind = Kind::Include(if inc == "$self" {
@@ -362,18 +368,25 @@ impl Registry {
         } else if let Some(b) = s("begin") {
             let begin = Source::new(b);
             let both = self.compile_caps(g, &v["captures"], repo);
-            let bc = if v["beginCaptures"].is_object() { self.compile_caps(g, &v["beginCaptures"], repo) } else { both.clone() };
+            let bc = if v["beginCaptures"].is_object() {
+                self.compile_caps(g, &v["beginCaptures"], repo)
+            } else {
+                both.clone()
+            };
             rule.caps_a = bc;
             rule.patterns = self.compile_patterns(g, &v["patterns"], repo);
             if let Some(w) = s("while") {
-                rule.caps_b = if v["whileCaptures"].is_object() { self.compile_caps(g, &v["whileCaptures"], repo) } else { both };
+                rule.caps_b =
+                    if v["whileCaptures"].is_object() { self.compile_caps(g, &v["whileCaptures"], repo) } else { both };
                 rule.kind = Kind::BeginWhile { begin, while_: Source::new(w) };
             } else {
-                rule.caps_b = if v["endCaptures"].is_object() { self.compile_caps(g, &v["endCaptures"], repo) } else { both };
+                rule.caps_b =
+                    if v["endCaptures"].is_object() { self.compile_caps(g, &v["endCaptures"], repo) } else { both };
                 rule.kind = Kind::BeginEnd {
                     begin,
                     end: Source::new(s("end").unwrap_or("\u{FFFF}")),
-                    apply_end_last: v["applyEndPatternLast"].as_bool().unwrap_or(false) || v["applyEndPatternLast"].as_i64() == Some(1),
+                    apply_end_last: v["applyEndPatternLast"].as_bool().unwrap_or(false)
+                        || v["applyEndPatternLast"].as_i64() == Some(1),
                 };
             }
         } else {
@@ -563,7 +576,8 @@ fn expand_name(name: &Option<String>, line: &str, caps: &Caps) -> Option<String>
             }
             if j > st {
                 let idx: usize = b[st..j].iter().collect::<String>().parse().unwrap_or(0);
-                let mut text = caps.get(idx).copied().flatten().map(|(s, e)| line[s..e].to_string()).unwrap_or_default();
+                let mut text =
+                    caps.get(idx).copied().flatten().map(|(s, e)| line[s..e].to_string()).unwrap_or_default();
                 if braced {
                     let mut k = j;
                     while k < b.len() && b[k] != '}' {
@@ -636,7 +650,9 @@ impl Tokenizer {
         let rule = self.reg.rules[top.rule].clone();
         let pats = self.reg.flatten(top.rule, self.base);
         let (end_src, end_last) = match &rule.kind {
-            Kind::BeginEnd { end, apply_end_last, .. } => (Some(top.end_rule.clone().unwrap_or_else(|| end.clone())), *apply_end_last),
+            Kind::BeginEnd { end, apply_end_last, .. } => {
+                (Some(top.end_rule.clone().unwrap_or_else(|| end.clone())), *apply_end_last)
+            }
             _ => (None, false),
         };
         let rules = &self.reg.rules;
@@ -651,7 +667,15 @@ impl Tokenizer {
             let found: Option<usize> = match cache.get(&key) {
                 Some((from, res)) if !anchored && *from <= pos && res.is_none_or(|s| s >= pos) => *res,
                 _ => {
-                    let res = src.regex(allow_a, allow_g).and_then(|re| re.search_with_options(line, pos, line.len(), SearchOptions::SEARCH_OPTION_NONE, Some(&mut region)));
+                    let res = src.regex(allow_a, allow_g).and_then(|re| {
+                        re.search_with_options(
+                            line,
+                            pos,
+                            line.len(),
+                            SearchOptions::SEARCH_OPTION_NONE,
+                            Some(&mut region),
+                        )
+                    });
                     cache.insert(key, (pos, res));
                     res
                 }
@@ -666,10 +690,8 @@ impl Tokenizer {
         };
 
         let mut done = false;
-        if !end_last {
-            if let Some(e) = &end_src {
-                done = probe(Cand::End, e, &mut best);
-            }
+        if !end_last && let Some(e) = &end_src {
+            done = probe(Cand::End, e, &mut best);
         }
         if !done {
             for &p in pats.iter() {
@@ -684,10 +706,11 @@ impl Tokenizer {
                 }
             }
         }
-        if !done && end_last {
-            if let Some(e) = &end_src {
-                probe(Cand::End, e, &mut best);
-            }
+        if !done
+            && end_last
+            && let Some(e) = &end_src
+        {
+            probe(Cand::End, e, &mut best);
         }
 
         let (_, cand, src) = best?;
@@ -698,7 +721,15 @@ impl Tokenizer {
         Some((cand, Arc::new(caps)))
     }
 
-    fn handle_captures(&mut self, line: &str, is_first: bool, stack: &Arc<Stack>, out: &mut LineTokens, caps_rules: &CapList, caps: &Caps) {
+    fn handle_captures(
+        &mut self,
+        line: &str,
+        is_first: bool,
+        stack: &Arc<Stack>,
+        out: &mut LineTokens,
+        caps_rules: &CapList,
+        caps: &Caps,
+    ) {
         if caps_rules.is_empty() {
             return;
         }
@@ -1031,6 +1062,10 @@ mod bench {
             st = next;
         }
         let el = t0.elapsed();
-        eprintln!("[bench] {n} lines in {el:?} = {:.0} lines/s, {:.1} us/line", n as f64 / el.as_secs_f64(), el.as_secs_f64() * 1e6 / n as f64);
+        eprintln!(
+            "[bench] {n} lines in {el:?} = {:.0} lines/s, {:.1} us/line",
+            n as f64 / el.as_secs_f64(),
+            el.as_secs_f64() * 1e6 / n as f64
+        );
     }
 }

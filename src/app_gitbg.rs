@@ -28,7 +28,12 @@ pub const POLL_EVERY: Duration = Duration::from_secs(60);
 /// [`POLL_EVERY`], unless `LUMEN_GIT_POLL_MS` says otherwise (headless runs and tests).
 pub fn poll_every() -> Duration {
     static EVERY: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
-    *EVERY.get_or_init(|| std::env::var("LUMEN_GIT_POLL_MS").ok().and_then(|v| v.parse::<u64>().ok()).map_or(POLL_EVERY, Duration::from_millis))
+    *EVERY.get_or_init(|| {
+        std::env::var("LUMEN_GIT_POLL_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map_or(POLL_EVERY, Duration::from_millis)
+    })
 }
 /// How long a toast stays (failures stay longer: they need reading).
 pub const TOAST_OK: Duration = Duration::from_secs(4);
@@ -64,7 +69,16 @@ pub struct GitBg {
 
 impl Default for GitBg {
     fn default() -> Self {
-        GitBg { detached: None, info: None, info_root: None, next_poll: Instant::now(), focused: true, pending: None, toast: None, polls: 0 }
+        GitBg {
+            detached: None,
+            info: None,
+            info_root: None,
+            next_poll: Instant::now(),
+            focused: true,
+            pending: None,
+            toast: None,
+            polls: 0,
+        }
     }
 }
 
@@ -79,7 +93,9 @@ pub fn report_text(op: &Op, res: &Result<String, Fail>) -> (String, bool) {
         Ok(m) => (m.clone(), true),
         Err(f) => {
             let hint = match f.kind {
-                FailKind::Rejected | FailKind::Diverged if !matches!(op, Op::Fetch) => " · open the Git panel (Ctrl+Shift+G)",
+                FailKind::Rejected | FailKind::Diverged if !matches!(op, Op::Fetch) => {
+                    " · open the Git panel (Ctrl+Shift+G)"
+                }
                 _ => "",
             };
             (format!("{}: {}{hint}", op.label(), f.text), false)
@@ -141,10 +157,10 @@ impl App {
         }
         if let Some(a) = answer {
             self.gitbg.pending = None;
-            if let Some((root, info)) = a {
-                if root == self.root {
-                    self.git_apply_info(info);
-                }
+            if let Some((root, info)) = a
+                && root == self.root
+            {
+                self.git_apply_info(info);
             }
         }
         // 3. Start the next one.
@@ -237,7 +253,15 @@ impl App {
             let (dx, dy) = ((a.cos() * 6.0).round() as i32, (a.sin() * 6.0).round() as i32);
             cv.fill_round(Rect::new(cx + dx - 1, cy + dy - 1, 3, 3), 1, c.accent_text.with_alpha(alpha));
         }
-        self.tx.draw_ui(cv, x + 22, bar.y + (bar.h - 18) / 2, &label, c.status_fg, Rect::new(x, bar.y, w, bar.h), false);
+        self.tx.draw_ui(
+            cv,
+            x + 22,
+            bar.y + (bar.h - 18) / 2,
+            &label,
+            c.status_fg,
+            Rect::new(x, bar.y, w, bar.h),
+            false,
+        );
         w
     }
 
@@ -288,7 +312,10 @@ mod tests {
         assert!(!ok && t.starts_with("Push: Rejected") && t.contains("Git panel"), "{t}");
         let (t, _) = report_text(&Op::Fetch, &Err(Fail { kind: FailKind::Network, text: "No access".into() }));
         assert_eq!(t, "Fetch: No access");
-        let (t, _) = report_text(&Op::PullWith(gitsync::PullStrategy::Rebase), &Err(Fail { kind: FailKind::Conflict, text: "Conflitos".into() }));
+        let (t, _) = report_text(
+            &Op::PullWith(gitsync::PullStrategy::Rebase),
+            &Err(Fail { kind: FailKind::Conflict, text: "Conflitos".into() }),
+        );
         assert!(t.starts_with("Pull: "), "{t}");
     }
 

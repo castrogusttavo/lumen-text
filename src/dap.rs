@@ -40,8 +40,7 @@ impl FrameReader {
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Value> {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
-        loop {
-            let Some(hend) = self.buf.windows(4).position(|w| w == b"\r\n\r\n") else { break };
+        while let Some(hend) = self.buf.windows(4).position(|w| w == b"\r\n\r\n") {
             let head = String::from_utf8_lossy(&self.buf[..hend]).to_string();
             let len = head.lines().find_map(|l| {
                 let (k, v) = l.split_once(':')?;
@@ -95,10 +94,23 @@ pub enum Pending {
 
 #[derive(Clone, Debug)]
 pub enum DapMsg {
-    Response { seq_for: i64, command: String, success: bool, body: Value, message: Option<String> },
-    Event { event: String, body: Value },
+    Response {
+        seq_for: i64,
+        command: String,
+        success: bool,
+        body: Value,
+        message: Option<String>,
+    },
+    Event {
+        event: String,
+        body: Value,
+    },
     /// A request sent by the adapter (`startDebugging`, ...). Answer with `Dap::respond`.
-    ReverseRequest { seq: i64, command: String, arguments: Value },
+    ReverseRequest {
+        seq: i64,
+        command: String,
+        arguments: Value,
+    },
     /// The adapter process ended (stdout closed).
     Exited,
 }
@@ -195,10 +207,10 @@ fn start_io(
                 }
                 Ok(n) => {
                     for v in fr.push(&chunk[..n]) {
-                        if let Some(m) = classify(v, &rtx, &rseq) {
-                            if mtx.send(m).is_err() {
-                                return;
-                            }
+                        if let Some(m) = classify(v, &rtx, &rseq)
+                            && mtx.send(m).is_err()
+                        {
+                            return;
                         }
                     }
                     wake();
@@ -247,7 +259,6 @@ impl Dap {
             "success": success, "command": command, "body": body,
         })));
     }
-
 
     /// Send a request; returns its seq. `what` is remembered for `take_pending`.
     pub fn request(&mut self, command: &str, args: Value, what: Pending) -> i64 {
@@ -321,7 +332,11 @@ impl Dap {
         self.request("threads", json!({}), Pending::Threads)
     }
     pub fn stack_trace(&mut self, thread: i64) -> i64 {
-        self.request("stackTrace", json!({"threadId": thread, "startFrame": 0, "levels": 50}), Pending::StackTrace(thread))
+        self.request(
+            "stackTrace",
+            json!({"threadId": thread, "startFrame": 0, "levels": 50}),
+            Pending::StackTrace(thread),
+        )
     }
     pub fn scopes(&mut self, frame_id: i64) -> i64 {
         self.request("scopes", json!({"frameId": frame_id}), Pending::Scopes(frame_id))
@@ -400,7 +415,8 @@ pub fn parse_stopped(body: &Value) -> Stop {
 /// Pick the scope to show as "locals": the first non-expensive one, else the first.
 pub fn parse_locals_scope(body: &Value) -> Option<i64> {
     let arr = body.get("scopes")?.as_array()?;
-    let pick = arr.iter().find(|s| s.get("expensive").and_then(Value::as_bool) != Some(true)).or_else(|| arr.first())?;
+    let pick =
+        arr.iter().find(|s| s.get("expensive").and_then(Value::as_bool) != Some(true)).or_else(|| arr.first())?;
     pick.get("variablesReference").and_then(Value::as_i64)
 }
 
@@ -544,8 +560,10 @@ impl Session {
             DapMsg::Response { seq_for, command, success, body, message } => {
                 let what = dap.take_pending(*seq_for).unwrap_or(Pending::Other);
                 if !success {
-                    let stale = matches!(what, Pending::StackTrace(_) | Pending::Scopes(_) | Pending::Locals | Pending::Variables(_))
-                        && !matches!(self.state, State::Stopped { .. });
+                    let stale = matches!(
+                        what,
+                        Pending::StackTrace(_) | Pending::Scopes(_) | Pending::Locals | Pending::Variables(_)
+                    ) && !matches!(self.state, State::Stopped { .. });
                     if stale {
                         return;
                     }
@@ -931,7 +949,10 @@ mod tests {
         assert_eq!(v, vec![Var { name: "x".into(), value: "1".into(), type_: "i32".into(), vars_ref: 0 }]);
         let s = parse_stopped(&json!({"reason":"breakpoint","threadId":2,"description":"hit"}));
         assert_eq!(s, Stop { reason: "breakpoint".into(), thread_id: 2, text: "hit".into() });
-        assert_eq!(parse_locals_scope(&json!({"scopes":[{"expensive":true,"variablesReference":9},{"variablesReference":5}]})), Some(5));
+        assert_eq!(
+            parse_locals_scope(&json!({"scopes":[{"expensive":true,"variablesReference":9},{"variablesReference":5}]})),
+            Some(5)
+        );
     }
 
     fn pump(dap: &mut Dap, s: &mut Session, until: impl Fn(&Session) -> bool, secs: u64) -> bool {
@@ -950,7 +971,14 @@ mod tests {
 
     #[test]
     fn gdb_session_breakpoint_and_terminate() {
-        let have = |c: &str| Command::new(c).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+        let have = |c: &str| {
+            Command::new(c)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        };
         if !have("gdb") || !have("rustc") {
             eprintln!("skipping: gdb or rustc missing");
             return;
@@ -964,7 +992,12 @@ mod tests {
             "fn add(a: i32, b: i32) -> i32 {\n    let sum = a + b;\n    sum\n}\n\nfn main() {\n    let mut total = 0;\n    for i in 0..3 {\n        total = add(total, i);\n    }\n    println!(\"{}\", total);\n}\n",
         )
         .unwrap();
-        let ok = Command::new("rustc").args(["-g", "-C", "opt-level=0", "-o"]).arg(&bin).arg(&src).status().is_ok_and(|s| s.success());
+        let ok = Command::new("rustc")
+            .args(["-g", "-C", "opt-level=0", "-o"])
+            .arg(&bin)
+            .arg(&src)
+            .status()
+            .is_ok_and(|s| s.success());
         if !ok {
             eprintln!("skipping: rustc failed");
             return;
@@ -1002,7 +1035,8 @@ mod tests {
     }
 
     fn js_debug_server() -> Option<PathBuf> {
-        let p = PathBuf::from(std::env::var("HOME").ok()?).join(".local/share/lumen-text/js-debug/js-debug/src/dapDebugServer.js");
+        let p = PathBuf::from(std::env::var("HOME").ok()?)
+            .join(".local/share/lumen-text/js-debug/js-debug/src/dapDebugServer.js");
         p.exists().then_some(p)
     }
 
@@ -1050,7 +1084,14 @@ mod tests {
                 eprintln!("{l}");
             }
         }
-        eprintln!("[{ext}] state={:?} frames={:?} locals={:?} output={:?} children={}", m.state(), m.frames(), m.locals(), m.output(), m.children.len());
+        eprintln!(
+            "[{ext}] state={:?} frames={:?} locals={:?} output={:?} children={}",
+            m.state(),
+            m.frames(),
+            m.locals(),
+            m.output(),
+            m.children.len()
+        );
         if !ok {
             m.stop();
             panic!("never stopped at breakpoint ({ext})");

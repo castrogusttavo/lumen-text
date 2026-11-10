@@ -122,7 +122,26 @@ pub fn place(anchor: Rect, w: i32, h: i32, below: bool, win: (i32, i32)) -> (i32
 
 /// Git panel hit targets that get a tooltip (buttons, tabs and file rows; not the message box).
 fn git_tip_wanted(h: Hit) -> bool {
-    matches!(h, Hit::Refresh | Hit::Close | Hit::Tab(_) | Hit::Check(_) | Hit::Discard(_) | Hit::ConfirmDiscard(_) | Hit::Row(_) | Hit::CommitBtn | Hit::Opt | Hit::Fetch | Hit::Pull | Hit::Push | Hit::Amend | Hit::JobCancel | Hit::Commit(_) | Hit::Strategy(_) | Hit::ForceYes)
+    matches!(
+        h,
+        Hit::Refresh
+            | Hit::Close
+            | Hit::Tab(_)
+            | Hit::Check(_)
+            | Hit::Discard(_)
+            | Hit::ConfirmDiscard(_)
+            | Hit::Row(_)
+            | Hit::CommitBtn
+            | Hit::Opt
+            | Hit::Fetch
+            | Hit::Pull
+            | Hit::Push
+            | Hit::Amend
+            | Hit::JobCancel
+            | Hit::Commit(_)
+            | Hit::Strategy(_)
+            | Hit::ForceYes
+    )
 }
 
 /// Opacity (0..=1) of the card `elapsed` after it appeared.
@@ -212,7 +231,7 @@ pub fn local_datetime(ts: i64) -> String {
 pub fn wrap_tip(text: &str, max: i32, max_lines: usize, width: &mut dyn FnMut(&str) -> i32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
-    let mut push_word = |cur: &mut String, lines: &mut Vec<String>, word: &str, width: &mut dyn FnMut(&str) -> i32| {
+    let push_word = |cur: &mut String, lines: &mut Vec<String>, word: &str, width: &mut dyn FnMut(&str) -> i32| {
         let cand = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
         if width(&cand) <= max {
             *cur = cand;
@@ -266,7 +285,12 @@ pub fn place_side(anchor: Rect, w: i32, h: i32, win: (i32, i32)) -> (i32, i32) {
 /// Tooltip of a history row: the full subject, who and when, and the whole hash.
 pub fn commit_tip(c: &crate::app_gitpanel::LogEntry, now: i64) -> TipText {
     let when = format!("{} ({})", local_datetime(c.ts), crate::git::ago((now - c.ts).max(0)));
-    TipText { title: c.subject.clone(), keys: None, detail: Some(format!("{} · {when}", c.author)), more: vec![c.hash.clone()] }
+    TipText {
+        title: c.subject.clone(),
+        keys: None,
+        detail: Some(format!("{} · {when}", c.author)),
+        more: vec![c.hash.clone()],
+    }
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -291,7 +315,9 @@ impl App {
             }
             let &(r, i) = m.rects.iter().find(|(r, _)| r.contains(x, y))?;
             return match m.entries.get(i) {
-                Some(crate::app_ctxmenu::Entry::Item { act, .. }) if act_hint(*act).is_some() => Some((TipKey::Ctx(*act), r, false)),
+                Some(crate::app_ctxmenu::Entry::Item { act, .. }) if act_hint(*act).is_some() => {
+                    Some((TipKey::Ctx(*act), r, false))
+                }
                 _ => None,
             };
         }
@@ -306,18 +332,29 @@ impl App {
             return Some((TipKey::Status(*k), *r, false));
         }
         if let Some((tab, close, i)) = l.tabs.iter().find(|(r, _, _)| r.contains(x, y)).copied() {
-            return Some(if close.contains(x, y) { (TipKey::TabClose(i), close, true) } else { (TipKey::Tab(i), tab, true) });
+            return Some(if close.contains(x, y) {
+                (TipKey::TabClose(i), close, true)
+            } else {
+                (TipKey::Tab(i), tab, true)
+            });
         }
         if let Some((r, t)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((TipKey::PanelTab(*t), *r, false));
         }
-        if let Some(gp) = &self.gitpanel {
-            if self.gitpanel_rect().contains(x, y) {
-                return gp.hit_at(x, y).filter(|h| git_tip_wanted(*h)).and_then(|h| gp.hits.iter().rev().find(|(_, k)| *k == h).map(|(r, _)| (TipKey::Git(h), *r, true)));
-            }
+        if let Some(gp) = &self.gitpanel
+            && self.gitpanel_rect().contains(x, y)
+        {
+            return gp
+                .hit_at(x, y)
+                .filter(|h| git_tip_wanted(*h))
+                .and_then(|h| gp.hits.iter().rev().find(|(_, k)| *k == h).map(|(r, _)| (TipKey::Git(h), *r, true)));
         }
         let side = self.layout.sidebar;
-        if self.sidebar_open && self.sidebar_mode == SidebarMode::Outline && side.contains(x, y) && x < (side.right() - 15) as f64 {
+        if self.sidebar_open
+            && self.sidebar_mode == SidebarMode::Outline
+            && side.contains(x, y)
+            && x < (side.right() - 15) as f64
+        {
             let top = side.y + TAB_H;
             let n = self.docs.get(self.active).map_or(0, |d| d.symbols.len());
             let k = sidebar_row_at(self.tree.scroll, top, y as i32, ROW_H, n)?;
@@ -325,7 +362,11 @@ impl App {
             let ry = top - (self.tree.scroll as i32 % ROW_H) + (k - first) as i32 * ROW_H;
             return Some((TipKey::Outline(k), Rect::new(side.x + 8, ry + 1, side.w - 17, ROW_H - 2), true));
         }
-        if self.sidebar_open && self.sidebar_mode == SidebarMode::Files && side.contains(x, y) && x < (side.right() - 15) as f64 {
+        if self.sidebar_open
+            && self.sidebar_mode == SidebarMode::Files
+            && side.contains(x, y)
+            && x < (side.right() - 15) as f64
+        {
             let top = side.y + TAB_H;
             let k = sidebar_row_at(self.tree.scroll, top, y as i32, ROW_H, self.tree.rows.len())?;
             // Only rows whose name does not fit (the tooltip is how to read the rest).
@@ -346,7 +387,12 @@ impl App {
 
     /// The words for a target.
     pub fn tip_text(&mut self, key: TipKey) -> TipText {
-        let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText { title: title.to_string(), keys, detail, more: Vec::new() };
+        let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText {
+            title: title.to_string(),
+            keys,
+            detail,
+            more: Vec::new(),
+        };
         match key {
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
                 Some(s) => t(&s.name, None, Some(format!("{} · line {}", symbol_kind_name(s.kind), s.sl + 1))),
@@ -367,7 +413,12 @@ impl App {
             TipKey::Tab(i) => match self.docs.get(i) {
                 Some(d) => {
                     let path = d.path().map_or_else(|| "File not saved yet".to_string(), crate::app_topbar::tilde);
-                    TipText { title: d.name.clone(), keys: d.buf.is_dirty().then(|| "unsaved".to_string()), detail: Some(path), more: Vec::new() }
+                    TipText {
+                        title: d.name.clone(),
+                        keys: d.buf.is_dirty().then(|| "unsaved".to_string()),
+                        detail: Some(path),
+                        more: Vec::new(),
+                    }
                 }
                 None => TipText::default(),
             },
@@ -378,7 +429,12 @@ impl App {
             TipKey::SideRow(k) => match self.tree.rows.get(k) {
                 Some(r) => {
                     let rel = self.rel(&r.path);
-                    TipText { title: r.name.clone(), keys: None, detail: (rel != r.name).then_some(rel), more: Vec::new() }
+                    TipText {
+                        title: r.name.clone(),
+                        keys: None,
+                        detail: (rel != r.name).then_some(rel),
+                        more: Vec::new(),
+                    }
                 }
                 None => TipText::default(),
             },
@@ -391,16 +447,27 @@ impl App {
                 StatusBtn::Search => t("Search in project", self.shortcut_text("ProjectSearch"), None),
                 StatusBtn::Problems => {
                     let (e, w) = self.diag_counts();
-                    let detail = if e + w == 0 { "No problems".to_string() } else { format!("{} · {}", plural(e, "error", "errors"), plural(w, "warning", "warnings")) };
+                    let detail = if e + w == 0 {
+                        "No problems".to_string()
+                    } else {
+                        format!("{} · {}", plural(e, "error", "errors"), plural(w, "warning", "warnings"))
+                    };
                     t("Problems", None, Some(detail))
                 }
                 StatusBtn::Terminal => t("Terminal", self.shortcut_text("OpenTerminal"), None),
                 StatusBtn::Debug => t("Debugger", None, Some("Stack, variables and output".into())),
                 StatusBtn::Git => {
                     let n = self.git_status.len();
-                    let title = if n == 0 { "No changes · Git panel".to_string() } else { format!("{} · Git panel", plural(n, "changed file", "changed files")) };
+                    let title = if n == 0 {
+                        "No changes · Git panel".to_string()
+                    } else {
+                        format!("{} · Git panel", plural(n, "changed file", "changed files"))
+                    };
                     // Ahead / behind of the branch, from the panel or the background refresh.
-                    let detail = self.git_counts().filter(|i| i.upstream.is_some()).map(|i| format!("{}: ↑{} ↓{}", i.upstream.unwrap_or_default(), i.ahead, i.behind));
+                    let detail = self
+                        .git_counts()
+                        .filter(|i| i.upstream.is_some())
+                        .map(|i| format!("{}: ↑{} ↓{}", i.upstream.unwrap_or_default(), i.ahead, i.behind));
                     TipText { title, keys: self.shortcut_text("GitPanel"), detail, more: Vec::new() }
                 }
                 StatusBtn::Ram => {
@@ -411,20 +478,35 @@ impl App {
                 StatusBtn::Position => t("Go to line…", self.shortcut_text("GotoLine"), Some("Cursor position".into())),
                 StatusBtn::Indent => {
                     let d = self.docs.get(self.active);
-                    let now = d.map(|d| if d.ed.indent.contains('\t') { "Tab".to_string() } else { plural(d.ed.indent.len(), "space", "spaces") });
+                    let now = d.map(|d| {
+                        if d.ed.indent.contains('\t') {
+                            "Tab".to_string()
+                        } else {
+                            plural(d.ed.indent.len(), "space", "spaces")
+                        }
+                    });
                     t("Change indentation…", None, now.map(|n| format!("Current: {n}")))
                 }
                 StatusBtn::Update => {
                     let (title, detail) = self.update_indicator_tip();
                     t(&title, None, detail)
                 }
-                StatusBtn::Language => t("Change language…", None, self.docs.get(self.active).map(|d| format!("Current: {}", d.lang.unwrap_or("text")))),
+                StatusBtn::Language => t(
+                    "Change language…",
+                    None,
+                    self.docs.get(self.active).map(|d| format!("Current: {}", d.lang.unwrap_or("text"))),
+                ),
             },
         }
     }
 
     fn git_tip_text(&self, h: Hit) -> TipText {
-        let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText { title: title.to_string(), keys, detail, more: Vec::new() };
+        let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText {
+            title: title.to_string(),
+            keys,
+            detail,
+            more: Vec::new(),
+        };
         let change = |i: usize| self.gitpanel.as_ref().and_then(|gp| gp.changes.get(i));
         match h {
             Hit::Refresh => t("Refresh", None, Some("Re-reads the git status and history".into())),
@@ -439,7 +521,12 @@ impl App {
             Hit::Discard(i) => t("Discard changes", None, change(i).map(|c| c.path.clone())),
             Hit::ConfirmDiscard(i) => t("Click to discard for good", None, change(i).map(|c| c.path.clone())),
             Hit::Row(i) => match change(i) {
-                Some(c) => TipText { title: c.path.rsplit('/').next().unwrap_or(&c.path).to_string(), keys: None, detail: Some(c.path.clone()), more: Vec::new() },
+                Some(c) => TipText {
+                    title: c.path.rsplit('/').next().unwrap_or(&c.path).to_string(),
+                    keys: None,
+                    detail: Some(c.path.clone()),
+                    more: Vec::new(),
+                },
                 None => TipText::default(),
             },
             Hit::Commit(i) => match self.gitpanel.as_ref().and_then(|g| g.commits.get(i)) {
@@ -449,7 +536,11 @@ impl App {
             Hit::Strategy(st) => t(st.label(), None, Some(st.hint().to_string())),
             Hit::ForceYes => t("Force push", None, Some("git push --force-with-lease".into())),
             Hit::CommitBtn => t("Commit", Some("Ctrl+Enter".into()), Some("Commits what is staged".into())),
-            Hit::Opt => t("Include everything if nothing is staged", None, Some("With nothing staged, the commit takes all changes".into())),
+            Hit::Opt => t(
+                "Include everything if nothing is staged",
+                None,
+                Some("With nothing staged, the commit takes all changes".into()),
+            ),
             Hit::Fetch => t("Fetch", None, Some("Downloads news from the remote without touching your files".into())),
             Hit::Pull => {
                 let n = self.gitpanel.as_ref().map_or(0, |g| g.sync.behind);
@@ -457,17 +548,34 @@ impl App {
                     Some(st) => format!("Strategy: {} · right-click to change", st.label()),
                     None => "Right-click to choose merge, rebase or fast-forward only".to_string(),
                 };
-                TipText { title: "Pull".into(), keys: None, detail: Some(if n > 0 { format!("{n} new commit(s) on the remote") } else { "Fetches and integrates the remote commits".to_string() }), more: vec![how] }
+                TipText {
+                    title: "Pull".into(),
+                    keys: None,
+                    detail: Some(if n > 0 {
+                        format!("{n} new commit(s) on the remote")
+                    } else {
+                        "Fetches and integrates the remote commits".to_string()
+                    }),
+                    more: vec![how],
+                }
             }
             Hit::Push => {
                 let g = self.gitpanel.as_ref().map(|g| (g.sync.upstream.clone(), g.sync.ahead));
-                t("Push", None, Some(match g {
-                    Some((None, _)) => "Branch has no upstream: asks before publishing".to_string(),
-                    Some((Some(u), n)) => format!("{n} commit(s) to push to {u}"),
-                    None => String::new(),
-                }))
+                t(
+                    "Push",
+                    None,
+                    Some(match g {
+                        Some((None, _)) => "Branch has no upstream: asks before publishing".to_string(),
+                        Some((Some(u), n)) => format!("{n} commit(s) to push to {u}"),
+                        None => String::new(),
+                    }),
+                )
             }
-            Hit::Amend => t("Amend the last commit", None, Some("Rewrites the previous commit with the message and what is staged".into())),
+            Hit::Amend => t(
+                "Amend the last commit",
+                None,
+                Some("Rewrites the previous commit with the message and what is staged".into()),
+            ),
             Hit::JobCancel => t("Cancel the operation", None, None),
             _ => TipText::default(),
         }
@@ -488,7 +596,13 @@ impl App {
                 let warm = old.as_ref().is_some_and(|t| t.shown && !t.dismissed);
                 let now = Instant::now();
                 // A warm card appears at full opacity at once.
-                *old = Some(Tooltip { key, since: now, shown: warm, shown_at: warm.then(|| now - FADE), dismissed: false });
+                *old = Some(Tooltip {
+                    key,
+                    since: now,
+                    shown: warm,
+                    shown_at: warm.then(|| now - FADE),
+                    dismissed: false,
+                });
                 self.request_redraw();
             }
         }
@@ -496,13 +610,13 @@ impl App {
 
     /// Click or key press: hide it until the pointer leaves the target.
     pub fn dismiss_tooltip(&mut self) {
-        if let Some(t) = &mut self.tooltip {
-            if !t.dismissed || t.shown {
-                t.dismissed = true;
-                t.shown = false;
-                t.shown_at = None;
-                self.request_redraw();
-            }
+        if let Some(t) = &mut self.tooltip
+            && (!t.dismissed || t.shown)
+        {
+            t.dismissed = true;
+            t.shown = false;
+            t.shown_at = None;
+            self.request_redraw();
         }
     }
 
@@ -570,7 +684,8 @@ impl App {
         let w = widest + 2 * PAD_X;
         let lines = (title.len() + rest.len()) as i32;
         let h = 2 * PAD_Y + lines * LINE + if rest.is_empty() { 0 } else { 2 };
-        let (x, y) = if matches!(key, TipKey::Ctx(_)) { place_side(anchor, w, h, win) } else { place(anchor, w, h, below, win) };
+        let (x, y) =
+            if matches!(key, TipKey::Ctx(_)) { place_side(anchor, w, h, win) } else { place(anchor, w, h, below, win) };
         let r = Rect::new(x, y, w, h);
         if alpha > 0.6 {
             cv.shadow(r, 8);
@@ -584,7 +699,15 @@ impl App {
             self.tx.draw_ui(cv, r.x + PAD_X + fw + 14, r.y + PAD_Y, k, faded(c.tab_inactive_fg, alpha), r, false);
         }
         for (i, l) in rest.iter().enumerate() {
-            self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y + (title.len() + i) as i32 * LINE + 2, l, faded(c.tab_inactive_fg, alpha), r, false);
+            self.tx.draw_ui(
+                cv,
+                r.x + PAD_X,
+                r.y + PAD_Y + (title.len() + i) as i32 * LINE + 2,
+                l,
+                faded(c.tab_inactive_fg, alpha),
+                r,
+                false,
+            );
         }
     }
 }
@@ -716,7 +839,13 @@ mod tests {
 
     #[test]
     fn history_rows_describe_subject_author_date_and_hash() {
-        let c = crate::app_gitpanel::LogEntry { hash: "0123456789abcdef0123456789abcdef01234567".into(), short: "0123456".into(), author: "Ana".into(), ts: 1_700_000_000, subject: "Fix the shipping calculation for kit orders".into() };
+        let c = crate::app_gitpanel::LogEntry {
+            hash: "0123456789abcdef0123456789abcdef01234567".into(),
+            short: "0123456".into(),
+            author: "Ana".into(),
+            ts: 1_700_000_000,
+            subject: "Fix the shipping calculation for kit orders".into(),
+        };
         let tip = commit_tip(&c, 1_700_000_000 + 7200);
         assert_eq!(tip.title, c.subject, "the whole subject, not the cut-off row text");
         let d = tip.detail.unwrap();
@@ -735,8 +864,18 @@ mod tests {
         assert!(act_hint(Act::Delete).unwrap().contains("Cannot be undone"));
         assert_eq!(act_hint(Act::Rename), None, "self-explanatory items get no card");
         // Every action the menus can offer is either explained or deliberately plain.
-        for t in [crate::app_ctxmenu::Target::File("/x".into()), crate::app_ctxmenu::Target::Folder("/x".into()), crate::app_ctxmenu::Target::Tab(0)] {
-            let f = crate::app_ctxmenu::Flags { has_clip: true, split: true, md: Some(false), pinned: false, has_path: true };
+        for t in [
+            crate::app_ctxmenu::Target::File("/x".into()),
+            crate::app_ctxmenu::Target::Folder("/x".into()),
+            crate::app_ctxmenu::Target::Tab(0),
+        ] {
+            let f = crate::app_ctxmenu::Flags {
+                has_clip: true,
+                split: true,
+                md: Some(false),
+                pinned: false,
+                has_path: true,
+            };
             for e in crate::app_ctxmenu::entries_for(&t, &f) {
                 if let crate::app_ctxmenu::Entry::Item { act, label, .. } = e {
                     let plain = matches!(act, Act::NewFile | Act::NewFolder | Act::Rename | Act::CloseTab);
