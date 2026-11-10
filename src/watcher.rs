@@ -646,3 +646,25 @@ mod tests {
         assert_eq!(merge(Moved, Modified), Moved);
     }
 }
+
+/// Watch `root` and every sub-directory (skipping [`IGNORED`] and hidden ones), at most `max` directories.
+pub fn watch_tree(w: &mut Watcher, root: &Path, max: usize) {
+    let mut stack = vec![root.to_path_buf()];
+    let mut n = 0;
+    while let Some(d) = stack.pop() {
+        if n >= max || w.watch_dir(&d).is_err() {
+            return;
+        }
+        n += 1;
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if e.file_type().is_ok_and(|t| t.is_dir())
+                && !is_ignored(&p)
+                && !e.file_name().to_string_lossy().starts_with('.')
+            {
+                stack.push(p);
+            }
+        }
+    }
+}

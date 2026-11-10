@@ -195,6 +195,10 @@ pub struct App {
     pub pending_native: Option<PathBuf>,
     pub inbox: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     pub watcher: Option<crate::watcher::Watcher>,
+    /// When set, re-pull diagnostics of every open TS document (a dependency changed on disk).
+    pub lsp_refresh_at: Option<Instant>,
+    /// Project roots whose whole directory tree is watched for the language server.
+    pub lsp_watched: Vec<PathBuf>,
     pub dragging_minimap: bool,
     pub cursor_icon: CursorIcon,
     pub hover_rect: Option<(Rect, i32)>,
@@ -319,6 +323,8 @@ impl App {
             pending_native: None,
             inbox: None,
             watcher: None,
+            lsp_refresh_at: None,
+            lsp_watched: Vec::new(),
             dragging_minimap: false,
             cursor_icon: CursorIcon::Default,
             hover_rect: None,
@@ -508,19 +514,28 @@ impl App {
                 let _ = w.watch_dir(p);
             }
         }
+        // A running language server needs to hear about every source file changing on disk, also in
+        // folders that are collapsed in the tree.
+        for l in &self.lsps {
+            if l.name == "tsgo" && !self.lsp_watched.contains(&l.root) {
+                self.lsp_watched.push(l.root.clone());
+                crate::watcher::watch_tree(w, &l.root, 4000);
+            }
+        }
     }
 
     /// React to file-system events: reload changed files right away and refresh the tree.
     pub fn pump_watcher(&mut self) {
-        let mut any = false;
+        let mut evs = Vec::new();
         if let Some(w) = &self.watcher {
-            while w.rx.try_recv().is_ok() {
-                any = true;
+            while let Ok(e) = w.rx.try_recv() {
+                evs.push(e);
             }
         }
-        if !any {
+        if evs.is_empty() {
             return;
         }
+        self.lsp_fs_events(&evs);
         self.last_disk_check = Instant::now() - Duration::from_secs(60);
         if self.last_tree_refresh.elapsed() > Duration::from_millis(400) {
             self.last_tree_refresh = Instant::now();

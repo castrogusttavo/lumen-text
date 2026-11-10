@@ -204,7 +204,7 @@ impl App {
                 self.update_setting_changed();
             }
             "auto_import" => self.config.auto_import = b.unwrap_or(false),
-            "lsp_narrow" => self.config.lsp_narrow = b.unwrap_or(true),
+            "lsp_narrow" => self.config.lsp_narrow = b.unwrap_or(false),
             "code_lens_refs" | "code_lens_impls" => {
                 let on = b.unwrap_or(true);
                 if key == "code_lens_refs" {

@@ -211,7 +211,7 @@ pub fn default_settings() -> Vec<SettingDef> {
             "lsp_narrow",
             "TypeScript",
             "Lean mode",
-            "Limits the language server to the essentials to use less memory and CPU.",
+            "Opt-in for low-RAM machines: the TypeScript server only sees open files and their imports (less memory, but references, rename, workspace symbols and errors in other files are incomplete). Off = the whole project, like VS Code.",
             Bool,
         ),
         d(
@@ -373,7 +373,7 @@ pub fn default_settings() -> Vec<SettingDef> {
 /// and as the display value of keys missing from the values map.
 pub fn default_values() -> Value {
     let mut v = json!({
-        "format_on_save": false, "updates": "auto", "auto_import": false, "font_size": 14, "lsp_narrow": true,
+        "format_on_save": false, "updates": "auto", "auto_import": false, "font_size": 14, "lsp_narrow": false,
         "code_lens": false, "code_lens_refs": true, "code_lens_impls": true, "inlay_hints": false, "inlay_hints_params": true, "inlay_hints_types": true, "appearance": "fixed", "theme_chrome": "derived", "theme_light": "github-light-default",
         "theme_dark": "github-dark-default", "tsgo_source": "auto",
         "minimap": true, "minimap_style": "subtle", "word_wrap": false, "sticky_scroll": true, "indent_guides": true, "ui_scale": 0, "scroll_speed": 1,
@@ -2861,11 +2861,11 @@ mod tests {
 
     #[test]
     fn reset_row_restores_default_and_flags_modified() {
-        let mut p = page_with(json!({"lsp_narrow": false, "font_size": 14}));
+        let mut p = page_with(json!({"lsp_narrow": true, "font_size": 14}));
         let d = def_idx(&p, "lsp_narrow");
         assert!(p.is_modified(d));
         assert!(!p.is_modified(def_idx(&p, "font_size")));
-        assert_eq!(p.reset_def(d), Event::Setting { key: "lsp_narrow".into(), value: json!(true) });
+        assert_eq!(p.reset_def(d), Event::Setting { key: "lsp_narrow".into(), value: json!(false) });
         assert!(!p.is_modified(d));
         assert_eq!(p.reset_def(d), Event::None);
     }

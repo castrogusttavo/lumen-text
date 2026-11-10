@@ -195,6 +195,51 @@ impl App {
         }
     }
 
+    /// Disk changes (new/edited/deleted sources, `tsconfig`, lockfiles) reach every tsgo server and
+    /// the diagnostics of the open documents are re-pulled shortly after, so importers of a changed
+    /// dependency never keep stale squiggles.
+    pub fn lsp_fs_events(&mut self, evs: &[crate::watcher::FsEvent]) {
+        use crate::watcher::FsKind;
+        let mut restart = false;
+        let mut touched = false;
+        for li in 0..self.lsps.len() {
+            if self.lsps[li].name != "tsgo" {
+                continue;
+            }
+            let root = self.lsps[li].root.clone();
+            let mut changes = Vec::new();
+            for e in evs {
+                if !e.path.starts_with(&root) || !is_watched_source(&e.path) {
+                    continue;
+                }
+                let ty = match e.kind {
+                    FsKind::Created => 1,
+                    FsKind::Removed => 3,
+                    FsKind::Modified | FsKind::Moved => {
+                        if e.path.exists() {
+                            2
+                        } else {
+                            3
+                        }
+                    }
+                };
+                if is_project_config(&e.path) {
+                    restart = true;
+                }
+                changes.push(json!({"uri": path_to_uri(&crate::doc::to_mirror(&e.path)), "type": ty}));
+            }
+            if !changes.is_empty() {
+                self.lsps[li].notify("workspace/didChangeWatchedFiles", json!({"changes": changes}));
+                touched = true;
+            }
+        }
+        if restart {
+            self.restart_lsp();
+        } else if touched {
+            self.lsp_refresh_at = Some(Instant::now() + std::time::Duration::from_millis(300));
+        }
+    }
+
     pub fn cycle_tsgo_source(&mut self) {
         self.config.tsgo_source = match self.config.tsgo_source.as_str() {
             "auto" => "project",
@@ -221,9 +266,9 @@ impl App {
         let on = self.config.lsp_narrow;
         self.restart_lsp();
         self.say(if on {
-            "tsgo in lean mode (open files only): less RAM"
+            "tsgo in lean mode (opt-in: open files + imports only): less RAM, incomplete cross-file info"
         } else {
-            "tsgo in full-project mode: sees the whole project, uses more RAM"
+            "tsgo in full-project mode (default): sees the whole project"
         });
     }
 
@@ -451,6 +496,18 @@ impl App {
                 } else {
                     want(t);
                 }
+            }
+        }
+        if let Some(t) = self.lsp_refresh_at {
+            if t <= now {
+                self.lsp_refresh_at = None;
+                for li in 0..self.lsps.len() {
+                    if self.lsps[li].name == "tsgo" {
+                        pull.push(li);
+                    }
+                }
+            } else {
+                want(t);
             }
         }
         pull.sort_unstable();
@@ -1857,6 +1914,25 @@ fn kind_glyph(kind: u32, t: &crate::theme::Theme) -> (&'static str, Rgba) {
 }
 
 // ───────────── a document's language changed (bottom bar picker) ─────────────
+
+/// Files whose on-disk changes the TypeScript server must hear about.
+fn is_watched_source(p: &std::path::Path) -> bool {
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if is_project_config(p) || name == "package.json" {
+        return true;
+    }
+    matches!(
+        p.extension().and_then(|e| e.to_str()),
+        Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "json")
+    )
+}
+
+/// Changes that alter how the whole project is resolved: the server is restarted.
+fn is_project_config(p: &std::path::Path) -> bool {
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    ((name.starts_with("tsconfig") || name.starts_with("jsconfig")) && name.ends_with(".json"))
+        || matches!(name, "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "bun.lockb")
+}
 
 /// The LSP `languageId` sent in `textDocument/didOpen` for a document language.
 pub fn lsp_language_id(lang: Option<&str>) -> &'static str {

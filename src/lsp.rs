@@ -502,7 +502,7 @@ pub fn write_mirror(root: &Path, mirror: &Path, includes: &[PathBuf]) -> std::io
         includes.iter().filter_map(|p| p.strip_prefix(root).ok().map(|r| r.to_string_lossy().into_owned())).collect();
     rels.sort();
     rels.dedup();
-    let mut cfg = json!({"include": rels, "compilerOptions": {"incremental": false, "noEmit": true}});
+    let mut cfg = json!({"include": rels, "compilerOptions": {"incremental": false, "noEmit": true, "rootDir": "."}});
     let real_cfg = root.join("tsconfig.json");
     if real_cfg.exists() {
         cfg["extends"] = json!(real_cfg.to_string_lossy());
@@ -737,5 +737,114 @@ mod tests {
         let syms = syms.expect("no outline response");
         assert!(syms.len() >= 3000, "{} symbols", syms.len());
         assert!(syms.iter().all(|s| s.depth <= 2));
+    }
+
+    /// Pull diagnostics of `uri` from a live server and return the messages.
+    fn pull_msgs(lsp: &mut Lsp, uri: &str) -> Vec<String> {
+        lsp.request(
+            "textDocument/diagnostic",
+            json!({"textDocument": {"uri": uri}}),
+            Pending::Diagnostic { uri: uri.to_string() },
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            let Ok(m) = lsp.rx.recv_timeout(std::time::Duration::from_millis(200)) else { continue };
+            match m {
+                Msg::Response { id, result } => match lsp.pending.remove(&id) {
+                    Some(Pending::Initialize) => lsp.on_initialized(&result.unwrap()),
+                    Some(Pending::Diagnostic { .. }) => {
+                        let items = result.unwrap()["items"].clone();
+                        return items
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|d| d["message"].as_str().unwrap_or("").to_string())
+                            .collect();
+                    }
+                    _ => {}
+                },
+                Msg::Request { id, .. } => lsp.respond(id, Value::Null),
+                _ => {}
+            }
+        }
+        panic!("no diagnostic response");
+    }
+
+    fn cache_base() -> PathBuf {
+        std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache")))
+            .unwrap_or_else(std::env::temp_dir)
+    }
+
+    /// The bug behind "red imports until the target is opened": with only `a.ts` open, imports of
+    /// unopened files (`./b.js` -> `b.ts`, a directory index) must resolve, both in the default
+    /// full-project mode and in the opt-in lean mirror (whose rootDir used to clash with the
+    /// project's `rootDir: "."`); deleting and re-creating the dependency on disk must refresh the
+    /// importer after `didChangeWatchedFiles`.
+    #[test]
+    fn real_tsgo_resolves_unopened_imports_and_follows_disk_changes() {
+        let Some(bin) = find_tsgo(Path::new("/nonexistent"), "bundled") else {
+            eprintln!("tsgo not installed, skipping");
+            return;
+        };
+        for lean in [false, true] {
+            let base = cache_base().join(format!("lumen-imports-{}-{lean}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            let root = base.join("proj");
+            std::fs::create_dir_all(root.join("src/util")).unwrap();
+            std::fs::write(
+                root.join("tsconfig.json"),
+                r#"{"compilerOptions":{"module":"ESNext","moduleResolution":"Bundler","strict":true,"noEmit":true,"rootDir":"."},"include":["src"]}"#,
+            )
+            .unwrap();
+            std::fs::write(root.join("src/b.ts"), "export const b: number = 1\n").unwrap();
+            std::fs::write(root.join("src/util/index.ts"), "export const u = 2\n").unwrap();
+            let a = root.join("src/a.ts");
+            let src = "import { b } from \"./b.js\"\nimport { u } from \"./util\"\nexport const s: number = b + u\n";
+            std::fs::write(&a, src).unwrap();
+            let (work, mirror) = if lean {
+                let m = base.join("mirror");
+                write_mirror(&root, &m, &[a.clone()]).unwrap();
+                (m.clone(), Some(m))
+            } else {
+                (root.clone(), None)
+            };
+            let open = if let Some(m) = &mirror { m.join("src/a.ts") } else { a.clone() };
+            let uri = crate::doc::path_to_uri(&open);
+            let mut lsp = Lsp::spawn("tsgo", &bin, &["--lsp", "--stdio"], &root, &work, 512, Arc::new(|| {})).unwrap();
+            lsp.notify(
+                "textDocument/didOpen",
+                json!({"textDocument": {"uri": uri, "languageId": "typescript", "version": 1, "text": src}}),
+            );
+            let msgs = pull_msgs(&mut lsp, &uri);
+            assert!(msgs.is_empty(), "lean={lean}: imports of unopened files must resolve: {msgs:?}");
+
+            let b_uri = crate::doc::path_to_uri(&work.join("src/b.ts"));
+            std::fs::remove_file(root.join("src/b.ts")).unwrap();
+            lsp.notify("workspace/didChangeWatchedFiles", json!({"changes": [{"uri": b_uri, "type": 3}]}));
+            let msgs = pull_msgs(&mut lsp, &uri);
+            assert!(msgs.iter().any(|m| m.contains("Cannot find module")), "lean={lean}: deleted dependency: {msgs:?}");
+
+            std::fs::write(root.join("src/b.ts"), "export const b: number = 1\n").unwrap();
+            lsp.notify("workspace/didChangeWatchedFiles", json!({"changes": [{"uri": b_uri, "type": 1}]}));
+            let msgs = pull_msgs(&mut lsp, &uri);
+            assert!(msgs.is_empty(), "lean={lean}: re-created dependency: {msgs:?}");
+            lsp.shutdown();
+            std::fs::remove_dir_all(&base).ok();
+        }
+    }
+
+    #[test]
+    fn lean_mirror_overrides_root_dir() {
+        let base = cache_base().join(format!("lumen-mirror-rd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("tsconfig.json"), "{}").unwrap();
+        write_mirror(&root, &base.join("m"), &[]).unwrap();
+        let cfg: Value = serde_json::from_str(&std::fs::read_to_string(base.join("m/tsconfig.json")).unwrap()).unwrap();
+        assert_eq!(cfg["compilerOptions"]["rootDir"], json!("."));
+        std::fs::remove_dir_all(&base).ok();
     }
 }

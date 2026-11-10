@@ -161,7 +161,7 @@ impl Default for Config {
             format_on_save: false,
             auto_import: false,
             font_size: 14.0,
-            lsp_narrow: true,
+            lsp_narrow: false,
             code_lens: false,
             code_lens_refs: true,
             code_lens_impls: true,
@@ -349,7 +349,8 @@ impl Config {
             theme: v["theme"].as_str().map(str::to_string),
             format_on_save: v["format_on_save"].as_bool().unwrap_or(false),
             auto_import: v["auto_import"].as_bool().unwrap_or(false),
-            lsp_narrow: v["lsp_narrow"].as_bool().unwrap_or(true),
+            // Lean mode was the default before v2: an old stored `true` is not a deliberate choice.
+            lsp_narrow: v["lsp_lean_v"].as_u64() == Some(2) && v["lsp_narrow"].as_bool().unwrap_or(false),
             code_lens: v["code_lens"].as_bool().unwrap_or(false),
             code_lens_refs: v["code_lens_refs"].as_bool().unwrap_or(true),
             code_lens_impls: v["code_lens_impls"].as_bool().unwrap_or(true),
@@ -420,7 +421,7 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "font_size": self.font_size, "lsp_narrow": self.lsp_narrow, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch});
+        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "font_size": self.font_size, "lsp_narrow": self.lsp_narrow, "lsp_lean_v": 2, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch});
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -680,6 +681,19 @@ mod tests {
         std::fs::write(&p, r#"{"git_pull_strategy": "nope", "tab_width": 5}"#).unwrap();
         let c = Config::load_from(&p);
         assert_eq!((c.git_pull_strategy.as_str(), c.tab_width), ("", 4));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lean_mode_is_opt_in_and_an_old_stored_default_is_ignored() {
+        assert!(!Config::default().lsp_narrow);
+        let dir = std::env::temp_dir().join(format!("lumen-cfg-lean-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("config.json");
+        std::fs::write(&f, r#"{"lsp_narrow": true}"#).unwrap();
+        assert!(!Config::load_from(&f).lsp_narrow, "pre-v2 files stored lean mode as the default");
+        std::fs::write(&f, r#"{"lsp_narrow": true, "lsp_lean_v": 2}"#).unwrap();
+        assert!(Config::load_from(&f).lsp_narrow, "a deliberate opt-in survives");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

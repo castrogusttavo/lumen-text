@@ -15,14 +15,14 @@
 ## Why
 
 Modern editors are great and heavy. lumen-text is an experiment in how far you can get with a small
-memory budget (the goal is **about 100 MB for a real TypeScript project**, language server included)
+memory budget (the editor itself stays around **20 MB**; the TypeScript server adds **~65 MB for a small project and several hundred MB for a very large one**, see the table below)
 and no GPU driver:
 
 - Everything is drawn on the CPU (`softbuffer` + `tiny-skia`), so it runs anywhere a Wayland or X11 window does.
 - Highlighting uses the same TextMate grammars and VS Code themes as [Shiki](https://shiki.style)
   (65 themes, 260 grammar files), through a port of the `vscode-textmate` core on top of `onig`.
 - TypeScript is served by [`tsgo`](https://github.com/microsoft/typescript-go) (the native TypeScript
-  compiler) started on demand in a *lean mode* that only loads open files and their imports.
+  compiler) started on demand with full project awareness (like VS Code or Zed); an opt-in *lean mode* only loads open files and their imports for low-RAM machines.
 - One window, one process per editor, one font in memory, no web view, no Electron.
 
 ## Features
@@ -39,7 +39,7 @@ and no GPU driver:
 - Diagnostics, rich Markdown hover, completion, signature help, definition, references, rename,
   organize imports, quick fixes (`Ctrl+.`), expand selection, call hierarchy
 - Semantic tokens, optional code lens and inlay hints, optional auto-import
-- Lean mode (default) versus full-project mode; uses the project's own `tsgo` or a bundled one
+- Full-project mode (default; also reacts to files changed, created or deleted on disk) versus an opt-in lean mode; uses the project's own `tsgo` or a bundled one
 - Formatting with the project's Biome or Prettier (falls back to `tsgo`); lint through `biome lsp-proxy` and ESLint
 - Vitest/Jest runs with pass/fail marks in the gutter, `package.json` and `cargo` tasks with an ANSI output panel
 
@@ -101,8 +101,9 @@ Resident memory is PSS (proportional set size) as reported by the status bar (`R
 |---|---|
 | Editor with a window open, 1 file | ~12-16 MB |
 | 100k-line file (8 MB), tokenized | ~33 MB (about 19-24 MB without the LSP) |
-| `tsgo` on a real project, **lean mode** (default: open files + imports) | ~40-220 MB |
-| `tsgo` on a real project, full tsconfig (7k files) | ~780 MB |
+| `tsgo`, small project (30 files, 14 open), full project (default) | ~65-75 MB (editor ~20 MB) |
+| `tsgo` on a real project, **lean mode** (opt-in: open files + imports) | ~40-220 MB |
+| `tsgo` on a real project, full tsconfig (7k files; the default mode) | ~780 MB |
 | Open a 100k-line file | ~21 ms |
 | 1,000 keystrokes | ~3.9 ms total |
 | Background tokenizer | 4-9k lines/s, off the UI thread |
@@ -261,7 +262,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `format_on_save` | `false` | Run the formatter on save |
 | `updates` | `"auto"` | `"auto"` (check, download and install in the background), `"notify"` (only announce) or `"off"`; see [Updates](#updates) |
 | `auto_import` | `false` | Auto-import in completion (costs RAM and time) |
-| `lsp_narrow` | `true` | tsgo lean mode (only open files and their imports) |
+| `lsp_narrow` | `false` | opt-in tsgo lean mode (only open files and their imports; less RAM, incomplete cross-file errors/references) |
 | `tsgo_source` | `"auto"` | `"auto"` (project's own, else bundled), `"project"`, `"bundled"` |
 | `code_lens` / `inlay_hints` | `false` | Optional LSP extras (cost server CPU) |
 | `inlay_hints_params` / `inlay_hints_types` | `true` | With `inlay_hints` on: show parameter names / inferred types separately. Ctrl+click a type goes to its definition; double click a `: T` hint inserts the annotation |
@@ -374,8 +375,8 @@ cargo build --release                                       # build.rs embeds th
 - The interface is English only for now; other languages need a string layer (see the roadmap).
 - No TextMate `injections` (code embedded in Markdown/HTML gets only the outer grammar).
 - Opening a very large file and jumping to its end leaves that stretch uncolored for a few seconds.
-- In lean mode, errors and references only see open files and their imports; use the palette command
-  "LSP: Alternar modo enxuto / projeto completo" for the whole project at a higher RAM cost.
+- Full-project mode (default) can use several hundred MB on very large projects; the opt-in lean mode
+  (setting `lsp_narrow`, palette "LSP: Toggle lean mode") trades that for errors and references that only see open files and their imports.
 - "Open folder" inside the app is limited; the project root normally comes from the command line.
 
 ## License and credits
