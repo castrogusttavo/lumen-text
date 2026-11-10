@@ -71,3 +71,33 @@ jobs:
           HOME="$d" XDG_CONFIG_HOME="$d/c" XDG_STATE_HOME="$d/s" \
             timeout 60 lumen-text --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"
+      - name: Package and smoke test (Windows zip)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          packaging/windows/build-zip.sh target/release/lumen-text.exe 2026.1.1.1 x86_64 dist
+          ls -l dist
+          d="$(mktemp -d)"
+          unzip -q dist/lumen-text-*-windows-x86_64.zip -d "$d/pkg"
+          echo hello > "$d/f.txt"
+          HOME="$d" timeout 90 "$d"/pkg/lumen-text-*/lumen-text.exe --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
+          test -s "$d/snap/a.png"
+      - name: Package and smoke test (macOS app + dmg)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          arch="$(uname -m)"; [ "$arch" = arm64 ] && arch=aarch64
+          packaging/macos/build-app.sh target/release/lumen-text 2026.1.1.1 "$arch" dist
+          ls -l dist
+          mnt="$(mktemp -d)"
+          hdiutil attach dist/*.dmg -mountpoint "$mnt" -nobrowse -quiet
+          trap 'hdiutil detach "$mnt" -quiet || true' EXIT
+          app="$mnt/Lumen Text.app/Contents/MacOS/lumen-text"
+          "$app" --version
+          d="$(mktemp -d)"; echo hello > "$d/f.txt"
+          HOME="$d" timeout 90 "$app" --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
+          test -s "$d/snap/a.png"
