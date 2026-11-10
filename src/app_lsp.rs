@@ -20,7 +20,10 @@ use std::{
 use winit::keyboard::{Key, NamedKey};
 
 const SYNC_DEBOUNCE: Duration = Duration::from_millis(120);
-const MEM_LIMIT_MIB: u32 = 300;
+/// Go soft memory limit. Lean servers stay small; a full-project server must NOT get a limit below its
+/// live heap, or the GC runs flat out and every request crawls, so it only gets a very high ceiling.
+const MEM_LIMIT_LEAN_MIB: u32 = 512;
+const MEM_LIMIT_FULL_MIB: u32 = 6144;
 
 pub use crate::app_hover::HoverTip;
 
@@ -109,7 +112,11 @@ impl App {
             return None;
         };
         // Narrow mode: the server runs in a mirror whose tsconfig includes only the open files.
-        let narrow = self.config.lsp_narrow
+        let mut heavy = None;
+        if !self.config.lsp_narrow && self.config.lsp_auto_lean && !self.lsp_guard.lean.contains(&root) {
+            heavy = crate::lsp_guard::heavy_reason(&root);
+        }
+        let narrow = (self.config.lsp_narrow || heavy.is_some() || self.lsp_guard.lean.contains(&root))
             && root.join("tsconfig.json").exists()
             && std::env::var_os("LUMEN_NO_MIRROR").is_none();
         let includes = self.ts_includes(&root);
@@ -128,7 +135,7 @@ impl App {
             &["--lsp", "--stdio"],
             &root,
             mirror.as_deref().unwrap_or(&root),
-            MEM_LIMIT_MIB,
+            if mirror.is_some() { MEM_LIMIT_LEAN_MIB } else { MEM_LIMIT_FULL_MIB },
             self.wake(),
         ) {
             Ok(mut l) => {
@@ -137,7 +144,12 @@ impl App {
                 self.lsps.push(l);
                 let ver = lsp::tsgo_version(&bin).unwrap_or_default();
                 let mode = if self.lsps.last().is_some_and(|l| l.mirror.is_some()) { " (lean mode)" } else { "" };
-                self.say(format!("starting tsgo {ver}{mode}…"));
+                match heavy {
+                    Some(why) if !mode.is_empty() => {
+                        self.say(format!("starting tsgo {ver} in lean mode ({why}) to save RAM; set lsp_auto_lean to false for the full project"))
+                    }
+                    _ => self.say(format!("starting tsgo {ver}{mode}…")),
+                }
                 Some(self.lsps.len() - 1)
             }
             Err(e) => {
@@ -264,6 +276,26 @@ impl App {
         } else {
             "tsgo in full-project mode (default): sees the whole project"
         });
+    }
+
+    /// Restart a full-project tsgo in lean mode when it grows past the memory budget.
+    pub(crate) fn guard_lsp_memory(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        want(now + Duration::from_secs(5));
+        if !self.config.lsp_auto_lean || !self.lsp_guard.due() {
+            return;
+        }
+        let Some(l) = self.lsps.iter().find(|l| l.name == "tsgo" && l.mirror.is_none()) else { return };
+        let Some(mb) = crate::mem::pss_of(l.pid()).map(|kb| kb / 1024) else { return };
+        if !self.lsp_guard.over_budget(mb, crate::lsp_guard::budget_mb(crate::lsp_guard::total_ram_mb())) {
+            return;
+        }
+        let root = l.root.clone();
+        if !root.join("tsconfig.json").exists() {
+            return;
+        }
+        self.lsp_guard.lean.insert(root);
+        self.restart_lsp();
+        self.say(format!("tsgo used {mb} MB: restarted in lean mode (open files + imports). Toggle it in Settings"));
     }
 
     pub fn restart_lsp(&mut self) {

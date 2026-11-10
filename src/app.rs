@@ -131,6 +131,7 @@ pub struct App {
 
     pub lsps: Vec<Lsp>,
     pub lsp_warned: bool,
+    pub lsp_guard: crate::lsp_guard::Guard,
     /// Formatter file types already reported as unsupported (one message per type and session).
     pub fmt_told: std::collections::HashSet<String>,
     pub config: crate::config::Config,
@@ -269,6 +270,7 @@ impl App {
             focus: Focus::Editor,
             lsps: Vec::new(),
             lsp_warned: false,
+            lsp_guard: crate::lsp_guard::Guard::new(),
             fmt_told: Default::default(),
             config,
             overlay: Overlay::None,
@@ -616,6 +618,7 @@ impl App {
         let mut want = |t: Instant| next = Some(next.map_or(t, |n| n.min(t)));
 
         self.lsp_tick(now, &mut want);
+        self.guard_lsp_memory(now, &mut want);
         if self.last_trim.elapsed() > Duration::from_secs(4) {
             self.last_trim = Instant::now();
             crate::app_lsp::release_memory();

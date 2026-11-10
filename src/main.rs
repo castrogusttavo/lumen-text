@@ -47,6 +47,7 @@ mod inlay;
 mod instance;
 mod keymap;
 mod lsp;
+mod lsp_guard;
 mod lsp_stream;
 mod mdimg;
 mod mdview;

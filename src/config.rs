@@ -11,6 +11,8 @@ pub struct Config {
     pub auto_import: bool,
     pub font_size: f32,
     pub lsp_narrow: bool,
+    /// Start big projects in lean mode and fall back to it when the full-project server gets too large.
+    pub lsp_auto_lean: bool,
     /// Reference/implementation counts above symbols (costs server CPU, so off by default).
     pub code_lens: bool,
     /// Which code lens items to show when `code_lens` is on.
@@ -162,6 +164,7 @@ impl Default for Config {
             auto_import: false,
             font_size: 14.0,
             lsp_narrow: false,
+            lsp_auto_lean: true,
             code_lens: false,
             code_lens_refs: true,
             code_lens_impls: true,
@@ -351,6 +354,7 @@ impl Config {
             auto_import: v["auto_import"].as_bool().unwrap_or(false),
             // Lean mode was the default before v2: an old stored `true` is not a deliberate choice.
             lsp_narrow: v["lsp_lean_v"].as_u64() == Some(2) && v["lsp_narrow"].as_bool().unwrap_or(false),
+            lsp_auto_lean: v["lsp_auto_lean"].as_bool().unwrap_or(true),
             code_lens: v["code_lens"].as_bool().unwrap_or(false),
             code_lens_refs: v["code_lens_refs"].as_bool().unwrap_or(true),
             code_lens_impls: v["code_lens_impls"].as_bool().unwrap_or(true),
@@ -421,7 +425,7 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "font_size": self.font_size, "lsp_narrow": self.lsp_narrow, "lsp_lean_v": 2, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch});
+        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "font_size": self.font_size, "lsp_narrow": self.lsp_narrow, "lsp_lean_v": 2, "lsp_auto_lean": self.lsp_auto_lean, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch});
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -465,6 +469,7 @@ mod tests {
             auto_import: true,
             font_size: 17.0,
             lsp_narrow: false,
+            lsp_auto_lean: true,
             code_lens: true,
             code_lens_refs: false,
             code_lens_impls: true,

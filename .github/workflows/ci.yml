@@ -248,10 +248,23 @@ jobs:
             minisign -S -s "$key" -m "$f" -x "$f.minisig" -t "lumen-text ${VERSION} ${name}"
             minisign -V -p src/update_key.pub -m "$f" -x "$f.minisig" >/dev/null   # must match the key embedded in the app
           done
-          # Release notes: generated once, used for the GitHub release and (first lines) for latest.json.
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-            -f tag_name="v${VERSION}" -f target_commitish="${GITHUB_SHA}" --jq .body > release-notes.md \
-            || echo "lumen-text ${VERSION}" > release-notes.md
+          # Release notes: every commit since the previous release, newest first (a push to main is
+          # one release, so this is the whole changelog). Written once, used for the GitHub release
+          # and (first lines) for latest.json.
+          prev="$(gh release view --repo "${GITHUB_REPOSITORY}" --json tagName --jq .tagName 2>/dev/null || true)"
+          {
+            if [ -n "$prev" ] && commits="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${prev}...${GITHUB_SHA}" \
+                --jq '.commits | reverse | map("- " + (.commit.message | split("\n")[0]) + " (`" + .sha[0:7] + "`)") | .[]')" \
+                && [ -n "$commits" ]; then
+              echo "## What changed ($(wc -l <<<"$commits") commits)"
+              echo
+              echo "$commits"
+              echo
+              echo "**Full diff:** https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...v${VERSION}"
+            else
+              echo "lumen-text ${VERSION}"
+            fi
+          } > release-notes.md
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
           platforms='{}'
           add() { # add <platform key> <file name>: signed files carry their base64 .minisig, the rest an empty signature
@@ -268,7 +281,7 @@ jobs:
             add "linux-${arch}-rpm" "lumen-text-${VERSION}-1.${rpm}.rpm"
             add "linux-${arch}-arch" "lumen-text-bin-${VERSION}-1-${arch}.pkg.tar.zst"
           done
-          jq -n --arg v "${VERSION}" --arg n "$(head -n 25 release-notes.md)" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          jq -n --arg v "${VERSION}" --arg n "$(head -n 40 release-notes.md)" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson p "$platforms" '{version: $v, notes: $n, pub_date: $d, platforms: $p}' > dist/latest.json
           jq -e '.platforms["linux-x86_64-appimage"].signature != "" and .platforms["linux-x86_64-tarball"].signature != ""' dist/latest.json >/dev/null
           cat dist/latest.json
