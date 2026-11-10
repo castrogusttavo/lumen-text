@@ -184,7 +184,7 @@ pub struct App {
     pub eslint_tx: std::sync::mpsc::Sender<(PathBuf, Result<Vec<crate::eslint::Msg>, String>)>,
     pub eslint_rx: std::sync::mpsc::Receiver<(PathBuf, Result<Vec<crate::eslint::Msg>, String>)>,
     pub eslint_busy: std::collections::HashSet<PathBuf>,
-    pub test_json: Option<(PathBuf, PathBuf)>,
+    pub tests: crate::app_tests::TestsState,
     pub dbg: Option<crate::app_debug::Debugger>,
     pub diff: Option<crate::app_gitx::DiffView>,
     /// Git panel docked on the right (Changes / History).
@@ -309,7 +309,7 @@ impl App {
             eslint_tx: mpsc::channel().0,
             eslint_rx: mpsc::channel().1,
             eslint_busy: Default::default(),
-            test_json: None,
+            tests: crate::app_tests::TestsState::default(),
             dbg: None,
             diff: None,
             gitpanel: None,
@@ -581,6 +581,7 @@ impl App {
                 self.lsp_did_save(idx);
                 self.refresh_git_status();
                 self.say(format!("{name} salvo"));
+                self.tests_on_save();
             }
             Err(e) => self.say(format!("Error saving {name}: {e}")),
         }
@@ -605,6 +606,7 @@ impl App {
         self.update_tick(now, &mut want);
         self.git_bg_tick(now, &mut want);
         self.md_tick(now, &mut want);
+        self.tests_tick(now, &mut want);
 
         // Git gutter against the buffer, debounced.
         let active = self.active;
@@ -1587,6 +1589,7 @@ impl App {
             || l.sidebar_tabs.iter().any(|(r, _)| r.contains(x, y))
             || l.crumbs.iter().any(|(r, _)| r.contains(x, y))
             || l.panel_tabs.iter().any(|(r, _)| r.contains(x, y))
+            || self.tests_clickable_at(x, y)
             || l.completion_rows.iter().any(|(r, _)| r.contains(x, y))
         {
             return CursorIcon::Pointer;
@@ -1662,6 +1665,9 @@ impl App {
             return Some((*r, 6));
         }
         if let Some(h) = self.debug_hover_target() {
+            return Some(h);
+        }
+        if let Some(h) = self.tests_hover_target() {
             return Some(h);
         }
         if self.sidebar_open && l.sidebar.contains(x, y) && y >= (l.sidebar.y + TAB_H) as f64 {

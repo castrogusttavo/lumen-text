@@ -52,6 +52,12 @@ pub enum Cmd {
     StopTask,
     TestFile,
     TestAtCursor,
+    TestAll,
+    TestFailed,
+    TestsPanel,
+    TestDebug,
+    TestWatch,
+    TestRunner,
     ToggleOutput,
     NewFile,
     NewDir,
@@ -175,6 +181,12 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Tasks: Stop", "Ctrl+K X", Cmd::StopTask),
     ("Tests: Run current file", "Ctrl+K F", Cmd::TestFile),
     ("Tests: Run test at cursor", "Ctrl+K T", Cmd::TestAtCursor),
+    ("Tests: Run all", "Ctrl+K A", Cmd::TestAll),
+    ("Tests: Re-run failed", "Ctrl+K E", Cmd::TestFailed),
+    ("Tests: Open panel", "", Cmd::TestsPanel),
+    ("Tests: Debug test at cursor", "Ctrl+K D", Cmd::TestDebug),
+    ("Tests: Toggle watch (re-run on save)", "", Cmd::TestWatch),
+    ("Tests: Choose runner…", "", Cmd::TestRunner),
     ("View: Toggle output panel", "Ctrl+J", Cmd::ToggleOutput),
     ("Code: Organize imports", "", Cmd::OrganizeImports),
     ("Code: Toggle format on save", "", Cmd::ToggleFormatOnSave),
@@ -267,6 +279,7 @@ pub enum Action {
     SetLang(Option<String>),
     WorkspaceEdit(Value),
     Run(String),
+    TestRunner(crate::testrun::Runner),
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),
@@ -772,6 +785,7 @@ impl App {
     pub fn pump_background(&mut self) {
         self.pump_lsp();
         self.pump_task();
+        self.pump_tests();
         self.pump_term();
         self.pump_inbox();
         self.pump_eslint();
@@ -863,9 +877,18 @@ impl App {
             Cmd::ToggleAutoImport => self.toggle_auto_import(),
             Cmd::RunTask => self.open_task_picker(),
             Cmd::RepeatTask => self.repeat_task(),
-            Cmd::StopTask => self.stop_task(),
+            Cmd::StopTask => {
+                self.stop_task();
+                self.tests_stop();
+            }
             Cmd::TestFile => self.run_tests(false),
             Cmd::TestAtCursor => self.run_tests(true),
+            Cmd::TestAll => self.tests_run_all(),
+            Cmd::TestFailed => self.tests_run_failed(),
+            Cmd::TestsPanel => self.tests_open_panel(),
+            Cmd::TestDebug => self.tests_debug_cursor(),
+            Cmd::TestWatch => self.tests_toggle_watch(),
+            Cmd::TestRunner => self.tests_pick_runner(),
             Cmd::ToggleOutput => self.toggle_panel(),
             Cmd::NewFile => self.prompt_new_file(false),
             Cmd::NewDir => self.prompt_new_file(true),
@@ -1293,6 +1316,7 @@ impl App {
                     self.apply_workspace_edit(&v)
                 }
             }
+            Action::TestRunner(r) => self.tests_set_runner(r),
             Action::Run(cmd) => {
                 let title = cmd.clone();
                 self.run_task(&cmd, &title)

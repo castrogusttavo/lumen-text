@@ -4,11 +4,11 @@ use crate::{
     app::{App, Focus},
     app_overlay::{Action, Item},
     scrollreg::Reg,
-    tasks::{self, Ansi, Event, Pm, Running, Segs},
+    tasks::{self, Ansi, Event, Running, Segs},
     theme::Rgba,
     ui::{Canvas, Rect, line_h},
 };
-use std::{path::PathBuf, time::Instant};
+use std::time::Instant;
 use winit::event::MouseScrollDelta;
 
 pub const PANEL_HEADER: i32 = 30;
@@ -19,6 +19,7 @@ pub enum PanelTab {
     Output,
     Terminal,
     Debug,
+    Tests,
 }
 
 pub struct Panel {
@@ -249,9 +250,6 @@ impl App {
             self.push_line(&l);
         }
         if done {
-            if let Some((json, file)) = self.test_json.take() {
-                self.apply_test_marks(&json, &file);
-            }
             if let Some(prog) = self.pending_native.take() {
                 let ok = self
                     .panel
@@ -278,34 +276,6 @@ impl App {
         }
     }
 
-    /// Read a vitest/jest JSON report and mark each test's line in the gutter.
-    pub fn apply_test_marks(&mut self, json: &std::path::Path, file: &std::path::Path) {
-        let Ok(text) = std::fs::read_to_string(json) else { return };
-        let _ = std::fs::remove_file(json);
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return };
-        let Some(i) = self.docs.iter().position(|d| d.path() == Some(file)) else { return };
-        let d = &mut self.docs[i];
-        let lines: Vec<String> = (0..d.buf.line_count()).map(|l| d.buf.line(l)).collect();
-        let mut marks = Vec::new();
-        for tr in v["testResults"].as_array().into_iter().flatten() {
-            for a in tr["assertionResults"].as_array().into_iter().flatten() {
-                let Some(title) = a["title"].as_str() else { continue };
-                if let Some(l) = tasks::find_test_line(&lines, title) {
-                    let ok = match a["status"].as_str() {
-                        Some("passed") => Some(true),
-                        Some("failed") => Some(false),
-                        _ => None,
-                    };
-                    marks.push((l, ok));
-                }
-            }
-        }
-        let (p, f) =
-            (marks.iter().filter(|m| m.1 == Some(true)).count(), marks.iter().filter(|m| m.1 == Some(false)).count());
-        d.test_marks = marks;
-        self.say(format!("testes: {p} passaram, {f} falharam"));
-    }
-
     pub fn open_task_picker(&mut self) {
         let items: Vec<Item> = tasks::project_tasks(&self.root)
             .into_iter()
@@ -317,51 +287,10 @@ impl App {
         self.open_locations("Run task", items);
     }
 
-    /// Run tests for the current file, optionally only the test under the cursor.
+    /// Run tests for the current file, optionally only the test under the cursor. Both land in the
+    /// Tests panel (tree, gutter marks, failure details).
     pub fn run_tests(&mut self, at_cursor: bool) {
-        let Some(d) = self.docs.get(self.active) else { return };
-        let Some(path) = d.path().map(PathBuf::from) else { return };
-        let rel = self.rel(&path);
-        let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
-        let (cur_line, _) = d.buf.line_col(d.ed.head());
-        let lines: Vec<String> = (0..=cur_line.min(d.buf.line_count() - 1)).map(|l| d.buf.line(l)).collect();
-        let cmd = if ext == "rs" {
-            let name = if at_cursor { rust_test_name(&lines) } else { None };
-            match name {
-                Some(n) => format!("cargo test {n} -- --nocapture"),
-                None => "cargo test".to_string(),
-            }
-        } else if let Some(runner) = tasks::test_runner(&self.root) {
-            let pm = Pm::detect(&self.root);
-            let exec = pm.exec();
-            let name = if at_cursor { tasks::test_name_at(&lines, cur_line) } else { None };
-            let base = if runner == "vitest" {
-                format!("{exec} vitest run {}", tasks::shell_quote(&rel))
-            } else {
-                format!("{exec} jest {}", tasks::shell_quote(&rel))
-            };
-            match name {
-                Some(n) => format!("{base} -t {}", tasks::shell_quote(&regex::escape(&n))),
-                None => base,
-            }
-        } else {
-            return self.say("no test runner detected (vitest/jest/cargo)");
-        };
-        // Ask the runner for a JSON report too, to put ✓/✗ marks in the gutter afterwards.
-        let json = std::env::temp_dir().join(format!("lumen-tests-{}.json", std::process::id()));
-        let cmd = if ext == "rs" {
-            cmd
-        } else if tasks::test_runner(&self.root) == Some("vitest") {
-            format!(
-                "{cmd} --reporter=default --reporter=json --outputFile.json={}",
-                tasks::shell_quote(&json.to_string_lossy())
-            )
-        } else {
-            format!("{cmd} --json --outputFile={}", tasks::shell_quote(&json.to_string_lossy()))
-        };
-        let title = if at_cursor { "Test at cursor" } else { "File tests" };
-        self.run_task(&cmd, title);
-        self.test_json = (ext != "rs").then_some((json, path));
+        self.tests_run_file(at_cursor);
     }
 
     // ───────────── input ─────────────
@@ -378,6 +307,7 @@ impl App {
                     self.panel.tab = PanelTab::Debug;
                     self.focus = Focus::Editor;
                 }
+                Some(PanelTab::Tests) => self.tests_open_panel(),
                 Some(PanelTab::Terminal) => self.open_terminal(),
                 Some(PanelTab::Output) => {
                     self.panel.tab = PanelTab::Output;
@@ -389,6 +319,11 @@ impl App {
         }
         if self.panel.tab == PanelTab::Debug {
             self.debug_click(x, y);
+            return true;
+        }
+        if self.panel.tab == PanelTab::Tests {
+            self.focus = Focus::Editor;
+            self.tests_click(x, y);
             return true;
         }
         if self.panel.tab == PanelTab::Terminal {
@@ -455,8 +390,12 @@ impl App {
         let head = Rect::new(r.x, r.y + 1, r.w, PANEL_HEADER - 1);
         let ty = r.y + (PANEL_HEADER - 18) / 2 + 1;
         let mut x = r.x + 14;
-        for (label, tab) in [("Output", PanelTab::Output), ("Terminal", PanelTab::Terminal), ("Debug", PanelTab::Debug)]
-        {
+        for (label, tab) in [
+            ("Output", PanelTab::Output),
+            ("Tests", PanelTab::Tests),
+            ("Terminal", PanelTab::Terminal),
+            ("Debug", PanelTab::Debug),
+        ] {
             let w = self.tx.ui_width(label, true);
             let active = self.panel.tab == tab;
             self.tx.draw_ui(cv, x, ty, label, if active { fg } else { dim }, head, active);
@@ -475,6 +414,9 @@ impl App {
         }
         if self.panel.tab == PanelTab::Debug {
             return self.draw_debug(cv, body);
+        }
+        if self.panel.tab == PanelTab::Tests {
+            return self.draw_tests(cv, body);
         }
 
         let state = match (&self.panel.running, self.panel.exit) {
@@ -595,31 +537,5 @@ impl App {
                 true,
             );
         }
-    }
-}
-
-fn rust_test_name(lines: &[String]) -> Option<String> {
-    thread_local! {
-        static RE: regex::Regex = regex::Regex::new(r"fn\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-    }
-    for (i, l) in lines.iter().enumerate().rev() {
-        if let Some(c) = RE.with(|re| re.captures(l).map(|c| c[1].to_string())) {
-            let attr_above = i > 0 && lines[i - 1].contains("#[test]") || l.contains("#[test]");
-            let attr_above = attr_above || (i > 1 && lines[i - 2].contains("#[test]"));
-            return attr_above.then_some(c);
-        }
-    }
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rust_test_name_needs_test_attribute() {
-        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(rust_test_name(&l(&["#[test]", "fn works() {", "    assert!(true)"])).as_deref(), Some("works"));
-        assert_eq!(rust_test_name(&l(&["fn helper() {", "  let x = 1;"])), None);
     }
 }

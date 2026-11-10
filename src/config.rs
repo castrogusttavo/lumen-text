@@ -65,6 +65,12 @@ pub struct Config {
     pub theme_chrome: String,
     /// Updates: "auto" (check, download and install in the background), "notify" (only announce) or "off".
     pub updates: String,
+    /// Tests panel: a command of your own (e.g. `make test`) and the JUnit XML file it writes
+    /// (relative to the project) so its results show up as a tree. Empty = auto-detect the runner.
+    pub test_command: String,
+    pub test_report: String,
+    /// Re-run the last tests whenever a file is saved.
+    pub test_watch: bool,
 }
 
 /// `updates` setting values; anything else falls back to "auto".
@@ -185,6 +191,9 @@ impl Default for Config {
             md_split: 0.5,
             theme_chrome: "derived".into(),
             updates: "auto".into(),
+            test_command: String::new(),
+            test_report: String::new(),
+            test_watch: false,
         }
     }
 }
@@ -394,6 +403,9 @@ impl Config {
             md_split: v["md_split"].as_f64().map_or(0.5, |f| f as f32).clamp(MD_SPLIT_RANGE.0, MD_SPLIT_RANGE.1),
             theme_chrome: if v["theme_chrome"].as_str() == Some("theme") { "theme".into() } else { "derived".into() },
             updates: normalize_updates(v["updates"].as_str()),
+            test_command: v["test_command"].as_str().unwrap_or("").trim().to_string(),
+            test_report: v["test_report"].as_str().unwrap_or("").trim().to_string(),
+            test_watch: v["test_watch"].as_bool().unwrap_or(false),
             scroll_speed: v["scroll_speed"].as_f64().map_or(1.0, |f| f as f32).clamp(0.1, 5.0),
             ui_scale: v["ui_scale"].as_f64().map_or(0.0, |f| f as f32).clamp(0.0, 4.0),
             font_size: v["font_size"].as_f64().map_or(14.0, |f| f as f32).clamp(8.0, 40.0),
@@ -408,7 +420,7 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "font_size": self.font_size, "lsp_narrow": self.lsp_narrow, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates});
+        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "font_size": self.font_size, "lsp_narrow": self.lsp_narrow, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch});
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -478,6 +490,9 @@ mod tests {
             git_panel_width: 512,
             theme_chrome: "theme".into(),
             updates: "notify".into(),
+            test_command: "make test".into(),
+            test_report: "out/junit.xml".into(),
+            test_watch: true,
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

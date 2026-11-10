@@ -446,6 +446,9 @@ impl App {
             },
             TipKey::PanelTab(PanelTab::Output) => t("Output", None, Some("Results of tasks and tests".into())),
             TipKey::PanelTab(PanelTab::Terminal) => t("Terminal", self.shortcut_text("OpenTerminal"), None),
+            TipKey::PanelTab(PanelTab::Tests) => {
+                t("Tests", self.shortcut_text("TestAll"), Some("Run tests and browse the results".into()))
+            }
             TipKey::PanelTab(PanelTab::Debug) => t("Debug", None, Some("Stack, variables and output".into())),
             TipKey::Git(h) => self.git_tip_text(h),
             TipKey::Status(k) => match k {

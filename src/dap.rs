@@ -717,10 +717,25 @@ impl MultiSession {
 
     /// Spawn js-debug, connect, and debug `program` with `node_launch_args`.
     pub fn start_node(node_bin: &str, server_js: &Path, program: &Path, wake: Wake) -> io::Result<MultiSession> {
-        let cwd = program.parent().unwrap_or(Path::new("."));
+        Self::start_node_with(node_bin, server_js, program, None, |_| {}, wake)
+    }
+
+    /// [`start_node`](Self::start_node) with a working directory and a last chance to adjust the
+    /// launch configuration (program arguments, runtime flags).
+    pub fn start_node_with(
+        node_bin: &str,
+        server_js: &Path,
+        program: &Path,
+        cwd: Option<&Path>,
+        tweak: impl FnOnce(&mut Value),
+        wake: Wake,
+    ) -> io::Result<MultiSession> {
+        let cwd = cwd.or(program.parent()).unwrap_or(Path::new("."));
         let (child, port) = spawn_js_debug(node_bin, server_js, cwd, wake.clone())?;
         let mut args = node_launch_args(program);
         args["runtimeExecutable"] = json!(node_bin);
+        args["cwd"] = json!(cwd.to_string_lossy());
+        tweak(&mut args);
         match MultiSession::connect("127.0.0.1", port, args, wake) {
             Ok(mut m) => {
                 m.adapter = Some(child);

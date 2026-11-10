@@ -26,6 +26,8 @@ pub enum Reg {
     DebugStack,
     DebugVars,
     DebugOut,
+    Tests,
+    TestsDetail,
     GitChanges,
     GitLog,
     Picker,
@@ -162,6 +164,8 @@ impl App {
             Reg::DebugStack => Some(self.panel.dbg_scroll[0]),
             Reg::DebugVars => Some(self.panel.dbg_scroll[1]),
             Reg::DebugOut => Some(self.panel.dbg_scroll[2]),
+            Reg::Tests => Some(self.tests.scroll),
+            Reg::TestsDetail => Some(self.tests.detail_scroll),
             Reg::Terminal => {
                 let t = self.term.as_ref()?;
                 Some((t.grid.history_len() - t.scroll_offset.min(t.grid.history_len())) as f64)
@@ -340,6 +344,8 @@ impl App {
                     t.scroll_offset = ((max - v).round().max(0.0) as usize).min(t.grid.history_len());
                 }
             }
+            Reg::Tests => self.tests.scroll = v,
+            Reg::TestsDetail => self.tests.detail_scroll = v,
             Reg::DebugStack => self.panel.dbg_scroll[0] = v,
             Reg::DebugVars => self.panel.dbg_scroll[1] = v,
             Reg::DebugOut => {

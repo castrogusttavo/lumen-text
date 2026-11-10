@@ -227,6 +227,36 @@ impl App {
         }
     }
 
+    /// Debug `program` under js-debug with program `args` and node `runtime_args` (used for single tests).
+    pub fn start_node_debug_args(&mut self, program: &Path, args: Vec<String>, runtime_args: Vec<String>, cwd: &Path) {
+        let Some(server) = js_debug_server() else {
+            return self.say("js-debug not installed: download js-debug-dap-*.tar.gz from GitHub (microsoft/vscode-js-debug) into ~/.local/share/lumen-text/js-debug");
+        };
+        let tweak = |v: &mut serde_json::Value| {
+            v["args"] = serde_json::json!(args);
+            if !runtime_args.is_empty() {
+                let mut rt: Vec<serde_json::Value> = v["runtimeArgs"].as_array().cloned().unwrap_or_default();
+                rt.extend(runtime_args.iter().map(|a| serde_json::json!(a)));
+                v["runtimeArgs"] = serde_json::Value::Array(rt);
+            }
+        };
+        match MultiSession::start_node_with("node", &server, program, Some(cwd), tweak, self.wake()) {
+            Ok(mut ms) => {
+                for (p, lines) in self.breakpoint_pairs() {
+                    ms.set_breakpoints(&p, &lines);
+                }
+                ms.start();
+                self.dbg = Some(Debugger::Node(Box::new(ms)));
+                self.panel.open = true;
+                self.panel.tab = PanelTab::Debug;
+                self.panel.dbg_scroll = [0.0; 3];
+                self.panel.dbg_follow = true;
+                self.say("depurando o teste…");
+            }
+            Err(e) => self.say(format!("could not start js-debug: {e}")),
+        }
+    }
+
     fn start_node_debug(&mut self, path: &Path) {
         let Some(server) = js_debug_server() else {
             return self.say("js-debug not installed: download js-debug-dap-*.tar.gz from GitHub (microsoft/vscode-js-debug) into ~/.local/share/lumen-text/js-debug");
@@ -260,20 +290,25 @@ impl App {
 
     /// Called when `cargo build` finished successfully.
     pub fn start_native_debug(&mut self, program: PathBuf) {
-        if !program.exists() {
-            return self.say(format!("binary not found: {}", program.display()));
-        }
         let cwd = program
             .parent()
             .and_then(Path::parent)
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.root.clone());
+        self.start_native_debug_args(program, Vec::new(), cwd);
+    }
+
+    /// gdb on `program` with `args`, started in `cwd` (a single test passes its name and `--exact`).
+    pub fn start_native_debug_args(&mut self, program: PathBuf, args: Vec<String>, cwd: PathBuf) {
+        if !program.exists() {
+            return self.say(format!("binary not found: {}", program.display()));
+        }
         let mut dap = match Dap::spawn("gdb", &["--interpreter=dap"], &cwd, self.wake()) {
             Ok(d) => d,
             Err(e) => return self.say(format!("gdb unavailable: {e}")),
         };
-        let mut session = Session::new(&program.to_string_lossy(), &[], &cwd, false);
+        let mut session = Session::new(&program.to_string_lossy(), &args, &cwd, false);
         for (p, lines) in self.breakpoint_pairs() {
             session.set_breakpoints(&p, &lines, &mut dap);
         }

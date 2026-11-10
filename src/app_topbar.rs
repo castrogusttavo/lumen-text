@@ -738,7 +738,7 @@ impl App {
         self.nav_back.clear();
         self.nav_fwd.clear();
         self.file_index = None;
-        self.test_json = None;
+        self.tests.reset();
         self.blame_for = None;
         self.eslint_busy.clear();
         self.git_status.clear();

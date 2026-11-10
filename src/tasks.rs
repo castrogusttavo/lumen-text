@@ -234,18 +234,6 @@ pub fn project_tasks(root: &Path) -> Vec<(String, String)> {
     v
 }
 
-/// Which test runner does this package use?
-pub fn test_runner(root: &Path) -> Option<&'static str> {
-    let text = std::fs::read_to_string(root.join("package.json")).ok()?;
-    if text.contains("\"vitest\"") {
-        Some("vitest")
-    } else if text.contains("\"jest\"") {
-        Some("jest")
-    } else {
-        None
-    }
-}
-
 pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -432,7 +420,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(Pm::detect(&root), Pm::Pnpm);
-        assert_eq!(test_runner(&root), Some("vitest"));
         let t = project_tasks(&root);
         assert!(t.iter().any(|(_, c)| c == "pnpm run dev"), "{t:?}");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
