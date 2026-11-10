@@ -14,6 +14,7 @@ URL:            https://github.com/castrogusttavo/lumen-text
 # The binary links only glibc/libgcc (picked up by the automatic requires); the windowing
 # libraries are dlopen()ed at run time, so they are declared by hand.
 Requires:       libxkbcommon
+Requires:       fontconfig
 Recommends:     libwayland-client
 Recommends:     libwayland-cursor
 Recommends:     libxkbcommon-x11
@@ -21,7 +22,7 @@ Recommends:     libX11
 Recommends:     libX11-xcb
 Recommends:     libXcursor
 Recommends:     libXi
-Recommends:     fontconfig
+Recommends:     dejavu-sans-mono-fonts
 Suggests:       wl-clipboard
 Suggests:       xclip
 

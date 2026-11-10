@@ -16,6 +16,7 @@ publish = false
 cosmic-text = "0.19.0"
 gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image-webp = "0.2.4"
+minisign-verify = "0.3.0"
 ignore = "0.4.34"
 libc = "0.2.191"
 onig = "6.5.3"

@@ -27,6 +27,7 @@ mod format;
 mod fuzzy;
 mod git;
 mod gitsync;
+mod app_gitbg;
 mod gitx;
 mod highlight;
 mod hover_md;
@@ -34,6 +35,8 @@ mod icons;
 mod instance;
 mod keymap;
 mod lsp;
+mod lsp_stream;
+mod bigfile;
 mod mdimg;
 mod mdview;
 mod mem;
@@ -55,11 +58,13 @@ mod app_split;
 mod app_tooltip;
 mod app_topbar;
 mod app_unsaved;
+mod app_update;
 mod terminal;
 mod textmate;
 mod theme;
 mod tree;
 mod ui;
+mod update;
 
 use std::{env, path::PathBuf, process::ExitCode};
 use winit::event_loop::EventLoop;
@@ -90,6 +95,10 @@ fn version() -> &'static str {
     option_env!("LUMEN_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
+fn exit_code(code: i32) -> ExitCode {
+    ExitCode::from(code.clamp(0, 255) as u8)
+}
+
 fn main() -> ExitCode {
     // Few malloc arenas: with background threads (tokenizer, LSP readers) glibc otherwise keeps
     // hundreds of MB of freed memory per thread arena.
@@ -107,6 +116,9 @@ fn main() -> ExitCode {
                 println!("lumen-text {}", version());
                 return ExitCode::SUCCESS;
             }
+            "--install-user" => return exit_code(update::cli_install_user()),
+            "--check-update" => return exit_code(update::cli_check(false)),
+            "--update" => return exit_code(update::cli_check(true)),
             "--keys" => keys = it.next(),
             "--scale" => scale_arg = it.next().as_deref().and_then(ui::parse_scale),
             "--snap" => snap = PathBuf::from(it.next().unwrap_or_default()),

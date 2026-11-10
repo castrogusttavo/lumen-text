@@ -49,7 +49,7 @@ fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
 }
 
-fn ts_family(lang: Option<&str>) -> bool {
+pub(crate) fn ts_family(lang: Option<&str>) -> bool {
     matches!(lang, Some("typescript" | "tsx" | "javascript" | "jsx"))
 }
 
@@ -223,14 +223,7 @@ impl App {
     }
 
     fn doc_open_params(d: &Doc, uri: String) -> Option<Value> {
-        let lang = match d.lang {
-            Some("tsx") => "typescriptreact",
-            Some("jsx") => "javascriptreact",
-            Some("javascript") => "javascript",
-            Some("json") => "json",
-            Some("css") => "css",
-            _ => "typescript",
-        };
+        let lang = lsp_language_id(d.lang);
         Some(json!({"textDocument": {"uri": uri, "languageId": lang, "version": d.version, "text": d.buf.to_string()}}))
     }
 
@@ -355,14 +348,24 @@ impl App {
                 if let Some(t) = self.docs[i].sem_due {
                     if t <= now {
                         self.docs[i].sem_due = None;
-                        // Huge files: the full response is millions of integers (hundreds of MB as JSON values).
-                        if self.lsps[li].caps["semanticTokensProvider"].is_object() && self.docs[i].buf.line_count() <= 20_000 {
-                            if let Some(uri) = self.docs[i].uri() {
-                                self.lsps[li].request("textDocument/semanticTokens/full", json!({"textDocument": {"uri": uri}}), Pending::SemTokens { uri });
+                        if self.lsps[li].caps["semanticTokensProvider"].is_object() {
+                            if self.docs[i].buf.line_count() <= crate::bigfile::BIG_LINES {
+                                if let Some(uri) = self.docs[i].uri() {
+                                    self.lsps[li].request("textDocument/semanticTokens/full", json!({"textDocument": {"uri": uri}}), Pending::SemTokens { uri });
+                                }
+                            } else {
+                                // Big files: only a window around the viewport (below), never the whole document.
+                                self.docs[i].big.semwin.reset();
                             }
                         }
                     } else {
                         want(t);
+                    }
+                }
+                if i == self.active && self.docs[i].buf.line_count() > crate::bigfile::BIG_LINES && self.docs[i].sem_due.is_none() {
+                    let range = &self.lsps[li].caps["semanticTokensProvider"]["range"];
+                    if !range.is_null() && range.as_bool() != Some(false) {
+                        self.sem_range_tick(i, li, now, want);
                     }
                 }
                 if let Some(t) = self.docs[i].lens_due {
@@ -386,7 +389,7 @@ impl App {
             if let (Some(t), None) = (self.docs[i].symbols_due, self.docs[i].changed_at) {
                 if t <= now {
                     self.docs[i].symbols_due = None;
-                    if let (Some(uri), true) = (self.docs[i].uri(), self.docs[i].buf.line_count() <= 20_000) {
+                    if let Some(uri) = self.docs[i].uri() {
                         self.lsps[li].request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri}}), Pending::SymbolsCache { uri: uri.clone() });
                         if self.lsps[li].caps["foldingRangeProvider"].as_bool() != Some(false) && !self.lsps[li].caps["foldingRangeProvider"].is_null() {
                             self.lsps[li].request("textDocument/foldingRange", json!({"textDocument": {"uri": uri}}), Pending::Folding { uri });
@@ -421,7 +424,10 @@ impl App {
         let count = d.buf.line_count();
         let (vf, vl) = d.visible_line_span();
         if d.inlay.due.is_none() && d.inlay.needs_request(vf, vl, count) {
-            d.inlay.due = Some(now + Duration::from_millis(180));
+            // The viewport itself has no hints yet (fast scroll): ask at once (at most every 60 ms);
+            // a margin refresh waits for the scroll to settle.
+            let wait = if d.inlay.viewport_uncovered(vf, vl, count) { d.inlay.since_last_request().map_or(0, |e| 60u64.saturating_sub(e.as_millis() as u64)) } else { 180 };
+            d.inlay.due = Some(now + Duration::from_millis(wait));
         }
         let Some(t) = d.inlay.due else { return };
         if t > now {
@@ -435,6 +441,7 @@ impl App {
         let params = json!({"textDocument": {"uri": uri}, "range": {"start": {"line": a, "character": 0}, "end": {"line": b, "character": end_col}}});
         let version = d.version;
         d.inlay.cover = Some((a, b));
+        d.inlay.mark_requested();
         self.lsps[li].request("textDocument/inlayHint", params, Pending::InlayHint { uri, version, first: a, last: b });
     }
 
@@ -462,6 +469,10 @@ impl App {
             }
             crate::inlay::utf16_to_char_col(&cache.as_ref().unwrap().1, u16col)
         });
+        let mut hints = hints;
+        // Parameter names / types are separate switches (enum member values count as types).
+        let (names, types) = (self.config.inlay_hints_params, self.config.inlay_hints_types);
+        hints.retain(|h| if h.kind == crate::inlay::HintKind::Parameter { names } else { types });
         let count = d.buf.line_count();
         d.inlay.apply(first, last, hints, count);
         self.request_redraw();
@@ -583,6 +594,14 @@ impl App {
                     let Some(what) = self.lsps[li].pending.remove(&id) else { continue };
                     self.on_response(li, what, result);
                 }
+                Msg::Symbols { id, syms } => {
+                    let Some(what) = self.lsps[li].pending.remove(&id) else { continue };
+                    self.on_symbol_list(what, syms);
+                }
+                Msg::Tokens { id, data } => {
+                    let Some(what) = self.lsps[li].pending.remove(&id) else { continue };
+                    self.on_tokens(li, what, data);
+                }
                 Msg::Notification { method, params } => self.on_notification(li, &method, &params),
                 Msg::Request { id, method, params } => self.on_server_request(li, id, &method, &params),
             }
@@ -638,13 +657,14 @@ impl App {
                     "referencesCodeLens": {"enabled": self.config.code_lens, "showOnAllFunctions": true},
                     "implementationsCodeLens": {"enabled": self.config.code_lens},
                     "inlayHints": if self.config.inlay_hints {
+                        let (names, types) = (self.config.inlay_hints_params, self.config.inlay_hints_types);
                         json!({
-                            "parameterNames": {"enabled": "literals", "suppressWhenArgumentMatchesName": true},
-                            "parameterTypes": {"enabled": true},
-                            "variableTypes": {"enabled": true, "suppressWhenTypeMatchesName": true},
-                            "propertyDeclarationTypes": {"enabled": true},
-                            "functionLikeReturnTypes": {"enabled": true},
-                            "enumMemberValues": {"enabled": true}
+                            "parameterNames": {"enabled": if names { "literals" } else { "none" }, "suppressWhenArgumentMatchesName": true},
+                            "parameterTypes": {"enabled": types},
+                            "variableTypes": {"enabled": types, "suppressWhenTypeMatchesName": true},
+                            "propertyDeclarationTypes": {"enabled": types},
+                            "functionLikeReturnTypes": {"enabled": types},
+                            "enumMemberValues": {"enabled": types}
                         })
                     } else {
                         json!({"parameterNames": {"enabled": "none"}, "parameterTypes": {"enabled": false}, "variableTypes": {"enabled": false}, "propertyDeclarationTypes": {"enabled": false}, "functionLikeReturnTypes": {"enabled": false}, "enumMemberValues": {"enabled": false}})
@@ -733,7 +753,8 @@ impl App {
                 if matches!(what, Pending::CodeActions { .. }) {
                     return self.actions_response(Vec::new());
                 }
-                if !matches!(what, Pending::Diagnostic { .. } | Pending::Hover { .. } | Pending::HoverExtra { .. } | Pending::Completion { .. } | Pending::Signature { .. }) {
+                self.sem_range_failed(&what);
+                if !matches!(what, Pending::Diagnostic { .. } | Pending::Hover { .. } | Pending::HoverExtra { .. } | Pending::Completion { .. } | Pending::Signature { .. } | Pending::SymbolsCache { .. } | Pending::Folding { .. } | Pending::SemTokens { .. } | Pending::SemRange { .. }) {
                     self.say(format!("LSP: {msg}"));
                 }
                 return;
@@ -795,7 +816,7 @@ impl App {
             }
             Pending::CodeActions { .. } => self.on_code_actions(li, &v),
             Pending::Signature { uri } => self.on_signature(&uri, &v),
-            Pending::Symbols { uri } => self.on_symbols(&uri, &v),
+            what @ (Pending::Symbols { .. } | Pending::SymbolsCache { .. }) => self.on_symbol_list(what, crate::doc::flatten_symbols(&v)),
             Pending::ResolveCompletion { uri, version } => {
                 if let Some(i) = self.doc_by_uri(&uri) {
                     let extra = parse_edits(&v["additionalTextEdits"]);
@@ -813,28 +834,16 @@ impl App {
                     None => self.say("imports já organizados"),
                 }
             }
-            Pending::SymbolsCache { uri } => {
-                if let Some(i) = self.doc_by_uri(&uri) {
-                    self.docs[i].symbols = crate::doc::flatten_symbols(&v);
-                    self.request_redraw();
-                }
-            }
             Pending::Folding { uri } => {
                 if let Some(i) = self.doc_by_uri(&uri) {
-                    self.docs[i].set_lsp_folds(crate::rowmap::fold_regions_from_lsp(&v));
+                    self.set_lsp_folds_all(i, crate::rowmap::fold_regions_from_lsp(&v));
                     self.request_redraw();
                 }
             }
-            Pending::SemTokens { uri } => {
-                let li_caps = self.lsps[li].caps["semanticTokensProvider"]["legend"].clone();
-                let names = |k: &str| li_caps[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>()).unwrap_or_default();
-                if let Some(i) = self.doc_by_uri(&uri) {
-                    let data: Vec<u64> = v["data"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
-                    let d = &mut self.docs[i];
-                    d.sem = crate::doc::decode_semantic(&data, &names("tokenTypes"), &names("tokenModifiers"));
-                    d.sem_valid_until = usize::MAX;
-                    self.request_redraw();
-                }
+            what @ (Pending::SemTokens { .. } | Pending::SemRange { .. }) => {
+                // Normally delivered packed as `Msg::Tokens`; a null result lands here.
+                let data: Vec<u32> = v["data"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect()).unwrap_or_default();
+                self.on_tokens(li, what, data);
             }
             Pending::CodeLens { uri } => {
                 if let Some(i) = self.doc_by_uri(&uri) {
@@ -1028,7 +1037,11 @@ impl App {
     /// Format with the project's formatter (Biome/Prettier) if there is one.
     /// Returns false when no external formatter applies.
     pub fn format_external_active(&mut self, quiet: bool) -> bool {
-        let i = self.active;
+        self.format_external_doc(self.active, quiet)
+    }
+
+    /// [`format_external_active`](Self::format_external_active) for the document at `i`.
+    pub fn format_external_doc(&mut self, i: usize, quiet: bool) -> bool {
         let Some(d) = self.docs.get(i) else { return false };
         let Some(f) = d.path().and_then(crate::format::detect) else { return false };
         let text = d.buf.to_string();
@@ -1076,7 +1089,7 @@ impl App {
         let d = &self.docs[i];
         let uri = d.uri().unwrap_or_default();
         let version = d.version;
-        let tab = if d.ed.indent.contains('\t') { 4 } else { d.ed.indent.len().max(1) };
+        let tab = if d.ed.indent.contains('\t') { d.ed.tab_w } else { d.ed.indent.len().max(1) };
         let params = json!({"textDocument": {"uri": uri}, "options": {"tabSize": tab, "insertSpaces": !d.ed.indent.contains('\t')}});
         self.lsps[li].request("textDocument/formatting", params, Pending::Format { uri, version });
     }
@@ -1087,26 +1100,33 @@ impl App {
         self.lsps[li].request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri}}), Pending::Symbols { uri });
     }
 
-    fn on_symbols(&mut self, uri: &str, v: &Value) {
-        let Some(i) = self.doc_by_uri(uri) else { return };
-        let mut items: Vec<Item> = Vec::new();
-        fn walk(d: &Doc, v: &Value, depth: usize, out: &mut Vec<Item>) {
-            for s in v.as_array().into_iter().flatten() {
-                let name = s["name"].as_str().unwrap_or("?");
-                let range = s.get("selectionRange").or_else(|| s["location"].get("range")).or_else(|| s.get("range"));
-                let (Some(l), Some(c)) = (range.and_then(|r| r["start"]["line"].as_u64()), range.and_then(|r| r["start"]["character"].as_u64())) else {
-                    continue;
-                };
-                let kind = match s["kind"].as_u64().unwrap_or(0) {
-                    2 => "módulo", 5 => "classe", 6 => "método", 7 => "propriedade", 8 => "campo", 9 => "construtor", 10 => "enum", 11 => "interface", 12 => "função", 13 => "variável", 14 => "constante", 22 => "membro de enum", 23 => "struct", 26 => "tipo", _ => "",
-                };
-                out.push(Item { label: format!("{}{}", "  ".repeat(depth), name), detail: kind.to_string(), action: Action::Goto(d.from_lsp_pos(l as usize, c as usize)) });
-                if let Some(ch) = s.get("children") {
-                    walk(d, ch, depth + 1, out);
+    /// A flattened outline arrived: for breadcrumbs / sticky scroll, or for the "go to symbol" picker.
+    fn on_symbol_list(&mut self, what: Pending, syms: Vec<crate::doc::Sym>) {
+        match what {
+            Pending::SymbolsCache { uri } => {
+                if let Some(i) = self.doc_by_uri(&uri) {
+                    if std::env::var_os("LUMEN_DEBUG").is_some() {
+                        eprintln!("[lsp] outline: {} symbols", syms.len());
+                    }
+                    self.docs[i].symbols = syms;
+                    self.request_redraw();
                 }
             }
+            Pending::Symbols { uri } => self.on_symbols(&uri, &syms),
+            _ => {}
         }
-        walk(&self.docs[i], v, 0, &mut items);
+    }
+
+    fn on_symbols(&mut self, uri: &str, syms: &[crate::doc::Sym]) {
+        let Some(i) = self.doc_by_uri(uri) else { return };
+        let d = &self.docs[i];
+        let mut items: Vec<Item> = Vec::with_capacity(syms.len());
+        for s in syms {
+            let kind = match s.kind {
+                2 => "módulo", 5 => "classe", 6 => "método", 7 => "propriedade", 8 => "campo", 9 => "construtor", 10 => "enum", 11 => "interface", 12 => "função", 13 => "variável", 14 => "constante", 22 => "membro de enum", 23 => "struct", 26 => "tipo", _ => "",
+            };
+            items.push(Item { label: format!("{}{}", "  ".repeat(s.depth), s.name), detail: kind.to_string(), action: Action::Goto(d.from_lsp_pos(s.sel_l, s.sel_c)) });
+        }
         if items.is_empty() {
             return self.say("nenhum símbolo");
         }
@@ -1282,7 +1302,7 @@ impl App {
 
     // ───────────── locations ─────────────
 
-    fn goto_location(&mut self, loc: &(String, usize, usize)) {
+    pub(crate) fn goto_location(&mut self, loc: &(String, usize, usize)) {
         let Some(path) = uri_to_path(&loc.0) else { return };
         self.push_nav();
         if let Some(i) = self.open_path(&path, None) {
@@ -1596,12 +1616,16 @@ impl App {
         let fg = self.theme.foreground;
         let dim = self.theme.chrome.tab_inactive_fg;
         let mut layout_rows = Vec::new();
-        for (k, &i) in c.filtered.iter().enumerate().skip(c.scroll).take(rows) {
+        // Mid-glide: rows shift up by a fraction of a row, one more shows at the bottom, all clipped.
+        let off = self.region_off(crate::scrollreg::Reg::Completion, 22);
+        let lclip = Rect::new(r.x + 2, r.y + 3, r.w - 4, rows as i32 * 22);
+        for (k, &i) in c.filtered.iter().enumerate().skip(c.scroll).take(rows + (off > 0) as usize) {
             let it = &c.items[i];
-            let yy = r.y + 3 + (k - c.scroll) as i32 * 22;
-            let rr = Rect::new(r.x + 2, yy, r.w - 4, 22);
+            let yy = r.y + 3 + (k - c.scroll) as i32 * 22 - off;
+            let row_full = Rect::new(r.x + 2, yy, r.w - 4, 22);
+            let rr = row_full.intersect(&lclip);
             if k == c.sel {
-                cv.fill_clip(rr, chrome.list_active_bg, r);
+                cv.fill_clip(row_full, chrome.list_active_bg, lclip);
             }
             let (glyph, col) = kind_glyph(it.kind, &self.theme);
             self.tx.draw_line(cv, rr.x + 6, yy + 1, glyph, col, rr);
@@ -1643,5 +1667,140 @@ fn kind_glyph(kind: u32, t: &crate::theme::Theme) -> (&'static str, Rgba) {
         21 => ("c", Rgba(0x75, 0xbe, 0xff, 0xff)),
         25 => ("T", c.info),
         _ => ("·", t.chrome.tab_inactive_fg),
+    }
+}
+
+// ───────────── a document's language changed (bottom bar picker) ─────────────
+
+/// The LSP `languageId` sent in `textDocument/didOpen` for a document language.
+pub fn lsp_language_id(lang: Option<&str>) -> &'static str {
+    match lang {
+        Some("tsx") => "typescriptreact",
+        Some("jsx") => "javascriptreact",
+        Some("javascript") => "javascript",
+        Some("json") => "json",
+        Some("css") => "css",
+        _ => "typescript",
+    }
+}
+
+fn biome_lang(lang: Option<&str>) -> bool {
+    matches!(lang, Some("typescript" | "tsx" | "javascript" | "jsx" | "json" | "css"))
+}
+
+/// What changing a document's language means for the servers: which ones must be told the old
+/// document is gone, and which ones will pick it up again (the regular sync tick sends `didOpen`
+/// with the new `languageId` and starts a server that is not running yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LangPlan {
+    pub ts_close: bool,
+    pub ts_after: bool,
+    pub biome_close: bool,
+    pub biome_after: bool,
+}
+
+pub fn lang_change_plan(old: Option<&str>, new: Option<&str>) -> LangPlan {
+    let same_id = lsp_language_id(old) == lsp_language_id(new);
+    LangPlan {
+        ts_close: ts_family(old) && (!ts_family(new) || !same_id),
+        ts_after: ts_family(new),
+        biome_close: biome_lang(old) && (!biome_lang(new) || !same_id),
+        biome_after: biome_lang(new),
+    }
+}
+
+impl App {
+    /// `didClose` only: the server keeps running (the document is reopened with another language id).
+    fn biome_notify_close(&mut self, i: usize) {
+        let Some(lb) = self.biome_index(i) else { return };
+        if let Some(uri) = self.docs.get(i).and_then(|d| d.real_uri()) {
+            self.lsps[lb].notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
+        }
+    }
+
+    /// Document `i` switched from language `old` to `new` (already stored in `Doc::lang`): close it
+    /// on the servers that no longer fit, forget what they told us and let the sync tick reopen it
+    /// with the new `languageId` (starting tsgo / Biome if the new language needs one).
+    pub fn lsp_language_changed(&mut self, i: usize, old: Option<&'static str>, new: Option<&'static str>) {
+        if i >= self.docs.len() {
+            return;
+        }
+        let plan = lang_change_plan(old, new);
+        if plan.ts_close && self.docs[i].lsp_open {
+            if plan.ts_after {
+                // `doc_lsp` keys off the *current* language, which is already the new one: still tsgo.
+                self.lsp_notify_close(i);
+            } else {
+                // Old language was served by tsgo, the new one is not: close it (the last document
+                // of a project also shuts the server down). `doc_lsp` needs the old language back.
+                self.docs[i].lang = old;
+                self.lsp_did_close(i);
+                self.docs[i].lang = new;
+            }
+        }
+        if plan.biome_close && self.docs[i].biome_open {
+            if plan.biome_after {
+                self.biome_notify_close(i);
+            } else {
+                self.biome_close(i);
+            }
+        }
+        let d = &mut self.docs[i];
+        if plan.ts_close {
+            d.lsp_open = false;
+        }
+        if plan.biome_close {
+            d.biome_open = false;
+        }
+        if !plan.ts_after {
+            d.set_source_diags(false, Vec::new());
+            d.sem.clear();
+            d.symbols.clear();
+            d.lenses.clear();
+        } else {
+            let soon = Instant::now() + Duration::from_millis(400);
+            d.symbols_due = Some(soon);
+            d.sem_due = Some(soon);
+        }
+        if !plan.biome_after {
+            d.set_source_diags(true, Vec::new());
+        }
+        self.request_redraw();
+    }
+}
+
+#[cfg(test)]
+mod lang_tests {
+    use super::*;
+
+    #[test]
+    fn language_ids_follow_the_document_language() {
+        assert_eq!(lsp_language_id(Some("tsx")), "typescriptreact");
+        assert_eq!(lsp_language_id(Some("jsx")), "javascriptreact");
+        assert_eq!(lsp_language_id(Some("javascript")), "javascript");
+        assert_eq!(lsp_language_id(Some("typescript")), "typescript");
+        assert_eq!(lsp_language_id(None), "typescript");
+    }
+
+    #[test]
+    fn changing_language_closes_and_reopens_on_the_right_servers() {
+        // Plain text -> TypeScript: nothing to close, both servers pick the document up.
+        let p = lang_change_plan(None, Some("typescript"));
+        assert_eq!((p.ts_close, p.ts_after, p.biome_close, p.biome_after), (false, true, false, true));
+        // TypeScript -> TSX: same servers, new languageId => close and reopen.
+        let p = lang_change_plan(Some("typescript"), Some("tsx"));
+        assert_eq!((p.ts_close, p.ts_after, p.biome_close, p.biome_after), (true, true, true, true));
+        // TypeScript -> Python: leaves both.
+        let p = lang_change_plan(Some("typescript"), Some("python"));
+        assert_eq!((p.ts_close, p.ts_after, p.biome_close, p.biome_after), (true, false, true, false));
+        // TypeScript -> JSON: tsgo is left, Biome keeps it with the json languageId.
+        let p = lang_change_plan(Some("typescript"), Some("json"));
+        assert_eq!((p.ts_close, p.ts_after, p.biome_close, p.biome_after), (true, false, true, true));
+        // Python -> Markdown: no server involved at all.
+        let p = lang_change_plan(Some("python"), Some("markdown"));
+        assert_eq!((p.ts_close, p.ts_after, p.biome_close, p.biome_after), (false, false, false, false));
+        // Same language id: nothing to do (a no-op pick).
+        let p = lang_change_plan(Some("javascript"), Some("javascript"));
+        assert!(!p.ts_close && !p.biome_close && p.ts_after);
     }
 }

@@ -152,6 +152,12 @@ jobs:
           sudo apt-get install -y ./dist/lumen-text_*.deb
           lumen-text --version
           test -f /usr/share/lumen-text/assets/language-manifest.json
+          # Headless render: proves fonts, assets lookup and the CPU renderer work from the installed layout.
+          d="$(mktemp -d)"; echo hello > "$d/f.txt"
+          HOME="$d" XDG_CONFIG_HOME="$d/c" XDG_STATE_HOME="$d/s" \
+            timeout 60 lumen-text --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
+          test -s "$d/snap/a.png"
+          head -c 8 "$d/snap/a.png" | od -An -c | grep -q 'P   N   G'
       - uses: actions/upload-artifact@v4
         with:
           name: dist-linux-${{ matrix.arch }}
@@ -168,6 +174,11 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      # Only the updater's public key is needed here (to double-check the signatures we make).
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: src/update_key.pub
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           pattern: dist-*
@@ -185,6 +196,49 @@ jobs:
             "lumen-text-${VERSION}-x86_64.AppImage"; do
             [ -f "dist/$f" ] || { echo "missing release file: $f" >&2; exit 1; }
           done
+      - name: Sign the AppImage and tarball (minisign) and write latest.json
+        shell: bash
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${MINISIGN_SECRET_KEY}" ] || { echo "secret MINISIGN_SECRET_KEY is not set (see CONTRIBUTING.md, Releases)" >&2; exit 1; }
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign jq
+          key="${RUNNER_TEMP}/minisign.key"
+          (umask 077; printf '%s\n' "${MINISIGN_SECRET_KEY}" > "$key")
+          trap 'rm -f "$key"' EXIT
+          # The trusted comment ties each signature to one version and one file name, so an old
+          # (validly signed) file can't be replayed as a newer release.
+          for f in dist/*.AppImage dist/*.tar.gz; do
+            name="$(basename "$f")"
+            minisign -S -s "$key" -m "$f" -x "$f.minisig" -t "lumen-text ${VERSION} ${name}"
+            minisign -V -p src/update_key.pub -m "$f" -x "$f.minisig" >/dev/null   # must match the key embedded in the app
+          done
+          # Release notes: generated once, used for the GitHub release and (first lines) for latest.json.
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="v${VERSION}" -f target_commitish="${GITHUB_SHA}" --jq .body > release-notes.md \
+            || echo "lumen-text ${VERSION}" > release-notes.md
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
+          platforms='{}'
+          add() { # add <platform key> <file name>: signed files carry their base64 .minisig, the rest an empty signature
+            [ -f "dist/$2" ] || return 0
+            sig=""
+            [ -f "dist/$2.minisig" ] && sig="$(base64 -w0 "dist/$2.minisig")"
+            platforms="$(jq -c --arg k "$1" --arg u "${base}/$2" --arg s "$sig" '. + {($k): {url: $u, signature: $s}}' <<<"$platforms")"
+          }
+          for pair in "x86_64 amd64 x86_64" "aarch64 arm64 aarch64"; do
+            set -- $pair; arch="$1"; deb="$2"; rpm="$3"
+            add "linux-${arch}-appimage" "lumen-text-${VERSION}-${arch}.AppImage"
+            add "linux-${arch}-tarball" "lumen-text-${VERSION}-linux-${arch}.tar.gz"
+            add "linux-${arch}-deb" "lumen-text_${VERSION}-1_${deb}.deb"
+            add "linux-${arch}-rpm" "lumen-text-${VERSION}-1.${rpm}.rpm"
+            add "linux-${arch}-arch" "lumen-text-bin-${VERSION}-1-${arch}.pkg.tar.zst"
+          done
+          jq -n --arg v "${VERSION}" --arg n "$(head -n 25 release-notes.md)" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson p "$platforms" '{version: $v, notes: $n, pub_date: $d, platforms: $p}' > dist/latest.json
+          jq -e '.platforms["linux-x86_64-appimage"].signature != "" and .platforms["linux-x86_64-tarball"].signature != ""' dist/latest.json >/dev/null
+          cat dist/latest.json
       - name: Checksums for every file
         run: |
           cd dist
@@ -197,4 +251,4 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --title "lumen-text ${VERSION}" \
-            --generate-notes
+            --notes-file release-notes.md

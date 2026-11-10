@@ -142,12 +142,19 @@ mod tests {
         let theme = Theme::load(&assets().join("themes/dark-plus.json")).unwrap();
         let mut hl = Highlighter::new(tk);
         assert!(hl.ready() < 100);
-        let t0 = Instant::now();
+        // CPU time of this thread (the provisional window is tokenized on the calling thread), so
+        // other tests/agents competing for cores cannot make it flaky.
+        let cpu = || {
+            let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+            unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+            ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+        };
+        let t0 = cpu();
         let spans = hl.spans(&buf, &theme, 90_000);
-        let el = t0.elapsed();
-        eprintln!("[perf] provisional spans @90000: {:.1} ms", el.as_secs_f64() * 1e3);
+        let el = cpu() - t0;
+        eprintln!("[perf] provisional spans @90000: {:.1} ms (cpu)", el * 1e3);
         assert!(spans.is_some(), "no provisional spans");
-        assert!(el.as_millis() < 300, "provisional window too slow: {el:?}");
+        assert!(el < 0.3, "provisional window too slow: {:.0} ms cpu", el * 1e3);
     }
 
     #[test]
@@ -180,6 +187,8 @@ mod tests {
 
     #[test]
     fn memory_100k_buffer_and_tokenizer() {
+        // The whole process is measured: wait for any `App` fixture of another test to finish.
+        let _g = crate::app_unsaved::testkit::lock();
         let (_dir, buf, _) = big_file();
         let tk = make_tokenizer(&assets(), "source.ts").expect("tokenizer");
         let theme = Theme::load(&assets().join("themes/dark-plus.json")).unwrap();

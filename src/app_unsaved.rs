@@ -1,7 +1,7 @@
 //! "Unsaved changes" question: Salvar tudo / Descartar / Cancelar.
 //!
 //! Asked before an action that would throw unsaved tabs away ("Fechar outras" / "Fechar todas",
-//! switching project) and, for a project switch, also when a debug session is running (it is
+//! switching project; "Fechar todas" also lists unsaved *pinned* tabs, which stay open but can be saved) and, for a project switch, also when a debug session is running (it is
 //! stopped as part of the action). The card rides on [`Overlay::Ctx`] like the delete
 //! confirmation does ([`CtxMenu::unsaved`]), so key/mouse/hover routing and the drawing hooks
 //! are the context menu's own; everything specific lives here.
@@ -9,10 +9,11 @@
 use crate::{
     app::App,
     app_ctxmenu::{CtxMenu, Target},
-    app_overlay::Overlay,
+    app_overlay::{Overlay, Prompt, PromptKind},
+    field::TextField,
     ui::{Canvas, Rect},
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use winit::keyboard::{Key, NamedKey};
 
 /// What to do once the user has answered.
@@ -35,6 +36,8 @@ pub struct Unsaved {
     pub pending: Pending,
     /// Names of the unsaved tabs involved.
     pub names: Vec<String>,
+    /// How many of them are pinned tabs that stay open ("Fechar todas"): only saved, never closed.
+    pub kept: usize,
     /// A debug session is running and will be stopped (project switch).
     pub debug: bool,
     /// Focused button.
@@ -46,7 +49,12 @@ pub struct Unsaved {
 impl Unsaved {
     pub fn new(pending: Pending, names: Vec<String>, debug: bool) -> Self {
         let sel = if names.is_empty() { Choice::Discard } else { Choice::Save };
-        Unsaved { pending, names, debug, sel, rects: [Rect::default(); 3] }
+        Unsaved { pending, names, kept: 0, debug, sel, rects: [Rect::default(); 3] }
+    }
+
+    pub fn with_kept(mut self, kept: usize) -> Self {
+        self.kept = kept.min(self.names.len());
+        self
     }
 
     /// "Salvar tudo" only makes sense when there is something to save.
@@ -98,6 +106,10 @@ impl Unsaved {
         }
         if matches!(self.pending, Pending::SwitchProject(_)) {
             body.push("As abas abertas serão fechadas ao trocar de projeto.".into());
+        } else if self.kept > 0 && self.kept == n {
+            body.push(if n == 1 { "A aba fixada continua aberta." } else { "As abas fixadas continuam abertas." }.into());
+        } else if self.kept > 0 {
+            body.push(format!("{} fixada(s) continua(m) aberta(s); as demais serão fechadas.", self.kept));
         } else if n > 0 {
             body.push("As abas selecionadas serão fechadas.".into());
         }
@@ -136,9 +148,24 @@ pub fn tabs_to_close(pinned: &[bool], dirty: &[bool], keep: Option<usize>) -> (V
     (all, unsaved)
 }
 
+/// Unsaved tabs the question lists and "Salvar tudo" saves, in tab order, and how many of them are
+/// pinned tabs that stay open. "Fechar todas" (`keep = None`) includes unsaved *pinned* tabs (they
+/// are not closed, but the user is asked about them and may save them); "Fechar outras" only lists
+/// what it closes.
+pub fn tabs_to_ask(pinned: &[bool], dirty: &[bool], keep: Option<usize>) -> (Vec<usize>, usize) {
+    let mut v: Vec<usize> = (0..pinned.len()).filter(|&i| dirty[i] && Some(i) != keep && (!pinned[i] || keep.is_none())).collect();
+    v.sort_unstable();
+    let kept = v.iter().filter(|&&i| pinned[i]).count();
+    (v, kept)
+}
+
 impl App {
     /// Show the card for `pending`.
     pub fn ask_unsaved(&mut self, pending: Pending, names: Vec<String>, debug: bool) {
+        self.ask_unsaved_kept(pending, names, 0, debug);
+    }
+
+    fn ask_unsaved_kept(&mut self, pending: Pending, names: Vec<String>, kept: usize, debug: bool) {
         self.hover = None;
         self.hover_rect = None;
         self.overlay = Overlay::Ctx(Box::new(CtxMenu {
@@ -149,7 +176,7 @@ impl App {
             rects: Vec::new(),
             card: Rect::default(),
             confirm: None,
-            unsaved: Some(Unsaved::new(pending, names, debug)),
+            unsaved: Some(Unsaved::new(pending, names, debug).with_kept(kept)),
         }));
         self.request_redraw();
     }
@@ -161,13 +188,13 @@ impl App {
     /// "Fechar outras" / "Fechar todas": closes at once when nothing would be lost, else asks.
     pub fn close_tabs_request(&mut self, keep: Option<usize>) {
         let (pinned, dirty) = self.tab_flags();
-        let (_, unsaved) = tabs_to_close(&pinned, &dirty, keep);
-        if unsaved.is_empty() {
+        let (list, kept) = tabs_to_ask(&pinned, &dirty, keep);
+        if list.is_empty() {
             return self.close_tabs_now(keep);
         }
-        let mut names: Vec<String> = unsaved.iter().rev().filter_map(|&i| self.docs.get(i)).map(|d| d.name.clone()).collect();
+        let mut names: Vec<String> = list.iter().filter_map(|&i| self.docs.get(i)).map(|d| d.name.clone()).collect();
         names.dedup();
-        self.ask_unsaved(Pending::CloseTabs { keep }, names, false);
+        self.ask_unsaved_kept(Pending::CloseTabs { keep }, names, kept, false);
     }
 
     /// Close every unpinned tab but `keep`, discarding unsaved changes.
@@ -184,26 +211,118 @@ impl App {
         }
     }
 
-    /// Save these documents; stops at the first failure and reports it.
-    pub fn save_docs(&mut self, idxs: &[usize]) -> Result<(), String> {
-        for &i in idxs {
-            let Some(d) = self.docs.get_mut(i) else { continue };
+    /// Save document `i` the way Ctrl+S does: format-on-save first (external formatter), then the
+    /// atomic write and the follow-ups (LSP `didSave`, git gutter, disk stamp).
+    pub fn save_doc(&mut self, i: usize) -> Result<(), String> {
+        if self.format_on_save {
+            self.format_external_doc(i, true);
+        }
+        let Some(d) = self.docs.get_mut(i) else { return Ok(()) };
+        let name = d.name.clone();
+        match d.buf.save() {
+            Ok(()) => {
+                d.git_stale = true;
+                d.disk_mtime = d.stat_mtime();
+                d.conflict = false;
+                self.lsp_did_save(i);
+                Ok(())
+            }
+            Err(e) => Err(format!("não foi possível salvar {name}: {e}")),
+        }
+    }
+
+    /// Save these documents; stops at the first failure and reports it. A document without a file
+    /// path cannot be written: it opens the "Salvar como" prompt, and the rest of the list (and
+    /// `then`, the action that was waiting for the save) continue once that is answered.
+    pub fn save_docs_then(&mut self, idxs: Vec<usize>, then: Option<Pending>) {
+        let mut rest = idxs.into_iter();
+        while let Some(i) = rest.next() {
+            let Some(d) = self.docs.get(i) else { continue };
             if !d.buf.is_dirty() {
                 continue;
             }
-            let name = d.name.clone();
-            match d.buf.save() {
-                Ok(()) => {
-                    d.git_stale = true;
-                    d.disk_mtime = d.stat_mtime();
-                    d.conflict = false;
-                    self.lsp_did_save(i);
-                }
-                Err(e) => return Err(format!("não foi possível salvar {name}: {e}")),
+            if d.path().is_none() {
+                return self.ask_save_as(i, rest.collect(), then, String::new());
+            }
+            if let Err(e) = self.save_doc(i) {
+                self.refresh_git_status();
+                return self.say(e);
             }
         }
         self.refresh_git_status();
-        Ok(())
+        if let Some(p) = then {
+            self.run_pending(p);
+        }
+    }
+
+    /// "Salvar como" prompt for the untitled document `i`; `rest` and `then` continue afterwards.
+    pub fn ask_save_as(&mut self, i: usize, rest: Vec<usize>, then: Option<Pending>, text: String) {
+        let name = self.docs.get(i).map(|d| d.name.clone()).unwrap_or_default();
+        self.overlay = Overlay::Prompt(Prompt {
+            kind: PromptKind::SaveAs { doc: i, rest, then },
+            title: format!("Salvar “{name}” como (caminho; relativo à raiz do projeto)"),
+            field: TextField::with(&text),
+        });
+        self.request_redraw();
+    }
+
+    /// Where a "Salvar como" answer points: `~/x`, an absolute path, or relative to the project root.
+    pub fn resolve_save_path(&self, text: &str) -> Option<PathBuf> {
+        let t = text.trim();
+        if t.is_empty() || t.ends_with('/') {
+            return None;
+        }
+        Some(match t.strip_prefix("~/") {
+            Some(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest),
+            None if t.starts_with('/') => PathBuf::from(t),
+            None => self.root.join(t),
+        })
+    }
+
+    /// The "Salvar como" prompt was accepted with `text`.
+    pub fn save_as_answer(&mut self, i: usize, rest: Vec<usize>, then: Option<Pending>, text: String) {
+        let Some(path) = self.resolve_save_path(&text) else {
+            return self.say("salvar cancelado: caminho vazio");
+        };
+        if path.is_dir() {
+            self.say(format!("{} é uma pasta", path.display()));
+            return self.ask_save_as(i, rest, then, text);
+        }
+        if path.exists() {
+            self.say(format!("já existe: {}", path.display()));
+            return self.ask_save_as(i, rest, then, text);
+        }
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return self.say(format!("não foi possível criar {}: {e}", parent.display()));
+            }
+        }
+        self.set_doc_path(i, &path);
+        if let Err(e) = self.save_doc(i) {
+            return self.say(e);
+        }
+        self.refresh_tree();
+        self.tree.reveal(&path);
+        let name = self.docs.get(i).map(|d| d.name.clone()).unwrap_or_default();
+        self.say(format!("{name} salvo"));
+        self.save_docs_then(rest, then);
+    }
+
+    /// Give the untitled document `i` a file path: name, language, comment prefix, git base.
+    pub fn set_doc_path(&mut self, i: usize, path: &Path) {
+        let lang = crate::highlight::language_for(&path.to_string_lossy());
+        let hl = lang.and_then(|l| self.tokenizer_for(l)).map(crate::highlight::Highlighter::new);
+        let Some(d) = self.docs.get_mut(i) else { return };
+        d.buf.path = Some(path.to_path_buf());
+        d.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        d.lang = lang;
+        d.hl = hl;
+        d.ed.comment = crate::highlight::comment_prefix(&path.to_string_lossy()).to_string();
+        d.ed.jsx = matches!(lang, Some("tsx" | "jsx" | "html" | "vue" | "svelte"));
+        d.sem.clear();
+        d.lsp_open = false;
+        d.git_base = crate::git::head_text(path);
+        d.git_stale = true;
     }
 
     /// The user answered the card.
@@ -216,14 +335,11 @@ impl App {
                 let idxs: Vec<usize> = match &pending {
                     Pending::CloseTabs { keep } => {
                         let (pinned, dirty) = self.tab_flags();
-                        tabs_to_close(&pinned, &dirty, *keep).1
+                        tabs_to_ask(&pinned, &dirty, *keep).0
                     }
                     Pending::SwitchProject(_) => (0..self.docs.len()).collect(),
                 };
-                match self.save_docs(&idxs) {
-                    Ok(()) => self.run_pending(pending),
-                    Err(e) => self.say(e),
-                }
+                self.save_docs_then(idxs, Some(pending));
             }
             Choice::Discard => self.run_pending(pending),
         }
@@ -338,6 +454,59 @@ fn fit_text(tx: &mut crate::ui::TextCtx, s: &str, max: i32, bold: bool) -> Strin
     format!("{out}…")
 }
 
+/// App fixtures for the tests of this module and of the explorer (no window, no LSP).
+#[cfg(test)]
+pub(crate) mod testkit {
+    use super::*;
+
+    /// Held for the whole test: one `App` at a time (each owns a font system, a watcher and
+    /// caches, and the memory test of `perf.rs` measures the whole test process); the freed heap
+    /// is handed back to the OS when the test ends.
+    pub struct Guard(std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            crate::app_lsp::release_memory();
+        }
+    }
+
+    pub fn lock() -> Guard {
+        static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        Guard(L.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// An `App` rooted at `dir` with `seed.txt` open (take [`lock`] first).
+    pub fn test_app(dir: &Path) -> App {
+        // Headless: no window, and the project is not added to the user's recent list.
+        unsafe { std::env::set_var("LUMEN_HEADLESS", "1") };
+        let assets = crate::config::assets_dir();
+        let theme = crate::theme::Theme::load(&assets.join("themes").join("github-dark-default.json")).expect("theme");
+        // Settings written by the code under test land here, not in the user's config.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.join(".config")) };
+        let seed = dir.join("seed.txt");
+        std::fs::write(&seed, "seed\n").unwrap();
+        let wake: crate::lsp::Wake = std::sync::Arc::new(|| {});
+        let mut app = App::new(vec![(seed, None)], dir.to_path_buf(), theme, wake, crate::config::Config::default());
+        app.clip = crate::clipboard::Clipboard::in_process();
+        app
+    }
+
+    /// Add a document without a path holding `text` (unsaved).
+    pub fn untitled(app: &mut App, text: &str) -> usize {
+        let mut d = crate::doc::Doc::new(crate::buffer::Buffer::from_str(""), None, None, "//", 8.0);
+        d.replace_text(text);
+        app.docs.push(d);
+        app.docs.len() - 1
+    }
+
+    pub fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("lumen-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.canonicalize().unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +547,23 @@ mod tests {
     }
 
     #[test]
+    fn close_all_also_asks_about_unsaved_pinned_tabs() {
+        let pinned = [false, true, false, true];
+        let dirty = [false, true, true, false];
+        // Close all lists the unsaved pinned tab (1) too; it is only saved, never closed.
+        assert_eq!(tabs_to_ask(&pinned, &dirty, None), (vec![1, 2], 1));
+        // Close others of tab 2: only what it closes (the pinned one stays and is not asked about).
+        assert_eq!(tabs_to_ask(&pinned, &dirty, Some(2)), (vec![], 0));
+        assert_eq!(tabs_to_ask(&pinned, &dirty, Some(0)), (vec![2], 0));
+        // Only a pinned tab is unsaved: Close all still has a question for it.
+        assert_eq!(tabs_to_ask(&[true, false], &[true, false], None), (vec![0], 1));
+        let u = Unsaved::new(Pending::CloseTabs { keep: None }, names(&["a.ts"]), false).with_kept(1);
+        assert_eq!(u.text().1, ["A aba fixada continua aberta."]);
+        let u = Unsaved::new(Pending::CloseTabs { keep: None }, names(&["a.ts", "b.ts"]), false).with_kept(1);
+        assert!(u.text().1.iter().any(|l| l.contains("1 fixada(s) continua(m) aberta(s)")), "{:?}", u.text());
+    }
+
+    #[test]
     fn keys_pick_or_move_focus() {
         let mut u = Unsaved::new(Pending::CloseTabs { keep: Some(1) }, names(&["a"]), false);
         let ch = |s: &str| Key::Character(s.into());
@@ -396,5 +582,74 @@ mod tests {
         let mut u = Unsaved::new(Pending::SwitchProject("/x".into()), vec![], true);
         assert_eq!(u.key(&ch("s")), None);
         assert_eq!(u.sel, Choice::Discard);
+    }
+
+    use super::testkit::{lock, test_app, tmp, untitled};
+
+    #[test]
+    fn save_all_asks_for_a_path_for_untitled_tabs_then_continues() {
+        let _g = lock();
+        let dir = tmp("saveall");
+        let mut app = test_app(&dir);
+        app.docs[0].replace_text("changed\n");
+        let u = untitled(&mut app, "hello\n");
+        assert!(app.docs[u].path().is_none() && app.docs[u].buf.is_dirty());
+        app.close_tabs_request(None);
+        assert!(matches!(&app.overlay, Overlay::Ctx(m) if m.unsaved.as_ref().is_some_and(|u| u.names.len() == 2)));
+        app.unsaved_answer(Pending::CloseTabs { keep: None }, Choice::Save);
+        // The file with a path was saved; the untitled one raised the "Salvar como" prompt and
+        // nothing was closed yet.
+        assert_eq!(std::fs::read_to_string(dir.join("seed.txt")).unwrap(), "changed\n");
+        let Overlay::Prompt(p) = &app.overlay else { panic!("expected the Salvar como prompt") };
+        assert!(matches!(&p.kind, PromptKind::SaveAs { doc, .. } if *doc == u));
+        assert_eq!(app.docs.len(), 2);
+        // Answer with a relative path (inside the project, in a folder that does not exist yet).
+        let Overlay::Prompt(p) = std::mem::replace(&mut app.overlay, Overlay::None) else { unreachable!() };
+        let PromptKind::SaveAs { doc, rest, then } = p.kind else { unreachable!() };
+        app.save_as_answer(doc, rest, then, "sub/new.txt".into());
+        assert_eq!(std::fs::read_to_string(dir.join("sub/new.txt")).unwrap(), "hello\n");
+        assert!(app.docs.is_empty(), "the pending Close all ran after the save");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_as_refuses_existing_files_and_empty_names() {
+        let _g = lock();
+        let dir = tmp("saveas");
+        let mut app = test_app(&dir);
+        let u = untitled(&mut app, "x");
+        app.save_as_answer(u, vec![], None, "seed.txt".into());
+        assert_eq!(std::fs::read_to_string(dir.join("seed.txt")).unwrap(), "seed\n", "never overwrites");
+        assert!(matches!(&app.overlay, Overlay::Prompt(p) if p.field.text == "seed.txt"), "asks again with the text kept");
+        app.overlay = Overlay::None;
+        app.save_as_answer(u, vec![], None, "  ".into());
+        assert!(app.docs[u].path().is_none() && matches!(app.overlay, Overlay::None));
+        assert_eq!(app.resolve_save_path("a/b.ts"), Some(app.root.join("a/b.ts")));
+        assert_eq!(app.resolve_save_path("/x/y"), Some(PathBuf::from("/x/y")));
+        assert_eq!(app.resolve_save_path("dir/"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn close_all_saves_unsaved_pinned_tabs_and_keeps_them_open() {
+        let _g = lock();
+        let dir = tmp("pinned");
+        let mut app = test_app(&dir);
+        let other = dir.join("other.txt");
+        std::fs::write(&other, "o\n").unwrap();
+        app.open_path(&other, None);
+        let i = app.docs.iter().position(|d| d.name == "seed.txt").unwrap();
+        app.docs[i].pinned = true;
+        app.docs[i].replace_text("pinned edit\n");
+        // Only the pinned tab is unsaved: Close all still asks (it lists it as a tab that stays).
+        app.close_tabs_request(None);
+        let Overlay::Ctx(m) = &app.overlay else { panic!("expected the question") };
+        let u = m.unsaved.as_ref().unwrap();
+        assert_eq!((u.names.clone(), u.kept), (vec!["seed.txt".to_string()], 1));
+        app.unsaved_answer(Pending::CloseTabs { keep: None }, Choice::Save);
+        assert_eq!(std::fs::read_to_string(dir.join("seed.txt")).unwrap(), "pinned edit\n");
+        assert_eq!(app.docs.len(), 1, "the unpinned tab closed, the pinned one stayed");
+        assert!(app.docs[0].pinned && !app.docs[0].buf.is_dirty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

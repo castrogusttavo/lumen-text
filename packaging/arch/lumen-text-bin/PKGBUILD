@@ -10,7 +10,7 @@ pkgdesc='Lightweight code editor in Rust with TextMate highlighting and a TypeSc
 arch=('x86_64' 'aarch64')
 url='https://github.com/castrogusttavo/lumen-text'
 license=('MIT')
-depends=('gcc-libs' 'glibc' 'libxkbcommon' 'fontconfig')
+depends=('gcc-libs' 'glibc' 'libxkbcommon' 'fontconfig' 'ttf-dejavu')  # the editor panics without at least one system font
 optdepends=('wayland: Wayland sessions'
             'libxkbcommon-x11: X11 sessions'
             'libx11: X11 sessions'

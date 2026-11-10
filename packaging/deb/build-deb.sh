@@ -34,8 +34,8 @@ Installed-Size: ${size_kb}
 Section: editors
 Priority: optional
 Homepage: https://github.com/castrogusttavo/lumen-text
-Depends: libc6 (>= 2.35), libgcc-s1, libxkbcommon0
-Recommends: libwayland-client0, libwayland-cursor0, libxkbcommon-x11-0, libx11-6, libx11-xcb1, libxcursor1, libxi6, libfontconfig1
+Depends: libc6 (>= 2.35), libgcc-s1, libxkbcommon0, fontconfig, fonts-dejavu-core | fonts-liberation | fonts-noto-core
+Recommends: libwayland-client0, libwayland-cursor0, libxkbcommon-x11-0, libx11-6, libx11-xcb1, libxcursor1, libxi6
 Suggests: wl-clipboard, xclip
 Description: Lightweight code editor with TextMate highlighting and a TypeScript workflow
  lumen-text is a fast, memory-frugal code editor written in Rust. It renders

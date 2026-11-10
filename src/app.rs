@@ -165,6 +165,10 @@ pub struct App {
     pub last_click_pos: (f64, f64),
     /// First stroke of a pending chord (normalized, e.g. "ctrl+k"); see `keymap::DEFAULTS`.
     pub chord: Option<String>,
+    /// Git work that outlives the panel: detached command, background counts, toast.
+    pub gitbg: crate::app_gitbg::GitBg,
+    /// Language / indentation / tab width the user picked per file (kept in the session).
+    pub picks: std::collections::HashMap<PathBuf, crate::app_topbar::DocPick>,
 
     pub status: Option<(String, Instant)>,
     pub quit_armed: bool,
@@ -216,12 +220,15 @@ pub struct App {
     pub preedit: String,
     pub actions_expected: usize,
     pub actions_items: Vec<crate::app_overlay::Item>,
+    /// Auto-update state (background checks, update card).
+    pub upd: crate::app_update::UpdateUi,
 }
 
 impl App {
     pub fn new(files: Vec<(PathBuf, Option<(usize, usize)>)>, root: PathBuf, theme: Theme, wake_fn: crate::lsp::Wake, config: crate::config::Config) -> Self {
         let mut tx = TextCtx::new(None);
         crate::minimap::set_style(crate::minimap::Style::from_name(&config.minimap_style));
+        crate::editor::set_default_tab_w(config.tab_width);
         if (config.font_size - 14.0).abs() > f32::EPSILON {
             tx.set_zoom(config.font_size);
         }
@@ -279,6 +286,8 @@ impl App {
             last_click: Instant::now(),
             last_click_pos: (0.0, 0.0),
             chord: None,
+            gitbg: Default::default(),
+            picks: Default::default(),
             status: None,
             quit_armed: false,
             close_armed: None,
@@ -323,6 +332,7 @@ impl App {
             preedit: String::new(),
             actions_expected: 0,
             actions_items: Vec::new(),
+            upd: crate::app_update::UpdateUi::new(),
         };
         app.refresh_git_status();
         app.watcher = crate::watcher::Watcher::new(app.wake()).ok();
@@ -387,7 +397,7 @@ impl App {
         }
     }
 
-    fn tokenizer_for(&mut self, lang: &str) -> Option<SharedTokenizer> {
+    pub(crate) fn tokenizer_for(&mut self, lang: &str) -> Option<SharedTokenizer> {
         let reg = crate::textmate::Registry::new(&self.assets).ok()?;
         let scope = reg.scope_for_language(lang)?;
         if let Some(t) = self.tokenizers.get(&scope) {
@@ -419,6 +429,8 @@ impl App {
             doc.minimap = self.config.minimap;
             doc.indent_guides = self.config.indent_guides;
             doc.sticky = self.config.sticky_scroll;
+            doc.lens_refs = self.config.code_lens_refs;
+            doc.lens_impls = self.config.code_lens_impls;
             doc.set_word_wrap(self.config.word_wrap);
             doc.git_base = git::head_text(&path);
             self.docs.push(doc);
@@ -541,6 +553,10 @@ impl App {
     }
 
     pub fn save_active(&mut self) {
+        if self.docs.get(self.active).is_some_and(|d| d.path().is_none()) {
+            // Untitled document: nowhere to write yet, ask for a path.
+            return self.ask_save_as(self.active, Vec::new(), None, String::new());
+        }
         if self.format_on_save {
             self.format_external_active(true);
         }
@@ -576,6 +592,9 @@ impl App {
         want(self.last_trim + Duration::from_secs(4));
         self.check_disk(now, &mut want);
         self.gitpanel_tick(now, &mut want);
+        self.update_tick(now, &mut want);
+        self.git_bg_tick(now, &mut want);
+        self.md_tick(now, &mut want);
 
         // Git gutter against the buffer, debounced.
         let active = self.active;
@@ -736,10 +755,20 @@ impl App {
             .iter()
             .filter_map(|d| {
                 let (l, c) = d.buf.line_col(d.ed.head());
-                Some(serde_json::json!({"path": d.path()?.to_string_lossy(), "line": l, "col": c, "top": d.target, "pinned": d.pinned, "md": d.md.is_some()}))
+                let mut entry = serde_json::json!({"path": d.path()?.to_string_lossy(), "line": l, "col": c, "top": d.target, "pinned": d.pinned, "md": d.md.is_some()});
+                self.picks_to_json(d.path()?, &mut entry);
+                Some(entry)
             })
             .collect();
-        let v = serde_json::json!({"active": self.active, "files": files});
+        // Index of each document's entry in `files` (documents without a path are not saved).
+        let mut file_ix = vec![None; self.docs.len()];
+        for (k, i) in self.docs.iter().enumerate().filter(|(_, d)| d.path().is_some()).map(|(i, _)| i).enumerate() {
+            file_ix[i] = Some(k);
+        }
+        let mut v = serde_json::json!({"active": self.active, "files": files});
+        if let Some(sp) = self.split_session(&file_ix) {
+            v["split"] = sp;
+        }
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -750,16 +779,21 @@ impl App {
         let Some(path) = self.session_path() else { return };
         let Ok(text) = std::fs::read_to_string(path) else { return };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+        let mut opened: Vec<Option<usize>> = Vec::new();
         for f in v["files"].as_array().into_iter().flatten() {
+            opened.push(None);
             let Some(p) = f["path"].as_str() else { continue };
             if !Path::new(p).exists() {
                 continue;
             }
             let at = Some((f["line"].as_u64().unwrap_or(0) as usize, f["col"].as_u64().unwrap_or(0) as usize));
-            if let Some(i) = self.open_path(Path::new(p), at) {
+            let i = self.open_path(Path::new(p), at);
+            *opened.last_mut().unwrap() = i;
+            if let Some(i) = i {
                 let top = f["top"].as_f64().unwrap_or(0.0);
                 self.docs[i].pinned = f["pinned"].as_bool().unwrap_or(false);
                 self.docs[i].md_restore(f["md"].as_bool().unwrap_or(false));
+                self.apply_picks_json(i, f);
                 self.docs[i].target = top;
                 self.docs[i].top = top;
                 self.docs[i].reveal = false;
@@ -768,6 +802,9 @@ impl App {
         let active = v["active"].as_u64().unwrap_or(0) as usize;
         if active < self.docs.len() {
             self.activate(active);
+        }
+        if v["split"].is_object() {
+            self.split_restore(&v["split"], &opened);
         }
     }
 
@@ -892,8 +929,10 @@ impl App {
         self.draw_find(cv);
         self.draw_completion(cv);
         self.draw_hover(cv);
+        self.draw_update_card(cv);
         self.draw_overlay(cv);
         self.draw_tooltip(cv);
+        self.draw_toast(cv);
         busy
     }
 
@@ -1109,7 +1148,11 @@ impl App {
         let (dim, fg) = (c.tab_inactive_fg, c.tab_active_fg);
         let rel = d.path().map(|p| self.rel(p)).unwrap_or_else(|| d.name.clone());
         let (line, _) = d.buf.line_col(d.ed.head());
-        let chain: Vec<(String, usize, usize)> = d.symbol_chain(line).iter().map(|s| (s.name.clone(), s.sel_l, s.sel_c)).collect();
+        let mut chain: Vec<(String, usize, usize)> = d.symbol_chain(line).iter().map(|s| (s.name.clone(), s.sel_l, s.sel_c)).collect();
+        if chain.is_empty() && d.buf.line_count() > crate::bigfile::BIG_LINES {
+            // Big file with no (or a trimmed) outline: derive the chain from indentation.
+            chain = d.big.chain(&d.buf, line, d.version).into_iter().map(|s| (s.name, s.sel_l, s.sel_c)).collect();
+        }
         let parts: Vec<String> = rel.split('/').map(str::to_string).collect();
         let y = r.y + (r.h - 18) / 2;
         let mut x = r.x + 16;
@@ -1203,6 +1246,7 @@ impl App {
         }
         self.hover = None;
         self.dismiss_tooltip();
+        self.chord = None;
         if button == MouseButton::Right {
             return self.right_click();
         }
@@ -1210,6 +1254,9 @@ impl App {
             return self.request_redraw();
         }
         if self.overlay_mouse(x, y) {
+            return self.request_redraw();
+        }
+        if self.update_card_mouse(x, y) {
             return self.request_redraw();
         }
         if self.gitpanel_mouse(x, y) {
@@ -1284,7 +1331,7 @@ impl App {
         if self.split_mouse_down(x, y) {
             return self.request_redraw();
         }
-        if self.diff.is_some() {
+        if self.diff.is_some() && self.diff_area().contains(x, y) {
             return;
         }
         if self.conflict_click(x, y) {
@@ -1352,7 +1399,7 @@ impl App {
         if clicks == 1 && !alt && d.click_fold(x, y) {
             return self.request_redraw();
         }
-        let p = d.pos_at(x, y);
+        let (p, hint) = d.hit_at(x, y);
         if alt && clicks == 1 {
             self.drag_press_block(p);
             return self.request_redraw();
@@ -1362,6 +1409,21 @@ impl App {
             d.reveal = true;
             self.drag_press(p, 3, false);
             return self.request_redraw();
+        }
+        // Inlay hints: Ctrl+click on a label part with a location goes there; a double click on a
+        // type hint inserts the annotation (one undo step). A plain click only places the cursor.
+        if let Some(hit) = hint {
+            if ctrl && clicks == 1 {
+                d.ed.click(&mut d.buf, p, false);
+                if let Some(l) = d.hint_link(hit) {
+                    self.goto_location(&(l.uri, l.line, l.character));
+                }
+                return self.request_redraw();
+            }
+            if clicks == 2 && !ctrl && !shift && d.apply_hint_edits(hit) {
+                d.reveal = true;
+                return self.request_redraw();
+            }
         }
         if ctrl && clicks == 1 {
             d.ed.click(&mut d.buf, p, false);
@@ -1431,6 +1493,9 @@ impl App {
             }
         }
         if l.editor.contains(x, y) || self.split_in_other(x, y) {
+            if self.mods.control_key() && self.docs.get(self.active).is_some_and(|d| d.hit_at(x, y).1.is_some_and(|h| d.hint_link(h).is_some())) {
+                return CursorIcon::Pointer; // Ctrl over a hint with a target
+            }
             // Gutter (line numbers, fold chevrons, breakpoints) is not text.
             let gutter_right = l.editor.x + 56;
             return if x < gutter_right as f64 && l.editor.contains(x, y) { CursorIcon::Default } else { CursorIcon::Text };
@@ -1641,6 +1706,10 @@ impl App {
         if !self.overlay.is_none() {
             return self.overlay_key(ev);
         }
+        if self.update_card_key(&key) {
+            self.request_redraw();
+            return false;
+        }
         if self.gitpanel_key(ev) {
             self.request_redraw();
             return false;
@@ -1656,7 +1725,7 @@ impl App {
         }
 
         // User key bindings win over the built-in shortcuts.
-        if self.diff.is_some() {
+        if self.diff.is_some() && self.diff_pane_focused() {
             if self.diff_key(&key) {
                 self.request_redraw();
                 return false;
@@ -1744,7 +1813,7 @@ impl App {
                     ("d", false) => d.ed.add_next_occurrence(&mut d.buf),
                     ("l", true) => d.ed.select_all_occurrences(&mut d.buf),
                     ("c", _) => {
-                        let t = d.ed.copy_text_multi(&d.buf);
+                        let t = d.copy_cmd();
                         self.clip.set(&t);
                     }
                     ("x", _) => {
@@ -1753,7 +1822,7 @@ impl App {
                             self.clip.set(&t);
                             d.ed.edit_multi(&mut d.buf, EditKind::Other, |e, b| e.backspace(b));
                         } else {
-                            let t = d.ed.cut(&mut d.buf);
+                            let t = d.cut_cmd();
                             self.clip.set(&t);
                         }
                     }
@@ -1816,17 +1885,9 @@ impl App {
                     d.scr.glide_next = true;
                     d.ed.doc_end(&mut d.buf, shift)
                 }
-                NamedKey::Home => {
-                    // With word wrap the first press goes to the start of the visual row.
-                    match d.row_home_target(d.ed.head()).filter(|_| d.ed.extra.is_empty()) {
-                        Some(p) => d.ed.click(&mut d.buf, p, shift),
-                        None => d.ed.move_multi(&mut d.buf, |e, b| e.home(b, shift)),
-                    }
-                }
-                NamedKey::End => match d.row_end_target(d.ed.head()).filter(|_| d.ed.extra.is_empty()) {
-                    Some(p) => d.ed.click(&mut d.buf, p, shift),
-                    None => d.ed.move_multi(&mut d.buf, |e, b| e.end(b, shift)),
-                },
+                // With word wrap the first press goes to the start / end of the visual row (every cursor).
+                NamedKey::Home => d.home_cmd(shift),
+                NamedKey::End => d.end_cmd(shift),
                 NamedKey::Backspace => d.ed.edit_multi(&mut d.buf, EditKind::Backspace, |e, b| {
                     if ctrl {
                         e.delete_word(b, false)
@@ -1895,6 +1956,9 @@ impl App {
                         let h = d.ed.head();
                         d.ed.click(&mut d.buf, h, false);
                         self.find = None;
+                        // Nothing else to dismiss: Esc also forgets a pending file cut (the
+                        // dimmed explorer rows), whichever pane has the focus.
+                        self.cancel_cut();
                     } else {
                         d.ed.clear_extra();
                     }
@@ -2089,7 +2153,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.preedit = text;
                 self.request_redraw();
             }
+            WindowEvent::Focused(false) => self.git_bg_focus(false),
             WindowEvent::Focused(true) => {
+                self.git_bg_focus(true);
                 self.follow_system_theme();
                 self.last_disk_check = Instant::now() - Duration::from_secs(10);
                 self.refresh_git_status();

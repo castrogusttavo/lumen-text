@@ -82,6 +82,15 @@ pub fn write_png(path: &Path, px: &[u32], w: u32, h: u32) -> std::io::Result<()>
 }
 
 fn state_line(app: &App) -> String {
+    let mut extra = app.regions_state();
+    if let Some(h) = &app.hover {
+        extra.push_str(&format!(" hover_scroll={:.1}", h.scroll));
+    }
+    let base = state_line_doc(app);
+    if extra.is_empty() { base } else { format!("{base} {}", extra.trim()) }
+}
+
+fn state_line_doc(app: &App) -> String {
     let d = app.docs.get(app.active);
     match d {
         Some(d) => format!(
@@ -321,7 +330,7 @@ pub fn run(mut app: App, opts: Opts) {
                     frame(&mut app, w, h);
                     app.mouse_down(MouseButton::Left);
                     app.dragging = false;
-                    app.tree.drag = None;
+                    app.tree_drag_release(); // a click on an explorer file opens it on release
                 } else {
                     // Layout and hit rects only exist after a frame; draw one so `hover:` works first thing.
                     let mut px = vec![0u32; (w * h) as usize];

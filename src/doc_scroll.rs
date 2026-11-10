@@ -29,8 +29,8 @@ const WIDE_WINDOW: usize = 800;
 pub struct DocScroll {
     pub v: Scroller,
     pub h: Scroller,
-    /// (version, first line, end line, widest visual column) of the last scan.
-    pub wide: std::cell::Cell<(i32, usize, usize, usize)>,
+    /// (version, first line, end line, widest visual column, tab width) of the last scan.
+    pub wide: std::cell::Cell<(i32, usize, usize, usize, usize)>,
     /// The next reveal that moves the view glides (80 ms) instead of jumping (Ctrl+Home/End).
     pub glide_next: bool,
 }
@@ -48,8 +48,8 @@ impl Doc {
         let n = self.buf.line_count();
         let (first, _) = self.top_pos();
         let vis = self.visible_lines() as usize + 2;
-        let (ver, lo, hi, cols) = self.scr.wide.get();
-        let cached = ver == self.version && lo <= first && (first + vis <= hi || hi >= n);
+        let (ver, lo, hi, cols, tab_seen) = self.scr.wide.get();
+        let cached = ver == self.version && tab_seen == self.ed.tab_w && lo <= first && (first + vis <= hi || hi >= n);
         let cols = if cached {
             cols
         } else {
@@ -59,10 +59,10 @@ impl Doc {
             // Giant (minified) lines: the char count stands in for the visual width (no tab scan).
             let width = |l: usize| {
                 let n = self.buf.line_len(l);
-                if n > 4000 { n } else { visual_col(&self.buf.line(l), usize::MAX, tab) }
+                if n > 4000 { n } else { visual_col(&self.buf.line(l), usize::MAX, tab) + self.inlay.hints.extra_before(l, usize::MAX, true) }
             };
             let cols = (lo..hi).map(width).max().unwrap_or(0);
-            self.scr.wide.set((self.version, lo, hi, cols));
+            self.scr.wide.set((self.version, lo, hi, cols, tab));
             cols
         };
         cols.max(self.caret_geom(self.ed.head()).1)
@@ -323,6 +323,18 @@ mod tests {
         d.sync_edits();
         d.apply_reveal();
         assert!(d.max_left() >= 400.0 * 8.0 - d.text_view_w());
+    }
+
+    #[test]
+    fn changing_the_tab_width_re_measures_the_widest_line() {
+        // Ten tabs: 40 columns at width 4, 80 at width 8 (no edit in between).
+        let mut d = doc("short\n\t\t\t\t\t\t\t\t\t\tx\nshort\n");
+        d.ed.tab_w = 4;
+        assert_eq!(d.widest_cols(), 41);
+        d.ed.tab_w = 8;
+        assert_eq!(d.widest_cols(), 81, "the cached width of the old tab width is not reused");
+        d.ed.tab_w = 2;
+        assert_eq!(d.widest_cols(), 21);
     }
 
     #[test]

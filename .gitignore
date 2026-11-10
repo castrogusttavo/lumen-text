@@ -3,6 +3,8 @@
 /assets/icons/hugeicons/
 /assets/icons/hugeicons_bulk/
 *.orig
+# minisign secret keys must never be committed (the release key lives in a GitHub secret)
+*.key
 *.rej
 *.log
 .DS_Store

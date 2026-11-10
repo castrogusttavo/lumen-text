@@ -125,7 +125,7 @@ pub fn sem_scope(class: u8, readonly: bool) -> Option<&'static str> {
 }
 
 /// Decode LSP `semanticTokens` (relative encoding) into per-line (utf16 start, utf16 len, class, readonly).
-pub fn decode_semantic(data: &[u64], types: &[String], mods: &[String]) -> std::collections::HashMap<usize, Vec<(usize, usize, u8, bool)>> {
+pub fn decode_semantic(data: &[u32], types: &[String], mods: &[String]) -> std::collections::HashMap<usize, Vec<(usize, usize, u8, bool)>> {
     let ro_bit = mods.iter().position(|m| m == "readonly");
     let classes: Vec<u8> = types.iter().map(|t| sem_class(t)).collect();
     let mut out: std::collections::HashMap<usize, Vec<(usize, usize, u8, bool)>> = std::collections::HashMap::new();
@@ -249,9 +249,13 @@ pub struct Doc {
     pub sem: std::collections::HashMap<usize, Vec<(usize, usize, u8, bool)>>,
     pub sem_valid_until: usize,
     pub sem_due: Option<Instant>,
+    /// Windowed semantic tokens and the cheap outline of big files (see `bigfile`).
+    pub big: crate::bigfile::Big,
     pub lenses: Vec<Lens>,
     pub lens_due: Option<Instant>,
     pub lens_hits: Vec<(Rect, usize)>,
+    pub lens_refs: bool,
+    pub lens_impls: bool,
     pub symbols_due: Option<Instant>,
     pub biome_open: bool,
     pub biome_root: Option<Option<PathBuf>>,
@@ -284,6 +288,15 @@ pub struct LspEdit {
     pub el: usize,
     pub ec: usize,
     pub text: String,
+}
+
+/// An inlay hint under the pointer: the line, its index in `inlay.hints.hints_on(line)` and the label
+/// char under the pointer (`None` over the paddings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HintHit {
+    pub line: usize,
+    pub idx: usize,
+    pub off: Option<usize>,
 }
 
 pub struct DrawOpts<'a> {
@@ -351,9 +364,12 @@ impl Doc {
             sem: Default::default(),
             sem_valid_until: usize::MAX,
             sem_due: Some(Instant::now()),
+            big: Default::default(),
             lenses: Vec::new(),
             lens_due: Some(Instant::now()),
             lens_hits: Vec::new(),
+            lens_refs: true,
+            lens_impls: true,
             symbols_due: Some(Instant::now()),
             biome_open: false,
             biome_root: None,
@@ -551,8 +567,9 @@ impl Doc {
         self.lint_changed_at = Some(Instant::now());
         self.eslint_due = Some(Instant::now() + std::time::Duration::from_millis(700));
         self.sel_stack.clear();
-        self.view_on_edit(l);
-        self.inlay.on_edit(l, self.buf.line_count());
+        let recs = self.view_on_edit(l);
+        let buf = &self.buf;
+        self.inlay.on_edits(&recs, l, buf.line_count(), &|p| buf.line_col(p));
         self.symbols_due = Some(Instant::now() + std::time::Duration::from_millis(600));
         self.conflicts_due = Some(Instant::now() + std::time::Duration::from_millis(400));
         self.sem_due = Some(Instant::now() + std::time::Duration::from_millis(450));
@@ -623,32 +640,57 @@ impl Doc {
 
     /// Char index under window position (x, y).
     pub fn pos_at(&self, x: f64, y: f64) -> usize {
+        self.hit_at(x, y).0
+    }
+
+    /// Char index under window position (x, y) and the inlay hint the pointer is over, if any
+    /// (the char index is then the hint's own column). Works on wrapped rows and with folds.
+    pub fn hit_at(&self, x: f64, y: f64) -> (usize, Option<HintHit>) {
         let lh = line_h() as f64;
         let rel_y = y - self.rect.y as f64;
         let row = ((rel_y + self.top * lh) / lh).floor().max(0.0) as usize;
         let tx = (self.rect.x + self.gutter_w()) as f64;
-        let vcol = ((x - tx + self.left) / self.cell_w as f64).round().max(0.0) as usize;
-        let hinted_col = |line: usize, text: &str| {
-            if self.inlay.hints.hints_on(line).is_empty() { col_from_visual(text, vcol, self.ed.tab_w) } else { self.inlay.hints.col_from_vcol(line, text, vcol, self.ed.tab_w).0 }
+        let cw = self.cell_w as f64;
+        let docx = x - tx + self.left;
+        let vcol = (docx / cw).round().max(0.0) as usize;
+        let cell = (docx / cw).floor().max(0.0) as usize;
+        let tab_w = self.ed.tab_w;
+        // (char column, hint hit) on `text` with the row's hints (row-relative columns); `idx` maps back to the line's hints.
+        let hinted = |line: usize, text: &str, hs: &[crate::inlay::Hint], idx: Option<&[usize]>| {
+            if hs.is_empty() {
+                return (col_from_visual(text, vcol, tab_w), None);
+            }
+            let (col, _) = crate::inlay::hit_in(hs, text, vcol, tab_w);
+            let hit = crate::inlay::hit_in(hs, text, cell, tab_w).1.map(|(i, start)| HintHit {
+                line,
+                idx: idx.map_or(i, |m| m[i]),
+                off: hs[i].char_at_px((docx - start as f64 * cw) as f32, self.cell_w),
+            });
+            (col, hit)
         };
         if !self.vm_live() {
             let line = row.min(self.buf.line_count() - 1);
             let text = self.buf.line(line);
-            return self.buf.pos(line, hinted_col(line, &text));
+            let (col, hit) = hinted(line, &text, self.inlay.hints.hints_on(line), None);
+            return (self.buf.pos(line, col), hit);
         }
         let (line, sub) = self.view.map.line_at_row(row);
         let text = self.buf.line(line);
         if self.view.cols == 0 {
-            return self.buf.pos(line, hinted_col(line, &text));
+            let (col, hit) = hinted(line, &text, self.inlay.hints.hints_on(line), None);
+            return (self.buf.pos(line, col), hit);
         }
         let breaks = self.view.breaks(&text);
-        let (c0, c1) = crate::docview::row_range(&breaks, sub, text.chars().count());
+        let len = text.chars().count();
+        let (c0, c1) = crate::docview::row_range(&breaks, sub, len);
         let rowtext: String = text.chars().skip(c0).take(c1 - c0).collect();
-        let mut c = c0 + col_from_visual(&rowtext, vcol, self.ed.tab_w);
+        let rh = crate::inlay::row_hints(self.inlay.hints.hints_on(line), len, c0, c1, sub >= breaks.len());
+        let (rc, hit) = hinted(line, &rowtext, &rh.hints, Some(&rh.idx));
+        let mut c = c0 + rc;
         if sub < breaks.len() {
             c = c.min(c1.saturating_sub(1).max(c0)); // not the last row: stay before the wrap point
         }
-        self.buf.pos(line, c)
+        (self.buf.pos(line, c), hit)
     }
 
     /// Window position (x, y of the cell's top-left) of a char index, if visible.
@@ -716,11 +758,13 @@ impl Doc {
     /// Apply LSP text edits (positions in the *current* text) as one undo step.
     /// The selection is shifted by edits that happen before it.
     pub fn apply_lsp_edits(&mut self, edits: &[LspEdit]) {
+        let ranges: Vec<(usize, usize, String)> = edits.iter().map(|e| (self.from_lsp_pos(e.sl, e.sc), self.from_lsp_pos(e.el, e.ec), e.text.clone())).collect();
+        self.apply_char_edits(ranges);
+    }
+
+    /// Apply `(start, end, text)` replacements (char positions in the *current* text) as one undo step.
+    pub fn apply_char_edits(&mut self, mut ranges: Vec<(usize, usize, String)>) {
         use crate::buffer::{EditKind, Sel};
-        let mut ranges: Vec<(usize, usize, &str)> = edits
-            .iter()
-            .map(|e| (self.from_lsp_pos(e.sl, e.sc), self.from_lsp_pos(e.el, e.ec), e.text.as_str()))
-            .collect();
         if ranges.is_empty() {
             return;
         }
@@ -728,7 +772,8 @@ impl Doc {
         let before = self.ed.sel;
         let shift = |p: usize| {
             let mut np = p as isize;
-            for &(s, e, t) in &ranges {
+            for (s, e, t) in &ranges {
+                let (s, e) = (*s, *e);
                 let n = t.chars().count() as isize;
                 if e <= p {
                     np += n - (e - s) as isize;
@@ -741,13 +786,47 @@ impl Doc {
         let sel = Sel { anchor: shift(before.anchor), head: shift(before.head) };
         self.buf.close_group();
         self.buf.begin_compound(before);
-        for &(s, e, t) in &ranges {
-            self.buf.replace(s, e, t, EditKind::Other, before);
+        for (s, e, t) in &ranges {
+            self.buf.replace(*s, *e, t, EditKind::Other, before);
         }
         let len = self.buf.len_chars();
         self.ed.sel = Sel { anchor: sel.anchor.min(len), head: sel.head.min(len) };
         self.buf.end_compound(self.ed.sel);
         self.sync_edits();
+    }
+
+    /// Double click on an inlay hint: apply its text edits (or the type annotation synthesized from
+    /// a `: T` hint) as one undo step. False when the hint carries nothing to apply.
+    pub fn apply_hint_edits(&mut self, hit: HintHit) -> bool {
+        let Some(h) = self.inlay.hints.hints_on(hit.line).get(hit.idx) else { return false };
+        let edits = h.annotation_edits();
+        if edits.is_empty() {
+            return false;
+        }
+        let (hl, hc) = (h.line as i64, h.col as i64);
+        let n = self.buf.line_count() as i64;
+        let at = |dl: i64, c: i64| -> Option<usize> {
+            let l = hl + dl;
+            if l < 0 || l >= n {
+                return None;
+            }
+            let col = if dl == 0 { hc + c } else { c };
+            let len = self.buf.line_len(l as usize) as i64;
+            Some(self.buf.pos(l as usize, col.clamp(0, len) as usize))
+        };
+        let ranges: Vec<(usize, usize, String)> = edits.iter().filter_map(|e| Some((at(e.dl0, e.c0)?, at(e.dl1, e.c1)?, e.text.clone()))).collect();
+        if ranges.is_empty() {
+            return false;
+        }
+        self.apply_char_edits(ranges);
+        self.ed.sel = crate::buffer::Sel { anchor: self.ed.sel.head, head: self.ed.sel.head };
+        true
+    }
+
+    /// The link of the hint label under the pointer (Ctrl+click target), if any.
+    pub fn hint_link(&self, hit: HintHit) -> Option<crate::inlay::HintLink> {
+        let h = self.inlay.hints.hints_on(hit.line).get(hit.idx)?;
+        h.link_at(hit.off?).cloned()
     }
 
     // ── drawing ──
@@ -890,14 +969,22 @@ impl Doc {
         let caret_y = rect.y + (self.caret.1 - self.top * lh_f as f64).round() as i32;
         let caret_x = body.x + self.caret.0.round() as i32 - left.round() as i32;
 
+        // Inlay hints per wrapped row (columns relative to the row start); unwrapped rows use the line's own.
+        let row_hs: Vec<crate::inlay::RowHints> = if wrap_cols > 0 && !inl.is_empty() {
+            rows.iter()
+                .map(|row| {
+                    let hs = inl.hints_on(row.line);
+                    if hs.is_empty() { Default::default() } else { crate::inlay::row_hints(hs, geo[row.lk].1, row.c0, row.c1, row.last) }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let ry = |r: usize| rect.y + (r as f32 * lh_f) as i32 + y_off;
         let vx = |vc: usize| body.x + (vc as f32 * cell_w).round() as i32 - left.round() as i32;
         let rt = |r: usize| row_text(&rows, &lines, r);
-        // Visual column of char `col` of row `r`. Unwrapped rows are whole lines and may carry inlay
-        // hints; wrapped rows ignore them.
-        let vc = |r: usize, col: usize, include_at: bool| -> usize {
-            if wrap_cols == 0 { inl.vcol(rows[r].line, &lines[rows[r].lk], col, tab_w, include_at) } else { visual_col(rt(r), col, tab_w) }
-        };
+        // Visual column of char `col` of row `r` (text + the hint cells before it).
+        let vc = |r: usize, col: usize, include_at: bool| -> usize { crate::inlay::vcol_in(hints_for(inl, &row_hs, wrap_cols, r, rows[r].line), rt(r), col, tab_w, include_at) };
         // y of the first row of `line` when that line is on screen (a line scrolled partly off the top
         // reports where its first row would be).
         let line_y = |line: usize| -> Option<i32> {
@@ -1059,26 +1146,24 @@ impl Doc {
         let vc1 = vc0 + ((rect.w - gutter_w) as f32 / cell_w).ceil() as usize + 3;
         let mut pieces: Vec<(String, Rgba, u8)> = Vec::new();
         let hint_fg = theme.line_number;
+        let mut labels: Vec<(i32, i32, &str)> = Vec::new();
         for (r, row) in rows.iter().enumerate() {
-            let hs = if wrap_cols == 0 { inl.hints_on(row.line) } else { &[] };
+            let hs = hints_for(inl, &row_hs, wrap_cols, r, row.line);
             if hs.is_empty() {
                 window_pieces(&lines[row.lk], line_spans.get(row.lk).and_then(|s| s.as_ref()), row.b0, row.b1, vc0, vc1, tab_w, fg, &mut pieces);
             } else {
-                // Inlay hints: a faint pill behind each, then the line woven with its hint text.
-                for (v, w) in crate::inlay::hint_cells(&lines[row.lk], hs, tab_w) {
-                    let rr = Rect::new(vx(v), ry(r) + 1, vx(v + w) - vx(v), lh - 2);
-                    if rr.x >= body.x && rr.right() <= body.right() && rr.y >= body.y && rr.bottom() <= body.bottom() {
-                        cv.fill_round(rr, 3, hint_fg.with_alpha(0x26));
-                    } else {
-                        cv.fill_clip(rr, hint_fg.with_alpha(0x26), body);
-                    }
-                }
-                crate::inlay::window_pieces_hinted(&lines[row.lk], line_spans.get(row.lk).and_then(|s| s.as_ref()), hs, vc0, vc1, tab_w, fg, hint_fg, crate::ui::ITALIC, &mut pieces);
+                // Inlay hints: a faint pill behind each, its blank cells in the text; the labels
+                // (smaller font) are drawn over them after the text.
+                hint_decor(cv, rt(r), hs, tab_w, &vx, ry(r), lh, cell_w, hint_fg, body, &mut labels);
+                crate::inlay::window_pieces_hinted(&lines[row.lk], line_spans.get(row.lk).and_then(|s| s.as_ref()), row.b0, row.b1, hs, vc0, vc1, tab_w, fg, &mut pieces);
             }
             pieces.push(("\n".to_string(), fg, 0));
         }
         let body_x = body.x + (vc0 as f32 * cell_w).round() as i32 - left.round() as i32;
         tx.draw_styled(cv, body_x, rect.y + y_off, &pieces, body);
+        for (x, y, label) in labels.drain(..) {
+            tx.draw_hint(cv, x, y, label, hint_fg, body);
+        }
 
         // Folded regions: a "..." marker after the header line (click to unfold).
         if !self.view.folds.is_empty() {
@@ -1128,19 +1213,37 @@ impl Doc {
             }
         }
 
-        // Code lens: reference/implementation counts after the line's code.
+        // Code lens: reference/implementation counts after the line's code. Several lenses of one
+        // line (e.g. references and implementations) are laid out side by side, separated by a dot.
         self.lens_hits.clear();
-        for (idx, lz) in self.lenses.iter().enumerate() {
+        let mut order: Vec<usize> = (0..self.lenses.len()).collect();
+        order.sort_by_key(|&i| (self.lenses[i].line, self.lenses[i].col));
+        let mut cursor: Option<(usize, i32)> = None; // (line, next x)
+        for idx in order {
+            let lz = &self.lenses[idx];
             let Some(title) = &lz.title else { continue };
-            if let Some((r, vend)) = at_end(lz.line) {
-                let x = vx(vend) + (cell_w * 3.0) as i32;
-                let w = tx.ui_width(title, false);
-                if x + w < body.right() {
-                    let rr = Rect::new(x, ry(r), w, lh);
-                    tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, title, c.accent_text, body, false);
-                    self.lens_hits.push((rr, idx));
-                }
+            let is_impl = title.to_lowercase().contains("implementation");
+            if (is_impl && !self.lens_impls) || (!is_impl && !self.lens_refs) {
+                continue;
             }
+            let Some((r, vend)) = at_end(lz.line) else { continue };
+            let w = tx.ui_width(title, false);
+            let sep = "\u{b7}";
+            let sw = tx.ui_width(sep, false);
+            let (x, sep_x) = match cursor {
+                Some((l, nx)) if l == lz.line => (nx + (cell_w as i32) * 2 + sw, Some(nx + cell_w as i32 / 2 + 2)),
+                _ => (vx(vend) + (cell_w * 3.0) as i32, None),
+            };
+            if x + w >= body.right() {
+                continue;
+            }
+            if let Some(sx) = sep_x {
+                tx.draw_ui(cv, sx, ry(r) + (lh - 18) / 2, sep, c.tab_inactive_fg, body, false);
+            }
+            let rr = Rect::new(x, ry(r), w, lh);
+            tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, title, c.tab_inactive_fg, body, false);
+            self.lens_hits.push((rr, idx));
+            cursor = Some((lz.line, x + w));
         }
 
         // Inline git blame for the cursor line, after the code.
@@ -1302,12 +1405,17 @@ impl Doc {
                 let mut pieces = Vec::new();
                 let head_text = self.buf.line(*l);
                 let hs = if wrap_cols == 0 { inl.hints_on(*l) } else { &[] };
+                let clip = Rect::new(body.x, y, body.w, lh);
                 if hs.is_empty() {
                     window_pieces(&head_text, None, 0, head_text.len(), vc0, vc1, tab_w, fg, &mut pieces);
                 } else {
-                    crate::inlay::window_pieces_hinted(&head_text, None, hs, vc0, vc1, tab_w, fg, hint_fg, crate::ui::ITALIC, &mut pieces);
+                    hint_decor(cv, &head_text, hs, tab_w, &vx, y, lh, cell_w, hint_fg, clip, &mut labels);
+                    crate::inlay::window_pieces_hinted(&head_text, None, 0, head_text.len(), hs, vc0, vc1, tab_w, fg, &mut pieces);
                 }
-                tx.draw_styled(cv, body_x, y, &pieces, Rect::new(body.x, y, body.w, lh));
+                tx.draw_styled(cv, body_x, y, &pieces, clip);
+                for (x, ly, label) in labels.drain(..) {
+                    tx.draw_hint(cv, x, ly, label, hint_fg, clip);
+                }
             }
             if band_h > 0 {
                 cv.fill(Rect::new(rect.x, rect.y + band_h - 1, rect.w, 1), c.border);
@@ -1344,13 +1452,16 @@ impl Doc {
             let mut infos = |i: usize| {
                 let (line, sub) = if live { self.view.map.line_at_row(i) } else { (i, 0) };
                 let mut text = self.buf.line(line);
+                let mut b0 = 0; // byte offset of the row inside its line
                 if sub > 0 && wrap_view {
                     let breaks = self.view.breaks(&text);
                     let (c0, c1) = row_range_of(&breaks, sub, text.chars().count());
+                    b0 = text.char_indices().nth(c0).map_or(text.len(), |(b, _)| b);
                     text = text.chars().skip(c0).take(c1 - c0).collect();
                 }
-                let sp = if sub == 0 { vlines.binary_search(&line).ok().and_then(|k| line_spans.get(k)).and_then(|s| s.as_ref()) } else { None };
-                let sp3: Option<Vec<(usize, usize, Rgba)>> = sp.map(|s| s.iter().map(|&(a, b, c, _)| (a, b, c)).collect());
+                // Token colors for this row: continuation rows of a wrapped line use the line's spans too.
+                let sp = vlines.binary_search(&line).ok().and_then(|k| line_spans.get(k)).and_then(|s| s.as_ref());
+                let sp3: Option<Vec<(usize, usize, Rgba)>> = sp.map(|s| crate::minimap::row_spans(s.iter().map(|&(a, b, c, _)| (a, b, c)), b0, b0 + text.len()));
                 crate::minimap::line_info(&text, sp3.as_deref(), fgc, tab_w)
             };
             let vis_rows = rect.h as f64 / lh_f as f64;
@@ -1419,6 +1530,27 @@ struct VRow {
     b0: usize,
     b1: usize,
     last: bool,
+}
+
+/// Hints of visual row `r` (of line `line`): the whole line's when unwrapped, else the row's slice.
+fn hints_for<'a>(inl: &'a crate::inlay::LineHints, row_hs: &'a [crate::inlay::RowHints], wrap_cols: usize, r: usize, line: usize) -> &'a [crate::inlay::Hint] {
+    if wrap_cols == 0 { inl.hints_on(line) } else { row_hs.get(r).map_or(&[], |x| x.hints.as_slice()) }
+}
+
+/// Paint the faint pills behind the labels of one row (`text` = the row's text, `hs` its hints)
+/// and queue the labels as `(x, y, text)`: each centred in its whole-cell slot, at the row's `y`.
+#[allow(clippy::too_many_arguments)]
+fn hint_decor<'a>(cv: &mut Canvas, text: &str, hs: &'a [crate::inlay::Hint], tab_w: usize, vx: &dyn Fn(usize) -> i32, y: i32, lh: i32, cell_w: f32, hint_fg: Rgba, clip: Rect, labels: &mut Vec<(i32, i32, &'a str)>) {
+    for (h, (v, w)) in hs.iter().zip(crate::inlay::hint_cells(text, hs, tab_w)) {
+        let pill = Rect::new(vx(v), y + 1, vx(v + w) - vx(v), lh - 2);
+        if pill.x >= clip.x && pill.right() <= clip.right() && pill.y >= clip.y && pill.bottom() <= clip.bottom() {
+            cv.fill_round(pill, 3, hint_fg.with_alpha(0x26));
+        } else {
+            cv.fill_clip(pill, hint_fg.with_alpha(0x26), clip);
+        }
+        let text_w = h.label.chars().count() as f32 * cell_w * crate::inlay::HINT_SCALE;
+        labels.push((pill.x + ((pill.w as f32 - text_w) / 2.0).round() as i32, y, h.label.as_str()));
+    }
 }
 
 fn row_text<'a>(rows: &'a [VRow], lines: &'a [String], r: usize) -> &'a str {

@@ -31,6 +31,17 @@ pub struct Editor {
 }
 
 /// Visual column of char column `col` (tabs expand to the next tab stop).
+static DEFAULT_TAB_W: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(4);
+
+/// Columns a tab character spans in documents opened from now on (the `tab_width` setting).
+pub fn default_tab_w() -> usize {
+    DEFAULT_TAB_W.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_default_tab_w(n: usize) {
+    DEFAULT_TAB_W.store(n.clamp(1, 16), std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn visual_col(line: &str, col: usize, tab_w: usize) -> usize {
     let mut v = 0;
     for ch in line.chars().take(col) {
@@ -66,7 +77,7 @@ fn closer(c: char) -> Option<char> {
 
 impl Editor {
     pub fn new(buf: &Buffer, comment: &str) -> Self {
-        Self { sel: Sel::caret(0), extra: Vec::new(), want: None, indent: detect_indent(buf), comment: comment.to_string(), tab_w: 4, jsx: false }
+        Self { sel: Sel::caret(0), extra: Vec::new(), want: None, indent: detect_indent(buf), comment: comment.to_string(), tab_w: default_tab_w(), jsx: false }
     }
 
     pub fn head(&self) -> usize {
@@ -491,11 +502,6 @@ impl Editor {
         }
     }
 
-    pub fn select_line_at(&mut self, buf: &mut Buffer, p: usize) {
-        let (s, e) = Self::line_range(buf, p);
-        self.set(buf, s, e, false);
-    }
-
     /// Select `anchor..head` keeping the anchor (drag by words / lines).
     pub fn select_range(&mut self, buf: &mut Buffer, anchor: usize, head: usize) {
         self.set(buf, anchor, head, false);
@@ -559,14 +565,36 @@ impl Editor {
         format!("{}{}", buf.line(l), buf.eol())
     }
 
+    /// Whole lines `l0..=l1` as clipboard text (each one ends with the line break).
+    pub fn lines_text(buf: &Buffer, l0: usize, l1: usize) -> String {
+        let n = buf.line_count();
+        let l1 = l1.min(n.saturating_sub(1));
+        let (s, e) = (buf.line_start(l0), if l1 + 1 < n { buf.line_start(l1 + 1) } else { buf.len_chars() });
+        let mut t = buf.slice(s, e);
+        if !t.ends_with('\n') {
+            t.push_str(buf.eol());
+        }
+        t
+    }
+
+    /// Cut the whole lines `l0..=l1` (what Ctrl+X does with no selection); returns their text.
+    pub fn cut_lines(&mut self, buf: &mut Buffer, l0: usize, l1: usize) -> String {
+        let text = Self::lines_text(buf, l0, l1);
+        let n = buf.line_count();
+        let l1 = l1.min(n.saturating_sub(1));
+        let s = buf.line_start(l0);
+        let e = if l1 + 1 < n { buf.line_start(l1 + 1) } else { buf.len_chars() };
+        buf.close_group();
+        self.delete_range(buf, s, e, EditKind::Other);
+        buf.close_group();
+        text
+    }
+
     pub fn cut(&mut self, buf: &mut Buffer) -> String {
         let text = self.copy_text(buf);
         if self.sel.is_empty() {
             let (l, _) = buf.line_col(self.sel.head);
-            let s = buf.line_start(l);
-            let e = if l + 1 < buf.line_count() { buf.line_start(l + 1) } else { buf.len_chars() };
-            buf.close_group();
-            self.delete_range(buf, s, e, EditKind::Other);
+            return self.cut_lines(buf, l, l);
         } else {
             buf.close_group();
             let (s, e) = (self.sel.start(), self.sel.end());

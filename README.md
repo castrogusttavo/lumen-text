@@ -1,116 +1,384 @@
 # lumen-text
 
-A code editor for Linux written 100% in Rust, designed to use little RAM and to offer a good
-TypeScript workflow. Its look is based on the TextMate grammars and VS Code themes used by
-[Shiki](https://shiki.style) (65 themes, 242 languages), rendered on the CPU (no GPU driver).
+**A lean, CPU-rendered code editor for Linux, written 100% in Rust, with a first-class TypeScript workflow.**
 
-## Numbers (measured)
+[![CI](https://github.com/castrogusttavo/lumen-text/actions/workflows/ci.yml/badge.svg)](https://github.com/castrogusttavo/lumen-text/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/castrogusttavo/lumen-text)](https://github.com/castrogusttavo/lumen-text/releases)
 
-| | RAM (PSS) |
+![lumen-text, light theme, TypeScript project](docs/screenshots/light-editor.png)
+
+## Why
+
+Modern editors are great and heavy. lumen-text is an experiment in how far you can get with a small
+memory budget (the goal is **about 100 MB for a real TypeScript project**, language server included)
+and no GPU driver:
+
+- Everything is drawn on the CPU (`softbuffer` + `tiny-skia`), so it runs anywhere a Wayland or X11 window does.
+- Highlighting uses the same TextMate grammars and VS Code themes as [Shiki](https://shiki.style)
+  (65 themes, 260 grammar files), through a port of the `vscode-textmate` core on top of `onig`.
+- TypeScript is served by [`tsgo`](https://github.com/microsoft/typescript-go) (the native TypeScript
+  compiler) started on demand in a *lean mode* that only loads open files and their imports.
+- One window, one process per editor, one font in memory, no web view, no Electron.
+
+## Features
+
+**Editor**
+- Rope buffer (`ropey`), atomic save, CRLF, tree-shaped undo history, opens a 100k-line file in ~21 ms
+- Multi-cursor, auto-indent, bracket pairs and matching, JSX/HTML tag closing, Emmet, snippets with tab stops
+- Word wrap, folding, sticky scroll, indent guides, minimap, breadcrumbs, color swatches
+- Find/replace (case, regex), project search, symbols, go to line, back/forward navigation
+- Tabs, quick open (fuzzy), session restore, live reload when files change on disk (inotify)
+- Smooth Zed-style scrolling, drag selection by word/line, Wayland and X11 clipboard, IME, fractional hi-DPI scaling
+
+**TypeScript and LSP**
+- Diagnostics, rich Markdown hover, completion, signature help, definition, references, rename,
+  organize imports, quick fixes (`Ctrl+.`), expand selection, call hierarchy
+- Semantic tokens, optional code lens and inlay hints, optional auto-import
+- Lean mode (default) versus full-project mode; uses the project's own `tsgo` or a bundled one
+- Formatting with the project's Biome or Prettier (falls back to `tsgo`); lint through `biome lsp-proxy` and ESLint
+- Vitest/Jest runs with pass/fail marks in the gutter, `package.json` and `cargo` tasks with an ANSI output panel
+
+**Git**
+- Gutter marks, branch switcher, status dots in the explorer, inline blame
+- Git panel (`Ctrl+Shift+G`): stage/unstage files and single hunks, commit, amend, fetch/pull (merge, rebase or ff-only)/push (force with lease behind a confirmation), history
+- Side-by-side diff with intraline highlight, file history, merge-conflict resolution (accept current / incoming / both)
+
+**Debugging**
+- Breakpoints in the gutter, step over/into/out, stack, variables and output tab
+- TypeScript/JavaScript through js-debug; Rust and C through `gdb` DAP
+
+**Terminal**
+- Integrated PTY terminal with a VT emulator (`vte`), 5,000-line scrollback, alternate screen (`vim`, `less`), bracketed paste
+
+**Themes**
+- 65 bundled VS Code themes with live preview (arrows apply, `Esc` restores), follow-the-system light/dark mode
+- Import installed Zed themes, write your own custom theme (a template is generated for you)
+- Text/background pairs checked against WCAG AA in every theme
+
+**Markdown preview**
+- Side-by-side reader (`Ctrl+Shift+V`) with live updates, scroll sync in both directions, highlighted code blocks, clickable links
+
+**Split panes**
+- Up to six panes (a row of four, or a grid up to 3x2), moveable tabs, per-pane focus shortcuts, saved with the session; the Markdown reader and the diff open inside the focused pane
+
+**Customization**
+- Settings modal (`Ctrl+,`) and shortcut editor with conflict detection
+- `config.json`, `keybindings.json`, user themes folder, removable and reorderable bottom-bar items
+
+## Screenshots
+
+| | |
 |---|---|
-| Editor with a window open, 1 file | ~12–16 MB |
-| 100k-line file (8 MB), tokenized | ~33 MB |
-| `tsgo` on a real project, **lean mode** (default; only open files + imports) | ~40–220 MB |
-| `tsgo` on a real project, full tsconfig (7k files) | ~780 MB |
+| ![Light theme with the Git panel](docs/screenshots/light-git.png) | ![Command palette / quick open](docs/screenshots/light-palette.png) |
+| Git panel (light) | Quick open (light) |
+| ![Dark theme](docs/screenshots/dark-editor.png) | ![Two split panes](docs/screenshots/dark-split.png) |
+| Dracula theme | Split panes |
 
-The status bar shows `RAM <editor> + tsgo <server>` live.
+![Markdown reader](docs/screenshots/dark-markdown.png)
 
-Learnings that changed the design: `GOMEMLIMIT` barely reduces tsgo's RAM (the live heap
-*is* the loaded program); auto-import in completion costs ~3 s and hundreds of MB, so it is opt-in
-(the `Ctrl+.` quick fixes already offer "add import"); loading system fonts cost 25 MB,
-so the font database holds a single font.
+The interface strings are currently in Portuguese; an English UI is the next roadmap item.
 
-## Install and run
+Regenerate the screenshots with the [headless mode](#headless-mode) on any small project, using a throwaway config so your own settings are not touched:
 
 ```sh
-./install.sh                     # builds and installs into ~/.local
-npm i --prefix ~/.local/share/lumen-text/tsgo @typescript/native-preview   # TS support (optional)
-lumen-text project/ src/app.ts:42:7
+mkdir -p ~/.cache/lumen-shots/cfg/lumen-text
+echo '{"theme":"github-light-default"}' > ~/.cache/lumen-shots/cfg/lumen-text/config.json
+XDG_CONFIG_HOME=~/.cache/lumen-shots/cfg XDG_STATE_HOME=~/.cache/lumen-shots/state \
+  lumen-text --size 1100x700 --snap docs/screenshots \
+  --keys "wait:1500;snap:light-editor;ctrl+shift+g;wait:800;snap:light-git" project/ project/src/todo.ts
 ```
 
-Look: light theme (GitHub Light Default) and a minimalist interface; switch themes from the palette ("Aparência: Escolher tema…").
+The headless PNG writer stores uncompressed data; recompress the files (for example with `zlib` level 9 or `optipng`) before committing so each stays well under 250 KB.
 
-With no arguments it reopens the tabs from the project's last session. In development: `cargo run --release -- <files/folders>`.
+## Measured numbers
 
-Configuration lives in `~/.config/lumen-text/config.json` (theme, font size, format on save, auto-import).
-`theme_chrome` (`derived` by default, or `theme`) makes the sidebar, tabs and status bar use the theme's own colors wherever the text stays readable (WCAG AA).
-Environment variables: `LUMEN_THEME`, `LUMEN_ASSETS`, `LUMEN_TSGO`, `LUMEN_AUTOIMPORT=1`, `LUMEN_DEBUG=1`.
+Resident memory is PSS (proportional set size) as reported by the status bar (`RAM <editor> + tsgo <server>`).
 
-## Shortcuts
+| Scenario | Result |
+|---|---|
+| Editor with a window open, 1 file | ~12-16 MB |
+| 100k-line file (8 MB), tokenized | ~33 MB (about 19-24 MB without the LSP) |
+| `tsgo` on a real project, **lean mode** (default: open files + imports) | ~40-220 MB |
+| `tsgo` on a real project, full tsconfig (7k files) | ~780 MB |
+| Open a 100k-line file | ~21 ms |
+| 1,000 keystrokes | ~3.9 ms total |
+| Background tokenizer | 4-9k lines/s, off the UI thread |
+
+Learnings that shaped the design: `GOMEMLIMIT` barely reduces `tsgo`'s RAM (the live heap *is* the
+loaded program); auto-import in completion costs ~3 s and hundreds of MB, so it is opt-in (the
+`Ctrl+.` quick fixes already offer "add import"); loading system fonts cost 25 MB, so the font
+database holds a single font plus lazily loaded fallbacks.
+
+## Install
+
+Pre-built packages for x86_64 Linux are attached to every
+[GitHub Release](https://github.com/castrogusttavo/lumen-text/releases). Versions use **CalVer
+`YYYY.M.D.N`** (year, month, day of the release, then a counter for that day), for example
+`2026.11.10.1`; tags are `vYYYY.M.D.N`. Every push to `main` that passes CI publishes a release.
+Replace `<v>` below with the version you downloaded and verify with
+`sha256sum -c SHA256SUMS --ignore-missing`.
+
+| Distribution | Command |
+|---|---|
+| Debian, Ubuntu, Mint, Pop!_OS | `sudo apt install ./lumen-text_<v>-1_amd64.deb` |
+| Fedora, RHEL, Rocky, Alma | `sudo dnf install ./lumen-text-<v>-1.x86_64.rpm` (openSUSE: `sudo zypper install ./...rpm`) |
+| Arch, Manjaro, EndeavourOS | `sudo pacman -U lumen-text-bin-<v>-1-x86_64.pkg.tar.zst` (a source `PKGBUILD` and an AUR-style `lumen-text-bin` live in `packaging/arch/`) |
+| Any distribution | `chmod +x lumen-text-<v>-x86_64.AppImage && ./lumen-text-<v>-x86_64.AppImage` |
+| Portable | `tar xzf lumen-text-<v>-linux-x86_64.tar.gz && ./lumen-text-<v>-linux-x86_64/bin/lumen-text` (or run its `install.sh`) |
+
+Release binaries need glibc 2.35 or newer (built on Ubuntu 22.04). The binary links only glibc;
+libxkbcommon, Wayland and X11 are loaded at run time. aarch64 packages exist when the repository
+enables them. Details: [packaging/README.md](packaging/README.md).
+
+**TypeScript support** is optional; install the language server once:
+
+```sh
+npm i --prefix ~/.local/share/lumen-text/tsgo @typescript/native-preview
+```
+
+(a project that already has `@typescript/native-preview` installed is used first).
+
+**Build from source** (Rust stable, edition 2024):
+
+```sh
+sudo apt-get install build-essential pkg-config libxkbcommon-dev libwayland-dev \
+  libfontconfig1-dev libclang-dev libonig-dev     # Debian/Ubuntu names
+./install.sh                                      # cargo build --release + install into ~/.local
+```
+
+## Updates
+
+Lumen updates itself where it safely can. About 20 seconds after startup and then every 4 hours
+(also after a failed attempt, with a growing delay) it fetches
+`https://github.com/castrogusttavo/lumen-text/releases/latest/download/latest.json`, a small file
+published with every release. Nothing else is sent; there is no telemetry.
+
+| Setting `updates` | Behaviour |
+|---|---|
+| `"auto"` (default) | Checks, downloads and installs the new version in the background, then shows a small card: **Lumen X is ready - Restart to update** (*Reiniciar agora* / *Depois* / *Notas da versão*). A subtle download icon stays in the bottom bar until you restart. Each version is announced once. |
+| `"notify"` | Only announces that a new version exists (card + bottom bar icon). The card's *Atualizar agora* button installs it on demand. |
+| `"off"` | Never checks by itself. The command palette entries below still work. |
+
+Command palette: **Ajuda: Verificar atualizações** (always ends in a card: up to date, available or the error), **Ajuda: Reiniciar para atualizar**, **Ajuda: Sobre o Lumen** (version, install kind). Restart starts the new executable with your project and restores the session; with unsaved files it asks you to save first.
+
+What "install" means depends on how you installed Lumen:
+
+| Install | Update |
+|---|---|
+| **AppImage** | The new AppImage replaces the file you run, atomically; the previous one stays next to it as `<name>.AppImage.old`. |
+| **User install** (`lumen-text --install-user`, layout `~/.local/share/lumen-text/<version>/` + `current` symlink + `~/.local/bin/lumen-text`) | The release tarball is unpacked into a new version directory and `current` is switched atomically. The previous version is kept, older ones are pruned (2 stay). |
+| **deb / rpm / pacman** (`/usr/bin`) | Never touched. You get the notification with the command for your distribution (read from `/etc/os-release`), e.g. `sudo dnf install <url>`. |
+| Tarball run in place, `/usr/local`, local builds | Notification only. Local builds (version without a build number, e.g. `2026.11.9`) never check on their own. |
+
+Every file is verified before it is used: it must carry a [minisign](https://jedisct1.github.io/minisign/)
+signature made with the release key whose public half is embedded in the binary
+(`src/update_key.pub`), and the signature must name exactly that version and file. Downloads use
+the system `curl` (or `wget`) into `~/.cache/lumen-text/update/` with a time and size limit, on a
+background thread.
+
+`lumen-text --install-user` copies the running editor into the user layout above and creates the
+launcher entry (`~/.local/share/applications/lumen-text.desktop`, absolute `Exec`) and icon
+(`~/.local/share/icons/hicolor/`), so it works from the application menu without a terminal and then
+keeps itself updated. Other flags: `lumen-text --check-update` (exit 0 up to date, 10 update
+available, 1 error) and `lumen-text --update` (check, then install when this install can).
+For testing, `LUMEN_UPDATE_URL` points the check at another `latest.json` (plain http allowed) and
+`LUMEN_UPDATE_PUBKEY` at another public key; see `tools/update-e2e.sh`.
+
+## Quick start
+
+```sh
+lumen-text                          # reopen the tabs of the project's last session
+lumen-text project/                 # open a folder
+lumen-text project/ src/app.ts:42:7 # open a file at line:column
+```
+
+Press `Ctrl+P` to open files, `Ctrl+Shift+P` for the command palette, `Ctrl+,` for settings.
+A second `lumen-text` invocation hands its files to the already running window. The tool tips and
+palette are the reference for everything not listed below.
+
+## Keyboard shortcuts
+
+Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atalhos de teclado").
 
 | Action | Shortcut |
 |---|---|
-| Open file (fuzzy) | `Ctrl+P` |
-| Command palette | `Ctrl+Shift+P` |
-| Find in file / replace | `Ctrl+F` / `Ctrl+H` (`Alt+C` case, `Alt+R` regex, `Ctrl+Alt+Enter` replace all) |
+| Open file (fuzzy) / command palette | `Ctrl+P` / `Ctrl+Shift+P` |
+| Find / replace | `Ctrl+F` / `Ctrl+H` (`Alt+C` case, `Alt+R` regex, `Ctrl+Alt+Enter` replace all) |
 | Find in project | `Ctrl+Shift+F` |
 | Symbol in file / in project | `Ctrl+Shift+O` / `Ctrl+T` |
 | Go to line | `Ctrl+G` |
 | Definition / references / rename | `F12` (or `Ctrl+click`) / `Shift+F12` / `F2` |
 | Completion / signature help | `Ctrl+Space` / `Ctrl+Shift+Space` |
 | Hover | mouse resting, or `Ctrl+K I` |
-| Quick actions (quick fix) | `Ctrl+.` |
-| Next problem | `F8` / `Shift+F8` |
-| Format (project's Biome/Prettier, else tsgo) | `Shift+Alt+F` |
+| Quick fix | `Ctrl+.` |
+| Next / previous problem | `F8` / `Shift+F8` |
+| Format | `Shift+Alt+F` |
+| Expand / shrink selection | `Shift+Alt+Right` / `Shift+Alt+Left` |
 | Save / close tab / quit | `Ctrl+S` / `Ctrl+W` / `Ctrl+Q` |
-| Tabs | `Ctrl+Tab`, `Ctrl+Shift+Tab`, `Alt+1…9` |
-| Sidebar / focus explorer | `Ctrl+B` / `Ctrl+Shift+E` (in the explorer: `A` new file, `Shift+A` folder, `F2` rename, `Delete` delete) |
-| Explorer: select several / copy / move | `Ctrl+click`, `Shift+click` (or `Shift+↑/↓`), `Ctrl+A`; `Ctrl+C` / `Ctrl+X` / `Ctrl+V`; drag onto a folder (`Ctrl` copies) |
-| Git panel diff: pick / stage a hunk | `n` / `p` / `s` (or the Stage / Unstage button) |
-| Bottom panel (output / terminal) | `Ctrl+J` |
-| Integrated terminal: open / toggle focus | ``Ctrl+` `` |
-| Tests: at cursor / file / rerun task / stop | `Ctrl+K T` / `Ctrl+K F` / `Ctrl+K R` / `Ctrl+K X` |
-| Zoom | `Ctrl+=`, `Ctrl+-`, `Ctrl+0` |
-| Navigate back / forward | `Alt+←` / `Alt+→` |
-| Snippet: expand / next field | `Tab` after the prefix (`fn`, `clg`, `it`, `desc`, `us`, `rfc`…) / `Tab` |
+| Next / previous tab, jump to tab | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Alt+1`..`Alt+9` |
+| Sidebar / focus explorer | `Ctrl+B` / `Ctrl+Shift+E` |
+| Explorer: new file / folder / rename / delete | `A` / `Shift+A` / `F2` / `Delete` |
+| Git panel | `Ctrl+Shift+G` (in a diff: `n` / `p` pick a hunk, `s` stage) |
+| Bottom panel / terminal | `Ctrl+J` / ``Ctrl+` `` |
+| Tests: at cursor / file / rerun / stop | `Ctrl+K T` / `Ctrl+K F` / `Ctrl+K R` / `Ctrl+K X` |
+| Debug: start / stop / breakpoint | `F5` / `Shift+F5` / `F9` |
+| Debug: step over / into / out | `F10` / `F11` / `Shift+F11` |
+| Zoom in / out / reset | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` |
+| Navigate back / forward | `Alt+Left` / `Alt+Right` |
 | Next occurrence / all occurrences | `Ctrl+D` / `Ctrl+Shift+L` |
-| Cursor above/below, cursor at click | `Ctrl+Alt+↑/↓`, `Alt+clique` |
-| Comment, move line, duplicate, delete line | `Ctrl+/`, `Alt+↑/↓`, `Ctrl+Shift+D`, `Ctrl+Shift+K` |
-| Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
-| Split panes (up to 4) | `Ctrl+\` right, `Ctrl+K \` below, `Ctrl+1…4` focus, `Ctrl+K ←/→` previous/next pane, `Ctrl+K Shift+←/→` move the tab to another pane, `Ctrl+K Shift+W` close the focused pane |
+| Add cursor above/below, at click | `Ctrl+Alt+Up/Down`, `Alt+click` |
+| Comment / move line / duplicate / delete line | `Ctrl+/`, `Alt+Up/Down`, `Ctrl+Shift+D`, `Ctrl+Shift+K` |
+| Fold / unfold | `Ctrl+Shift+[` / `Ctrl+Shift+]` |
+| Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) |
+| Snippet expand / next field | `Tab` after the prefix (`fn`, `clg`, `it`, `desc`, `us`, `rfc`...) / `Tab` |
+| Markdown reader | `Ctrl+Shift+V` |
+| Split right / below | `Ctrl+\` / `Ctrl+K \` |
+| Focus pane 1..4 | `Ctrl+1`..`Ctrl+4`; `Ctrl+K Left/Right` previous/next pane |
+| Move tab to another pane / close pane | `Ctrl+K Shift+Left/Right` / `Ctrl+K Shift+W` |
+| Settings | `Ctrl+,` |
 
-Lint: with a `biome.json` in the project, the editor uses `biome lsp-proxy` for diagnostics and fixes (Ctrl+.).
+Explorer selection: `Ctrl+click`, `Shift+click`, `Ctrl+A`, `Ctrl+C` / `Ctrl+X` / `Ctrl+V`, drag onto a folder (`Ctrl` copies).
 
-More palette commands: git (changed files, stage, commit, discard), `package.json`/`cargo` tasks,
-choose theme, organize imports, format on save, toggle auto-import, reload from disk.
+## Configuration
+
+All files live in `$XDG_CONFIG_HOME/lumen-text/` (default `~/.config/lumen-text/`). The settings
+modal edits `config.json` and applies changes live; unknown or invalid values fall back to defaults.
+
+### `config.json`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `theme` | none (GitHub Light Default) | Theme name (file stem in `assets/themes` or the user themes folder) |
+| `appearance` | `"fixed"` | `"fixed"` keeps `theme`; `"system"` follows the desktop light/dark preference |
+| `theme_light` / `theme_dark` | `github-light-default` / `github-dark-default` | Themes used when `appearance` is `"system"` |
+| `theme_chrome` | `"derived"` | `"theme"` makes sidebar, tabs and status bar use the theme's own colors where text stays readable (AA) |
+| `font_size` | `14` | 8 to 40 |
+| `ui_scale` | `0` | `0` = automatic from the window scale factor, else up to 4 |
+| `format_on_save` | `false` | Run the formatter on save |
+| `updates` | `"auto"` | `"auto"` (check, download and install in the background), `"notify"` (only announce) or `"off"`; see [Updates](#updates) |
+| `auto_import` | `false` | Auto-import in completion (costs RAM and time) |
+| `lsp_narrow` | `true` | tsgo lean mode (only open files and their imports) |
+| `tsgo_source` | `"auto"` | `"auto"` (project's own, else bundled), `"project"`, `"bundled"` |
+| `code_lens` / `inlay_hints` | `false` | Optional LSP extras (cost server CPU) |
+| `inlay_hints_params` / `inlay_hints_types` | `true` | With `inlay_hints` on: show parameter names / inferred types separately. Ctrl+click a type goes to its definition; double click a `: T` hint inserts the annotation |
+| `minimap` / `minimap_style` | `true` / `"subtle"` | `"subtle"` or `"normal"` |
+| `word_wrap` / `sticky_scroll` / `indent_guides` | `false` / `true` / `true` | Editor view options |
+| `breadcrumbs` / `git_blame` | `true` / `true` | Path bar above the editor; inline blame |
+| `ram_display` | `"long"` | `"long"` (numbers) or `"short"` (a chip icon) |
+| `status_items` | `{}` | Map of bottom-bar item id to `true`/`false` (`search`, `problems`, `terminal`, `debug`, `git`, `ram`, `position`, `indent`, `language`) |
+| `status_order` | position, indent, language, terminal, debug, git, ram | Order of the right-hand bottom-bar items |
+| `status_left_order` | sidebar, search, problems | Order of the left-hand bottom-bar items |
+| `git_pull_strategy` | `""` | `"merge"`, `"rebase"` or `"ff-only"`: how Pull integrates remote commits (empty = ask when the branches diverge) |
+| `tab_width` | `4` | Columns a tab character spans (2, 4 or 8); per-file picks live in the session |
+| `git_panel_width` / `md_split` | `0` / `0.5` | Panel width in px (0 = automatic); Markdown source share (0.2 to 0.8) |
+
+Environment variables: `LUMEN_THEME` (path to a theme file), `LUMEN_ASSETS` (assets directory),
+`LUMEN_TSGO` (path to a `tsgo` binary), `LUMEN_AUTOIMPORT=1`, `LUMEN_DEBUG=1`, `LUMEN_GIT_POLL_MS` (interval of the background ahead/behind refresh, default 60000).
+Assets are searched in `$LUMEN_ASSETS`, then `<exe dir>/../share/lumen-text/assets`, then `~/.local/share/lumen-text/assets`.
+
+### `keybindings.json`
+
+Maps a key combination to a command id (the `Cmd` variant names in `src/app_overlay.rs`; `none` disables a built-in shortcut).
+Chords use a space, explorer-only bindings use the `explorer:` prefix.
+
+```json
+{ "ctrl+shift+t": "TestFile", "f5": "RepeatTask", "ctrl+w": "none", "ctrl+k r": "RepeatTask" }
+```
+
+### Themes
+
+Themes are VS Code JSON (`colors` + `tokenColors`). Drop `*.json` files into
+`~/.config/lumen-text/themes/` and pick them from the theme list. The palette command
+"Criar tema personalizado" writes `custom-<name>.json` there from a template that contains every
+`colors` key the editor reads (editor, sidebar, tabs, status bar, widgets, gutter, diagnostics, find
+highlights) and about 20 `tokenColors` examples:
+
+```json
+{ "name": "My Custom Theme", "type": "dark",
+  "colors": { "editor.background": "#1e1e1e", "editor.foreground": "#d4d4d4", "...": "..." },
+  "tokenColors": [ { "scope": ["comment"], "settings": { "foreground": "#6a9955", "fontStyle": "italic" } } ] }
+```
+
+**Zed themes:** installed Zed themes (`~/.config/zed/themes` and the Zed extensions folder) are
+converted automatically to `~/.config/lumen-text/themes/zed-*.json` (Zed `style` keys are mapped to the
+VS Code keys; the mapping table is documented at the top of `src/zedtheme.rs`).
 
 ## Architecture
 
 ```
 src/
-  buffer.rs      rope (ropey), grouped undo, atomic save
-  editor.rs      cursor, selection, editing, multi-cursor (pure logic, tested)
-  textmate.rs    port of the vscode-textmate core on top of onig
-  highlight.rs   per-line states, incremental tokenization with a per-frame budget
-  theme.rs       VS Code themes (text and UI colors)
-  ui.rs / doc.rs drawing primitives; document (render, animated scroll and cursor)
-  app*.rs        window, tabs, sidebar, overlays, LSP, output panel, git, files
-  lsp.rs         JSON-RPC client (reader/writer threads), lazy tsgo
-  tasks.rs       processes, ANSI, file:line:col links
-  terminal.rs    PTY + VT emulator (vte), keys -> bytes
-  snippets.rs    snippets with tab stops
-  git.rs, format.rs, search.rs, config.rs, fuzzy.rs, field.rs, tree.rs, clipboard.rs
-  script.rs      headless mode for tests and screenshots
+  buffer.rs, editor.rs     rope (ropey), grouped/tree undo, atomic save; cursors, selections, multi-cursor
+  textmate.rs, highlight.rs  vscode-textmate port on onig; background, incremental tokenization
+  theme.rs, zedtheme.rs    VS Code themes, WCAG-checked chrome; Zed theme import, custom template
+  ui.rs, doc.rs, docview.rs  drawing primitives (cosmic-text, tiny-skia); document render, word wrap/folds
+  rowmap.rs, minimap.rs, scroller.rs  visual rows, minimap sampling, exponential-glide scrolling
+  app.rs, app_*.rs         window (winit + softbuffer), tabs, sidebar, overlays, panels, split panes, settings
+  keymap.rs, config.rs     DEFAULTS table + keybindings.json; config.json and paths
+  lsp.rs, inlay.rs, eslint.rs, format.rs  JSON-RPC client (lazy tsgo), inlay hints, lint, formatters
+  dap.rs, tasks.rs, terminal.rs  debug adapters, processes and ANSI output, PTY + VT emulator
+  git.rs, gitx.rs, gitsync.rs  status, blame, hunks, diff, history, conflicts, fetch/pull/push
+  mdview.rs, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)
+  search.rs, fuzzy.rs, snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs
+  script.rs                headless mode for tests and screenshots
+assets/   grammars, themes, language-manifest.json, icons, licenses
+packaging/  tarball, deb, rpm, Arch, AppImage, Flatpak scripts
 ```
 
-## Tests
+Dependencies are deliberately few and compiled with minimal features (`image-webp`, `png`, `zune-jpeg`
+and `gif` only for Markdown images). The binary is a single executable plus the `assets` directory.
 
-`cargo test --release` (77 tests, including an end-to-end test against the real tsgo, if installed).
+## Performance notes
 
-Headless mode: runs the same keyboard/render code without a window and writes PNGs.
+- Tokenization runs on a background thread with a per-frame budget; the UI thread spends ~0.05 ms on it and long jumps get an immediate color.
+- Big files (above 20k lines) get semantic colors for the visible window only (`semanticTokens/range`) and an outline trimmed to its first 3 levels; responses above 4 MB that have no streaming path are dropped.
+- A single font is loaded (fallback faces on demand), glibc arenas are limited and memory is trimmed with `malloc_trim`.
+- The CI `perf` job runs regression tests (`cargo test --release perf -- --nocapture`); thresholds are generous and the job never blocks a release.
+
+## Headless mode
+
+The same input and render code runs without a window and writes PNGs, which is how the editor is tested and
+how the screenshots above were made.
 
 ```sh
-lumen-text --size 900x500 --snap /tmp/out \
+lumen-text --size 900x500 --snap out/ \
   --keys "ctrl+p;type:app;enter;wait:800;f12;wait:500;snap:after" project/ project/src/a.ts
 ```
 
-Tokens: `ctrl+shift+x` (combos), `type:text`, `wait:ms`, `snap:name`, `hover:x,y`, `click:x,y`, `sh:command`, `full`.
+Flags: `--keys "<tokens separated by ;>"`, `--snap <dir>`, `--size WxH` (logical pixels), `--scale <f>`.
+The full token list is in [CONTRIBUTING.md](CONTRIBUTING.md#headless-testing).
+
+## Platform status
+
+Linux only for now (Wayland and X11). Windows and macOS are planned; the CI release job is already
+structured so other operating systems can add their own `dist-*` artifacts. The clipboard supports Wayland
+(`wl-clipboard`) and X11.
+
+## HugeIcons Pro (optional)
+
+The platform UI looks best with the commercial HugeIcons Pro set, whose license does not allow
+redistribution, so the masks are **not** in this repository (`assets/icons/hugeicons*` are git-ignored).
+Without them every icon falls back to the bundled Zed icons. If you own a license:
+
+```sh
+HUGEICONS_TOKEN=<your npm token> tools/setup-hugeicons.sh   # needs node, npm, python3, rsvg-convert
+```
 
 ## Known limitations
 
-- TextMate tokenization runs at ~9k lines/s: opening huge files and jumping to the end leaves that stretch uncolored for a few seconds (next step: tokenize in a thread/chunks).
-- No TextMate `injections` (code embedded in Markdown/HTML only gets the outer grammar).
-- Single font, no bold/italic; glyphs missing from the font show as a square.
-- No word wrap, folding, minimap or split panes; the terminal has no scrollback or alternate screen (vim/less).
-- Clipboard is Wayland-only (`wl-clipboard`).
-- tsgo lean mode: errors and references only see open files and their imports (use the command "LSP: Alternar modo enxuto / projeto completo" to see the whole project, at the cost of more RAM).
+- Interface strings are Portuguese for now (English UI planned).
+- No TextMate `injections` (code embedded in Markdown/HTML gets only the outer grammar).
+- Opening a very large file and jumping to its end leaves that stretch uncolored for a few seconds.
+- In lean mode, errors and references only see open files and their imports; use the palette command
+  "LSP: Alternar modo enxuto / projeto completo" for the whole project at a higher RAM cost.
+- "Open folder" inside the app is limited; the project root normally comes from the command line.
+
+## License and credits
+
+lumen-text is released under the [MIT License](LICENSE). Full list of Rust crates: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
+- **Grammars and themes:** [Shiki](https://shiki.style)'s [tm-grammars and tm-themes](https://github.com/shikijs/textmate-grammars-themes) (MIT, Pine Wu and Anthony Fu), each grammar and theme keeping its upstream license; notices in `assets/licenses/`.
+- **Icons:** masks derived from [Zed](https://github.com/zed-industries/zed)'s icon set, parts from Lucide (ISC); see `assets/icons/ZED_ICONS_LICENSES.txt`. HugeIcons Pro is optional and never redistributed.
+- **Fonts:** none are bundled; the editor uses your system monospace font via fontconfig.
+- **Language server:** [`tsgo`](https://github.com/microsoft/typescript-go) from Microsoft (Apache-2.0), installed separately.
+- Built on `winit`, `softbuffer`, `tiny-skia`, `cosmic-text`, `ropey`, `onig`, `vte`, `pulldown-cmark` and friends.

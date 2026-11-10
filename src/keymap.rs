@@ -127,6 +127,11 @@ pub struct Keymap {
     map: HashMap<String, String>,
 }
 
+/// What the status bar shows while a chord waits for its second stroke: "ctrl+k" -> "Ctrl+K …".
+pub fn chord_label(prefix: &str) -> String {
+    format!("{} …", crate::app_tooltip::pretty_combo(prefix))
+}
+
 /// Canonical text for a combination: modifiers in fixed order, key lowercase.
 pub fn combo(ctrl: bool, shift: bool, alt: bool, key: &str) -> String {
     let mut s = String::new();
@@ -516,5 +521,11 @@ mod tests {
         bind_in(&mut m, "ctrl+b", "ToggleSidebar");
         bind_in(&mut m, "ctrl+w", "none");
         assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn pending_chord_label() {
+        assert_eq!(chord_label("ctrl+k"), "Ctrl+K …");
+        assert_eq!(chord_label("ctrl+shift+k"), "Ctrl+Shift+K …");
     }
 }

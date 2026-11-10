@@ -13,7 +13,7 @@ use crate::{
     app_gitx::DiffView,
     field::TextField,
     git,
-    gitsync::{self, Fail, FailKind, Job, Op, SyncInfo},
+    gitsync::{self, Fail, FailKind, Job, Op, PullStrategy, SyncInfo},
     gitx::{self, Side},
     theme::Rgba,
     ui::{Canvas, Rect, TextCtx},
@@ -50,8 +50,8 @@ impl Group {
     }
 }
 
-/// One entry of `git status`. A file that is staged *and* modified again is ONE entry in the
-/// Staged group whose `also` holds the working-tree state (so the panel draws a single row).
+/// One entry of `git status`. A file that is staged *and* modified again has TWO entries (one under
+/// Staged, one under Mudanças), like in VS Code, so "Adicionar todos" picks up the new edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
     /// Repository-root-relative path.
@@ -61,32 +61,25 @@ pub struct Change {
     /// M A D R C T U or '?'.
     pub code: char,
     pub group: Group,
-    /// Staged entries only: the file also has unstaged changes (their M/D code).
-    pub also: Option<char>,
 }
 
 impl Change {
     /// Has working-tree changes that "discard" can throw away.
     pub fn discardable(&self) -> bool {
-        self.group != Group::Staged || self.also.is_some()
+        self.group != Group::Staged
     }
 }
 
-/// State of a row's checkbox: nothing staged, everything staged, or staged with later edits.
+/// State of a row's checkbox: staged (the Staged group) or not.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CheckState {
     Off,
     On,
-    Partial,
 }
 
 impl Change {
     pub fn check_state(&self) -> CheckState {
-        match (self.group, self.also) {
-            (Group::Staged, None) => CheckState::On,
-            (Group::Staged, Some(_)) => CheckState::Partial,
-            _ => CheckState::Off,
-        }
+        if self.group == Group::Staged { CheckState::On } else { CheckState::Off }
     }
 }
 
@@ -102,7 +95,7 @@ pub fn parse_status_z(out: &str) -> Vec<Change> {
         let (x, y) = (e.as_bytes()[0] as char, e.as_bytes()[1] as char);
         let path = e[3..].to_string();
         let old = (matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C')).then(|| it.next().unwrap_or("").to_string());
-        let mk = |code: char, group: Group| Change { path: path.clone(), old: old.clone(), code, group, also: None };
+        let mk = |code: char, group: Group| Change { path: path.clone(), old: old.clone(), code, group };
         if x == '?' && y == '?' {
             v.push(mk('?', Group::Untracked));
         } else if x == '!' {
@@ -111,8 +104,12 @@ pub fn parse_status_z(out: &str) -> Vec<Change> {
             v.push(mk('U', Group::Changes));
         } else {
             match (x != ' ', y != ' ') {
-                // Staged and modified again: a single row carrying both states.
-                (true, true) => v.push(Change { also: Some(y), ..mk(x, Group::Staged) }),
+                // Staged and modified again: listed under Staged (what the index holds) and under
+                // Mudanças (the edits made since).
+                (true, true) => {
+                    v.push(mk(x, Group::Staged));
+                    v.push(mk(y, Group::Changes));
+                }
                 (true, false) => v.push(mk(x, Group::Staged)),
                 (false, true) => v.push(mk(y, Group::Changes)),
                 (false, false) => {}
@@ -356,6 +353,50 @@ pub enum Hit {
     JobCancel,
     /// The result / error line under the branch row (click dismisses it).
     Note,
+    /// "Forçar push" / "Cancelar" in the force-push card.
+    ForceYes,
+    ForceNo,
+    /// A pull strategy button of the chooser card, and its "Cancelar".
+    Strategy(PullStrategy),
+    StrategyNo,
+}
+
+/// Why the force-push card is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForceWhy {
+    /// A push was rejected as non-fast-forward and nothing new is waiting on the remote.
+    Rejected,
+    /// The last commit was amended after it had been published.
+    Amended,
+}
+
+impl ForceWhy {
+    pub fn text(self) -> &'static str {
+        match self {
+            ForceWhy::Rejected => "Forçar o push? O remoto tem uma versão diferente deste branch (você reescreveu commits já publicados). O --force-with-lease só sobrescreve se ninguém mais enviou nada desde o seu último fetch.",
+            ForceWhy::Amended => "O commit emendado já estava publicado. Para enviá-lo é preciso forçar o push. O --force-with-lease só sobrescreve se o remoto ainda estiver como no seu último fetch.",
+        }
+    }
+}
+
+/// Text of the pull strategy chooser card.
+pub const STRATEGY_TEXT: &str = "Os branches divergiram. Como integrar os commits do remoto? A escolha fica salva (config git_pull_strategy).";
+
+/// Pack button widths into right-aligned rows no wider than `avail`: returns the number of
+/// buttons on each row, filled from the left, `gap` px apart.
+pub fn button_rows(widths: &[i32], avail: i32, gap: i32) -> Vec<usize> {
+    let mut rows: Vec<usize> = Vec::new();
+    let mut used = 0;
+    for (i, &w) in widths.iter().enumerate() {
+        if i == 0 || used + gap + w > avail {
+            rows.push(1);
+            used = w;
+        } else {
+            *rows.last_mut().unwrap() += 1;
+            used += gap + w;
+        }
+    }
+    rows
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -428,6 +469,12 @@ pub struct GitPanel {
     pub amend_draft: String,
     /// Last time the progress counter forced a redraw.
     pub spun: Instant,
+    /// The force-push card, when it is showing.
+    pub force: Option<ForceWhy>,
+    /// The pull strategy chooser card is showing.
+    pub strategy_ask: bool,
+    /// Height of the card above, measured at the last draw (it depends on the width).
+    pub prompt_h: i32,
 }
 
 impl GitPanel {
@@ -468,6 +515,9 @@ impl GitPanel {
             amend: false,
             amend_draft: String::new(),
             spun: Instant::now(),
+            force: None,
+            strategy_ask: false,
+            prompt_h: PROMPT_H,
         };
         p.refresh();
         p
@@ -497,6 +547,8 @@ impl GitPanel {
     pub fn strip_h(&self) -> i32 {
         if self.publish.is_some() {
             PROMPT_H
+        } else if self.force.is_some() || self.strategy_ask {
+            self.prompt_h.max(PROMPT_H)
         } else if self.job.is_some() {
             STRIP_LINE + 10
         } else if self.note_visible() {
@@ -504,6 +556,19 @@ impl GitPanel {
         } else {
             0
         }
+    }
+
+    /// Buttons of the force-push card (`force`) or the strategy chooser: (label, hit, warning color).
+    pub fn gp_card_buttons_for(force: bool) -> Vec<(&'static str, Hit, bool)> {
+        if force {
+            return vec![("Forçar push", Hit::ForceYes, true), ("Cancelar", Hit::ForceNo, false)];
+        }
+        let mut v: Vec<(&'static str, Hit, bool)> = [PullStrategy::Merge, PullStrategy::Rebase, PullStrategy::FfOnly]
+            .into_iter()
+            .map(|st| (match st { PullStrategy::Merge => "Merge", PullStrategy::Rebase => "Rebase", PullStrategy::FfOnly => "Só ff" }, Hit::Strategy(st), false))
+            .collect();
+        v.push(("Cancelar", Hit::StrategyNo, false));
+        v
     }
 
     /// Everything above the list: tabs, branch row and strip.
@@ -656,7 +721,7 @@ pub fn code_color(c: &crate::theme::Chrome, code: char) -> Rgba {
     }
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
@@ -665,7 +730,7 @@ fn mtime(p: &Path) -> u128 {
 }
 
 /// Longest prefix of `text` (plus an ellipsis) that fits `max` px.
-fn fit(tx: &mut TextCtx, text: &str, max: i32, bold: bool) -> String {
+pub(crate) fn fit(tx: &mut TextCtx, text: &str, max: i32, bold: bool) -> String {
     if max <= 0 {
         return String::new();
     }
@@ -804,15 +869,20 @@ impl App {
 
     pub fn open_git_panel(&mut self) {
         self.refresh_git_status();
-        self.gitpanel = Some(Box::new(GitPanel::new(&self.root)));
+        let mut gp = Box::new(GitPanel::new(&self.root));
+        // A command that kept running while the panel was closed is shown again.
+        gp.job = self.gitbg.detached.take();
+        self.gitpanel = Some(gp);
     }
 
     pub fn close_git_panel(&mut self) {
-        self.gitpanel = None;
+        if let Some(mut gp) = self.gitpanel.take() {
+            self.git_detach_job(&mut gp);
+        }
         self.focus = crate::app::Focus::Editor;
     }
 
-    fn sync_docs_with_head(&mut self) {
+    pub(crate) fn sync_docs_with_head(&mut self) {
         for d in &mut self.docs {
             if let Some(p) = d.path().map(Path::to_path_buf) {
                 d.git_base = git::head_text(&p);
@@ -863,7 +933,6 @@ impl App {
         if c.check_state() == CheckState::On {
             paths.extend(c.old.clone());
         }
-        // Fully staged -> unstage; unstaged or staged-with-later-edits -> stage everything.
         let r = if c.check_state() == CheckState::On { unstage(&top, &paths) } else { stage(&top, &paths) };
         if let Err(e) = r {
             gp.say(format!("git: {e}"), false);
@@ -930,6 +999,9 @@ impl App {
                 gp.msg_top = 0;
                 let extra = if published { " (já publicado: o push exige force)" } else { "" };
                 gp.say(format!("Commit emendado{extra}"), true);
+                if published {
+                    gp.force = Some(ForceWhy::Amended);
+                }
                 self.say(format!("amend: {line}"));
                 self.sync_docs_with_head();
                 self.diff = None;
@@ -991,6 +1063,8 @@ impl App {
         }
         gp.sync_note = None;
         gp.publish = None;
+        gp.force = None;
+        gp.strategy_ask = false;
         gp.job = Some(gitsync::spawn(&top, op, self.wake()));
         gp.spun = Instant::now();
     }
@@ -1000,12 +1074,27 @@ impl App {
             let b = self.branch.clone().unwrap_or_default();
             return self.gp_note(gp, format!("O branch “{b}” não tem upstream: use Push para publicá-lo antes"), false);
         }
-        self.gp_start(gp, Op::Pull);
+        let op = match PullStrategy::from_name(&self.config.git_pull_strategy) {
+            Some(st) => Op::PullWith(st),
+            None => Op::Pull,
+        };
+        self.gp_start(gp, op);
+    }
+
+    /// Remember `st` as the pull strategy and pull with it.
+    fn gp_pull_with(&mut self, gp: &mut GitPanel, st: PullStrategy) {
+        self.config.git_pull_strategy = st.name().to_string();
+        self.config.save();
+        gp.strategy_ask = false;
+        self.gp_start(gp, Op::PullWith(st));
     }
 
     fn gp_push(&mut self, gp: &mut GitPanel) {
         if gp.sync.upstream.is_none() {
             return self.gp_ask_publish(gp);
+        }
+        if gp.force.is_some() {
+            return;
         }
         self.gp_start(gp, Op::Push);
     }
@@ -1034,6 +1123,23 @@ impl App {
         match res {
             Ok(msg) => self.gp_note(gp, msg, true),
             Err(f) if f.kind == FailKind::NoUpstream && op == Op::Push => return self.gp_ask_publish(gp),
+            // A pull that cannot fast-forward: let the user choose merge / rebase / ff-only.
+            Err(f) if f.kind == FailKind::Diverged && matches!(op, Op::Pull | Op::PullWith(PullStrategy::FfOnly)) => {
+                self.gp_note(gp, format!("{}: {}", op.label(), f.text), false);
+                gp.strategy_ask = true;
+            }
+            // A rejected push with nothing new on the remote is rewritten history: offer the force.
+            Err(f) if f.kind == FailKind::Rejected && op == Op::Push => {
+                gp.refresh();
+                let rewrote = gp.top.as_deref().is_some_and(gitsync::rewrote_published);
+                if rewrote {
+                    gp.sync_note = None;
+                    gp.force = Some(ForceWhy::Rejected);
+                    self.say(format!("{}: {}", op.label(), f.text));
+                } else {
+                    self.gp_note(gp, "Push: rejeitado, o remoto tem commits que você não tem. Faça fetch e pull antes de enviar.".into(), false);
+                }
+            }
             Err(f) => self.gp_note(gp, format!("{}: {}", op.label(), f.text), false),
         }
         // A pull moves HEAD and files; everything the panel shows may have changed.
@@ -1066,6 +1172,7 @@ impl App {
             }
         }
         if gp.closed {
+            self.git_detach_job(&mut gp);
             self.focus = crate::app::Focus::Editor;
         } else {
             self.gitpanel = Some(gp);
@@ -1079,9 +1186,9 @@ impl App {
             return gp.say("Arquivo grande demais para o diff lado a lado", false);
         }
         let name = split_name(&c.path).0.to_string();
-        // Fully staged files open on the staged side (their hunks can be unstaged); the rest on the
+        // The Staged entry opens on the staged side (its hunks can be unstaged), the others on the
         // not-staged side (their hunks can be staged). A staged + modified file offers both.
-        let side = if c.group == Group::Staged && c.also.is_none() { Side::Staged } else { Side::Unstaged };
+        let side = if c.group == Group::Staged { Side::Staged } else { Side::Unstaged };
         self.diff = DiffView::staging_auto(&top, &c.path, c.old.as_deref(), side, &name);
         if self.diff.is_none() {
             gp.say("Sem diferenças de conteúdo para mostrar", false);
@@ -1139,6 +1246,7 @@ impl App {
         let Some(mut gp) = self.gitpanel.take() else { return false };
         let consumed = if gp.focused { self.gp_key(&mut gp, ev) } else { false };
         if gp.closed {
+            self.git_detach_job(&mut gp);
             self.focus = crate::app::Focus::Editor;
         } else {
             self.gitpanel = Some(gp);
@@ -1163,7 +1271,7 @@ impl App {
             return true;
         }
         if matches!(key, Key::Named(NamedKey::Escape)) {
-            if gp.confirm.take().is_some() || gp.publish.take().is_some() {
+            if gp.confirm.take().is_some() || gp.publish.take().is_some() || gp.force.take().is_some() || std::mem::take(&mut gp.strategy_ask) {
             } else if gp.msg_focus && gp.tab == Tab::Changes && self.diff.is_none() {
                 gp.msg_focus = false;
             } else if self.diff.is_some() {
@@ -1280,6 +1388,19 @@ impl App {
         true
     }
 
+    /// Right click on the Pull button: choose how pulls integrate (merge / rebase / ff-only).
+    pub fn gitpanel_right_click(&mut self, x: f64, y: f64) -> bool {
+        let Some(gp) = self.gitpanel.as_mut() else { return false };
+        if gp.top.is_none() || gp.job.is_some() || gp.hit_at(x, y) != Some(Hit::Pull) {
+            return false;
+        }
+        gp.sync_note = None;
+        gp.publish = None;
+        gp.force = None;
+        gp.strategy_ask = true;
+        true
+    }
+
     pub fn gitpanel_mouse(&mut self, x: f64, y: f64) -> bool {
         // A click on a "stage this hunk" button of the open diff.
         if self.diff_click(x, y) {
@@ -1366,6 +1487,14 @@ impl App {
                     }
                 }
                 Some(Hit::PublishNo) => gp.publish = None,
+                Some(Hit::ForceYes) => {
+                    if gp.force.take().is_some() {
+                        self.gp_start(&mut gp, Op::ForcePush);
+                    }
+                }
+                Some(Hit::ForceNo) => gp.force = None,
+                Some(Hit::Strategy(st)) => self.gp_pull_with(&mut gp, st),
+                Some(Hit::StrategyNo) => gp.strategy_ask = false,
                 Some(Hit::JobCancel) => {
                     if let Some(j) = gp.job.as_mut() {
                         j.cancel();
@@ -1389,6 +1518,7 @@ impl App {
             }
         }
         if gp.closed {
+            self.git_detach_job(&mut gp);
             self.focus = crate::app::Focus::Editor;
         } else {
             self.gitpanel = Some(gp);
@@ -1533,6 +1663,7 @@ impl App {
         self.tx.draw_ui(cv, p.x + 36, by + 8, &branch, dim, p, false);
 
         // Strip: set-upstream prompt, progress of the running command, or the last result.
+        self.gp_measure_prompt(&mut gp, p.w);
         let strip_h = gp.strip_h();
         if strip_h > 0 && gp.top.is_some() {
             self.gp_draw_strip(cv, &mut gp, Rect::new(p.x + 1, by + BRANCH_H, p.w - 1, strip_h));
@@ -1573,10 +1704,63 @@ impl App {
         w
     }
 
+    /// Buttons of the force-push / strategy cards: (label, hit, colored as a warning).
+    fn gp_card_buttons(gp: &GitPanel) -> Vec<(&'static str, Hit, bool)> {
+        GitPanel::gp_card_buttons_for(gp.force.is_some())
+    }
+
+    /// Height of the force-push / strategy card for a panel `w` px wide (text wrapped, buttons in rows).
+    fn gp_measure_prompt(&mut self, gp: &mut GitPanel, w: i32) {
+        if gp.force.is_none() && !gp.strategy_ask {
+            return;
+        }
+        let text = gp.force.map_or(STRATEGY_TEXT, ForceWhy::text);
+        let lines = wrap_lines(&mut self.tx, text, w - 32, 5).len() as i32;
+        let widths: Vec<i32> = Self::gp_card_buttons(gp).iter().map(|(l, _, _)| self.tx.ui_width(l, false) + 18).collect();
+        let rows = button_rows(&widths, w - 20, 4).len() as i32;
+        gp.prompt_h = 8 + lines * STRIP_LINE + 6 + rows * 28 + 4;
+    }
+
+    /// Draw the force-push / strategy card; true when one was drawn.
+    fn gp_draw_card(&mut self, cv: &mut Canvas, gp: &mut GitPanel, area: Rect) -> bool {
+        if gp.force.is_none() && !gp.strategy_ask {
+            return false;
+        }
+        let c = self.theme.chrome;
+        let strong = c.tab_active_fg;
+        let warn = gp.force.is_some();
+        if warn {
+            cv.fill(Rect::new(area.x, area.y, 3, area.h), c.error.with_alpha(0xc0));
+        }
+        let text = gp.force.map_or(STRATEGY_TEXT, ForceWhy::text);
+        let lines = wrap_lines(&mut self.tx, text, area.w - 32, 5);
+        for (i, l) in lines.iter().enumerate() {
+            self.tx.draw_ui(cv, area.x + 16, area.y + 6 + i as i32 * STRIP_LINE, l, strong, area, false);
+        }
+        let btns = Self::gp_card_buttons(gp);
+        let widths: Vec<i32> = btns.iter().map(|(l, _, _)| self.tx.ui_width(l, false) + 18).collect();
+        let rows = button_rows(&widths, area.w - 20, 4);
+        let mut k = 0;
+        let first_y = area.y + 6 + lines.len() as i32 * STRIP_LINE + 6;
+        for (ri, n) in rows.iter().enumerate() {
+            let y = first_y + ri as i32 * 28;
+            let mut right = area.right() - 10;
+            for &(label, hit, danger) in btns[k..k + n].iter().rev() {
+                let tint = if danger { c.error } else if matches!(hit, Hit::ForceNo | Hit::StrategyNo) { c.tab_inactive_fg } else { c.accent_text };
+                right -= self.gp_text_btn(cv, gp, right, y, label, hit, tint) + 4;
+            }
+            k += n;
+        }
+        true
+    }
+
     fn gp_draw_strip(&mut self, cv: &mut Canvas, gp: &mut GitPanel, area: Rect) {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
         cv.fill(Rect::new(area.x, area.y, area.w, area.h), c.input_bg.with_alpha(0x80).over(c.sidebar_bg));
+        if gp.publish.is_none() && self.gp_draw_card(cv, gp, area) {
+            return;
+        }
         if let Some((remote, branch)) = gp.publish.clone() {
             let q = format!("Publicar “{branch}” em {remote} e passar a acompanhá-lo (upstream)?");
             let lines = wrap_lines(&mut self.tx, &q, area.w - 32, 2);
@@ -1613,14 +1797,9 @@ impl App {
 
     fn gp_checkbox(&mut self, cv: &mut Canvas, r: Rect, state: CheckState, hov: bool) {
         let c = self.theme.chrome;
-        if state != CheckState::Off {
+        if state == CheckState::On {
             cv.fill_round(r, 5, if hov { c.accent.shift(22) } else { c.accent });
-            if state == CheckState::On {
-                self.tx.icon(cv, "ui/check", r.x + 2, r.y + 2, r.w - 4, c.on_accent, r);
-            } else {
-                // Staged, but edited again afterwards: a dash instead of the check.
-                cv.fill_round(Rect::new(r.x + 4, r.y + r.h / 2 - 1, r.w - 8, 2), 1, c.on_accent);
-            }
+            self.tx.icon(cv, "ui/check", r.x + 2, r.y + 2, r.w - 4, c.on_accent, r);
         } else {
             if hov {
                 cv.fill_round(r, 5, c.tab_active_fg.with_alpha(0x1c));
@@ -1678,7 +1857,7 @@ impl App {
                     let (name, dir) = split_name(&ch.path);
                     let icon = self.tx.icons.file_icon(name);
                     self.tx.icon(cv, &icon, r.x + 34, y + 7, 16, dim, clip);
-                    let reserved = (if ch.discardable() { 66 } else { 36 }) + if ch.also.is_some() { 16 } else { 0 };
+                    let reserved = if ch.discardable() { 66 } else { 36 };
                     let avail = r.w - 58 - reserved;
                     let nm = fit(&mut self.tx, name, avail, false);
                     let nw = self.tx.ui_width(&nm, false);
@@ -1688,36 +1867,23 @@ impl App {
                         let d = fit(&mut self.tx, dir, avail - nw - 10, false);
                         self.tx.draw_ui_sized(cv, r.x + 58 + nw + 8, y + 8, &d, dim, clip, false, 12.0);
                     }
-                    // Rightmost the working-tree state; a staged+modified file also shows the staged
-                    // letter just before it.
-                    let (state_code, staged_code) = match ch.also {
-                        Some(w) => (w, Some(ch.code)),
-                        None => (ch.code, None),
-                    };
-                    let letter = state_code.to_string();
+                    let letter = ch.code.to_string();
                     let lw = self.tx.ui_width(&letter, true);
                     let lx = r.right() - 14 - lw / 2 - 4;
-                    self.tx.draw_ui(cv, lx, y + 6, &letter, code_color(&c, state_code), clip, true);
-                    if let Some(sc) = staged_code {
-                        let sl = sc.to_string();
-                        let sw = self.tx.ui_width(&sl, true);
-                        self.tx.draw_ui(cv, lx - sw - 6, y + 6, &sl, code_color(&c, sc), clip, true);
-                    }
+                    self.tx.draw_ui(cv, lx, y + 6, &letter, code_color(&c, ch.code), clip, true);
                     gp.hits.push((Rect::new(r.x + 34, vis.y, r.w - 34, vis.h).intersect(&vis), Hit::Row(i)));
                     gp.hits.push((cbhit.intersect(&vis), Hit::Check(i)));
                     if ch.discardable() {
-                        // Make room for the second state letter of a staged+modified row.
-                        let dx = if ch.also.is_some() { 16 } else { 0 };
                         if gp.confirm == Some(i) {
                             let label = "Descartar?";
                             let w = self.tx.ui_width(label, false) + 16;
-                            let br = Rect::new(r.right() - 34 - dx - w, y + 3, w, 24);
+                            let br = Rect::new(r.right() - 34 - w, y + 3, w, 24);
                             let bh = self.hv(br);
                             cv.fill_round_clip(br, 8, c.error.with_alpha(if bh { 0x55 } else { 0x33 }), clip);
                             self.tx.draw_ui(cv, br.x + 8, br.y + 3, label, c.error, br.intersect(&vis), false);
                             gp.hits.push((br.intersect(&vis), Hit::ConfirmDiscard(i)));
                         } else {
-                            let br = Rect::new(r.right() - 58 - dx, y + 3, 24, 24);
+                            let br = Rect::new(r.right() - 58, y + 3, 24, 24);
                             if hov || cur {
                                 let bh = self.hv(br);
                                 if bh {
@@ -1930,9 +2096,8 @@ mod tests {
         let find = |p: &str, g: Group| v.iter().find(|c| c.path == p && c.group == g).cloned();
         assert_eq!(find("staged.ts", Group::Staged).unwrap().code, 'M');
         assert_eq!(find("work.ts", Group::Changes).unwrap().code, 'M');
-        let both = find("both.ts", Group::Staged).unwrap();
-        assert_eq!(both.also, Some('M'), "staged and modified again = one entry carrying both states");
-        assert!(find("both.ts", Group::Changes).is_none());
+        assert_eq!(find("both.ts", Group::Staged).unwrap().code, 'M');
+        assert_eq!(find("both.ts", Group::Changes).unwrap().code, 'M', "staged and modified again is listed under Mudanças too");
         assert_eq!(find("new.ts", Group::Untracked).unwrap().code, '?');
         let r = find("new name.ts", Group::Staged).unwrap();
         assert_eq!((r.code, r.old.as_deref()), ('R', Some("old name.ts")));
@@ -2130,19 +2295,18 @@ mod tests {
     }
 
     #[test]
-    fn staged_and_modified_is_one_row_with_both_states() {
+    fn staged_and_modified_is_listed_under_both_groups() {
         let v = parse_status_z("MM both.ts\0AD gone.ts\0M  staged.ts\0 M work.ts\0");
-        assert_eq!(v.len(), 4, "one entry per file: {v:?}");
-        let both = v.iter().find(|c| c.path == "both.ts").unwrap();
-        assert_eq!((both.group, both.code, both.also), (Group::Staged, 'M', Some('M')));
-        assert_eq!(both.check_state(), CheckState::Partial);
-        assert!(both.discardable());
-        let gone = v.iter().find(|c| c.path == "gone.ts").unwrap();
-        assert_eq!((gone.code, gone.also), ('A', Some('D')));
-        let staged = v.iter().find(|c| c.path == "staged.ts").unwrap();
-        assert_eq!((staged.check_state(), staged.discardable()), (CheckState::On, false));
-        let work = v.iter().find(|c| c.path == "work.ts").unwrap();
-        assert_eq!((work.check_state(), work.discardable()), (CheckState::Off, true));
+        assert_eq!(v.len(), 6, "a staged+modified file has two entries: {v:?}");
+        let of = |p: &str, g: Group| v.iter().find(|c| c.path == p && c.group == g).cloned();
+        let staged = of("both.ts", Group::Staged).unwrap();
+        assert_eq!((staged.code, staged.check_state(), staged.discardable()), ('M', CheckState::On, false));
+        let work = of("both.ts", Group::Changes).unwrap();
+        assert_eq!((work.code, work.check_state(), work.discardable()), ('M', CheckState::Off, true));
+        assert_eq!(of("gone.ts", Group::Staged).unwrap().code, 'A');
+        assert_eq!(of("gone.ts", Group::Changes).unwrap().code, 'D');
+        // Plain staged / plain modified files stay in one group only.
+        assert!(of("staged.ts", Group::Changes).is_none() && of("work.ts", Group::Staged).is_none());
     }
 
     #[test]
@@ -2155,24 +2319,84 @@ mod tests {
         git_run(&dir, &["add", "a.ts"]).unwrap();
         std::fs::write(dir.join("a.ts"), "3\n").unwrap();
         let mut gp = GitPanel::new(&dir);
-        assert_eq!(gp.changes.len(), 1);
-        assert_eq!(gp.rows(), vec![Row::Header(Group::Staged), Row::File(0)], "a single row, no entry under Mudanças");
-        assert_eq!(gp.changes[0].check_state(), CheckState::Partial);
-        // The diff against HEAD shows the on-disk text.
-        let (old, new) = working_pair(&dir, &gp.changes[0]);
-        assert_eq!((old.as_str(), new.as_str()), ("1\n", "3\n"));
-        // Discard throws away the unstaged edit only; the staged version survives.
-        discard(&dir, &gp.changes[0].clone()).unwrap();
+        assert_eq!(gp.changes.len(), 2);
+        assert_eq!(gp.rows(), vec![Row::Header(Group::Staged), Row::File(0), Row::Header(Group::Changes), Row::File(1)], "one row under each group");
+        assert_eq!((gp.changes[0].group, gp.changes[1].group), (Group::Staged, Group::Changes));
+        // "Adicionar todos" (the Mudanças section) stages the edit made after the first `add`.
+        let paths = gp.group_paths(Group::Changes);
+        assert_eq!(paths, vec!["a.ts".to_string()]);
+        // Discard (Mudanças row) throws away the unstaged edit only; the staged version survives.
+        discard(&dir, &gp.changes[1].clone()).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("a.ts")).unwrap(), "2\n");
         gp.refresh();
+        assert_eq!(gp.changes.len(), 1);
         assert_eq!(gp.changes[0].check_state(), CheckState::On);
         assert!(discard(&dir, &gp.changes[0].clone()).is_err(), "fully staged: nothing to discard");
-        // Staging a partially staged file stages the rest.
+        // Edit again, then stage every path of the Mudanças section: one Staged entry is left.
         std::fs::write(dir.join("a.ts"), "4\n").unwrap();
         gp.refresh();
-        stage(&dir, &["a.ts".into()]).unwrap();
+        assert_eq!(gp.changes.len(), 2);
+        stage(&dir, &gp.group_paths(Group::Changes)).unwrap();
         gp.refresh();
-        assert_eq!(gp.changes[0].check_state(), CheckState::On);
+        assert_eq!(gp.changes.len(), 1);
+        assert_eq!(gp.changes[0].group, Group::Staged);
+        assert_eq!(git_run(&dir, &["show", ":a.ts"]).unwrap(), "4\n", "the index got the latest edit");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_command_left_running_by_a_closed_panel_shows_a_spinner_in_the_bottom_bar() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        use std::os::unix::fs::PermissionsExt;
+        let _g = lock();
+        let dir = tmp("gpbg");
+        // A repository whose remote is reached through a "ssh" that never answers (until cancelled).
+        let slow = dir.join("slow-ssh.sh");
+        std::fs::write(&slow, "#!/bin/sh\nsleep 30\nexit 1\n").unwrap();
+        std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        for a in [&["init", "-q", "-b", "main"][..], &["remote", "add", "origin", "ssh://localhost/nothing"], &["config", "core.sshCommand", slow.to_str().unwrap()]] {
+            git_run(&work, a).unwrap();
+        }
+        let mut app = test_app(&work);
+        let mut gp = Box::new(GitPanel::new(&work));
+        let top = gp.top.clone().expect("a repository");
+        gp.job = Some(gitsync::spawn(&top, Op::Fetch, app.wake()));
+        app.gitpanel = Some(gp);
+        // Closing the panel hands the running command over...
+        app.close_git_panel();
+        assert!(app.gitpanel.is_none() && app.gitbg.detached.is_some());
+        // ...the event loop keeps waking up for the spinner...
+        let (now, mut due) = (Instant::now(), Vec::new());
+        app.git_bg_tick(now, &mut |t| due.push(t));
+        assert!(due.iter().any(|t| *t <= now + Duration::from_millis(200)), "wakes up often enough to turn the spinner");
+        // ...and the bottom bar draws it (nothing when no command runs or there is no room).
+        let (w, h) = (500, 28);
+        let mut px = vec![0u32; (w * h) as usize];
+        let bar = Rect::new(0, 0, w, h);
+        let used = app.draw_git_bg(&mut Canvas { px: &mut px, w, h }, 10, bar, 400);
+        assert!(used > 60 && used < 200, "spinner + 'Buscando… 0s': {used}px");
+        assert!(px.iter().any(|p| *p != 0), "something was painted");
+        let mut blank = vec![0u32; (w * h) as usize];
+        assert_eq!(app.draw_git_bg(&mut Canvas { px: &mut blank, w, h }, 10, bar, 30), 0, "no room, no spinner");
+        assert!(blank.iter().all(|p| *p == 0));
+        // Reopening the panel takes the command back (and the bar goes quiet).
+        app.open_git_panel();
+        assert!(app.gitbg.detached.is_none() && app.gitpanel.as_ref().is_some_and(|g| g.job.is_some()));
+        assert_eq!(app.draw_git_bg(&mut Canvas { px: &mut blank, w, h }, 10, bar, 400), 0);
+        // Close it again, cancel the command: the result is reported and the spinner is gone.
+        app.close_git_panel();
+        app.gitbg.detached.as_mut().unwrap().cancel();
+        let t0 = Instant::now();
+        while app.gitbg.detached.is_some() && t0.elapsed() < Duration::from_secs(20) {
+            app.git_bg_tick(Instant::now(), &mut |_| {});
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(app.gitbg.detached.is_none(), "the finished command is collected");
+        let msg = app.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        assert!(msg.starts_with("Fetch"), "the result is reported in the bottom bar: {msg:?}");
+        assert_eq!(app.draw_git_bg(&mut Canvas { px: &mut blank, w, h }, 10, bar, 400), 0);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2252,6 +2476,37 @@ mod tests {
         let gp = GitPanel::new(&work);
         assert_eq!((gp.sync.upstream.as_deref(), gp.sync.ahead, gp.sync.behind), (Some("origin/main"), 1, 0));
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn button_rows_wrap_from_the_left() {
+        assert_eq!(button_rows(&[60, 60, 60], 300, 4), [3]);
+        assert_eq!(button_rows(&[100, 100, 100, 90], 300, 4), [2, 2]);
+        assert_eq!(button_rows(&[290, 20], 300, 4), [1, 1]);
+        assert_eq!(button_rows(&[400], 300, 4), [1], "a button wider than the row still gets its own");
+        assert!(button_rows(&[], 300, 4).is_empty());
+    }
+
+    #[test]
+    fn force_and_strategy_cards_take_over_the_strip() {
+        let mut gp = GitPanel::new(&std::env::temp_dir().join("lumen-gp-no-such-dir"));
+        assert_eq!(gp.strip_h(), 0);
+        gp.force = Some(ForceWhy::Rejected);
+        gp.prompt_h = 120;
+        assert_eq!(gp.strip_h(), 120);
+        gp.force = None;
+        gp.strategy_ask = true;
+        assert_eq!(gp.strip_h(), 120);
+        gp.prompt_h = 10;
+        assert_eq!(gp.strip_h(), PROMPT_H, "never smaller than the one-line prompt");
+        gp.strategy_ask = false;
+        assert_eq!(gp.strip_h(), 0);
+        assert!(ForceWhy::Rejected.text().contains("--force-with-lease") && ForceWhy::Amended.text().contains("emendado"));
+        let confirm = GitPanel::gp_card_buttons_for(true);
+        assert_eq!(confirm.iter().map(|b| b.1).collect::<Vec<_>>(), [Hit::ForceYes, Hit::ForceNo]);
+        let strat = GitPanel::gp_card_buttons_for(false);
+        assert_eq!(strat.len(), 4);
+        assert!(matches!(strat[1].1, Hit::Strategy(PullStrategy::Rebase)) && strat[3].1 == Hit::StrategyNo);
     }
 
     #[test]

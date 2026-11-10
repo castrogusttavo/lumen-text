@@ -429,11 +429,15 @@ impl App {
         }
 
         let mut rows = Vec::new();
-        for (k, &ei) in m.filtered.iter().enumerate().skip(m.scroll).take(MAX_ROWS) {
-            let y = top + 5 + (k - m.scroll) as i32 * ROW;
-            let rr = Rect::new(r.x + 6, y, r.w - 12, ROW);
+        // Mid-glide: rows shift up by a fraction of a row, one more shows at the bottom, all clipped.
+        let off = self.region_off(Reg::TopMenu, ROW);
+        let lclip = Rect::new(r.x, top, r.w, MAX_ROWS as i32 * ROW + 10);
+        for (k, &ei) in m.filtered.iter().enumerate().skip(m.scroll).take(MAX_ROWS + (off > 0) as usize) {
+            let y = top + 5 + (k - m.scroll) as i32 * ROW - off;
+            let row_full = Rect::new(r.x + 6, y, r.w - 12, ROW);
+            let rr = row_full.intersect(&lclip);
             if k == m.sel {
-                cv.fill_round(rr, 8, c.list_active_bg);
+                cv.fill_round_clip(row_full, 8, c.list_active_bg, lclip);
             }
             let ly = y + (ROW - 18) / 2;
             let iy = y + (ROW - 16) / 2;
@@ -707,6 +711,8 @@ pub enum StatusBtn {
     Position,
     Indent,
     Language,
+    /// An update is ready or available (left group, only then).
+    Update,
 }
 
 /// Is it drawn as an icon button (as opposed to a text read-out)?
@@ -764,31 +770,54 @@ impl App {
         let (v_search, v_problems, v_term, v_dbg, v_git, v_ram) = (vis("search"), vis("problems"), vis("terminal"), vis("debug"), vis("git"), vis("ram"));
         let (v_pos, v_indent, v_lang) = (vis("position"), vis("indent"), vis("language"));
 
-        // Left group.
+        // Left group, in `config.status_left_order` (the sidebar toggle is always shown).
         let mut x = r.x + 6;
-        let side_icon = if self.sidebar_open { "ui/threads_sidebar_left_open" } else { "ui/threads_sidebar_left_closed" };
-        x = self.status_btn(cv, x, side_icon, "", dim, self.sidebar_open, StatusBtn::Sidebar);
-        if v_search {
-            x = self.status_btn(cv, x, "hugeicons/search", "", dim, false, StatusBtn::Search);
-        }
-        if v_problems {
-            let (e, w) = self.diag_counts();
-            if e == 0 && w == 0 {
-                // Nothing to report: a single calm check instead of two zero counters.
-                x = self.status_btn(cv, x, "ui/check", "", dim, false, StatusBtn::Problems);
-                x += 8;
-            } else {
-                x = self.status_btn(cv, x, "ui/x_circle", &e.to_string(), if e > 0 { c.error } else { dim }, false, StatusBtn::Problems);
-                // The warning count is part of the same button (same hit target).
-                let warn_label = w.to_string();
-                let ww = self.tx.ui_width(&warn_label, false);
-                self.tx.icon(cv, "ui/warning", x, r.y + (r.h - 14) / 2, 14, if w > 0 { c.warning } else { dim }, r);
-                self.tx.draw_ui(cv, x + 20, y, &warn_label, if w > 0 { c.warning } else { dim }, r, false);
-                if let Some((b, _)) = self.layout.status_btns.last_mut() {
-                    b.w = (x + 20 + ww + 8) - b.x;
+        for id in self.config.status_left_order.clone() {
+            match id.as_str() {
+                "sidebar" => {
+                    let side_icon = if self.sidebar_open { "ui/threads_sidebar_left_open" } else { "ui/threads_sidebar_left_closed" };
+                    x = self.status_btn(cv, x, side_icon, "", dim, self.sidebar_open, StatusBtn::Sidebar);
                 }
-                x += 20 + ww + 16;
+                "search" if v_search => {
+                    x = self.status_btn(cv, x, "hugeicons/search", "", dim, false, StatusBtn::Search);
+                }
+                "problems" if v_problems => {
+                    let (e, w) = self.diag_counts();
+                    if e == 0 && w == 0 {
+                        // Nothing to report: a single calm check instead of two zero counters.
+                        x = self.status_btn(cv, x, "ui/check", "", dim, false, StatusBtn::Problems);
+                        x += 8;
+                    } else {
+                        x = self.status_btn(cv, x, "ui/x_circle", &e.to_string(), if e > 0 { c.error } else { dim }, false, StatusBtn::Problems);
+                        // The warning count is part of the same button (same hit target).
+                        let warn_label = w.to_string();
+                        let ww = self.tx.ui_width(&warn_label, false);
+                        self.tx.icon(cv, "ui/warning", x, r.y + (r.h - 14) / 2, 14, if w > 0 { c.warning } else { dim }, r);
+                        self.tx.draw_ui(cv, x + 20, y, &warn_label, if w > 0 { c.warning } else { dim }, r, false);
+                        if let Some((b, _)) = self.layout.status_btns.last_mut() {
+                            b.w = (x + 20 + ww + 8) - b.x;
+                        }
+                        x += 20 + ww + 16;
+                    }
+                }
+                _ => {}
             }
+        }
+        // A chord waits for its second stroke: say so (Esc gives up).
+        if let Some(prefix) = self.chord.clone() {
+            let label = crate::keymap::chord_label(&prefix);
+            let lw = self.tx.ui_width(&label, true);
+            let pill = Rect::new(x + 2, r.y + 4, lw + 18, r.h - 8);
+            cv.fill_round(pill, (pill.h / 2).min(10), c.accent.with_alpha(0x38));
+            self.tx.draw_ui(cv, pill.x + 9, y, &label, c.accent_text, pill, true);
+            let hint = "Esc cancela";
+            let hw = self.tx.ui_width(hint, false);
+            self.tx.draw_ui(cv, pill.right() + 8, y, hint, dim, Rect::new(pill.right(), r.y, hw + 16, r.h), false);
+            x = pill.right() + 8 + hw + 14;
+        }
+        if self.upd.indicator().is_some() {
+            let tint = if self.upd.ready() { c.accent_text } else { dim };
+            x = self.status_btn(cv, x, "ui/download", "", tint, self.upd.card.is_some(), StatusBtn::Update);
         }
 
         // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
@@ -863,12 +892,14 @@ impl App {
                         }
                         self.layout.status_btns.push((b, kind));
                     }
-                    StatusBtn::Sidebar | StatusBtn::Search | StatusBtn::Problems => {}
+                    StatusBtn::Sidebar | StatusBtn::Search | StatusBtn::Problems | StatusBtn::Update => {}
                 }
                 ix += w + kinds.get(k + 1).map_or(0, |&n| status_gap(kind, n));
             }
         }
 
+        // A git command left running by a closed panel: spinner first, then the message.
+        let x = x + self.draw_git_bg(cv, x, r, right_min - 16 - x);
         // Transient message gets whatever room is left between the corners, ellipsized.
         if let Some((m, t)) = &self.status {
             if t.elapsed() < std::time::Duration::from_secs(6) {
@@ -931,6 +962,7 @@ impl App {
             StatusBtn::Position => self.open_goto_line(),
             StatusBtn::Indent => self.open_indent_picker(),
             StatusBtn::Language => self.open_language_picker(),
+            StatusBtn::Update => self.update_indicator_click(),
             StatusBtn::Ram => {}
         }
         true
@@ -995,16 +1027,194 @@ fn static_lang(id: &str) -> &'static str {
     s
 }
 
+/// What a choice of the indentation picker does. They travel in `Action::SetIndent(String)`:
+/// `"4"` / `"tab"` change the setting, `"reindent:4"` also converts the file, `"tabw:8"` sets the
+/// width of a tab character.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IndentAction {
+    Set(String),
+    Reindent(String),
+    TabWidth(usize),
+}
+
+pub fn parse_indent_action(spec: &str) -> Option<IndentAction> {
+    if let Some(rest) = spec.strip_prefix("reindent:") {
+        return indent_from_spec(rest).map(|_| IndentAction::Reindent(rest.to_string()));
+    }
+    if let Some(rest) = spec.strip_prefix("tabw:") {
+        return rest.parse::<usize>().ok().filter(|n| crate::config::TAB_WIDTHS.contains(n)).map(IndentAction::TabWidth);
+    }
+    indent_from_spec(spec).map(|_| IndentAction::Set(spec.to_string()))
+}
+
+/// The indentation unit a file actually uses: tabs when most indented lines start with one, else
+/// the most frequent increase in leading spaces from one line to the next (2, 3, 4 or 8), so a
+/// block comment's stray one-space lines do not fool it. `fallback` when the text is not indented.
+pub fn detect_unit(text: &str, fallback: &str) -> String {
+    let (mut tabs, mut spaced) = (0usize, 0usize);
+    let mut deltas = [0usize; 9];
+    let mut prev = 0usize;
+    for line in text.lines().take(4000) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with('\t') {
+            tabs += 1;
+            continue;
+        }
+        let n = line.chars().take_while(|c| *c == ' ').count();
+        if n > 0 {
+            spaced += 1;
+        }
+        if n > prev && n - prev <= 8 {
+            deltas[n - prev] += 1;
+        }
+        prev = n;
+    }
+    if tabs > 0 && tabs >= spaced {
+        return "\t".into();
+    }
+    // Ties go to the smaller step; a lone 1-space increase is noise unless it is all there is.
+    let best = (2..=8).filter(|&d| deltas[d] > 0).max_by_key(|&d| (deltas[d], std::cmp::Reverse(d)));
+    match best {
+        Some(d) => " ".repeat(d),
+        None => fallback.to_string(),
+    }
+}
+
+/// Convert the leading whitespace of every non-blank line from indentation unit `from` to `to`.
+/// A tab counts up to the next multiple of `tab_w`; leftover columns that do not fill a level stay
+/// as spaces. Returns the new text and how many lines changed.
+pub fn reindent(text: &str, from: &str, to: &str, tab_w: usize) -> (String, usize) {
+    let tab_w = tab_w.max(1);
+    let unit_w = if from.contains('\t') { tab_w } else { from.chars().count().max(1) };
+    let mut out = String::with_capacity(text.len());
+    let mut changed = 0;
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        let lead_len = body.len() - body.trim_start_matches([' ', '\t']).len();
+        if lead_len == 0 || body.trim().is_empty() {
+            out.push_str(line);
+            continue;
+        }
+        let mut w = 0;
+        for ch in body[..lead_len].chars() {
+            w += if ch == '\t' { tab_w - w % tab_w } else { 1 };
+        }
+        let new_lead = format!("{}{}", to.repeat(w / unit_w), " ".repeat(w % unit_w));
+        if new_lead != body[..lead_len] {
+            changed += 1;
+        }
+        out.push_str(&new_lead);
+        out.push_str(&line[lead_len..]);
+    }
+    (out, changed)
+}
+
+/// What the user picked for a document in the bottom bar pickers; kept for the session.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DocPick {
+    /// `Some(None)` = plain text was picked.
+    pub lang: Option<Option<String>>,
+    /// Indentation spec ("2", "4", "8", "tab").
+    pub indent: Option<String>,
+    pub tab_w: Option<usize>,
+}
+
+impl DocPick {
+    /// Add this pick's fields to a session entry (`lang_pick` is "" for plain text).
+    pub fn write_json(&self, v: &mut serde_json::Value) {
+        let Some(o) = v.as_object_mut() else { return };
+        if let Some(l) = &self.lang {
+            o.insert("lang_pick".into(), serde_json::Value::String(l.clone().unwrap_or_default()));
+        }
+        if let Some(i) = &self.indent {
+            o.insert("indent".into(), serde_json::Value::String(i.clone()));
+        }
+        if let Some(w) = self.tab_w {
+            o.insert("tab_w".into(), serde_json::json!(w));
+        }
+    }
+
+    pub fn from_json(v: &serde_json::Value) -> DocPick {
+        DocPick {
+            lang: v["lang_pick"].as_str().map(|s| if s.is_empty() { None } else { Some(s.to_string()) }),
+            indent: v["indent"].as_str().filter(|s| indent_from_spec(s).is_some()).map(str::to_string),
+            tab_w: v["tab_w"].as_u64().map(|n| n as usize).filter(|n| crate::config::TAB_WIDTHS.contains(n)),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == DocPick::default()
+    }
+}
+
 impl App {
-    /// Bottom bar "Espaços: 4": choose how the current document indents.
+    /// Session entry of a document: add what the pickers chose.
+    pub fn picks_to_json(&self, path: &Path, v: &mut serde_json::Value) {
+        if let Some(p) = self.picks.get(path) {
+            p.write_json(v);
+        }
+    }
+
+    /// Re-apply the picks stored in a session entry to document `i`.
+    pub fn apply_picks_json(&mut self, i: usize, entry: &serde_json::Value) {
+        let pick = DocPick::from_json(entry);
+        if pick.is_empty() || i >= self.docs.len() {
+            return;
+        }
+        if let Some(l) = pick.lang.clone() {
+            self.set_doc_language_for(i, l, false);
+        }
+        if let Some(ind) = pick.indent.as_deref().and_then(indent_from_spec) {
+            self.docs[i].ed.indent = ind;
+        }
+        if let Some(w) = pick.tab_w {
+            self.docs[i].ed.tab_w = w;
+        }
+        if let Some(path) = self.docs[i].path().map(Path::to_path_buf) {
+            self.picks.insert(path, pick);
+        }
+    }
+
+    fn pick_entry(&mut self, i: usize) -> Option<&mut DocPick> {
+        let path = self.docs.get(i)?.path()?.to_path_buf();
+        Some(self.picks.entry(path).or_default())
+    }
+
+    /// New documents start with the tab width of the settings (and the setting changed: follow it
+    /// in the open documents the user has not given a width of their own).
+    pub fn set_default_tab_width(&mut self, n: usize) {
+        crate::editor::set_default_tab_w(n);
+        for i in 0..self.docs.len() {
+            let own = self.docs[i].path().and_then(|p| self.picks.get(p)).is_some_and(|p| p.tab_w.is_some());
+            if !own {
+                self.docs[i].ed.tab_w = n;
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// Bottom bar "Espaços: 4": choose how the current document indents, convert the file to a
+    /// setting, or set the width of a tab character.
     pub fn open_indent_picker(&mut self) {
         use crate::app_overlay::{Action, Item};
         let Some(d) = self.docs.get(self.active) else { return };
         let cur = indent_spec(&d.ed.indent);
-        let items: Vec<Item> = INDENT_CHOICES
+        let mut items: Vec<Item> = INDENT_CHOICES
             .iter()
-            .map(|(label, spec)| Item { label: label.to_string(), detail: if *spec == cur { "atual".into() } else { String::new() }, action: Action::SetIndent(spec.to_string()) })
+            .map(|(label, spec)| Item { label: label.to_string(), detail: if *spec == cur { "atual".into() } else { "só muda a configuração".into() }, action: Action::SetIndent(spec.to_string()) })
             .collect();
+        items.extend(INDENT_CHOICES.iter().map(|(label, spec)| Item {
+            label: format!("Re-indentar o arquivo para: {label}"),
+            detail: "converte a indentação das linhas".into(),
+            action: Action::SetIndent(format!("reindent:{spec}")),
+        }));
+        items.extend(crate::config::TAB_WIDTHS.iter().map(|w| Item {
+            label: format!("Largura da tabulação: {w}"),
+            detail: if d.ed.tab_w == *w { "atual".into() } else { "colunas por tab".into() },
+            action: Action::SetIndent(format!("tabw:{w}")),
+        }));
         let sel = INDENT_CHOICES.iter().position(|(_, s)| *s == cur).unwrap_or(0);
         self.overlay = Overlay::Picker(crate::app_overlay::choice_picker("Indentação do arquivo", items, sel));
     }
@@ -1028,15 +1238,57 @@ impl App {
 
     /// Apply a choice of the indentation picker to the active document.
     pub fn set_doc_indent(&mut self, spec: &str) {
-        let (Some(indent), Some(d)) = (indent_from_spec(spec), self.docs.get_mut(self.active)) else { return };
-        d.ed.indent = indent;
-        self.say(format!("indentação: {}", if spec == "tab" { "tabulação".to_string() } else { format!("{spec} espaços") }));
+        let i = self.active;
+        let Some(action) = parse_indent_action(spec) else { return };
+        if self.docs.get(i).is_none() {
+            return;
+        }
+        match action {
+            IndentAction::Set(s) => {
+                let Some(indent) = indent_from_spec(&s) else { return };
+                self.docs[i].ed.indent = indent;
+                if let Some(p) = self.pick_entry(i) {
+                    p.indent = Some(s.clone());
+                }
+                self.say(format!("indentação: {}", if s == "tab" { "tabulação".to_string() } else { format!("{s} espaços") }));
+            }
+            IndentAction::Reindent(s) => {
+                let Some(to) = indent_from_spec(&s) else { return };
+                let d = &mut self.docs[i];
+                let text = d.buf.to_string();
+                let from = detect_unit(&text, &d.ed.indent);
+                let (new, lines) = reindent(&text, &from, &to, d.ed.tab_w);
+                if lines > 0 {
+                    d.replace_text(&new);
+                }
+                d.ed.indent = to;
+                if let Some(p) = self.pick_entry(i) {
+                    p.indent = Some(s.clone());
+                }
+                let what = if s == "tab" { "tabulação".to_string() } else { format!("{s} espaços") };
+                self.say(if lines == 0 { format!("indentação: {what} (o arquivo já estava assim)") } else { format!("re-indentado para {what}: {lines} linhas") });
+            }
+            IndentAction::TabWidth(w) => {
+                self.docs[i].ed.tab_w = w;
+                if let Some(p) = self.pick_entry(i) {
+                    p.tab_w = Some(w);
+                }
+                self.say(format!("largura da tabulação: {w}"));
+            }
+        }
     }
 
-    /// Switch the active document to language `id` (`None` = plain text): new grammar, comment
-    /// prefix and JSX handling. The choice lasts while the document stays open.
+    /// Switch the active document to language `id` (`None` = plain text); see [`Self::set_doc_language_for`].
     pub fn set_doc_language(&mut self, id: Option<String>) {
-        if self.docs.get(self.active).is_none() {
+        let i = self.active;
+        self.set_doc_language_for(i, id, true);
+    }
+
+    /// Switch document `i` to language `id`: new grammar, comment prefix and JSX handling, and the
+    /// language servers are told (`didClose` + `didOpen` with the new `languageId`; a server the new
+    /// language needs is started). `remember` stores the choice for the session.
+    pub fn set_doc_language_for(&mut self, i: usize, id: Option<String>, remember: bool) {
+        if self.docs.get(i).is_none() {
             return;
         }
         let lang = id.as_deref().map(static_lang);
@@ -1055,13 +1307,20 @@ impl App {
             }
             tk.map(crate::highlight::Highlighter::new)
         });
-        let d = &mut self.docs[self.active];
+        let d = &mut self.docs[i];
+        let old = d.lang;
         d.lang = lang;
         d.hl = hl;
         d.ed.comment = comment_for_lang(lang).to_string();
         d.ed.jsx = matches!(lang, Some("tsx" | "jsx" | "html" | "vue" | "svelte"));
         d.sem.clear();
-        self.say(note.unwrap_or_else(|| format!("linguagem: {}", lang.unwrap_or("texto simples"))));
+        self.lsp_language_changed(i, old, lang);
+        if remember {
+            if let Some(p) = self.pick_entry(i) {
+                p.lang = Some(id.clone());
+            }
+            self.say(note.unwrap_or_else(|| format!("linguagem: {}", lang.unwrap_or("texto simples"))));
+        }
     }
 }
 
@@ -1250,5 +1509,74 @@ mod tests {
         assert_eq!(status_gap(StatusBtn::Git, StatusBtn::Ram), 12);
         assert_eq!(status_gap(StatusBtn::Ram, StatusBtn::Language), 20);
         assert_eq!(status_gap(StatusBtn::Language, StatusBtn::Terminal), 20);
+    }
+
+    #[test]
+    fn indent_picker_actions_parse() {
+        assert_eq!(parse_indent_action("4"), Some(IndentAction::Set("4".into())));
+        assert_eq!(parse_indent_action("tab"), Some(IndentAction::Set("tab".into())));
+        assert_eq!(parse_indent_action("reindent:2"), Some(IndentAction::Reindent("2".into())));
+        assert_eq!(parse_indent_action("reindent:tab"), Some(IndentAction::Reindent("tab".into())));
+        assert_eq!(parse_indent_action("tabw:8"), Some(IndentAction::TabWidth(8)));
+        assert_eq!(parse_indent_action("tabw:3"), None, "only 2, 4 and 8");
+        assert_eq!(parse_indent_action("reindent:99"), None);
+        assert_eq!(parse_indent_action("lixo"), None);
+    }
+
+    #[test]
+    fn the_files_own_indentation_unit_is_detected() {
+        let two = "function f() {\n  if (a) {\n    b();\n  }\n  /**\n   * doc\n   */\n  c();\n}\n";
+        assert_eq!(detect_unit(two, "    "), "  ", "the one-space comment lines do not count");
+        let four = "class A {\n    m() {\n        x();\n    }\n    n() {\n        y();\n    }\n}\n";
+        assert_eq!(detect_unit(four, "  "), "    ");
+        assert_eq!(detect_unit("a\n\tb\n\t\tc\n\td\n", "  "), "\t");
+        assert_eq!(detect_unit("a\nb\nc\n", "   "), "   ", "nothing indented: keep the fallback");
+    }
+
+    #[test]
+    fn reindenting_converts_leading_whitespace_only() {
+        let src = "if (a) {\n  b(\"  keep  \");\n\n  if (c) {\n    d();\n  }\n}\n";
+        let (out, n) = reindent(src, "  ", "    ", 4);
+        assert_eq!(out, "if (a) {\n    b(\"  keep  \");\n\n    if (c) {\n        d();\n    }\n}\n");
+        assert_eq!(n, 4, "the blank line and the unindented ones are untouched");
+        // Spaces to tabs and back.
+        let (tabs, _) = reindent(&out, "    ", "\t", 4);
+        assert_eq!(tabs, "if (a) {\n\tb(\"  keep  \");\n\n\tif (c) {\n\t\td();\n\t}\n}\n");
+        let (back, _) = reindent(&tabs, "\t", "  ", 4);
+        assert_eq!(back, src);
+        // A tab counts to the next multiple of the tab width; leftover columns stay spaces.
+        let (odd, _) = reindent("   x\n", "  ", "\t", 4);
+        assert_eq!(odd, "\t x\n");
+        let (w8, _) = reindent("\tx\n", "\t", "    ", 8);
+        assert_eq!(w8, "    x\n", "one tab level becomes one level of the target unit, whatever the tab width");
+    }
+
+    #[test]
+    fn reindent_keeps_line_endings_and_reports_zero_when_nothing_changes() {
+        let (out, n) = reindent("a\r\n  b\r\n", "  ", "    ", 4);
+        assert_eq!(out, "a\r\n    b\r\n");
+        assert_eq!(n, 1);
+        let (same, n) = reindent("a\n    b\n", "    ", "    ", 4);
+        assert_eq!((same.as_str(), n), ("a\n    b\n", 0));
+        let (nolast, _) = reindent("  a", "  ", "\t", 4);
+        assert_eq!(nolast, "\ta", "no trailing newline needed");
+    }
+
+    #[test]
+    fn picks_roundtrip_through_the_session_entry() {
+        let pick = DocPick { lang: Some(Some("python".into())), indent: Some("tab".into()), tab_w: Some(8) };
+        let mut v = serde_json::json!({"path": "/x", "line": 1});
+        pick.write_json(&mut v);
+        assert_eq!(DocPick::from_json(&v), pick);
+        // Plain text is a pick of its own ("" in the file), distinct from no pick at all.
+        let plain = DocPick { lang: Some(None), ..Default::default() };
+        let mut v = serde_json::json!({});
+        plain.write_json(&mut v);
+        assert_eq!(v["lang_pick"], "");
+        assert_eq!(DocPick::from_json(&v), plain);
+        assert!(DocPick::from_json(&serde_json::json!({"path": "/x"})).is_empty());
+        // Garbage in an old or edited session is ignored.
+        let bad = serde_json::json!({"indent": "banana", "tab_w": 3});
+        assert!(DocPick::from_json(&bad).is_empty());
     }
 }

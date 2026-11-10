@@ -19,9 +19,9 @@ fn keybindings_path() -> Option<std::path::PathBuf> {
 impl App {
     fn config_values(&self) -> Value {
         let c = &self.config;
-        json!({
-            "format_on_save": c.format_on_save, "auto_import": c.auto_import, "font_size": c.font_size,
-            "lsp_narrow": c.lsp_narrow, "code_lens": c.code_lens, "inlay_hints": c.inlay_hints, "appearance": c.appearance, "theme_chrome": c.theme_chrome,
+        let mut v = json!({
+            "format_on_save": c.format_on_save, "updates": c.updates, "auto_import": c.auto_import, "font_size": c.font_size,
+            "lsp_narrow": c.lsp_narrow, "code_lens": c.code_lens, "code_lens_refs": c.code_lens_refs, "code_lens_impls": c.code_lens_impls, "inlay_hints": c.inlay_hints, "inlay_hints_params": c.inlay_hints_params, "inlay_hints_types": c.inlay_hints_types, "appearance": c.appearance, "theme_chrome": c.theme_chrome,
             "theme": c.theme.clone().unwrap_or_else(|| self.theme.name.clone()),
             "theme_light": c.theme_light, "theme_dark": c.theme_dark, "tsgo_source": c.tsgo_source,
             "minimap": c.minimap, "minimap_style": c.minimap_style, "word_wrap": c.word_wrap, "sticky_scroll": c.sticky_scroll, "indent_guides": c.indent_guides,
@@ -31,11 +31,36 @@ impl App {
             "status_position": c.status_visible("position"), "status_indent": c.status_visible("indent"),
             "status_language": c.status_visible("language"), "status_terminal": c.status_visible("terminal"),
             "status_debug": c.status_visible("debug"), "status_git": c.status_visible("git"), "status_ram": c.status_visible("ram"),
-            "status_pos_position": c.status_slot("position").map_or(1, |s| s + 1), "status_pos_indent": c.status_slot("indent").map_or(2, |s| s + 1),
-            "status_pos_language": c.status_slot("language").map_or(3, |s| s + 1), "status_pos_terminal": c.status_slot("terminal").map_or(4, |s| s + 1),
-            "status_pos_debug": c.status_slot("debug").map_or(5, |s| s + 1), "status_pos_git": c.status_slot("git").map_or(6, |s| s + 1),
-            "status_pos_ram": c.status_slot("ram").map_or(7, |s| s + 1),
-        })
+            "tab_width": c.tab_width.to_string(),
+            "git_pull_strategy": if c.git_pull_strategy.is_empty() { "ask" } else { c.git_pull_strategy.as_str() },
+        });
+        // Split in two: one `json!` this long hits the macro recursion limit.
+        let pos = json!({
+            "status_pos_sidebar": c.status_rank("sidebar"), "status_pos_search": c.status_rank("search"), "status_pos_problems": c.status_rank("problems"),
+            "status_pos_position": c.status_rank("position"), "status_pos_indent": c.status_rank("indent"),
+            "status_pos_language": c.status_rank("language"), "status_pos_terminal": c.status_rank("terminal"),
+            "status_pos_debug": c.status_rank("debug"), "status_pos_git": c.status_rank("git"),
+            "status_pos_ram": c.status_rank("ram"),
+        });
+        if let (Some(dst), Some(src)) = (v.as_object_mut(), pos.as_object()) {
+            dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
+        }
+        v
+    }
+
+    /// The order steppers show positions among visible items: refresh them all after anything
+    /// that moved or hid an item.
+    fn refresh_status_steppers(&mut self) {
+        let vals = self.config_values();
+        if let Overlay::Settings(m) = &mut self.overlay {
+            let mut merged = m.settings.values();
+            if let (Some(dst), Some(src)) = (merged.as_object_mut(), vals.as_object()) {
+                for (key, val) in src.iter().filter(|(key, _)| key.starts_with("status_pos_")) {
+                    dst.insert(key.clone(), val.clone());
+                }
+            }
+            m.settings.set_values(merged);
+        }
     }
 
     pub fn open_settings(&mut self, page: Page) {
@@ -67,8 +92,14 @@ impl App {
 
     pub fn draw_settings(&mut self, cv: &mut crate::ui::Canvas) {
         let window = self.window_rect();
+        let mut bar = None;
         if let Overlay::Settings(m) = &mut self.overlay {
             m.draw(cv, &mut self.tx, &self.theme, window);
+            bar = m.bar_info();
+        }
+        // Wheel + thin draggable scrollbar for the page's list (the shared `ui::VBar` regions).
+        if let Some((area, total, visible, pos)) = bar {
+            self.region_bar(cv, crate::scrollreg::Reg::Modal, area, total, visible, pos, 1.0, false);
         }
     }
 
@@ -165,8 +196,20 @@ impl App {
         let s = v.as_str().map(str::to_string);
         match key {
             "format_on_save" => self.config.format_on_save = b.unwrap_or(false),
+            "updates" => {
+                self.config.updates = crate::config::normalize_updates(s.as_deref());
+                self.update_setting_changed();
+            }
             "auto_import" => self.config.auto_import = b.unwrap_or(false),
             "lsp_narrow" => self.config.lsp_narrow = b.unwrap_or(true),
+            "code_lens_refs" | "code_lens_impls" => {
+                let on = b.unwrap_or(true);
+                if key == "code_lens_refs" { self.config.code_lens_refs = on } else { self.config.code_lens_impls = on }
+                for d in &mut self.docs {
+                    d.lens_refs = self.config.code_lens_refs;
+                    d.lens_impls = self.config.code_lens_impls;
+                }
+            }
             "code_lens" => {
                 self.config.code_lens = b.unwrap_or(false);
                 for d in &mut self.docs {
@@ -178,6 +221,11 @@ impl App {
             }
             "inlay_hints" => {
                 self.config.inlay_hints = b.unwrap_or(false);
+                self.refresh_inlay_hints();
+            }
+            "inlay_hints_params" | "inlay_hints_types" => {
+                let on = b.unwrap_or(true);
+                if key == "inlay_hints_params" { self.config.inlay_hints_params = on } else { self.config.inlay_hints_types = on }
                 self.refresh_inlay_hints();
             }
             "font_size" => {
@@ -253,27 +301,31 @@ impl App {
             }
             "ram_display" => self.config.ram_display = if s.as_deref() == Some("short") { "short".into() } else { "long".into() },
             k if k.starts_with("status_pos_") => {
-                // Stepper of an item's slot in the right-hand group: moves it there, live.
-                let slot = (v.as_f64().unwrap_or(1.0).round().max(1.0) as usize) - 1;
-                self.config.move_status_to(&k["status_pos_".len()..], slot);
-                self.tooltip = None;
-                // The other items shifted: refresh every stepper of the open modal.
-                let vals = self.config_values();
-                if let Overlay::Settings(m) = &mut self.overlay {
-                    let mut merged = m.settings.values();
-                    if let (Some(dst), Some(src)) = (merged.as_object_mut(), vals.as_object()) {
-                        for (key, val) in src.iter().filter(|(key, _)| key.starts_with("status_pos_")) {
-                            dst.insert(key.clone(), val.clone());
-                        }
+                // Stepper of an item's position among the visible ones of its group: each step moves
+                // it past one visible neighbour (hidden items are hopped over), live.
+                let id = &k["status_pos_".len()..];
+                let want = v.as_f64().unwrap_or(1.0).round().max(1.0) as usize;
+                for _ in 0..8 {
+                    let cur = self.config.status_rank(id);
+                    if want == cur || !self.config.step_status(id, if want > cur { 1 } else { -1 }) {
+                        break;
                     }
-                    m.settings.set_values(merged);
                 }
+                self.tooltip = None;
+                self.refresh_status_steppers();
             }
             k if k.starts_with("status_") => {
                 // One switch per bottom bar item; the mandatory one has none (and ignores `false`).
                 self.config.set_status_item(&k["status_".len()..], b.unwrap_or(true));
                 self.tooltip = None;
+                self.refresh_status_steppers();
             }
+            "tab_width" => {
+                let n = crate::config::clean_tab_width(s.as_deref().and_then(|t| t.parse().ok()).unwrap_or(4));
+                self.config.tab_width = n;
+                self.set_default_tab_width(n);
+            }
+            "git_pull_strategy" => self.config.git_pull_strategy = crate::config::clean_pull_strategy(s.as_deref().unwrap_or("")),
             _ => return,
         }
         self.config.save();

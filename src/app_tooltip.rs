@@ -12,6 +12,7 @@
 
 use crate::{
     app::{App, ROW_H, SidebarMode, TAB_H},
+    app_ctxmenu::Act,
     app_gitpanel::{Group, Hit, Tab as GitTab},
     app_overlay::Overlay,
     app_panel::PanelTab,
@@ -32,6 +33,8 @@ const PAD_Y: i32 = 6;
 const LINE: i32 = 18;
 const GAP: i32 = 6;
 const WIN_M: i32 = 6;
+/// Widest card (long subjects and paths wrap).
+const MAX_W: i32 = 460;
 
 /// What the pointer is resting on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -44,8 +47,12 @@ pub enum TipKey {
     /// A row of the file tree (index into `Tree::rows`).
     SideRow(usize),
     PanelTab(PanelTab),
-    /// A button or row of the Git panel.
+    /// A button or row of the Git panel (history rows included).
     Git(Hit),
+    /// A row of the outline sidebar ("Estrutura"): index into the active document's symbols.
+    Outline(usize),
+    /// An item of the open context menu that needs a word of explanation.
+    Ctx(Act),
 }
 
 /// Pointer-rest state (the text is resolved while drawing).
@@ -67,6 +74,8 @@ pub struct TipText {
     pub title: String,
     pub keys: Option<String>,
     pub detail: Option<String>,
+    /// More dim lines under the detail (hash of a commit, ...).
+    pub more: Vec<String>,
 }
 
 /// "ctrl+shift+g" -> "Ctrl+Shift+G".
@@ -113,7 +122,7 @@ pub fn place(anchor: Rect, w: i32, h: i32, below: bool, win: (i32, i32)) -> (i32
 
 /// Git panel hit targets that get a tooltip (buttons, tabs and file rows; not the message box).
 fn git_tip_wanted(h: Hit) -> bool {
-    matches!(h, Hit::Refresh | Hit::Close | Hit::Tab(_) | Hit::Check(_) | Hit::Discard(_) | Hit::ConfirmDiscard(_) | Hit::Row(_) | Hit::CommitBtn | Hit::Opt | Hit::Fetch | Hit::Pull | Hit::Push | Hit::Amend | Hit::JobCancel)
+    matches!(h, Hit::Refresh | Hit::Close | Hit::Tab(_) | Hit::Check(_) | Hit::Discard(_) | Hit::ConfirmDiscard(_) | Hit::Row(_) | Hit::CommitBtn | Hit::Opt | Hit::Fetch | Hit::Pull | Hit::Push | Hit::Amend | Hit::JobCancel | Hit::Commit(_) | Hit::Strategy(_) | Hit::ForceYes)
 }
 
 /// Opacity (0..=1) of the card `elapsed` after it appeared.
@@ -135,6 +144,131 @@ pub fn sidebar_row_at(scroll: f64, top: i32, y: i32, row_h: i32, rows: usize) ->
     (k < rows).then_some(k)
 }
 
+/// LSP `SymbolKind` in Portuguese, for the outline tooltip.
+pub fn symbol_kind_name(kind: u32) -> &'static str {
+    match kind {
+        1 => "Arquivo",
+        2 => "Módulo",
+        3 => "Namespace",
+        4 => "Pacote",
+        5 => "Classe",
+        6 => "Método",
+        7 => "Propriedade",
+        8 => "Campo",
+        9 => "Construtor",
+        10 => "Enum",
+        11 => "Interface",
+        12 => "Função",
+        13 => "Variável",
+        14 => "Constante",
+        15 => "String",
+        16 => "Número",
+        17 => "Booleano",
+        18 => "Array",
+        19 => "Objeto",
+        20 => "Chave",
+        21 => "Nulo",
+        22 => "Membro de enum",
+        23 => "Struct",
+        24 => "Evento",
+        25 => "Operador",
+        26 => "Parâmetro de tipo",
+        _ => "Símbolo",
+    }
+}
+
+/// The one-line explanation of a context menu action, for the ones that are not obvious.
+pub fn act_hint(act: Act) -> Option<&'static str> {
+    Some(match act {
+        Act::Cut => "Marca para mover: cole em outra pasta (Esc cancela)",
+        Act::Copy => "Copia para colar em outra pasta",
+        Act::Paste => "Cola aqui o que foi copiado ou recortado",
+        Act::Duplicate => "Cria uma cópia ao lado, com “(cópia)” no nome",
+        Act::Trash => "Envia para a lixeira do sistema; dá para restaurar de lá",
+        Act::Delete => "Apaga de vez, sem lixeira. Não pode ser desfeito",
+        Act::CopyPath => "Copia o caminho completo para a área de transferência",
+        Act::OpenSide => "Abre o arquivo em um painel dividido, ao lado",
+        Act::CloseOthers => "Fecha as outras abas; as com alterações não salvas perguntam antes",
+        Act::CloseAll => "Fecha todas as abas, menos as fixadas",
+        Act::TogglePin => "Abas fixadas ficam à esquerda e sobrevivem a “Fechar todas”",
+        Act::Markdown => "Mostra o texto renderizado ao lado do editor",
+        Act::NewFile | Act::NewFolder | Act::Rename | Act::CloseTab => return None,
+    })
+}
+
+/// "2026-11-09 14:03" in local time.
+pub fn local_datetime(ts: i64) -> String {
+    let t = ts as libc::time_t;
+    // SAFETY: `localtime_r` only writes into the zeroed `tm` we own.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&t, &mut tm);
+        format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min)
+    }
+}
+
+/// Greedy word wrap of `text` into lines no wider than `max` px (`width` measures a string); a word
+/// wider than the line is cut by characters. At most `max_lines` lines, the last one ellipsized.
+pub fn wrap_tip(text: &str, max: i32, max_lines: usize, width: &mut dyn FnMut(&str) -> i32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut push_word = |cur: &mut String, lines: &mut Vec<String>, word: &str, width: &mut dyn FnMut(&str) -> i32| {
+        let cand = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+        if width(&cand) <= max {
+            *cur = cand;
+            return;
+        }
+        if !cur.is_empty() {
+            lines.push(std::mem::take(cur));
+        }
+        // The word alone may be too long: break it by characters.
+        let mut piece = String::new();
+        for ch in word.chars() {
+            let mut next = piece.clone();
+            next.push(ch);
+            if width(&next) > max && !piece.is_empty() {
+                lines.push(std::mem::take(&mut piece));
+            }
+            piece.push(ch);
+        }
+        *cur = piece;
+    };
+    for word in text.split_whitespace() {
+        push_word(&mut cur, &mut lines, word, width);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.len() > max_lines.max(1) {
+        lines.truncate(max_lines.max(1));
+        let last = lines.pop().unwrap_or_default();
+        let mut l = format!("{last}…");
+        while width(&l) > max && l.chars().count() > 2 {
+            let mut c: Vec<char> = l.chars().collect();
+            c.pop();
+            c.pop();
+            l = c.into_iter().collect::<String>() + "…";
+        }
+        lines.push(l);
+    }
+    lines
+}
+
+/// Top-left corner of a card beside `anchor` (to its right, else its left), vertically centered on
+/// it and kept inside the window: for context menu items, whose neighbours are other items.
+pub fn place_side(anchor: Rect, w: i32, h: i32, win: (i32, i32)) -> (i32, i32) {
+    let right_x = anchor.right() + GAP;
+    let x = if right_x + w <= win.0 - WIN_M { right_x } else { (anchor.x - GAP - w).max(WIN_M) };
+    let y = (anchor.y + (anchor.h - h) / 2).clamp(WIN_M, (win.1 - h - WIN_M).max(WIN_M));
+    (x, y)
+}
+
+/// Tooltip of a history row: the full subject, who and when, and the whole hash.
+pub fn commit_tip(c: &crate::app_gitpanel::LogEntry, now: i64) -> TipText {
+    let when = format!("{} ({})", local_datetime(c.ts), crate::git::ago((now - c.ts).max(0)));
+    TipText { title: c.subject.clone(), keys: None, detail: Some(format!("{} · {when}", c.author)), more: vec![c.hash.clone()] }
+}
+
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -147,7 +281,21 @@ impl App {
     /// The target under the pointer, its rect and whether the card goes below it.
     pub fn tip_target(&mut self) -> Option<(TipKey, Rect, bool)> {
         let (x, y) = self.mouse;
-        if !self.overlay.is_none() || self.dragging || self.dragging_minimap || self.drag_bar.is_some() {
+        if self.dragging || self.dragging_minimap || self.drag_bar.is_some() {
+            return None;
+        }
+        // An open context menu explains the items that need it.
+        if let Overlay::Ctx(m) = &self.overlay {
+            if m.confirm.is_some() || m.unsaved.is_some() {
+                return None;
+            }
+            let &(r, i) = m.rects.iter().find(|(r, _)| r.contains(x, y))?;
+            return match m.entries.get(i) {
+                Some(crate::app_ctxmenu::Entry::Item { act, .. }) if act_hint(*act).is_some() => Some((TipKey::Ctx(*act), r, false)),
+                _ => None,
+            };
+        }
+        if !self.overlay.is_none() {
             return None;
         }
         let l = &self.layout;
@@ -169,6 +317,14 @@ impl App {
             }
         }
         let side = self.layout.sidebar;
+        if self.sidebar_open && self.sidebar_mode == SidebarMode::Outline && side.contains(x, y) && x < (side.right() - 15) as f64 {
+            let top = side.y + TAB_H;
+            let n = self.docs.get(self.active).map_or(0, |d| d.symbols.len());
+            let k = sidebar_row_at(self.tree.scroll, top, y as i32, ROW_H, n)?;
+            let first = (self.tree.scroll / ROW_H as f64).floor().max(0.0) as usize;
+            let ry = top - (self.tree.scroll as i32 % ROW_H) + (k - first) as i32 * ROW_H;
+            return Some((TipKey::Outline(k), Rect::new(side.x + 8, ry + 1, side.w - 17, ROW_H - 2), true));
+        }
         if self.sidebar_open && self.sidebar_mode == SidebarMode::Files && side.contains(x, y) && x < (side.right() - 15) as f64 {
             let top = side.y + TAB_H;
             let k = sidebar_row_at(self.tree.scroll, top, y as i32, ROW_H, self.tree.rows.len())?;
@@ -190,14 +346,28 @@ impl App {
 
     /// The words for a target.
     pub fn tip_text(&mut self, key: TipKey) -> TipText {
-        let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText { title: title.to_string(), keys, detail };
+        let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText { title: title.to_string(), keys, detail, more: Vec::new() };
         match key {
+            TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
+                Some(s) => t(&s.name, None, Some(format!("{} · linha {}", symbol_kind_name(s.kind), s.sl + 1))),
+                None => TipText::default(),
+            },
+            TipKey::Ctx(act) => {
+                let label = match &self.overlay {
+                    Overlay::Ctx(m) => m.entries.iter().find_map(|e| match e {
+                        crate::app_ctxmenu::Entry::Item { act: a, label, .. } if *a == act => Some(label.to_string()),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                t(&label.unwrap_or_default(), None, act_hint(act).map(str::to_string))
+            }
             TipKey::Top(MenuKind::Branch) => t("Trocar de branch", None, self.branch.clone()),
             TipKey::Top(_) => t("Trocar de projeto", None, Some(crate::app_topbar::tilde(&self.root))),
             TipKey::Tab(i) => match self.docs.get(i) {
                 Some(d) => {
                     let path = d.path().map_or_else(|| "Arquivo ainda não salvo".to_string(), crate::app_topbar::tilde);
-                    TipText { title: d.name.clone(), keys: d.buf.is_dirty().then(|| "não salvo".to_string()), detail: Some(path) }
+                    TipText { title: d.name.clone(), keys: d.buf.is_dirty().then(|| "não salvo".to_string()), detail: Some(path), more: Vec::new() }
                 }
                 None => TipText::default(),
             },
@@ -208,7 +378,7 @@ impl App {
             TipKey::SideRow(k) => match self.tree.rows.get(k) {
                 Some(r) => {
                     let rel = self.rel(&r.path);
-                    TipText { title: r.name.clone(), keys: None, detail: (rel != r.name).then_some(rel) }
+                    TipText { title: r.name.clone(), keys: None, detail: (rel != r.name).then_some(rel), more: Vec::new() }
                 }
                 None => TipText::default(),
             },
@@ -229,7 +399,9 @@ impl App {
                 StatusBtn::Git => {
                     let n = self.git_status.len();
                     let title = if n == 0 { "Sem alterações · Painel Git".to_string() } else { format!("{} · Painel Git", plural(n, "arquivo alterado", "arquivos alterados")) };
-                    TipText { title, keys: self.shortcut_text("GitPanel"), detail: None }
+                    // Ahead / behind of the branch, from the panel or the background refresh.
+                    let detail = self.git_counts().filter(|i| i.upstream.is_some()).map(|i| format!("{}: ↑{} ↓{}", i.upstream.unwrap_or_default(), i.ahead, i.behind));
+                    TipText { title, keys: self.shortcut_text("GitPanel"), detail, more: Vec::new() }
                 }
                 StatusBtn::Ram => {
                     self.mem_cache.0 = Instant::now() - Duration::from_secs(10); // fresh numbers
@@ -242,13 +414,17 @@ impl App {
                     let now = d.map(|d| if d.ed.indent.contains('\t') { "Tabulação".to_string() } else { plural(d.ed.indent.len(), "espaço", "espaços") });
                     t("Mudar indentação…", None, now.map(|n| format!("Atual: {n}")))
                 }
+                StatusBtn::Update => {
+                    let (title, detail) = self.update_indicator_tip();
+                    t(&title, None, detail)
+                }
                 StatusBtn::Language => t("Mudar linguagem…", None, self.docs.get(self.active).map(|d| format!("Atual: {}", d.lang.unwrap_or("texto")))),
             },
         }
     }
 
     fn git_tip_text(&self, h: Hit) -> TipText {
-        let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText { title: title.to_string(), keys, detail };
+        let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText { title: title.to_string(), keys, detail, more: Vec::new() };
         let change = |i: usize| self.gitpanel.as_ref().and_then(|gp| gp.changes.get(i));
         match h {
             Hit::Refresh => t("Atualizar", None, Some("Relê o status e o histórico do git".into())),
@@ -263,15 +439,25 @@ impl App {
             Hit::Discard(i) => t("Descartar alterações", None, change(i).map(|c| c.path.clone())),
             Hit::ConfirmDiscard(i) => t("Clique para descartar de vez", None, change(i).map(|c| c.path.clone())),
             Hit::Row(i) => match change(i) {
-                Some(c) => TipText { title: c.path.rsplit('/').next().unwrap_or(&c.path).to_string(), keys: None, detail: Some(c.path.clone()) },
+                Some(c) => TipText { title: c.path.rsplit('/').next().unwrap_or(&c.path).to_string(), keys: None, detail: Some(c.path.clone()), more: Vec::new() },
                 None => TipText::default(),
             },
+            Hit::Commit(i) => match self.gitpanel.as_ref().and_then(|g| g.commits.get(i)) {
+                Some(c) => commit_tip(c, crate::app_gitpanel::now_secs()),
+                None => TipText::default(),
+            },
+            Hit::Strategy(st) => t(st.label(), None, Some(st.hint().to_string())),
+            Hit::ForceYes => t("Forçar push", None, Some("git push --force-with-lease".into())),
             Hit::CommitBtn => t("Commit", Some("Ctrl+Enter".into()), Some("Grava o que está no stage".into())),
             Hit::Opt => t("Incluir tudo se nada no stage", None, Some("Sem nada no stage, o commit leva todas as alterações".into())),
             Hit::Fetch => t("Buscar (fetch)", None, Some("Baixa as novidades do remoto sem alterar seus arquivos".into())),
             Hit::Pull => {
                 let n = self.gitpanel.as_ref().map_or(0, |g| g.sync.behind);
-                t("Pull", None, Some(if n > 0 { format!("{n} commit(s) novos no remoto") } else { "Traz e integra os commits do remoto".to_string() }))
+                let how = match crate::gitsync::PullStrategy::from_name(&self.config.git_pull_strategy) {
+                    Some(st) => format!("Estratégia: {} · botão direito para trocar", st.label()),
+                    None => "Botão direito escolhe merge, rebase ou só avanço".to_string(),
+                };
+                TipText { title: "Pull".into(), keys: None, detail: Some(if n > 0 { format!("{n} commit(s) novos no remoto") } else { "Traz e integra os commits do remoto".to_string() }), more: vec![how] }
             }
             Hit::Push => {
                 let g = self.gitpanel.as_ref().map(|g| (g.sync.upstream.clone(), g.sync.ahead));
@@ -353,7 +539,7 @@ impl App {
 
     pub fn draw_tooltip(&mut self, cv: &mut Canvas) {
         let Some(t) = &self.tooltip else { return };
-        if !t.shown || t.dismissed || !matches!(self.overlay, Overlay::None) {
+        if !t.shown || t.dismissed || !matches!(self.overlay, Overlay::None | Overlay::Ctx(_)) {
             return;
         }
         let key = t.key;
@@ -368,24 +554,37 @@ impl App {
         }
         let alpha = self.tooltip.as_ref().and_then(|t| t.shown_at).map_or(1.0, |s| fade_alpha(s.elapsed()));
         let c = self.theme.chrome;
-        let tw = self.tx.ui_width(&text.title, false);
+        // Long subjects, paths and hints wrap instead of running off the window.
+        let win = (self.size.0 as i32, self.size.1 as i32);
+        let inner_max = (MAX_W.min(win.0 - 2 * WIN_M) - 2 * PAD_X).max(80);
         let kw = text.keys.as_ref().map_or(0, |k| self.tx.ui_width(k, false) + 14);
-        let dw = text.detail.as_ref().map_or(0, |d| self.tx.ui_width(d, false));
-        let w = (tw + kw).max(dw) + 2 * PAD_X;
-        let lines = 1 + text.detail.is_some() as i32;
-        let h = 2 * PAD_Y + lines * LINE + (lines - 1) * 2;
-        let (x, y) = place(anchor, w, h, below, (self.size.0 as i32, self.size.1 as i32));
+        let tx = &mut self.tx;
+        let mut measure = |s: &str| tx.ui_width(s, false);
+        let title = wrap_tip(&text.title, inner_max - kw, 3, &mut measure);
+        let mut rest: Vec<String> = Vec::new();
+        for d in text.detail.iter().chain(text.more.iter()) {
+            rest.extend(wrap_tip(d, inner_max, 3, &mut measure));
+        }
+        let widest = title.iter().map(|l| measure(l)).max().unwrap_or(0) + kw;
+        let widest = rest.iter().map(|l| measure(l)).fold(widest, i32::max);
+        let w = widest + 2 * PAD_X;
+        let lines = (title.len() + rest.len()) as i32;
+        let h = 2 * PAD_Y + lines * LINE + if rest.is_empty() { 0 } else { 2 };
+        let (x, y) = if matches!(key, TipKey::Ctx(_)) { place_side(anchor, w, h, win) } else { place(anchor, w, h, below, win) };
         let r = Rect::new(x, y, w, h);
         if alpha > 0.6 {
             cv.shadow(r, 8);
         }
         cv.card(r, 8, faded(c.widget_bg, alpha), faded(c.border, alpha));
-        self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y, &text.title, faded(c.tab_active_fg, alpha), r, false);
-        if let Some(k) = &text.keys {
-            self.tx.draw_ui(cv, r.x + PAD_X + tw + 14, r.y + PAD_Y, k, faded(c.tab_inactive_fg, alpha), r, false);
+        for (i, l) in title.iter().enumerate() {
+            self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y + i as i32 * LINE, l, faded(c.tab_active_fg, alpha), r, false);
         }
-        if let Some(d) = &text.detail {
-            self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y + LINE + 2, d, faded(c.tab_inactive_fg, alpha), r, false);
+        if let (Some(k), Some(first)) = (&text.keys, title.first()) {
+            let fw = self.tx.ui_width(first, false);
+            self.tx.draw_ui(cv, r.x + PAD_X + fw + 14, r.y + PAD_Y, k, faded(c.tab_inactive_fg, alpha), r, false);
+        }
+        for (i, l) in rest.iter().enumerate() {
+            self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y + (title.len() + i) as i32 * LINE + 2, l, faded(c.tab_inactive_fg, alpha), r, false);
         }
     }
 }
@@ -485,6 +684,65 @@ mod tests {
     #[test]
     fn git_panel_tooltips_skip_the_message_box_and_commit_rows() {
         assert!(git_tip_wanted(Hit::Refresh) && git_tip_wanted(Hit::Close) && git_tip_wanted(Hit::Discard(2)));
-        assert!(!git_tip_wanted(Hit::Msg) && !git_tip_wanted(Hit::Commit(0)) && !git_tip_wanted(Hit::CFile(1)));
+        assert!(!git_tip_wanted(Hit::Msg) && !git_tip_wanted(Hit::CFile(1)));
+        assert!(git_tip_wanted(Hit::Commit(0)), "history rows explain themselves now");
+    }
+
+    #[test]
+    fn wrapping_keeps_words_and_cuts_giant_ones() {
+        let mut w = |s: &str| s.chars().count() as i32 * 10;
+        assert_eq!(wrap_tip("um dois três quatro", 100, 5, &mut w), ["um dois", "três", "quatro"]);
+        assert_eq!(wrap_tip("curto", 100, 5, &mut w), ["curto"]);
+        assert_eq!(wrap_tip("abcdefghijklmnop", 50, 5, &mut w), ["abcde", "fghij", "klmno", "p"]);
+        let l = wrap_tip("a b c d e f g h i j k l", 30, 2, &mut w);
+        assert_eq!(l.len(), 2);
+        assert!(l[1].ends_with('…') && w(&l[1]) <= 30, "{l:?}");
+        assert!(wrap_tip("", 100, 3, &mut w).is_empty());
+    }
+
+    #[test]
+    fn side_card_prefers_the_right_and_flips_left() {
+        let win = (800, 600);
+        let item = Rect::new(100, 100, 150, 28);
+        let (x, y) = place_side(item, 200, 40, win);
+        assert_eq!(x, item.right() + GAP);
+        assert_eq!(y, 100 + (28 - 40) / 2);
+        let edge = Rect::new(600, 100, 190, 28);
+        let (x, _) = place_side(edge, 200, 40, win);
+        assert_eq!(x, edge.x - GAP - 200, "no room on the right: flips to the left");
+        let (_, y) = place_side(Rect::new(100, 590, 150, 28), 200, 40, win);
+        assert!(y + 40 <= 600 - WIN_M, "kept inside the window");
+    }
+
+    #[test]
+    fn history_rows_describe_subject_author_date_and_hash() {
+        let c = crate::app_gitpanel::LogEntry { hash: "0123456789abcdef0123456789abcdef01234567".into(), short: "0123456".into(), author: "Ana".into(), ts: 1_700_000_000, subject: "Corrige o cálculo de frete para pedidos com kit".into() };
+        let tip = commit_tip(&c, 1_700_000_000 + 7200);
+        assert_eq!(tip.title, c.subject, "the whole subject, not the cut-off row text");
+        let d = tip.detail.unwrap();
+        assert!(d.starts_with("Ana · 2023-11-1") && d.contains("há 2 horas"), "{d}");
+        assert_eq!(tip.more, [c.hash.clone()]);
+        assert!(git_tip_wanted(Hit::Commit(3)), "history rows get a tooltip now");
+    }
+
+    #[test]
+    fn outline_kinds_and_context_menu_hints() {
+        assert_eq!(symbol_kind_name(12), "Função");
+        assert_eq!(symbol_kind_name(5), "Classe");
+        assert_eq!(symbol_kind_name(11), "Interface");
+        assert_eq!(symbol_kind_name(999), "Símbolo");
+        assert!(act_hint(Act::Trash).unwrap().contains("lixeira"));
+        assert!(act_hint(Act::Delete).unwrap().contains("Não pode ser desfeito"));
+        assert_eq!(act_hint(Act::Rename), None, "self-explanatory items get no card");
+        // Every action the menus can offer is either explained or deliberately plain.
+        for t in [crate::app_ctxmenu::Target::File("/x".into()), crate::app_ctxmenu::Target::Folder("/x".into()), crate::app_ctxmenu::Target::Tab(0)] {
+            let f = crate::app_ctxmenu::Flags { has_clip: true, split: true, md: Some(false), pinned: false, has_path: true };
+            for e in crate::app_ctxmenu::entries_for(&t, &f) {
+                if let crate::app_ctxmenu::Entry::Item { act, label, .. } = e {
+                    let plain = matches!(act, Act::NewFile | Act::NewFolder | Act::Rename | Act::CloseTab);
+                    assert_eq!(act_hint(act).is_none(), plain, "{label}");
+                }
+            }
+        }
     }
 }

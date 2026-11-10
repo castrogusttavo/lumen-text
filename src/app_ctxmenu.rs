@@ -413,6 +413,9 @@ impl App {
         } else if !self.overlay.is_none() {
             return;
         }
+        if self.gitpanel_right_click(x, y) {
+            return;
+        }
         self.hover = None;
         self.completion = None;
         if let Some(t) = self.ctx_target_at(x, y) {
@@ -451,7 +454,7 @@ impl App {
     }
 
     pub fn open_ctxmenu(&mut self, target: Target, at: (i32, i32)) {
-        let mut f = Flags { has_clip: !self.file_clip.paths.is_empty(), split: self.split.is_some(), ..Flags::default() };
+        let mut f = Flags { has_clip: !self.file_clip.paths.is_empty() || self.clip.get_files().is_some(), split: self.split.is_some(), ..Flags::default() };
         if let Target::Tab(i) = &target {
             let Some(d) = self.docs.get(*i) else { return };
             f.pinned = d.pinned;
@@ -538,6 +541,7 @@ impl App {
 
     /// Pointer moved: the hovered item (or confirm button) takes the highlight.
     pub fn ctxmenu_hover(&mut self) -> bool {
+        self.update_tooltip();
         let (x, y) = self.mouse;
         let Overlay::Ctx(m) = &mut self.overlay else { return false };
         if m.unsaved.is_some() {
@@ -617,7 +621,7 @@ impl App {
             Act::Cut | Act::Copy => {
                 let cut = act == Act::Cut;
                 self.say(format!("{}: {}", if cut { "recortado" } else { "copiado" }, crate::app_explorer::describe(&paths)));
-                self.file_clip = FileClip { paths, cut };
+                self.set_file_clip(paths, cut);
             }
             Act::Duplicate => {
                 let mut made = Vec::new();
@@ -673,7 +677,7 @@ impl App {
             Act::Cut | Act::Copy => {
                 let Some(p) = path else { return };
                 let cut = act == Act::Cut;
-                self.file_clip = FileClip { paths: vec![p], cut };
+                self.set_file_clip(vec![p], cut);
                 self.say(format!("{}: {name}", if cut { "recortado" } else { "copiado" }));
             }
             Act::Paste => {
@@ -781,9 +785,36 @@ impl App {
         }
     }
 
+    /// Copy/cut `paths`: the internal file clipboard (dims cut rows) and the system clipboard
+    /// (`text/uri-list` or `x-special/gnome-copied-files`), so other programs can paste them.
+    pub fn set_file_clip(&mut self, paths: Vec<PathBuf>, cut: bool) {
+        self.clip.set_files(&crate::clipboard::FileList { paths: paths.clone(), cut });
+        self.file_clip = FileClip { paths, cut };
+    }
+
+    /// What Ctrl+V pastes: the files on the system clipboard (copied here or in another program),
+    /// else the internal clipboard. The system flavor `text/uri-list` cannot say "cut", so when it
+    /// is the very list this app cut the internal flag is kept.
+    pub fn paste_source(&mut self) -> FileClip {
+        let internal = self.file_clip.clone();
+        match self.clip.get_files() {
+            Some(list) => {
+                let paths: Vec<PathBuf> = list.paths.iter().filter(|p| p.exists()).cloned().collect();
+                if paths.is_empty() {
+                    internal
+                } else if paths == internal.paths {
+                    FileClip { paths, cut: internal.cut || list.cut }
+                } else {
+                    FileClip { paths, cut: list.cut }
+                }
+            }
+            None => internal,
+        }
+    }
+
     /// Paste the file clipboard into `dir`.
     pub fn paste_files(&mut self, dir: &Path) {
-        let clip = self.file_clip.clone();
+        let clip = self.paste_source();
         if clip.paths.is_empty() {
             return self.say("nada para colar");
         }
@@ -1119,5 +1150,97 @@ mod tests {
         assert_eq!(step(&e, Some(4), 1), Some(0));
         assert_eq!(step(&e, Some(0), -1), Some(4));
         assert_eq!(step(&[], None, 1), None);
+    }
+
+    // ---- App-level: Esc cancels a cut from the editor; the system clipboard carries files ----
+
+    use crate::app_unsaved::testkit::{lock, test_app, tmp};
+
+    fn key(app: &mut App, k: winit::keyboard::NamedKey) {
+        app.handle_key(&crate::app::KeyIn { key: winit::keyboard::Key::Named(k), text: None });
+    }
+
+    #[test]
+    fn esc_cancels_a_pending_cut_from_the_editor_too() {
+        let _g = lock();
+        let dir = tmp("esccut");
+        let mut app = test_app(&dir);
+        let f = dir.join("seed.txt");
+        app.set_file_clip(vec![f.clone()], true);
+        assert!(app.file_clip.is_cut(&f));
+        // Focus is in the editor, not the explorer.
+        app.focus = crate::app::Focus::Editor;
+        key(&mut app, winit::keyboard::NamedKey::Escape);
+        assert!(app.file_clip.paths.is_empty(), "the cut is forgotten (rows stop being dimmed)");
+        // A copy is not a cut: Esc leaves it alone.
+        app.set_file_clip(vec![f.clone()], false);
+        key(&mut app, winit::keyboard::NamedKey::Escape);
+        assert_eq!(app.file_clip.paths, vec![f.clone()]);
+        // Esc that closes something else (extra cursors) does not eat the cut.
+        app.set_file_clip(vec![f.clone()], true);
+        app.docs[0].ed.extra.push(crate::buffer::Sel::caret(1));
+        key(&mut app, winit::keyboard::NamedKey::Escape);
+        assert!(app.docs[0].ed.extra.is_empty() && app.file_clip.cut, "first Esc only drops the extra cursors");
+        key(&mut app, winit::keyboard::NamedKey::Escape);
+        assert!(!app.file_clip.cut, "the next one forgets the cut");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn wait_for(path: &Path, what: &str) -> String {
+        for _ in 0..200 {
+            if let Some(s) = std::fs::read_to_string(path).ok().filter(|s| !s.is_empty()) {
+                return s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("{what}: nothing arrived");
+    }
+
+    #[test]
+    fn files_travel_through_the_system_clipboard_in_both_directions() {
+        let _g = lock();
+        let dir = tmp("sysclip");
+        let mut app = test_app(&dir);
+        let fake = dir.join("fake");
+        app.clip = crate::clipboard::Clipboard::with_fake_tools(&fake);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), "A").unwrap();
+        // Copy here: the system clipboard now carries the file for other programs...
+        app.set_file_clip(vec![dir.join("a.txt")], false);
+        let data = wait_for(&fake.join("data"), "copy");
+        assert!(data.contains(&format!("file://{}/a.txt", dir.display())), "{data:?}");
+        // ...and pasting reads it back (the same list, so the internal flag is kept).
+        app.paste_files(&dir.join("sub"));
+        assert_eq!(std::fs::read_to_string(dir.join("sub/a.txt")).unwrap(), "A");
+        assert!(dir.join("a.txt").exists(), "a copy leaves the source");
+
+        // Another program copies a file whose name needs escaping; our own clipboard knows nothing.
+        std::fs::write(dir.join("o ther é.txt"), "O").unwrap();
+        app.file_clip = FileClip::default();
+        std::fs::write(fake.join("mime"), "text/uri-list\n").unwrap();
+        std::fs::write(fake.join("data"), format!("file://{}/o%20ther%20%C3%A9.txt\r\n", dir.display())).unwrap();
+        assert!(app.paste_source().paths == vec![dir.join("o ther é.txt")]);
+        app.paste_files(&dir.join("sub"));
+        assert_eq!(std::fs::read_to_string(dir.join("sub/o ther é.txt")).unwrap(), "O");
+        assert!(dir.join("o ther é.txt").exists());
+
+        // A file manager's "cut" (GNOME flavor) moves the file.
+        std::fs::write(dir.join("m.txt"), "M").unwrap();
+        std::fs::write(fake.join("mime"), "x-special/gnome-copied-files\n").unwrap();
+        std::fs::write(fake.join("data"), format!("cut\nfile://{}/m.txt", dir.display())).unwrap();
+        app.paste_files(&dir.join("sub"));
+        assert!(dir.join("sub/m.txt").exists() && !dir.join("m.txt").exists());
+
+        // Files that vanished are skipped; with nothing left the internal clipboard answers.
+        std::fs::write(fake.join("data"), "copy\nfile:///no/such/file").unwrap();
+        app.file_clip = FileClip { paths: vec![dir.join("a.txt")], cut: true };
+        assert_eq!(app.paste_source().paths, vec![dir.join("a.txt")]);
+
+        // What this app cut keeps its "cut" even through a flavor that cannot say so.
+        app.set_file_clip(vec![dir.join("a.txt")], true);
+        wait_for(&fake.join("data"), "cut");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(app.paste_source().cut);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

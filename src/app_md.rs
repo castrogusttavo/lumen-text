@@ -34,11 +34,13 @@ pub struct MdState {
     pub anchor: Option<String>,
     /// The divider between the editor and the preview is being dragged.
     pub dragging: bool,
+    /// Last time the image files were checked for edits on disk.
+    img_check: std::time::Instant,
 }
 
 impl MdState {
     pub fn new() -> Self {
-        MdState { view: MdView::new(), scroll: 0.0, rect: Rect::default(), ver: 0, top_seen: -1.0, fresh: true, anchor: None, dragging: false }
+        MdState { view: MdView::new(), scroll: 0.0, rect: Rect::default(), ver: 0, top_seen: -1.0, fresh: true, anchor: None, dragging: false, img_check: std::time::Instant::now() }
     }
 }
 
@@ -246,6 +248,33 @@ impl Doc {
 }
 
 impl App {
+    /// Timers of the open preview: image files edited on disk are noticed about once a second
+    /// (cached size and pixels dropped, layout redone), and an animated image that is on screen
+    /// asks for a redraw when its next frame is due. Nothing runs for a closed preview or for
+    /// animations scrolled out of view, so an idle editor stays idle.
+    pub fn md_tick(&mut self, now: std::time::Instant, want: &mut impl FnMut(std::time::Instant)) {
+        if self.layout.md.w <= 0 {
+            return;
+        }
+        let Some(st) = self.docs.get_mut(self.active).and_then(|d| d.md.as_mut()) else { return };
+        let mut redraw = false;
+        if st.img_check + std::time::Duration::from_secs(1) <= now {
+            st.img_check = now;
+            redraw |= st.view.refresh_images();
+        }
+        want(st.img_check + std::time::Duration::from_secs(1));
+        if let Some(due) = st.view.anim_due() {
+            if due <= now {
+                redraw = true;
+            } else {
+                want(due);
+            }
+        }
+        if redraw {
+            self.request_redraw();
+        }
+    }
+
     pub fn active_is_markdown(&self) -> bool {
         self.docs.get(self.active).is_some_and(|d| d.md_is_markdown())
     }
@@ -265,27 +294,35 @@ impl App {
         self.request_redraw();
     }
 
-    /// Called at the end of `compute_layout`: gives the right half of the card to the preview.
+    /// Called at the end of `compute_layout`: gives the right part of the card to the preview.
     pub fn md_split(&mut self) {
+        self.md_place(self.layout.card);
+    }
+
+    /// Give the right part of `area` (the card, or the focused pane of a split) to the preview of
+    /// the active document, if its reader is open and the area is wide enough.
+    pub fn md_place(&mut self, area: Rect) {
         self.layout.md = Rect::default();
-        if self.diff.is_some() || !self.docs.get(self.active).is_some_and(|d| d.md.is_some()) {
+        self.layout.divider = Rect::default();
+        if (self.diff.is_some() && self.diff_area() == self.layout.editor) || !self.docs.get(self.active).is_some_and(|d| d.md.is_some()) {
             return;
         }
-        self.layout.divider = Rect::default();
-        if let Some((ed, dv, md)) = md_rects(self.layout.card, self.config.md_split) {
+        if let Some((ed, dv, md)) = md_rects(area, self.config.md_split) {
             self.layout.editor = ed;
-            self.layout.divider = dv; // the split-pane divider is never in use while a reader is open
+            self.layout.divider = dv; // the split-pane dividers have their own list (`Split::divs`)
             self.layout.md = md;
         }
     }
 
     /// Mouse move while dragging the reader's divider.
     pub fn md_drag(&mut self, x: f64) -> bool {
-        let card = self.layout.card;
+        // The area the reader splits: the editor part, the divider and the preview together.
+        let (ed, dv, md) = (self.layout.editor, self.layout.divider, self.layout.md);
+        let area = Rect::new(ed.x, ed.y, ed.w + dv.w + md.w, ed.h);
         if !self.docs.get(self.active).and_then(|d| d.md.as_ref()).is_some_and(|s| s.dragging) {
             return false;
         }
-        self.config.md_split = md_ratio_at(card, x);
+        self.config.md_split = md_ratio_at(area, x);
         self.split_layout();
         for d in &mut self.docs {
             d.reveal = true;

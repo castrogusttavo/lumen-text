@@ -516,6 +516,27 @@ fn push_range(v: &mut Vec<(usize, usize)>, s: usize, e: usize) {
     }
 }
 
+/// `text` with each tab expanded to the next multiple of `tab_w` columns, cut after `max_cols`
+/// visual columns (what a diff row draws).
+pub fn expand_tabs(text: &str, tab_w: usize, max_cols: usize) -> String {
+    let tab_w = tab_w.max(1);
+    let mut out = String::new();
+    let mut col = 0;
+    for ch in text.chars() {
+        let w = if ch == '\t' { tab_w - col % tab_w } else { 1 };
+        if col + w > max_cols {
+            break;
+        }
+        if ch == '\t' {
+            out.extend(std::iter::repeat_n(' ', w));
+        } else {
+            out.push(ch);
+        }
+        col += w;
+    }
+    out
+}
+
 /// Char ranges (`start..end`, in chars) of intra-line differences in `a` and `b`.
 pub fn changed_ranges(a: &str, b: &str) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
     let diff = TextDiff::from_chars(a, b);
@@ -539,6 +560,17 @@ pub fn changed_ranges(a: &str, b: &str) -> (Vec<(usize, usize)>, Vec<(usize, usi
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tabs_expand_to_tab_stops_and_respect_the_column_limit() {
+        assert_eq!(expand_tabs("\tx", 4, 80), "    x");
+        assert_eq!(expand_tabs("ab\tx", 4, 80), "ab  x");
+        assert_eq!(expand_tabs("\tx", 2, 80), "  x");
+        assert_eq!(expand_tabs("\t\tx", 8, 80), format!("{}x", " ".repeat(16)));
+        assert_eq!(expand_tabs("a\tb", 0, 80), "a b", "a zero width counts as one column");
+        assert_eq!(expand_tabs("\tabc", 4, 6), "    ab");
+        assert_eq!(expand_tabs("ab\t", 4, 3), "ab", "a tab that does not fit is dropped");
+    }
+
     use super::*;
     use std::fs;
     use std::path::PathBuf;

@@ -127,6 +127,9 @@ pub enum Cmd {
     OrganizeImports,
     ToggleFormatOnSave,
     PickTheme,
+    CheckUpdate,
+    RestartUpdate,
+    About,
     Quit,
 }
 
@@ -247,6 +250,9 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Ir para: Chamados (hierarquia de chamadas)", "", Cmd::OutgoingCalls),
     ("LSP: Alternar versão do tsgo (auto / do projeto / embutida)", "", Cmd::CycleTsgoSource),
     ("Editar: Ver ramos do histórico (desfazer em árvore)", "", Cmd::UndoBranches),
+    ("Ajuda: Verificar atualizações", "", Cmd::CheckUpdate),
+    ("Ajuda: Reiniciar para atualizar", "", Cmd::RestartUpdate),
+    ("Ajuda: Sobre o Lumen", "", Cmd::About),
     ("Sair", "Ctrl+Q", Cmd::Quit),
 ];
 
@@ -309,6 +315,9 @@ pub enum PromptKind {
     DeletePath { path: PathBuf },
     GitDiscard { path: PathBuf },
     GitCommit,
+    /// "Salvar como" for an untitled document; `rest` (more documents to save) and `then` (the
+    /// action that was waiting for the save) continue after it.
+    SaveAs { doc: usize, rest: Vec<usize>, then: Option<crate::app_unsaved::Pending> },
 }
 
 pub struct Prompt {
@@ -711,6 +720,7 @@ impl App {
         self.pump_eslint();
         self.pump_debug();
         self.pump_watcher();
+        self.pump_update();
         let cur = self.search_gen.load(Ordering::SeqCst);
         let mut incoming: Vec<Hit> = Vec::new();
         while let Ok((g, hits)) = self.search_rx.try_recv() {
@@ -928,6 +938,9 @@ impl App {
             Cmd::OrganizeImports => self.organize_imports(),
             Cmd::ToggleFormatOnSave => self.toggle_format_on_save(),
             Cmd::PickTheme => self.open_theme_picker(),
+            Cmd::CheckUpdate => self.update_check_manual(),
+            Cmd::RestartUpdate => self.update_restart_cmd(),
+            Cmd::About => self.update_show_about(),
             Cmd::Quit => {
                 if self.try_quit() {
                     std::process::exit(0);
@@ -1184,6 +1197,7 @@ impl App {
                     }
                 }
                 PromptKind::GitCommit => self.git_commit(&p.field.text),
+                PromptKind::SaveAs { doc, rest, then } => self.save_as_answer(doc, rest, then, p.field.text),
             },
             Overlay::None => {}
         }
@@ -1639,12 +1653,17 @@ impl App {
                 cv.fill(Rect::new(r.x + 16, r.y + INPUT_H - 1, r.w - 32, 1), c.border);
 
                 let mut rows = Vec::new();
-                for (k, (idx, pos)) in p.filtered.iter().enumerate().skip(p.scroll).take(PICKER_ROWS) {
+                // Mid-glide the list sits a fraction of a row past `p.scroll`: rows shift up by `off`
+                // px, one more row shows at the bottom and everything is clipped to the list.
+                let off = self.region_off(crate::scrollreg::Reg::Picker, ROW);
+                let lclip = Rect::new(r.x, r.y + INPUT_H, r.w, list_h);
+                for (k, (idx, pos)) in p.filtered.iter().enumerate().skip(p.scroll).take(PICKER_ROWS + (off > 0) as usize) {
                     let it = &p.items[*idx];
-                    let y = r.y + INPUT_H + 6 + (k - p.scroll) as i32 * ROW;
-                    let rr = Rect::new(r.x + 8, y, r.w - 16, ROW);
+                    let y = r.y + INPUT_H + 6 + (k - p.scroll) as i32 * ROW - off;
+                    let row_full = Rect::new(r.x + 8, y, r.w - 16, ROW);
+                    let rr = row_full.intersect(&lclip);
                     if k == p.sel {
-                        cv.fill_round(rr, 10, c.list_active_bg);
+                        cv.fill_round_clip(row_full, 10, c.list_active_bg, lclip);
                     }
                     let avail = rr.w - 28;
                     let detail_w = if matches!(p.kind, PickKind::Commands | PickKind::Themes | PickKind::Choice) && !it.detail.is_empty() { self.tx.ui_width(&it.detail, false) + 20 } else { 0 };

@@ -694,16 +694,99 @@ pub fn parse_sig(sig: &str) -> Option<Sig> {
 
 // ───────────────────────────── source lexer ─────────────────────────────
 
-/// Walks the code bytes of TypeScript source, skipping comments, strings and template literals.
+/// Words after which a `/` starts a regular expression rather than a division.
+const REGEX_AFTER: [&[u8]; 14] = [b"return", b"typeof", b"instanceof", b"in", b"of", b"delete", b"void", b"throw", b"new", b"case", b"do", b"else", b"yield", b"await"];
+
+fn is_id_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c >= 0x80
+}
+
+/// Walks the code bytes of TypeScript / JavaScript source, skipping comments, string literals,
+/// template literals (including nested `${ ... }` expressions and templates inside them) and
+/// regular expression literals (decided from the previous token, like every JS tokenizer does).
 struct Lx<'a> {
     b: &'a [u8],
     i: usize,
+    /// Last code byte returned (or `"` after a skipped literal), and the range of the last word.
+    last: u8,
+    word: (usize, usize),
 }
 
 impl<'a> Lx<'a> {
     fn new(text: &'a str, at: usize) -> Self {
-        Lx { b: text.as_bytes(), i: at }
+        Lx { b: text.as_bytes(), i: at, last: 0, word: (at, at) }
     }
+
+    /// Can a `/` here open a regular expression literal?
+    fn regex_ok(&self) -> bool {
+        match self.last {
+            0 => true,
+            b')' | b']' | b'}' | b'"' | b'<' => false,
+            c if is_id_byte(c) => REGEX_AFTER.contains(&&self.b[self.word.0..self.word.1.min(self.b.len())]),
+            _ => true,
+        }
+    }
+
+    /// `self.i` is just after a `/`: skip the rest of a regex literal when it really is one on this
+    /// line (class `[...]`, escapes, flags). Returns false (nothing consumed) otherwise.
+    fn skip_regex(&mut self) -> bool {
+        let b = self.b;
+        let mut j = self.i;
+        let mut class = false;
+        while j < b.len() {
+            match b[j] {
+                b'\\' => j += 1,
+                b'\n' => return false,
+                b'[' => class = true,
+                b']' => class = false,
+                b'/' if !class => {
+                    j += 1;
+                    while j < b.len() && b[j].is_ascii_alphabetic() {
+                        j += 1;
+                    }
+                    self.i = j;
+                    return true;
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        false
+    }
+
+    /// `self.i` is just after the opening backtick: skip to after the closing one.
+    fn skip_template(&mut self) {
+        let b = self.b;
+        while self.i < b.len() {
+            match b[self.i] {
+                b'\\' => self.i += 2,
+                b'`' => {
+                    self.i += 1;
+                    return;
+                }
+                b'$' if b.get(self.i + 1) == Some(&b'{') => {
+                    let mut inner = Lx { b, i: self.i + 2, last: 0, word: (self.i + 2, self.i + 2) };
+                    let mut depth = 1;
+                    while let Some((_, c)) = inner.next() {
+                        match c {
+                            b'{' => depth += 1,
+                            b'}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.i = inner.i;
+                }
+                _ => self.i += 1,
+            }
+        }
+        self.i = self.i.min(b.len());
+    }
+
     /// The next code byte and its offset.
     fn next(&mut self) -> Option<(usize, u8)> {
         let b = self.b;
@@ -730,26 +813,43 @@ impl<'a> Lx<'a> {
                         }
                         self.i += 1;
                     }
-                    self.i += 1;
+                    self.i = (self.i + 1).min(b.len());
+                    self.last = b'"';
                 }
                 b'`' => {
                     self.i += 1;
-                    while self.i < b.len() && b[self.i] != b'`' {
-                        if b[self.i] == b'\\' {
-                            self.i += 1;
-                        }
-                        self.i += 1;
-                    }
-                    self.i += 1;
+                    self.skip_template();
+                    self.last = b'"';
                 }
-                _ => {
-                    let at = self.i;
-                    self.i += 1;
-                    return Some((at, c));
-                }
+                b'/' if self.regex_ok() && self.try_regex() => self.last = b'"',
+                _ => return Some(self.code_byte(c)),
             }
         }
         None
+    }
+
+    /// `self.i` is at a `/`: consume a whole regex literal if there is one here.
+    fn try_regex(&mut self) -> bool {
+        self.i += 1;
+        if self.skip_regex() {
+            return true;
+        }
+        self.i -= 1;
+        false
+    }
+
+    /// Return the plain code byte `c` at `self.i` and remember it as the last token.
+    fn code_byte(&mut self, c: u8) -> (usize, u8) {
+        let at = self.i;
+        self.i += 1;
+        if is_id_byte(c) {
+            if !(at > self.word.0 && self.word.1 == at) {
+                self.word = (at, at);
+            }
+            self.word.1 = at + 1;
+        }
+        self.last = c;
+        (at, c)
     }
 }
 
@@ -786,12 +886,43 @@ fn next_sig(text: &str, from: usize) -> Option<u8> {
 
 const MAX_STMT: usize = 6000;
 
+/// What kind of statement `stmt_end` is cutting; it decides how `<`, `>` and `{` are read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    /// A function / method header: ends before the body `{`; `<...>` are type parameters.
+    Fn,
+    /// A type alias: everything is type syntax, `<...>` always nests.
+    Type,
+    /// A variable statement: expression syntax, `<` is a comparison as often as a generic.
+    Var,
+}
+
+/// Words after which a `{` is a type literal (`x is { a: 1 }`, `T extends { a: 1 }`), never a body.
+const TYPE_BRACE_AFTER: [&str; 9] = ["is", "extends", "keyof", "typeof", "infer", "in", "readonly", "asserts", "unique"];
+
+/// Does the `{` at `at` open the body of a function (rather than a type literal / object)?
+fn opens_body(text: &str, at: usize) -> bool {
+    let before = text[..at].trim_end();
+    if before.ends_with("=>") {
+        return false;
+    }
+    match before.as_bytes().last() {
+        Some(b':' | b'|' | b'&' | b'<' | b',' | b'=' | b'(' | b'?') => false,
+        Some(c) if is_id_byte(*c) => {
+            let w = before.rsplit(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '$')).next().unwrap_or("");
+            !TYPE_BRACE_AFTER.contains(&w)
+        }
+        _ => true,
+    }
+}
+
 /// End (exclusive) of the statement beginning at `from`: a depth-0 `;`, or a newline that does not
-/// continue the expression. With `fn_header`, a `{` that opens a body ends it (before the brace).
+/// continue the expression. In `Mode::Fn` a `{` that opens a body ends it (before the brace).
 /// The bool is true when the statement ended at a `;` (a signature without body).
-fn stmt_end(text: &str, from: usize, fn_header: bool) -> (usize, bool) {
+fn stmt_end(text: &str, from: usize, mode: Mode) -> (usize, bool) {
     let mut lx = Lx::new(text, from);
-    let mut depth = 0i32;
+    let b = text.as_bytes();
+    let (mut depth, mut angle) = (0i32, 0i32);
     let mut limit = (from + MAX_STMT).min(text.len());
     while !text.is_char_boundary(limit) {
         limit -= 1;
@@ -800,16 +931,15 @@ fn stmt_end(text: &str, from: usize, fn_header: bool) -> (usize, bool) {
         if at > limit {
             return (limit, false);
         }
+        let prev = if at > 0 { b[at - 1] } else { 0 };
         match c {
             b'(' | b'[' => depth += 1,
             b')' | b']' => depth -= 1,
+            b'<' if mode != Mode::Var && depth == 0 && b.get(at + 1) != Some(&b'<') && b.get(at + 1) != Some(&b'=') && prev != b'<' => angle += 1,
+            b'>' if angle > 0 && prev != b'=' && prev != b'-' => angle -= 1,
             b'{' => {
-                if fn_header && depth == 0 {
-                    let before = text[..at].trim_end();
-                    let is_body = if before.ends_with("=>") { false } else { !matches!(before.as_bytes().last(), Some(b':' | b'|' | b'&' | b'<' | b',' | b'=' | b'(' | b'?')) };
-                    if is_body {
-                        return (at, false);
-                    }
+                if mode == Mode::Fn && depth == 0 && angle == 0 && opens_body(text, at) {
+                    return (at, false);
                 }
                 depth += 1;
             }
@@ -826,7 +956,7 @@ fn stmt_end(text: &str, from: usize, fn_header: bool) -> (usize, bool) {
                 let n = next_sig(text, at);
                 let cont_prev = matches!(p, Some(b'=' | b'|' | b'&' | b'?' | b':' | b',' | b'(' | b'[' | b'<' | b'+' | b'-' | b'*' | b'/' | b'%' | b'.')) || arrow;
                 let cont_next = matches!(n, Some(b'|' | b'&' | b'?' | b':' | b'.' | b')' | b']'));
-                if !(cont_prev || cont_next) {
+                if !(cont_prev || cont_next || angle > 0) {
                     return (at, false);
                 }
             }
@@ -848,7 +978,7 @@ pub struct Located {
 pub fn decl_kind_at(text: &str, name_off: usize) -> Option<Kind> {
     let ls = line_start(text, name_off);
     let before = text.get(ls..name_off)?.trim();
-    let mut s = before;
+    let mut s = strip_decorators(before).trim();
     loop {
         let mut ch = false;
         for p in ["export ", "default ", "declare ", "abstract "] {
@@ -861,12 +991,15 @@ pub fn decl_kind_at(text: &str, name_off: usize) -> Option<Kind> {
             break;
         }
     }
-    match s {
+    // `async function *`, `function*`: compare without blanks.
+    let compact: String = s.split_whitespace().collect();
+    match compact.as_str() {
         "interface" => Some(Kind::Interface),
         "class" => Some(Kind::Class),
-        "enum" | "const enum" => Some(Kind::Enum),
+        "enum" | "constenum" => Some(Kind::Enum),
         "type" => Some(Kind::TypeAlias),
-        "function" | "async function" | "function*" => Some(Kind::Function),
+        "function" | "asyncfunction" | "function*" | "asyncfunction*" => Some(Kind::Function),
+        "namespace" | "module" => Some(Kind::Namespace),
         "const" | "let" | "var" => Some(Kind::Variable),
         _ => None,
     }
@@ -877,25 +1010,29 @@ pub fn decl_extent(text: &str, name_off: usize, kind: Kind) -> Option<Located> {
     let start = line_start(text, name_off);
     match kind {
         Kind::Interface | Kind::Class | Kind::Enum | Kind::Namespace => {
+            // Header scan: the first `{` outside `()`, `[]` and `<...>` opens the body. Braces inside
+            // those (`<T extends { a: 1 }>`, `extends mixin({ ... })`, `B<{}>`) are skipped whole.
+            let b = text.as_bytes();
             let mut lx = Lx::new(text, name_off);
             let mut depth = 0i32;
             let mut angle = 0i32;
             while let Some((at, c)) = lx.next() {
+                let prev = if at > 0 { b[at - 1] } else { 0 };
                 match c {
-                    b'<' => angle += 1,
-                    b'>' if angle > 0 && !text[..at].ends_with('=') => angle -= 1,
+                    b'<' if depth == 0 || angle > 0 => angle += 1,
+                    b'>' if angle > 0 && prev != b'=' => angle -= 1,
                     b'(' | b'[' => depth += 1,
                     b')' | b']' => depth -= 1,
-                    b'{' if depth == 0 && angle <= 0 => {
+                    b'{' if depth <= 0 && angle <= 0 => {
                         let close = find_close(text, at)?;
                         return Some(Located { start, end: close + 1, open: Some(at) });
                     }
-                    b'{' if depth == 0 => {
-                        // `{` inside generics (`<T extends { a: 1 }>`): skip the block.
+                    b'{' => {
                         let close = find_close(text, at)?;
                         lx.i = close + 1;
+                        lx.last = b'"';
                     }
-                    b';' if depth == 0 => return None,
+                    b';' if depth <= 0 && angle <= 0 => return None,
                     _ => {}
                 }
                 if at > name_off + MAX_STMT * 20 {
@@ -905,15 +1042,15 @@ pub fn decl_extent(text: &str, name_off: usize, kind: Kind) -> Option<Located> {
             None
         }
         Kind::TypeAlias => {
-            let (end, _) = stmt_end(text, name_off, false);
+            let (end, _) = stmt_end(text, name_off, Mode::Type);
             Some(Located { start, end, open: None })
         }
         Kind::Function | Kind::Method | Kind::Constructor => {
-            let (end, _) = stmt_end(text, name_off, true);
+            let (end, _) = stmt_end(text, name_off, Mode::Fn);
             Some(Located { start, end, open: None })
         }
         Kind::Variable => {
-            let (end, _) = stmt_end(text, name_off, false);
+            let (end, _) = stmt_end(text, name_off, Mode::Var);
             Some(Located { start, end, open: None })
         }
         _ => None,
@@ -964,12 +1101,17 @@ fn split_members(body: &str) -> Vec<(usize, usize)> {
             }
             b'(' | b'[' => paren += 1,
             b')' | b']' => paren -= 1,
-            b'<' if brace == 0 && paren == 0 && (prev.is_ascii_alphanumeric() || prev == b'>' || prev == b'_') => angle += 1,
+            b'<' if brace == 0 && paren == 0 && (prev.is_ascii_alphanumeric() || prev == b'>' || prev == b'_') && !matches!(body.as_bytes().get(at + 1), Some(b'<' | b'=')) && body.as_bytes().get(at.wrapping_sub(1)) != Some(&b'<') => angle += 1,
             b'>' if brace == 0 && paren == 0 && angle > 0 && prev != b'=' => angle -= 1,
-            b';' | b',' if brace == 0 && paren == 0 && angle <= 0 => {
+            // `;` ends a member even if a `<` was a comparison; `,` only outside generics.
+            b';' if brace == 0 && paren == 0 => {
                 push(start, at + 1, &mut out);
                 start = at + 1;
                 angle = 0;
+            }
+            b',' if brace == 0 && paren == 0 && angle <= 0 => {
+                push(start, at + 1, &mut out);
+                start = at + 1;
             }
             _ => {}
         }
@@ -1011,14 +1153,46 @@ fn strip_leading_comments(mut s: &str) -> &str {
     }
 }
 
+/// Drop leading `@decorator`, `@ns.decorator<T>(args)` and `@(expr)` forms (and the comments
+/// between them). The arguments may hold strings, regexes, templates and braces.
 fn strip_decorators(mut s: &str) -> &str {
     loop {
-        let t = s.trim_start();
-        if t.starts_with('@') {
-            let mut i = 1;
-            let b = t.as_bytes();
-            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.') {
+        let t = strip_leading_comments(s);
+        if !t.starts_with('@') {
+            return t;
+        }
+        let b = t.as_bytes();
+        let mut i = 1;
+        if b.get(i) == Some(&b'(') {
+            match find_close(t, i) {
+                Some(c) => i = c + 1,
+                None => return t,
+            }
+        } else {
+            while i < b.len() && (is_id_byte(b[i]) || b[i] == b'.') {
                 i += 1;
+            }
+            // type arguments: `@Foo<Bar<Baz>>()`
+            if b.get(i) == Some(&b'<') {
+                let mut depth = 0i32;
+                let mut j = i;
+                while j < b.len() {
+                    match b[j] {
+                        b'<' => depth += 1,
+                        b'>' if b[j - 1] != b'=' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        b'\n' | b'(' | b';' => break,
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                if depth == 0 && j < b.len() && b[j] == b'>' {
+                    i = j + 1;
+                }
             }
             if b.get(i) == Some(&b'(') {
                 match find_close(t, i) {
@@ -1026,10 +1200,8 @@ fn strip_decorators(mut s: &str) -> &str {
                     None => return t,
                 }
             }
-            s = &t[i..];
-        } else {
-            return t;
         }
+        s = &t[i..];
     }
 }
 
@@ -1066,7 +1238,7 @@ pub fn class_skeleton(body: &str) -> (Vec<String>, usize) {
         }
         let rest = rest.trim_end().trim_end_matches([';', ',']).trim_end();
         // body of a method / accessor: cut before the opening brace
-        let (hend, _) = stmt_end(rest, 0, true);
+        let (hend, _) = stmt_end(rest, 0, Mode::Fn);
         let mut head = rest[..hend.min(rest.len())].trim_end().trim_end_matches([';', ',']).to_string();
         // initializer of a property
         if !head.contains('(') || head.find('=').is_some_and(|i| head.find('(').is_none_or(|p| i < p)) {
@@ -1131,10 +1303,12 @@ fn parse_int(v: &str) -> Option<i64> {
 /// The declaration at `name_off` as the text to show (dedented), and how many lines were cut.
 pub fn render_decl(text: &str, name_off: usize, kind: Kind, max_lines: usize) -> Option<(String, usize)> {
     let loc = decl_extent(text, name_off, kind)?;
-    let src = &text[loc.start..loc.end];
+    // Decorators on the declaration line (`@Injectable() export class A`) are not part of the shown text.
+    let src = strip_decorators(&text[loc.start..loc.end]);
+    let head_of = |open: usize| strip_decorators(&text[loc.start..open]).trim_end();
     let out = match (kind, loc.open) {
         (Kind::Class, Some(open)) => {
-            let head = text[loc.start..open].trim_end();
+            let head = head_of(open);
             let body = &text[open + 1..loc.end - 1];
             let (lines, hidden) = class_skeleton(body);
             let mut s = format!("{} {{\n", dedent_first(head));
@@ -1150,7 +1324,7 @@ pub fn render_decl(text: &str, name_off: usize, kind: Kind, max_lines: usize) ->
             s
         }
         (Kind::Enum, Some(open)) => {
-            let head = text[loc.start..open].trim_end();
+            let head = head_of(open);
             let body = &text[open + 1..loc.end - 1];
             let mut s = format!("{} {{\n", dedent_first(head));
             for l in enum_members(body) {
@@ -1195,6 +1369,16 @@ fn dedent_first(s: &str) -> String {
 
 // ───────────────────────────── overloads, values, imports ─────────────────────────────
 
+/// For every byte: is it real code (not inside a comment, string, template or regex literal)?
+fn code_mask(text: &str) -> Vec<bool> {
+    let mut mask = vec![false; text.len()];
+    let mut lx = Lx::new(text, 0);
+    while let Some((at, _)) = lx.next() {
+        mask[at] = true;
+    }
+    mask
+}
+
 /// Signatures of the overload set `name` belongs to (consecutive declarations without body).
 pub fn find_overloads(text: &str, name: &str, def_off: usize) -> Vec<String> {
     if name.is_empty() {
@@ -1208,8 +1392,14 @@ pub fn find_overloads(text: &str, name: &str, def_off: usize) -> Vec<String> {
         sig: bool,
     }
     let mut ms: Vec<M> = Vec::new();
+    let code = code_mask(text);
     for m in re.find_iter(text).take(400) {
-        let (end, semi) = stmt_end(text, m.start(), true);
+        // Skip matches that sit inside a comment, string or template literal.
+        let first = m.start() + (m.as_str().len() - m.as_str().trim_start().len());
+        if !code.get(first).copied().unwrap_or(false) {
+            continue;
+        }
+        let (end, semi) = stmt_end(text, m.start(), Mode::Fn);
         ms.push(M { start: m.start(), end, sig: semi });
     }
     let Some(k) = ms.iter().position(|m| m.start <= def_off && def_off <= m.end) else { return vec![] };
@@ -1583,5 +1773,205 @@ const obj = {
     fn truncation_and_dedent() {
         assert_eq!(dedent("    a\n      b\n    c"), "a\n  b\nc");
         assert_eq!(truncate_lines("a\nb\nc", 2), ("a\nb".to_string(), 1));
+    }
+
+    // ───────────── tokenizer-aware cutting ─────────────
+
+    fn decl(src: &str, name: &str, kind: Kind) -> String {
+        let at = src.find(name).unwrap_or_else(|| panic!("{name} not in source"));
+        render_decl(src, at, kind, 60).unwrap_or_else(|| panic!("no declaration for {name}")).0
+    }
+
+    #[test]
+    fn lexer_skips_regex_literals() {
+        let t = "interface A { re: RegExp; x: 1 }\nconst re = /[\"'{}`]/g; const n = a / b / c;\n";
+        let open = t.find('{').unwrap();
+        assert_eq!(find_close(t, open), Some(t.find(" }").unwrap() + 1));
+        // a regex with braces / quotes does not swallow the closing brace of the class
+        let c = "class A { p = /[;{}\"']/g; q = 1 / 2; r = 3 / 4; }\nconst after = 1;";
+        let open = c.find('{').unwrap();
+        assert_eq!(&c[find_close(c, open).unwrap()..][..1], "}");
+        assert_eq!(find_close(c, open).unwrap(), c.find("; }").unwrap() + 2);
+        // division after an identifier, a call and an index is not a regex
+        let d = "{ a / b; f() / 2; x[0] / 3; \"s\" / 4 } ";
+        assert_eq!(find_close(d, 0), Some(d.len() - 2));
+        // regex after return / typeof / operators
+        let r = "{ return /}/.test(x); y = a ? /{/ : /}/; }";
+        assert_eq!(find_close(r, 0), Some(r.len() - 1));
+    }
+
+    #[test]
+    fn lexer_handles_nested_templates() {
+        let t = "{ a = `x${ `}${ \"}\" }` + '{' }y` ; b = `\\` }`; c = 1 }";
+        assert_eq!(find_close(t, 0), Some(t.len() - 1));
+        let u = "{ s = `a ${ {k: 1}.k } b ${ f(`}`) } c`; }";
+        assert_eq!(find_close(u, 0), Some(u.len() - 1));
+        // unterminated template never panics
+        assert_eq!(find_close("{ `abc ${", 0), None);
+    }
+
+    #[test]
+    fn lexer_comments_with_quotes_and_braces() {
+        let t = "{ // don't }\n a /* it's } */ b /** \" */ }";
+        assert_eq!(find_close(t, 0), Some(t.len() - 1));
+        let jsx = "{ a: \"it's\", b: 'say \"hi\"', c: '\\'' }";
+        assert_eq!(find_close(jsx, 0), Some(jsx.len() - 1));
+    }
+
+    #[test]
+    fn generics_with_braces_in_headers() {
+        let src = "export interface Box<T extends { a: 1 } = { a: 1 }> extends Base<{ x: number }> {\n  value: T;\n}\n\nexport class Store<S extends { [k: string]: unknown }, A = () => void> extends Emitter<{ s: S }> implements Disposable {\n  state!: S;\n  dispatch(a: A): void {}\n}\n\nexport interface Next { n: 1 }\n";
+        let b = decl(src, "Box<", Kind::Interface);
+        assert!(b.starts_with("export interface Box<T extends { a: 1 } = { a: 1 }> extends Base<{ x: number }> {"), "{b}");
+        assert!(b.ends_with("  value: T;\n}"), "{b}");
+        let c = decl(src, "Store<", Kind::Class);
+        assert!(c.starts_with("export class Store<S extends { [k: string]: unknown }, A = () => void> extends Emitter<{ s: S }> implements Disposable {"), "{c}");
+        assert!(c.contains("  state!: S;") && c.contains("  dispatch(a: A): void;"), "{c}");
+        assert!(!c.contains("Next"), "{c}");
+    }
+
+    #[test]
+    fn heritage_calls_and_arrow_generics() {
+        let src = "class A extends mixin(B, { x: 1 }, C) {\n  m() {}\n}\nclass D<T extends (a: number) => { r: string }> extends E<(x: T) => void> {\n  f(): T { return null as any; }\n}\n";
+        let a = decl(src, "A extends", Kind::Class);
+        assert!(a.starts_with("class A extends mixin(B, { x: 1 }, C) {"), "{a}");
+        assert!(a.contains("  m();"), "{a}");
+        let d = decl(src, "D<", Kind::Class);
+        assert!(d.starts_with("class D<T extends (a: number) => { r: string }> extends E<(x: T) => void> {"), "{d}");
+        assert!(d.contains("  f(): T;"), "{d}");
+    }
+
+    #[test]
+    fn functions_cut_before_the_body_not_inside_types() {
+        let src = "function f<T extends { a: 1 }>(x: T, o = { k: 1 }): T { return x; }\nfunction g(a: number): { x: number; y: string } { return { x: a, y: '' }; }\nfunction isFoo(v: unknown): v is { foo: 1 } { return true; }\nasync function h(): Promise<{ ok: boolean }> {\n  return { ok: true };\n}\nfunction k(cb: (e: Event) => { stop: boolean }): void { cb(e); }\n";
+        assert_eq!(decl(src, "f<", Kind::Function), "function f<T extends { a: 1 }>(x: T, o = { k: 1 }): T");
+        assert_eq!(decl(src, "g(", Kind::Function), "function g(a: number): { x: number; y: string }");
+        assert_eq!(decl(src, "isFoo", Kind::Function), "function isFoo(v: unknown): v is { foo: 1 }");
+        assert_eq!(decl(src, "h(", Kind::Function), "async function h(): Promise<{ ok: boolean }>");
+        assert_eq!(decl(src, "k(", Kind::Function), "function k(cb: (e: Event) => { stop: boolean }): void");
+    }
+
+    #[test]
+    fn type_aliases_with_arrow_functions_and_multiline_generics() {
+        let src = "type Fn = (a: number, cb: (x: string) => void) => Promise<{ ok: boolean }>;\ntype Arr = Array<\n  string\n>\ntype Cond<T> = T extends (infer U)[] ? U : T extends string ? `s:${T}` : never;\ntype Mapped = {\n  [K in keyof Fn]: Fn[K];\n}\nconst after = 1;\n";
+        assert_eq!(decl(src, "Fn =", Kind::TypeAlias), "type Fn = (a: number, cb: (x: string) => void) => Promise<{ ok: boolean }>");
+        assert_eq!(decl(src, "Arr =", Kind::TypeAlias), "type Arr = Array<\n  string\n>");
+        assert_eq!(decl(src, "Cond<", Kind::TypeAlias), "type Cond<T> = T extends (infer U)[] ? U : T extends string ? `s:${T}` : never");
+        assert_eq!(decl(src, "Mapped", Kind::TypeAlias), "type Mapped = {\n  [K in keyof Fn]: Fn[K];\n}");
+    }
+
+    #[test]
+    fn strings_and_templates_in_declarations() {
+        let src = "export interface Cfg {\n  open: \"{\";\n  close: '}';\n  tpl: `${string}-}`;\n  // } not a brace\n  /* { */ n: number;\n}\nexport const after = 1;\n";
+        let t = decl(src, "Cfg", Kind::Interface);
+        assert!(t.ends_with("  /* { */ n: number;\n}"), "{t}");
+        assert!(!t.contains("after"));
+        let en = "enum E {\n  A = \"}\",\n  B = `{`,\n  C = 1 << 2,\n  D,\n  F = 'x' + \"}\",\n  G,\n}\nconst z = 1;";
+        let t = decl(en, "E {", Kind::Enum);
+        assert!(t.contains("A = \"}\","), "{t}");
+        assert!(t.contains("C = 1 << 2,"), "{t}");
+        assert!(t.contains("D,"), "{t}");
+        assert!(t.contains("G,"), "{t}");
+        assert!(!t.contains("const z"), "{t}");
+    }
+
+    #[test]
+    fn class_members_with_regex_templates_and_comparisons() {
+        let src = "class P {\n  pat = /[;{}]/g;\n  big = 1 << 2;\n  lt = a < b;\n  tpl = `a;${ {x: 1}.x }b;`;\n  /** Shown. */\n  show(): void { if (a < b) { x(); } }\n  other(): number { return 1 }\n}\n";
+        let t = decl(src, "P {", Kind::Class);
+        assert!(t.contains("  pat = /[;{}]/g;"), "{t}");
+        assert!(t.contains("  lt = a < b;"), "{t}");
+        assert!(t.contains("  tpl;") || t.contains("  tpl ="), "{t}");
+        assert!(t.contains("  big = 1 << 2;"), "{t}");
+        assert!(t.contains("  /** Shown. */\n  show(): void;"), "{t}");
+        assert!(t.contains("  other(): number;"), "{t}");
+        assert!(!t.contains("x();"), "{t}");
+    }
+
+    #[test]
+    fn decorators_are_skipped_in_classes() {
+        let src = "@Injectable() export class Svc {\n  @Input() name: string;\n  @Input({ alias: \"a}b\", transform: (v) => `${v}}` }) other = 1;\n  @HostListener('window:resize', ['$event'])\n  onResize(e: Event) { return 1 }\n  @Foo.bar<Baz<Qux>>(1) @Other() deco: number;\n  @(cond ? a : b) paren: string;\n  private hidden = 1;\n}\n";
+        let t = decl(src, "Svc", Kind::Class);
+        assert!(t.starts_with("export class Svc {"), "{t}");
+        assert!(t.contains("  name: string;"), "{t}");
+        assert!(t.contains("  other = 1;") || t.contains("  other;"), "{t}");
+        assert!(t.contains("  onResize(e: Event);"), "{t}");
+        assert!(t.contains("  deco: number;"), "{t}");
+        assert!(t.contains("  paren: string;"), "{t}");
+        assert!(t.contains("// + 1 membro privado"), "{t}");
+        assert!(!t.contains("Injectable") && !t.contains("@"), "{t}");
+    }
+
+    #[test]
+    fn kinds_at_declarations_with_decorators_and_modifiers() {
+        let k = |s: &str| decl_kind_at(s, s.rfind(" X").unwrap() + 1);
+        assert_eq!(k("@Component({ a: 1 }) export class X"), Some(Kind::Class));
+        assert_eq!(k("export default abstract class X"), Some(Kind::Class));
+        assert_eq!(k("export declare const enum X"), Some(Kind::Enum));
+        assert_eq!(k("export async function* X"), Some(Kind::Function));
+        assert_eq!(k("export async function * X"), Some(Kind::Function));
+        assert_eq!(k("/** doc */ export type X"), Some(Kind::TypeAlias));
+        assert_eq!(k("declare namespace X"), Some(Kind::Namespace));
+        assert_eq!(k("export const X"), Some(Kind::Variable));
+        assert_eq!(k("foo(a, X"), None);
+    }
+
+    #[test]
+    fn javascript_sources() {
+        let src = "export class Counter extends Base {\n  #n = 0;\n  static re = /}/;\n  inc(by = { step: 1 }) { return /{/.test(by) ? 1 : 2; }\n  get value() { return this.#n; }\n}\nexport function add(a, b = {x: 1}) {\n  return a + b.x;\n}\nconst f = async (a) => { return a; };\nexport const re = /[}]/g;\n";
+        let c = decl(src, "Counter", Kind::Class);
+        assert!(c.starts_with("export class Counter extends Base {"), "{c}");
+        assert!(c.contains("  static re = /}/;"), "{c}");
+        assert!(c.contains("  inc(by = { step: 1 });"), "{c}");
+        assert!(c.contains("  get value();"), "{c}");
+        assert!(c.contains("// + 1 membro privado"), "{c}");
+        assert_eq!(decl(src, "add(", Kind::Function), "export function add(a, b = {x: 1})");
+        assert_eq!(short_value(src, src.find("re = /[").unwrap()).as_deref(), Some("/[}]/g"));
+    }
+
+    #[test]
+    fn interface_member_forms() {
+        let src = "interface I {\n  readonly a?: number;\n  [key: string]: unknown;\n  (x: number): string;\n  new (x: string): I;\n  m?<T>(x: T): T;\n  get g(): number;\n  fn: <T>(x: T) => T;\n  nested: { a: { b: 1 } };\n}\nconst x = 1;";
+        let t = decl(src, "I {", Kind::Interface);
+        assert!(t.ends_with("  nested: { a: { b: 1 } };\n}"), "{t}");
+        assert_eq!(t.lines().count(), 10, "{t}");
+    }
+
+    #[test]
+    fn overloads_ignore_comments_and_strings() {
+        let src = "/*\nsum(a: string): string;\n*/\nconst s = `\nsum(x): y;\n`;\nexport function sum(a: number): number;\nexport function sum(a: string): string;\nexport function sum(a: any): any { return a; }\n";
+        let at = src.rfind("sum(a: any").unwrap();
+        let o = find_overloads(src, "sum", at);
+        assert_eq!(o, ["function sum(a: number): number", "function sum(a: string): string"]);
+    }
+
+    #[test]
+    fn generic_arrow_and_tsx_variables_do_not_run_away() {
+        let src = "const id = <T,>(x: T) => x;\nconst Comp = () => (\n  <div>{items.map(i => <b key={i}>{i}</b>)}</div>\n);\nconst next = 2;\n";
+        let t = decl(src, "Comp", Kind::Variable);
+        assert!(t.starts_with("const Comp = () => ("), "{t}");
+        assert!(t.ends_with(");") || t.ends_with(")"), "{t}");
+        assert!(!t.contains("next"), "{t}");
+        assert_eq!(short_value(src, src.find("next").unwrap()).as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn random_garbage_never_panics_or_runs_away() {
+        let junk = ["{{{{", "`${`${`${", "/*", "'", "\"\\", "interface A<<<<<{", "class C extends { { {", "@@@(", "/[", "type T = <<<", "enum E { A = `", "é{è`ü/ö", "function f<<(", "\u{1F600}{`", "}}}}", "@Foo<", "/", "//"];
+        for j in junk {
+            for pre in ["", "interface A ", "class C ", "enum E ", "type T = ", "function f", "const v = "] {
+                let src = format!("{pre}{j}");
+                for kind in [Kind::Interface, Kind::Class, Kind::Enum, Kind::TypeAlias, Kind::Function, Kind::Variable, Kind::Namespace] {
+                    for off in (0..src.len()).filter(|i| src.is_char_boundary(*i)) {
+                        let _ = render_decl(&src, off, kind, 10);
+                        let _ = decl_kind_at(&src, off);
+                        let _ = short_value(&src, off);
+                    }
+                }
+                let _ = find_overloads(&src, "f", 0);
+                let _ = class_skeleton(&src);
+                let _ = enum_members(&src);
+            }
+        }
     }
 }

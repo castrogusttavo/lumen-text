@@ -195,9 +195,10 @@ impl App {
             self.diff_toggle_block(cur);
             return true;
         }
+        let area_h = self.diff_area().h;
         let Some(dv) = self.diff.as_mut() else { return false };
-        let page = (self.layout.editor.h / line_h() as i32 - 3).max(1) as f64;
-        let max = (dv.rows.len() as f64 - ((self.layout.editor.h - 28) / line_h() as i32) as f64).max(0.0);
+        let page = (area_h / line_h() as i32 - 3).max(1) as f64;
+        let max = (dv.rows.len() as f64 - ((area_h - 28) / line_h() as i32) as f64).max(0.0);
         match key {
             Key::Named(NamedKey::Escape) => self.diff = None,
             Key::Character(c) if c.as_str() == "q" => self.diff = None,
@@ -260,11 +261,12 @@ impl App {
         };
         let (scroll, old_rel) = (dv.scroll, src.old_rel.clone());
         self.diff = DiffView::staging_auto(&src.top, &src.rel, old_rel.as_deref(), src.side, &src.name);
+        let area_h = self.diff_area().h;
         match self.diff.as_mut() {
             Some(nd) => {
                 nd.scroll = scroll;
                 nd.cur = keep.min(nd.blocks.len().saturating_sub(1));
-                let max = (nd.rows.len() as f64 - ((self.layout.editor.h - 28) / line_h() as i32) as f64).max(0.0);
+                let max = (nd.rows.len() as f64 - ((area_h - 28) / line_h() as i32) as f64).max(0.0);
                 nd.scroll = nd.scroll.min(max);
             }
             None => self.say("nenhum trecho restante neste arquivo"),
@@ -296,18 +298,23 @@ impl App {
     }
 
     pub fn diff_wheel(&mut self, delta: MouseScrollDelta) -> bool {
+        // In a split the wheel only scrolls the diff when the pointer is over the pane it covers.
+        if self.split.is_some() && !self.diff_area().contains(self.mouse.0, self.mouse.1) {
+            return false;
+        }
+        let area_h = self.diff_area().h;
         let Some(dv) = self.diff.as_mut() else { return false };
         let rows = match delta {
             MouseScrollDelta::LineDelta(_, y) => -(y as f64) * 3.0,
             MouseScrollDelta::PixelDelta(p) => -p.y / line_h() as f64,
         };
-        let max = (dv.rows.len() as f64 - ((self.layout.editor.h - 28) / line_h() as i32) as f64).max(0.0);
+        let max = (dv.rows.len() as f64 - ((area_h - 28) / line_h() as i32) as f64).max(0.0);
         dv.scroll = (dv.scroll + rows).clamp(0.0, max);
         true
     }
 
     pub fn draw_diff(&mut self, cv: &mut Canvas) {
-        let editor = self.layout.editor;
+        let editor = self.diff_area();
         let Some(dv) = &self.diff else { return };
         let (rows_total, scroll) = (dv.rows.len(), dv.scroll);
         let c = self.theme.chrome;
@@ -344,6 +351,8 @@ impl App {
 
         let lh = line_h() as i32;
         let first = dv.scroll as usize;
+        // `scroll` is fractional while the wheel glides: rows sit that much higher.
+        let off = ((dv.scroll - first as f64) * lh as f64).round() as i32;
         let n = (lr.h / lh + 2) as usize;
         let cell = self.tx.cell_w;
         let (removed, added, strong_r, strong_a) = (c.diff_del, c.diff_add, c.diff_del_word, c.diff_add_word);
@@ -354,7 +363,7 @@ impl App {
         let mut rp: Vec<(String, Rgba)> = Vec::new();
         let cur_block = dv.blocks.get(dv.cur).copied().filter(|_| staging.is_some());
         for (k, row) in dv.rows.iter().enumerate().skip(first).take(n) {
-            let y = lr.y + (k - first) as i32 * lh;
+            let y = lr.y + (k - first) as i32 * lh - off;
             if cur_block.is_some_and(|(a, b)| k >= a && k < b) {
                 cv.fill_clip(Rect::new(lr.x, y, 3, lh), c.accent, lr);
             }
@@ -373,10 +382,14 @@ impl App {
             if row.kind == RowKind::Changed {
                 if let (Some((_, l)), Some((_, r))) = (&row.left, &row.right) {
                     let (lrg, rrg) = gitx::changed_ranges(l, r);
+                    // Ranges are in characters; tabs expand to the configured width on screen.
+                    let tab = self.config.tab_width;
                     for (a, b) in lrg {
+                        let (a, b) = (crate::editor::visual_col(l, a, tab), crate::editor::visual_col(l, b, tab));
                         cv.fill_clip(Rect::new(lr.x + num_w + 8 + (a as f32 * cell) as i32, y, ((b - a) as f32 * cell) as i32, lh), strong_r, lr);
                     }
                     for (a, b) in rrg {
+                        let (a, b) = (crate::editor::visual_col(r, a, tab), crate::editor::visual_col(r, b, tab));
                         cv.fill_clip(Rect::new(rr.x + num_w + 8 + (a as f32 * cell) as i32, y, ((b - a) as f32 * cell) as i32, lh), strong_a, rr);
                     }
                 }
@@ -384,7 +397,7 @@ impl App {
             for (side, region, pieces) in [(&row.left, lr, &mut lp), (&row.right, rr, &mut rp)] {
                 match side {
                     Some((ln, text)) => {
-                        let shown: String = text.chars().take(max_cols).map(|ch| if ch == '\t' { ' ' } else { ch }).collect();
+                        let shown = crate::gitx::expand_tabs(text, self.config.tab_width, max_cols);
                         self.tx.draw_line(cv, region.x + 6, y, &format!("{:>digits$}", ln + 1), dim, region);
                         pieces.push((shown, fg));
                     }
@@ -393,8 +406,8 @@ impl App {
                 pieces.push(("\n".into(), fg));
             }
         }
-        self.tx.draw(cv, lr.x + num_w + 8, lr.y, &lp, lr);
-        self.tx.draw(cv, rr.x + num_w + 8, rr.y, &rp, rr);
+        self.tx.draw(cv, lr.x + num_w + 8, lr.y - off, &lp, lr);
+        self.tx.draw(cv, rr.x + num_w + 8, rr.y - off, &rp, rr);
         // Per-hunk button on the first row of every visible block (right pane, right edge).
         if let Some((side, editable, _)) = staging {
             // Short labels when the pane is narrow (the Git panel takes a good part of the window).
@@ -410,7 +423,7 @@ impl App {
                 if a < first || a >= first + n {
                     continue;
                 }
-                let y = lr.y + (a - first) as i32 * lh;
+                let y = lr.y + (a - first) as i32 * lh - off;
                 let r = Rect::new(rr.right() - 22 - bw, y + 1, bw, lh - 2);
                 let hov = editable && r.contains(self.mouse.0, self.mouse.1);
                 cv.fill_round_clip(r, 6, c.sidebar_bg, rr);

@@ -8,7 +8,13 @@
 //! * `include_at`: whether hints located exactly AT the queried column count. Use `true` for the
 //!   position of the glyph at that column (text starts after the hint) and `false` for a caret
 //!   that should sit *before* the hint (e.g. the caret at `name|: number` before the hint).
-//! * Hint widths are in cells = chars of label + paddings (labels never contain tabs/newlines).
+//! * Hint widths are in cells: the label is drawn in a smaller font (`HINT_SCALE` of the code
+//!   size) so it needs `label_cells(chars)` = ceil(chars * HINT_SCALE) cells, plus one cell per
+//!   padding. The width is therefore a per-hint value (not the char count) and every conversion
+//!   (`vcol`, `col_from_vcol`, `hint_cells`, `window_pieces_hinted`) uses it, so the cursor,
+//!   selections and clicks stay exact on the cell grid. Labels never contain tabs/newlines.
+//! * Wrapped rows: `row_hints` slices a line's hints for one visual row (columns relative to the
+//!   row start); all the `*_in` functions work on such a slice.
 #![allow(dead_code)]
 
 use serde_json::Value;
@@ -21,6 +27,38 @@ pub enum HintKind {
     Other,
 }
 
+/// Font size of hint labels relative to the code font (cells are still the code font's).
+pub const HINT_SCALE: f32 = 0.85;
+
+/// Cells needed by `chars` label characters drawn at [`HINT_SCALE`] (rounded up to whole cells).
+pub fn label_cells(chars: usize) -> usize {
+    (chars * 85).div_ceil(100)
+}
+
+/// A clickable stretch of a hint label (an LSP label part with a `location`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HintLink {
+    /// Char range `[start, end)` inside the label.
+    pub start: usize,
+    pub end: usize,
+    /// Target (LSP position: UTF-16 character).
+    pub uri: String,
+    pub line: usize,
+    pub character: usize,
+}
+
+/// A text edit that comes with a hint (`textEdits`): applied on double click. Positions are char
+/// columns; lines are relative to the hint's line, and so are columns on the hint's own line
+/// (relative to the hint's column), which keeps the edit valid when the hint is shifted by edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HintEdit {
+    pub dl0: i64,
+    pub c0: i64,
+    pub dl1: i64,
+    pub c1: i64,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hint {
     pub line: usize,
@@ -30,12 +68,51 @@ pub struct Hint {
     pub kind: HintKind,
     pub pad_left: bool,
     pub pad_right: bool,
+    /// Clickable label parts (Ctrl+click goes to `location`).
+    pub links: Vec<HintLink>,
+    /// Edits from the server (double click applies them as one undo step).
+    pub edits: Vec<HintEdit>,
 }
 
 impl Hint {
-    /// Displayed width in cells (label chars + paddings).
+    /// Cells taken by the label itself (smaller font, rounded up).
+    pub fn label_width(&self) -> usize {
+        label_cells(self.label.chars().count())
+    }
+
+    /// Displayed width in cells (label + paddings).
     pub fn width(&self) -> usize {
-        self.label.chars().count() + self.pad_left as usize + self.pad_right as usize
+        self.label_width() + self.pad_left as usize + self.pad_right as usize
+    }
+
+    /// The link under label char `off`, if any.
+    pub fn link_at(&self, off: usize) -> Option<&HintLink> {
+        self.links.iter().find(|l| off >= l.start && off < l.end)
+    }
+
+    /// The label char under `px` pixels from the start of the hint (cell width `cw`), or `None`
+    /// over the paddings / past the label. The label is centred in its whole-cell slot.
+    pub fn char_at_px(&self, px: f32, cw: f32) -> Option<usize> {
+        let n = self.label.chars().count();
+        let slack = (self.label_width() as f32 * cw - n as f32 * cw * HINT_SCALE) / 2.0;
+        let x = px - self.pad_left as usize as f32 * cw - slack;
+        if x < 0.0 {
+            return None;
+        }
+        let i = (x / (cw * HINT_SCALE)) as usize;
+        (i < n).then_some(i)
+    }
+
+    /// The edits to apply on double click: the server's, or for a type hint (`: T`) without any,
+    /// inserting the label itself at the hint position (what editors do for "add type annotation").
+    pub fn annotation_edits(&self) -> Vec<HintEdit> {
+        if !self.edits.is_empty() {
+            return self.edits.clone();
+        }
+        if self.kind == HintKind::Type && self.label.starts_with(':') {
+            return vec![HintEdit { dl0: 0, c0: 0, dl1: 0, c1: 0, text: self.label.clone() }];
+        }
+        Vec::new()
     }
 
     /// The displayed string (paddings as spaces).
@@ -54,19 +131,35 @@ impl Hint {
 
 /// Parse a `textDocument/inlayHint` result. `to_char_col(line, utf16_character)` converts the
 /// LSP column to a char column. Hints with an empty label are dropped; control chars in labels
-/// (tabs, newlines) become spaces.
+/// (tabs, newlines) become spaces. Label parts with a `location` become [`HintLink`]s and
+/// `textEdits` become [`HintEdit`]s.
 pub fn parse(v: &Value, to_char_col: &mut dyn FnMut(usize, usize) -> usize) -> Vec<Hint> {
     let Some(arr) = v.as_array() else { return Vec::new() };
     let mut out = Vec::with_capacity(arr.len());
     for item in arr {
         let pos = &item["position"];
         let (Some(line), Some(ch)) = (pos["line"].as_u64(), pos["character"].as_u64()) else { continue };
-        let raw: String = match &item["label"] {
-            Value::String(s) => s.clone(),
-            Value::Array(parts) => parts.iter().filter_map(|p| p["value"].as_str()).collect(),
+        let clean = |s: &str| -> String { s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect() };
+        let mut label = String::new();
+        let mut links = Vec::new();
+        match &item["label"] {
+            Value::String(s) => label = clean(s),
+            Value::Array(parts) => {
+                for p in parts {
+                    let Some(val) = p["value"].as_str() else { continue };
+                    let start = label.chars().count();
+                    label.push_str(&clean(val));
+                    let end = label.chars().count();
+                    let loc = &p["location"];
+                    if let (Some(uri), Some(l), Some(c)) = (loc["uri"].as_str(), loc["range"]["start"]["line"].as_u64(), loc["range"]["start"]["character"].as_u64()) {
+                        if end > start {
+                            links.push(HintLink { start, end, uri: uri.to_string(), line: l as usize, character: c as usize });
+                        }
+                    }
+                }
+            }
             _ => continue,
-        };
-        let label: String = raw.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        }
         if label.is_empty() {
             continue;
         }
@@ -77,6 +170,23 @@ pub fn parse(v: &Value, to_char_col: &mut dyn FnMut(usize, usize) -> usize) -> V
         };
         let line = line as usize;
         let col = to_char_col(line, ch as usize);
+        let mut edits = Vec::new();
+        for e in item["textEdits"].as_array().into_iter().flatten() {
+            let r = &e["range"];
+            let (Some(sl), Some(sc), Some(el), Some(ec), Some(text)) =
+                (r["start"]["line"].as_u64(), r["start"]["character"].as_u64(), r["end"]["line"].as_u64(), r["end"]["character"].as_u64(), e["newText"].as_str())
+            else {
+                continue;
+            };
+            let (sl, el) = (sl as usize, el as usize);
+            let (sc, ec) = (to_char_col(sl, sc as usize), to_char_col(el, ec as usize));
+            let rel = |l: usize, c: usize| -> (i64, i64) {
+                let dl = l as i64 - line as i64;
+                (dl, if dl == 0 { c as i64 - col as i64 } else { c as i64 })
+            };
+            let ((dl0, c0), (dl1, c1)) = (rel(sl, sc), rel(el, ec));
+            edits.push(HintEdit { dl0, c0, dl1, c1, text: text.to_string() });
+        }
         out.push(Hint {
             line,
             col,
@@ -84,22 +194,27 @@ pub fn parse(v: &Value, to_char_col: &mut dyn FnMut(usize, usize) -> usize) -> V
             kind,
             pad_left: item["paddingLeft"].as_bool().unwrap_or(false),
             pad_right: item["paddingRight"].as_bool().unwrap_or(false),
+            links,
+            edits,
         });
     }
     out
 }
 
-/// Lines to request for a viewport: `first..=last` padded by 20 lines and clamped to the
-/// document. Returns inclusive `(first_line, last_line)`; `(0, 0)` for an empty document.
+/// Lines to request for a viewport: `first..=last` padded by [`REQUEST_PAD`] lines and clamped to
+/// the document. Returns inclusive `(first_line, last_line)`; `(0, 0)` for an empty document.
 pub fn visible_range_request(first_line: usize, last_line: usize, line_count: usize) -> (usize, usize) {
     if line_count == 0 {
         return (0, 0);
     }
     let max = line_count - 1;
-    let first = first_line.saturating_sub(20).min(max);
-    let last = last_line.max(first_line).saturating_add(20).min(max);
+    let first = first_line.saturating_sub(REQUEST_PAD).min(max);
+    let last = last_line.max(first_line).saturating_add(REQUEST_PAD).min(max);
     (first, last)
 }
+
+/// Lines requested above and below the viewport (so a fast scroll mostly lands on known hints).
+pub const REQUEST_PAD: usize = 40;
 
 /// Tab-aware visual column of char column `col` (same semantics as `editor::visual_col`).
 fn visual_col(text: &str, col: usize, tab_w: usize) -> usize {
@@ -108,6 +223,77 @@ fn visual_col(text: &str, col: usize, tab_w: usize) -> usize {
         v += if ch == '\t' { tab_w - v % tab_w } else { 1 };
     }
     v
+}
+
+/// Visual column (tabs + virtual hint cells) of char column `col` in `text` given the hints of
+/// that text (sorted by column, columns relative to `text`). See the module docs for `include_at`.
+pub fn vcol_in(hints: &[Hint], text: &str, col: usize, tab_w: usize, include_at: bool) -> usize {
+    if hints.is_empty() {
+        return visual_col(text, col, tab_w);
+    }
+    let len = text.chars().count();
+    let col = col.min(len);
+    let extra: usize = hints
+        .iter()
+        .take_while(|h| {
+            let c = h.col.min(len);
+            c < col || (include_at && c == col)
+        })
+        .map(|h| h.width())
+        .sum();
+    visual_col(text, col, tab_w) + extra
+}
+
+/// Where a pointer at visual column `vcol` is on `text`: the char column it maps to and, when it
+/// is over a hint, `(index into hints, visual column where that hint starts)`. The returned
+/// column over a hint is the hint's own column (clamped to the text end). Past the end of the
+/// text gives its length. Over text it rounds like `editor::col_from_visual`.
+pub fn hit_in(hints: &[Hint], text: &str, vcol: usize, tab_w: usize) -> (usize, Option<(usize, usize)>) {
+    let len = text.chars().count();
+    let mut hi = 0;
+    let mut pos = 0; // total visual position
+    let mut tvc = 0; // text-only visual column (tab stops)
+    let mut chars = text.chars();
+    for i in 0..=len {
+        while hi < hints.len() && hints[hi].col.min(len) <= i {
+            let w = hints[hi].width();
+            if vcol < pos + w {
+                return (i, Some((hi, pos)));
+            }
+            pos += w;
+            hi += 1;
+        }
+        let Some(ch) = chars.next() else { break };
+        let w = if ch == '\t' { tab_w - tvc % tab_w } else { 1 };
+        if vcol < pos + w {
+            let c = if vcol - pos >= w.div_ceil(2) && w > 1 { i + 1 } else { i };
+            return (c, None);
+        }
+        pos += w;
+        tvc += w;
+    }
+    (len, None)
+}
+
+/// The hints of one visual row of a wrapped line: row chars `[c0, c1)` (`last` = the final row,
+/// which also owns the hints at the line end). `idx` are the indexes into the line's hints,
+/// `hints` the same hints with columns relative to `c0` (and clamped to the line length `len`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RowHints {
+    pub idx: Vec<usize>,
+    pub hints: Vec<Hint>,
+}
+
+pub fn row_hints(line_hints: &[Hint], len: usize, c0: usize, c1: usize, last: bool) -> RowHints {
+    let mut out = RowHints::default();
+    for (i, h) in line_hints.iter().enumerate() {
+        let c = h.col.min(len);
+        if c >= c0 && (c < c1 || (last && c == c1)) {
+            out.idx.push(i);
+            out.hints.push(Hint { col: c - c0, ..h.clone() });
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Default)]
@@ -157,21 +343,7 @@ impl LineHints {
 
     /// Visual column (tabs + virtual hint cells) of char column `col` in `text`.
     pub fn vcol(&self, line: usize, text: &str, col: usize, tab_w: usize, include_at: bool) -> usize {
-        let hints = self.hints_on(line);
-        if hints.is_empty() {
-            return visual_col(text, col, tab_w);
-        }
-        let len = text.chars().count();
-        let col = col.min(len);
-        let extra: usize = hints
-            .iter()
-            .take_while(|h| {
-                let c = h.col.min(len);
-                c < col || (include_at && c == col)
-            })
-            .map(|h| h.width())
-            .sum();
-        visual_col(text, col, tab_w) + extra
+        vcol_in(self.hints_on(line), text, col, tab_w, include_at)
     }
 
     /// Inverse of [`vcol`]: buffer char column for visual column `vcol`, and `Some(index into
@@ -179,106 +351,9 @@ impl LineHints {
     /// own column, clamped to the line end). Past the end of the line gives the line length.
     /// Over text it rounds like `editor::col_from_visual`.
     pub fn col_from_vcol(&self, line: usize, text: &str, vcol: usize, tab_w: usize) -> (usize, Option<usize>) {
-        let hints = self.hints_on(line);
-        let len = text.chars().count();
-        let mut hi = 0;
-        let mut pos = 0; // total visual position
-        let mut tvc = 0; // text-only visual column (tab stops)
-        let mut chars = text.chars();
-        for i in 0..=len {
-            while hi < hints.len() && hints[hi].col.min(len) <= i {
-                let w = hints[hi].width();
-                if vcol < pos + w {
-                    return (i, Some(hi));
-                }
-                pos += w;
-                hi += 1;
-            }
-            let Some(ch) = chars.next() else { break };
-            let w = if ch == '\t' { tab_w - tvc % tab_w } else { 1 };
-            if vcol < pos + w {
-                let c = if vcol - pos >= w.div_ceil(2) && w > 1 { i + 1 } else { i };
-                return (c, None);
-            }
-            pos += w;
-            tvc += w;
-        }
-        (len, None)
+        let (c, h) = hit_in(self.hints_on(line), text, vcol, tab_w);
+        (c, h.map(|(i, _)| i))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Piece {
-    Code(String),
-    Hint(String, HintKind),
-}
-
-impl Piece {
-    pub fn text(&self) -> &str {
-        match self {
-            Piece::Code(s) | Piece::Hint(s, _) => s,
-        }
-    }
-}
-
-/// The visible window `[vc0, vc1)` of one line (visual columns including hint cells) as pieces:
-/// code (tabs expanded to spaces like `doc::window_pieces`) interleaved with hint text at their
-/// columns. `hints` are the hints of this line, sorted by column (as `LineHints::hints_on`).
-/// Adjacent code is merged; empty pieces are never produced; hint text is clipped to the window.
-pub fn weave(text: &str, hints: &[Hint], vc0: usize, vc1: usize, tab_w: usize) -> Vec<Piece> {
-    let mut pieces: Vec<Piece> = Vec::new();
-    let mut code = String::new();
-    let len = text.chars().count();
-    let mut pos = 0usize; // total visual position
-    let mut tvc = 0usize; // text-only visual column
-    let mut hi = 0;
-
-    fn flush(code: &mut String, pieces: &mut Vec<Piece>) {
-        if !code.is_empty() {
-            pieces.push(Piece::Code(std::mem::take(code)));
-        }
-    }
-
-    let mut chars = text.chars();
-    for i in 0..=len {
-        while hi < hints.len() && hints[hi].col.min(len) <= i {
-            let h = &hints[hi];
-            hi += 1;
-            let mut s = String::new();
-            for ch in h.text().chars() {
-                if pos >= vc0 && pos < vc1 {
-                    s.push(ch);
-                }
-                pos += 1;
-            }
-            if !s.is_empty() {
-                flush(&mut code, &mut pieces);
-                pieces.push(Piece::Hint(s, h.kind));
-            }
-        }
-        if pos >= vc1 {
-            break;
-        }
-        let Some(ch) = chars.next() else { break };
-        if ch == '\t' {
-            let n = tab_w - tvc % tab_w;
-            for _ in 0..n {
-                if pos >= vc0 && pos < vc1 {
-                    code.push(' ');
-                }
-                pos += 1;
-            }
-            tvc += n;
-        } else {
-            if pos >= vc0 && pos < vc1 {
-                code.push(ch);
-            }
-            pos += 1;
-            tvc += 1;
-        }
-    }
-    flush(&mut code, &mut pieces);
-    pieces
 }
 
 // ───────────────────────────── editor integration ─────────────────────────────
@@ -319,6 +394,54 @@ impl LineHints {
             }
         }
     }
+
+    /// Follow one text edit: `removed` chars at (`line`, `col`) were replaced by `inserted` chars,
+    /// the removed text spanned `rem_lines` line breaks and the inserted one `ins_lines`.
+    /// `end_col` is the column where the inserted text ends on its last line (`None` = unknown,
+    /// only needed when `ins_lines > 0`). Hints before the edit stay, hints after it on the same
+    /// line move with their text (also across an inserted line break), hints inside the removed
+    /// text vanish, later lines shift. A hint exactly at an insertion point moves after it.
+    pub fn apply_edit(&mut self, line: usize, col: usize, removed: usize, inserted: usize, rem_lines: usize, ins_lines: usize, end_col: Option<usize>) {
+        let delta = ins_lines as isize - rem_lines as isize;
+        let end_col = if ins_lines == 0 { Some(col + inserted) } else { end_col };
+        let old = std::mem::take(&mut self.by_line);
+        let mut moved: Vec<Hint> = Vec::new();
+        for (l, v) in old {
+            if l < line {
+                self.by_line.insert(l, v);
+            } else if l == line {
+                let mut stay = Vec::new();
+                for h in v {
+                    if h.col < col || (h.col == col && removed > 0) {
+                        stay.push(h);
+                    } else if rem_lines == 0 && h.col >= col + removed {
+                        if let Some(e) = end_col {
+                            moved.push(Hint { line: line + ins_lines, col: e + (h.col - col - removed), ..h });
+                        }
+                    }
+                }
+                if !stay.is_empty() {
+                    self.by_line.insert(l, stay);
+                }
+            } else if l <= line + rem_lines {
+                // tail of a removed line break: gone
+            } else {
+                let n = (l as isize + delta) as usize;
+                let v: Vec<Hint> = v.into_iter().map(|h| Hint { line: n, ..h }).collect();
+                self.by_line.insert(n, v);
+            }
+        }
+        if !moved.is_empty() {
+            let e = self.by_line.entry(line + ins_lines).or_default();
+            e.extend(moved);
+            e.sort_by_key(|h| h.col);
+        }
+    }
+
+    /// Lines `first..first + n` were exchanged / rewritten wholesale: forget their hints.
+    pub fn drop_lines(&mut self, first: usize, n: usize) {
+        self.by_line.retain(|&l, _| l < first || l >= first + n);
+    }
 }
 
 /// Per-document inlay state: the hints plus the bookkeeping for asking the server again.
@@ -331,10 +454,13 @@ pub struct InlayState {
     pub cover: Option<(usize, usize)>,
     /// Line count when `hints` was last adjusted (to follow inserted/removed lines).
     lines: usize,
+    /// When the last request went out (throttles the urgent ones during a fast scroll).
+    last_request: Option<std::time::Instant>,
 }
 
 impl InlayState {
-    /// Text changed (first touched line `line`, new line count `line_count`).
+    /// Text changed (first touched line `line`, new line count `line_count`) and nothing is known
+    /// about where: hints of the touched line are dropped, later ones follow their lines.
     pub fn on_edit(&mut self, line: usize, line_count: usize) {
         if !self.hints.is_empty() {
             let delta = if self.lines == 0 { 0 } else { line_count as isize - self.lines as isize };
@@ -342,6 +468,37 @@ impl InlayState {
         }
         self.lines = line_count;
         self.due = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
+    }
+
+    /// Text changed by the recorded edits `recs` (in order); `end_of(pos)` gives the line and
+    /// column of a char position in the *current* text (valid for the last record only). The
+    /// hints follow their text, so nothing flashes while typing; the server's answer (asked for
+    /// after a pause) replaces them.
+    pub fn on_edits(&mut self, recs: &[crate::buffer::EditRec], first_line: usize, line_count: usize, end_of: &dyn Fn(usize) -> (usize, usize)) {
+        use crate::buffer::EditShape;
+        if recs.is_empty() {
+            return self.on_edit(first_line, line_count);
+        }
+        if !self.hints.is_empty() {
+            for (k, r) in recs.iter().enumerate() {
+                if let EditShape::Swap { a_lines, b_lines, .. } = r.shape {
+                    self.hints.drop_lines(r.line, a_lines + b_lines + 1);
+                    continue;
+                }
+                let end_col = (k + 1 == recs.len() && r.ins_lines > 0).then(|| end_of(r.at + r.inserted).1);
+                self.hints.apply_edit(r.line, r.col, r.removed, r.inserted, r.rem_lines, r.ins_lines, end_col);
+            }
+        }
+        self.lines = line_count;
+        self.due = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
+    }
+
+    pub fn mark_requested(&mut self) {
+        self.last_request = Some(std::time::Instant::now());
+    }
+
+    pub fn since_last_request(&self) -> Option<std::time::Duration> {
+        self.last_request.map(|t| t.elapsed())
     }
 
     /// Forget everything (feature switched off, file reloaded).
@@ -366,6 +523,13 @@ impl InlayState {
         let hi_ok = b + 1 >= line_count || vl + margin <= b;
         !(lo_ok && hi_ok && vf >= a && vl <= b)
     }
+
+    /// Is the viewport itself (not just its margin) outside the last covered range? Then the
+    /// request goes out at once instead of waiting for the scroll to settle.
+    pub fn viewport_uncovered(&self, vf: usize, vl: usize, line_count: usize) -> bool {
+        let Some((a, b)) = self.cover else { return true };
+        !((a == 0 || vf >= a) && (b + 1 >= line_count || vl <= b))
+    }
 }
 
 /// Convert an LSP UTF-16 column on `line_text` to a char column.
@@ -382,8 +546,8 @@ pub fn utf16_to_char_col(line_text: &str, u16col: usize) -> usize {
     col
 }
 
-/// Visual start column and width of each hint's label (paddings excluded: they stay as a gap)
-/// of a line, in the order of `hints`.
+/// Visual start column and width in cells of each hint's label pill (paddings excluded: they stay
+/// as a gap) of a line or row, in the order of `hints`.
 pub fn hint_cells(text: &str, hints: &[Hint], tab_w: usize) -> Vec<(usize, usize)> {
     let len = text.chars().count();
     let mut extra = 0;
@@ -392,24 +556,26 @@ pub fn hint_cells(text: &str, hints: &[Hint], tab_w: usize) -> Vec<(usize, usize
         .map(|h| {
             let start = visual_col(text, h.col.min(len), tab_w) + extra + h.pad_left as usize;
             extra += h.width();
-            (start, h.label.chars().count())
+            (start, h.label_width())
         })
         .collect()
 }
 
-/// Like `doc::window_pieces` but with the line's hints woven in: pieces `(text, color, flags)`
-/// for visual columns `[vc0, vc1)` (hint cells included), code colored by `spans`, hints in
-/// `hint_fg` flagged `hint_flags`. Same text as [`weave`] for the same window.
+/// Like `doc::window_pieces` but with the row's hints reserved: pieces `(text, color, flags)` for
+/// the row `line[b0..b1]` (`spans` hold byte offsets of the whole `line`) over visual columns
+/// `[vc0, vc1)` counted from the row start, hint cells included. Each hint's cells are blank (the
+/// labels are drawn separately, in a smaller font, over them). `hints` are the row's hints with
+/// columns relative to the row start (see [`row_hints`]), sorted by column.
 pub fn window_pieces_hinted(
     line: &str,
     spans: Option<&crate::highlight::Spans>,
+    b0: usize,
+    b1: usize,
     hints: &[Hint],
     vc0: usize,
     vc1: usize,
     tab_w: usize,
     fg: crate::theme::Rgba,
-    hint_fg: crate::theme::Rgba,
-    hint_flags: u8,
     out: &mut Vec<(String, crate::theme::Rgba, u8)>,
 ) {
     fn put(out: &mut Vec<(String, crate::theme::Rgba, u8)>, ch: char, c: crate::theme::Rgba, f: u8) {
@@ -418,27 +584,28 @@ pub fn window_pieces_hinted(
             _ => out.push((ch.to_string(), c, f)),
         }
     }
-    let len = line.chars().count();
+    let row = &line[b0..b1];
+    let len = row.chars().count();
     let mut pos = 0usize;
     let mut tvc = 0usize;
     let mut hi = 0;
     let mut si = 0;
-    let mut chars = line.char_indices();
+    let mut chars = row.char_indices();
     for i in 0..=len {
         while hi < hints.len() && hints[hi].col.min(len) <= i {
-            let h = &hints[hi];
-            hi += 1;
-            for ch in h.text().chars() {
+            for _ in 0..hints[hi].width() {
                 if pos >= vc0 && pos < vc1 {
-                    put(out, ch, hint_fg, hint_flags);
+                    put(out, ' ', fg, 0);
                 }
                 pos += 1;
             }
+            hi += 1;
         }
         if pos >= vc1 {
             break;
         }
         let Some((b, ch)) = chars.next() else { break };
+        let b = b + b0;
         let (color, flags) = match spans {
             Some(sp) => {
                 while si < sp.len() && sp[si].1 <= b {
@@ -489,15 +656,11 @@ mod tests {
     }
 
     fn h(line: usize, col: usize, label: &str, l: bool, r: bool) -> Hint {
-        Hint { line, col, label: label.into(), kind: HintKind::Type, pad_left: l, pad_right: r }
+        Hint { line, col, label: label.into(), kind: HintKind::Type, pad_left: l, pad_right: r, links: Vec::new(), edits: Vec::new() }
     }
 
     fn ident(_l: usize, c: usize) -> usize {
         c
-    }
-
-    fn joined(p: &[Piece]) -> String {
-        p.iter().map(|p| p.text()).collect()
     }
 
     #[test]
@@ -569,7 +732,7 @@ mod tests {
         assert_eq!(lh.width_cells(&h(0, 0, "ab", true, false)), 3);
         assert_eq!(lh.width_cells(&h(0, 0, "ab", true, true)), 4);
         assert_eq!(lh.width_cells(&h(0, 0, "日本", false, true)), 3);
-        assert_eq!(h(0, 0, "ab", true, true).text(), " ab ");
+        assert_eq!(lh.width_cells(&h(0, 0, ": number", true, true)), 9, "8 chars at 85% = 7 cells + paddings");
     }
 
     #[test]
@@ -618,7 +781,6 @@ mod tests {
         assert_eq!(lh.vcol(0, "ab", 99, 4, true), 3);
         assert_eq!(lh.col_from_vcol(0, "ab", 2, 4), (2, Some(0)));
         assert_eq!(lh.col_from_vcol(0, "ab", 3, 4), (2, None));
-        assert_eq!(joined(&weave("ab", lh.hints_on(0), 0, 100, 4)), "abT");
     }
 
     #[test]
@@ -718,111 +880,10 @@ mod tests {
     }
 
     #[test]
-    fn weave_basic() {
-        let hs = vec![h(0, 3, ": number", false, false), h(0, 9, "n:", false, true)];
-        let p = weave("let x = foo", &hs, 0, 100, 4);
-        assert_eq!(
-            p,
-            vec![
-                Piece::Code("let".into()),
-                Piece::Hint(": number".into(), HintKind::Type),
-                Piece::Code(" x = f".into()),
-                Piece::Hint("n: ".into(), HintKind::Type),
-                Piece::Code("oo".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn weave_tabs_like_window_pieces() {
-        let p = weave("a\tb", &[], 0, 100, 4);
-        assert_eq!(p, vec![Piece::Code("a   b".into())]);
-        // window starting inside the tab expansion
-        assert_eq!(weave("a\tb", &[], 2, 100, 4), vec![Piece::Code("  b".into())]);
-        assert_eq!(weave("a\tb", &[], 1, 3, 4), vec![Piece::Code("  ".into())]);
-        assert!(weave("a\tb", &[], 5, 9, 4).is_empty());
-        assert!(weave("abc", &[], 2, 2, 4).is_empty());
-    }
-
-    #[test]
-    fn weave_window_inside_hint() {
-        let hs = vec![h(0, 2, "abcdef", false, false)]; // cells 2..8
-        assert_eq!(weave("xyzw", &hs, 4, 6, 4), vec![Piece::Hint("cd".into(), HintKind::Type)]);
-        assert_eq!(
-            weave("xyzw", &hs, 5, 10, 4),
-            vec![Piece::Hint("def".into(), HintKind::Type), Piece::Code("zw".into())]
-        );
-        assert_eq!(
-            weave("xyzw", &hs, 0, 4, 4),
-            vec![Piece::Code("xy".into()), Piece::Hint("ab".into(), HintKind::Type)]
-        );
-    }
-
-    #[test]
-    fn weave_hint_with_tab_before_it() {
-        // hint cells do not shift tab stops: tab after the hint still uses text-only columns
-        let hs = vec![h(0, 1, "ZZ", false, false)];
-        assert_eq!(joined(&weave("a\tb\tc", &hs, 0, 100, 4)), "aZZ   b   c");
-    }
-
-    #[test]
-    fn weave_window_slices_equal_full_property() {
-        let mut r = Rng(0xDEADBEEF);
-        for _ in 0..300 {
-            let text = random_line(&mut r);
-            let len = text.chars().count();
-            let tab_w = [2, 4, 8][r.below(3)];
-            let lh = random_hints(&mut r, len);
-            let hs = lh.hints_on(0);
-            let full: Vec<char> = joined(&weave(&text, hs, 0, usize::MAX, tab_w)).chars().collect();
-            // total width = text vcol at end + all hint widths
-            assert_eq!(full.len(), lh.vcol(0, &text, len, tab_w, true));
-            for _ in 0..8 {
-                let a = r.below(full.len() + 3);
-                let b = a + r.below(full.len() + 3);
-                let got = joined(&weave(&text, hs, a, b, tab_w));
-                let want: String = full.iter().skip(a).take(b.saturating_sub(a)).collect();
-                assert_eq!(got, want, "text={text:?} window=[{a},{b}) hints={hs:?}");
-            }
-            // Adjacent windows tile the full output.
-            let mid = r.below(full.len() + 1);
-            let tiled = joined(&weave(&text, hs, 0, mid, tab_w)) + &joined(&weave(&text, hs, mid, usize::MAX, tab_w));
-            assert_eq!(tiled, full.iter().collect::<String>());
-        }
-    }
-
-    #[test]
-    fn weave_no_empty_or_adjacent_code_pieces() {
-        let mut r = Rng(777);
-        for _ in 0..200 {
-            let text = random_line(&mut r);
-            let lh = random_hints(&mut r, text.chars().count());
-            let p = weave(&text, lh.hints_on(0), r.below(4), 4 + r.below(30), 4);
-            for w in p.windows(2) {
-                assert!(!matches!((&w[0], &w[1]), (Piece::Code(_), Piece::Code(_))));
-            }
-            assert!(p.iter().all(|x| !x.text().is_empty()));
-        }
-    }
-
-    #[test]
-    fn weave_positions_agree_with_vcol() {
-        let hs = vec![h(0, 2, ": T", false, false)];
-        let lh = LineHints::from(hs);
-        let text = "ab\tcd";
-        let full: Vec<char> = joined(&weave(text, lh.hints_on(0), 0, 1000, 4)).chars().collect();
-        // char 'c' (col 3) must be drawn at vcol(col 3, include_at=true)
-        let v = lh.vcol(0, text, 3, 4, true);
-        assert_eq!(full[v], 'c');
-        let v = lh.vcol(0, text, 4, 4, true);
-        assert_eq!(full[v], 'd');
-    }
-
-    #[test]
     fn visible_range() {
-        assert_eq!(visible_range_request(100, 140, 1000), (80, 160));
-        assert_eq!(visible_range_request(5, 30, 1000), (0, 50));
-        assert_eq!(visible_range_request(990, 999, 1000), (970, 999));
+        assert_eq!(visible_range_request(100, 140, 1000), (60, 180));
+        assert_eq!(visible_range_request(5, 30, 1000), (0, 70));
+        assert_eq!(visible_range_request(990, 999, 1000), (950, 999));
         assert_eq!(visible_range_request(0, 10, 3), (0, 2));
         assert_eq!(visible_range_request(50, 60, 0), (0, 0));
         assert_eq!(visible_range_request(500, 10, 100), (99, 99));
@@ -830,10 +891,34 @@ mod tests {
 
     // ── editor integration ──
 
+    /// Reference for `window_pieces_hinted`: the row text with `width()` blanks per hint.
+    fn expected_cells(text: &str, hs: &[Hint], tab_w: usize) -> String {
+        let len = text.chars().count();
+        let mut out = String::new();
+        let (mut hi, mut tvc) = (0, 0);
+        let mut chars = text.chars();
+        for i in 0..=len {
+            while hi < hs.len() && hs[hi].col.min(len) <= i {
+                out.push_str(&" ".repeat(hs[hi].width()));
+                hi += 1;
+            }
+            let Some(ch) = chars.next() else { break };
+            if ch == '\t' {
+                let n = tab_w - tvc % tab_w;
+                out.push_str(&" ".repeat(n));
+                tvc += n;
+            } else {
+                out.push(ch);
+                tvc += 1;
+            }
+        }
+        out
+    }
+
     #[test]
-    fn hinted_pieces_match_weave_text_and_colors() {
+    fn hinted_pieces_reserve_blank_cells_and_slice_windows() {
         use crate::theme::Rgba;
-        let (fg, hg) = (Rgba(1, 1, 1, 255), Rgba(9, 9, 9, 255));
+        let fg = Rgba(1, 1, 1, 255);
         let kw = Rgba(5, 5, 5, 255);
         let mut r = Rng(0x9e3779b97f4a7c15);
         let alphabet: Vec<char> = "ab\tcé x".chars().collect();
@@ -841,35 +926,212 @@ mod tests {
             let n = r.below(12);
             let text: String = (0..n).map(|_| alphabet[r.below(alphabet.len())]).collect();
             let len = text.chars().count();
-            let mut hs: Vec<Hint> = (0..r.below(4)).map(|_| h(0, r.below(len + 3), "T", r.below(2) == 0, r.below(2) == 0)).collect();
+            let mut hs: Vec<Hint> = (0..r.below(4)).map(|_| h(0, r.below(len + 3), &"T".repeat(1 + r.below(9)), r.below(2) == 0, r.below(2) == 0)).collect();
             hs.sort_by_key(|x| x.col);
             let spans: crate::highlight::Spans = std::rc::Rc::new(vec![(0, text.len().min(2), kw, 0)]);
+            let full: Vec<char> = expected_cells(&text, &hs, 4).chars().collect();
             let (vc0, vc1) = (r.below(6), 6 + r.below(30));
-            let want = joined(&weave(&text, &hs, vc0, vc1, 4));
             let mut out = Vec::new();
-            window_pieces_hinted(&text, Some(&spans), &hs, vc0, vc1, 4, fg, hg, 2, &mut out);
+            window_pieces_hinted(&text, Some(&spans), 0, text.len(), &hs, vc0, vc1, 4, fg, &mut out);
             let got: String = out.iter().map(|p| p.0.as_str()).collect();
+            let want: String = full.iter().skip(vc0).take(vc1.saturating_sub(vc0)).collect();
             assert_eq!(got, want, "{text:?} {hs:?} {vc0}..{vc1}");
             assert!(out.iter().all(|p| !p.0.is_empty()));
-            // hint cells are drawn with the hint style
-            let hint_chars: usize = out.iter().filter(|p| p.1 == hg && p.2 == 2).map(|p| p.0.chars().count()).sum();
-            let weave_hint: usize = weave(&text, &hs, vc0, vc1, 4).iter().filter(|p| matches!(p, Piece::Hint(..))).map(|p| p.text().chars().count()).sum();
-            assert_eq!(hint_chars, weave_hint);
         }
     }
 
     #[test]
     fn hinted_pieces_color_code_by_span() {
         use crate::theme::Rgba;
-        let (fg, hg, kw) = (Rgba(1, 1, 1, 255), Rgba(9, 9, 9, 255), Rgba(5, 5, 5, 255));
+        let (fg, kw) = (Rgba(1, 1, 1, 255), Rgba(5, 5, 5, 255));
         let spans: crate::highlight::Spans = std::rc::Rc::new(vec![(0, 5, kw, 1)]); // "const"
-        let hs = vec![h(0, 7, ": number", false, false)];
+        let hs = vec![h(0, 7, ": number", false, false)]; // 8 chars -> 7 cells
         let mut out = Vec::new();
-        window_pieces_hinted("const x = 1", Some(&spans), &hs, 0, 100, 4, fg, hg, 2, &mut out);
+        window_pieces_hinted("const x = 1", Some(&spans), 0, 11, &hs, 0, 100, 4, fg, &mut out);
         assert_eq!(out[0], ("const".to_string(), kw, 1));
-        assert_eq!(out[1], (" x".to_string(), fg, 0));
-        assert_eq!(out[2], (": number".to_string(), hg, 2));
-        assert_eq!(out[3], (" = 1".to_string(), fg, 0));
+        // the hint's 7 blank cells share the code's style, so they merge with its neighbours
+        assert_eq!(out[1], (format!(" x{} = 1", " ".repeat(7)), fg, 0));
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn hinted_pieces_of_a_wrapped_row_use_row_relative_columns() {
+        use crate::theme::Rgba;
+        let (fg, kw) = (Rgba(1, 1, 1, 255), Rgba(5, 5, 5, 255));
+        // line "abcdefghij", row = "efghij" (bytes 4..10); keyword span covers "ef" (bytes 4..6)
+        let spans: crate::highlight::Spans = std::rc::Rc::new(vec![(4, 6, kw, 0)]);
+        let all = vec![h(0, 6, "XY", false, false), h(0, 2, "no", false, false)];
+        let mut sorted = all.clone();
+        sorted.sort_by_key(|x| x.col);
+        let rh = row_hints(&sorted, 10, 4, 10, true);
+        assert_eq!(rh.idx, vec![1]);
+        assert_eq!(rh.hints[0].col, 2);
+        let mut out = Vec::new();
+        window_pieces_hinted("abcdefghij", Some(&spans), 4, 10, &rh.hints, 0, 100, 4, fg, &mut out);
+        assert_eq!(out[0], ("ef".to_string(), kw, 0));
+        assert_eq!(out[1].0, "  ghij", "the hint at row column 2 reserves 2 cells right after \"ef\"");
+    }
+
+    #[test]
+    fn row_hints_split_a_line_between_rows() {
+        let mut hs = vec![h(0, 0, "a", false, false), h(0, 4, "b", false, false), h(0, 7, "c", false, false), h(0, 20, "d", false, false)];
+        hs.sort_by_key(|x| x.col);
+        // line of 10 chars wrapped as [0,4) [4,8) [8,10)
+        let r0 = row_hints(&hs, 10, 0, 4, false);
+        let r1 = row_hints(&hs, 10, 4, 8, false);
+        let r2 = row_hints(&hs, 10, 8, 10, true);
+        assert_eq!(r0.idx, vec![0]);
+        assert_eq!(r1.idx, vec![1, 2]);
+        assert_eq!(r1.hints.iter().map(|x| x.col).collect::<Vec<_>>(), vec![0, 3]);
+        assert_eq!(r2.idx, vec![3], "hint past the end belongs to the last row at the line end");
+        assert_eq!(r2.hints[0].col, 2);
+        // a hint exactly at a break belongs to the row that starts there, not the one that ends
+        assert!(!r0.idx.contains(&1));
+    }
+
+    #[test]
+    fn row_slices_agree_with_whole_line_geometry() {
+        // vcol/hit on a row slice equal the same computation on the row text alone.
+        let text = "abcdefghij";
+        let mut hs = vec![h(0, 6, ": number", true, false), h(0, 9, "x", false, true)];
+        hs.sort_by_key(|x| x.col);
+        let rh = row_hints(&hs, 10, 4, 10, true);
+        let row = &text[4..];
+        for col in 0..=6 {
+            let v = vcol_in(&rh.hints, row, col, 4, true);
+            assert_eq!(hit_in(&rh.hints, row, v, 4).0, col);
+        }
+        assert_eq!(vcol_in(&rh.hints, row, 2, 4, false), 2);
+        assert_eq!(vcol_in(&rh.hints, row, 2, 4, true), 2 + 1 + 7); // pad + 8 chars -> 7 cells
+        let (c, hit) = hit_in(&rh.hints, row, 4, 4);
+        assert_eq!((c, hit), (2, Some((0, 2))));
+    }
+
+    #[test]
+    fn label_width_is_scaled_and_rounded_up() {
+        assert_eq!((0..=8).map(label_cells).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4, 5, 6, 6, 7]);
+        assert_eq!(label_cells(20), 17);
+        assert_eq!(h(0, 0, ": number", true, true).width(), 7 + 2);
+        assert!(h(0, 0, "x: string[]", false, false).width() < "x: string[]".len());
+    }
+
+    #[test]
+    fn pixel_to_label_char_follows_the_smaller_font() {
+        // 8 chars at 0.85 -> 6.8 px/8px cells: 7 cells (56 px), text 54.4 px centred (0.8 px slack each side)
+        let hint = h(0, 0, ": number", true, false);
+        let cw = 8.0;
+        assert_eq!(hint.char_at_px(0.0, cw), None, "left padding");
+        assert_eq!(hint.char_at_px(8.0, cw), None, "still inside the slack");
+        assert_eq!(hint.char_at_px(8.0 + 0.8 + 1.0, cw), Some(0));
+        assert_eq!(hint.char_at_px(8.0 + 0.8 + 6.8 * 3.0 + 0.1, cw), Some(3));
+        assert_eq!(hint.char_at_px(8.0 + 56.0 - 0.1, cw), None, "past the last char (slack)");
+        assert_eq!(hint.char_at_px(8.0 + 0.8 + 6.8 * 7.5, cw), Some(7));
+    }
+
+    #[test]
+    fn parse_collects_links_and_edits() {
+        let v = json!([{
+            "position": {"line": 3, "character": 10},
+            "label": [{"value": ": "}, {"value": "User", "location": {"uri": "file:///a.ts", "range": {"start": {"line": 0, "character": 10}, "end": {"line": 0, "character": 14}}}}, {"value": "[]"}],
+            "kind": 1, "paddingLeft": true,
+            "textEdits": [{"range": {"start": {"line": 3, "character": 10}, "end": {"line": 3, "character": 10}}, "newText": ": User[]"}]
+        }]);
+        let hs = parse(&v, &mut ident);
+        let hint = &hs[0];
+        assert_eq!(hint.label, ": User[]");
+        assert_eq!(hint.links, vec![HintLink { start: 2, end: 6, uri: "file:///a.ts".into(), line: 0, character: 10 }]);
+        assert!(hint.link_at(1).is_none() && hint.link_at(2).is_some() && hint.link_at(5).is_some() && hint.link_at(6).is_none());
+        assert_eq!(hint.edits, vec![HintEdit { dl0: 0, c0: 0, dl1: 0, c1: 0, text: ": User[]".into() }]);
+        assert_eq!(hint.annotation_edits(), hint.edits);
+    }
+
+    #[test]
+    fn annotation_falls_back_to_the_label_for_type_hints_only() {
+        let t = h(0, 5, ": number", true, false);
+        assert_eq!(t.annotation_edits(), vec![HintEdit { dl0: 0, c0: 0, dl1: 0, c1: 0, text: ": number".into() }]);
+        let mut p = h(0, 5, "name:", false, true);
+        p.kind = HintKind::Parameter;
+        assert!(p.annotation_edits().is_empty());
+        let mut o = h(0, 5, "= 0", true, false);
+        o.kind = HintKind::Other;
+        assert!(o.annotation_edits().is_empty());
+        let mut r = h(0, 5, "-> x", true, false);
+        r.kind = HintKind::Type;
+        assert!(r.annotation_edits().is_empty(), "only ': T' labels are annotations");
+    }
+
+    #[test]
+    fn edit_follows_single_line_changes() {
+        let mk = || LineHints::from(vec![h(2, 3, "A", false, false), h(2, 8, "B", false, false), h(3, 1, "C", false, false)]);
+        // typing 2 chars at col 5 (between the hints): B moves, A stays
+        let mut lh = mk();
+        lh.apply_edit(2, 5, 0, 2, 0, 0, None);
+        assert_eq!(lh.hints_on(2).iter().map(|x| x.col).collect::<Vec<_>>(), vec![3, 10]);
+        // typing exactly at a hint position: the hint stays attached to the text after it
+        let mut lh = mk();
+        lh.apply_edit(2, 3, 0, 1, 0, 0, None);
+        assert_eq!(lh.hints_on(2).iter().map(|x| x.col).collect::<Vec<_>>(), vec![4, 9]);
+        // deleting 3 chars at col 4..7: neither hint touched, B shifts left
+        let mut lh = mk();
+        lh.apply_edit(2, 4, 3, 0, 0, 0, None);
+        assert_eq!(lh.hints_on(2).iter().map(|x| x.col).collect::<Vec<_>>(), vec![3, 5]);
+        // deleting across a hint removes it
+        let mut lh = mk();
+        lh.apply_edit(2, 2, 3, 0, 0, 0, None);
+        assert_eq!(lh.hints_on(2).iter().map(|x| (x.label.as_str(), x.col)).collect::<Vec<_>>(), vec![("B", 5)]);
+        // replacing text right before B ("xy" -> "abcd" at 6..8): B (at 8) follows its text
+        let mut lh = mk();
+        lh.apply_edit(2, 6, 2, 4, 0, 0, None);
+        assert_eq!(lh.hints_on(2).iter().map(|x| x.col).collect::<Vec<_>>(), vec![3, 10]);
+        assert_eq!(lh.hints_on(3).len(), 1, "other lines untouched");
+    }
+
+    #[test]
+    fn edit_follows_line_breaks() {
+        let mk = || LineHints::from(vec![h(1, 1, "pre", false, false), h(2, 3, "A", false, false), h(2, 8, "B", false, false), h(3, 2, "C", false, false)]);
+        // Enter + 4 spaces of indent at (2, 5): inserted 5 chars, ends at col 4 of line 3
+        let mut lh = mk();
+        lh.apply_edit(2, 5, 0, 5, 0, 1, Some(4));
+        assert_eq!(lh.hints_on(1).len(), 1);
+        assert_eq!(lh.hints_on(2).iter().map(|x| x.col).collect::<Vec<_>>(), vec![3]);
+        assert_eq!(lh.hints_on(3).iter().map(|x| (x.line, x.col)).collect::<Vec<_>>(), vec![(3, 7)], "B: 4 + (8 - 5)");
+        assert_eq!(lh.hints_on(4).iter().map(|x| (x.line, x.col)).collect::<Vec<_>>(), vec![(4, 2)], "later lines shift down");
+        // unknown end column: the tail's hints are dropped, never misplaced
+        let mut lh = mk();
+        lh.apply_edit(2, 5, 0, 5, 0, 1, None);
+        assert!(lh.hints_on(3).is_empty());
+        // joining lines 2 and 3 (delete the break at the end of line 2): later lines shift up, line 3's tail is gone
+        let mut lh = mk();
+        lh.apply_edit(2, 20, 1, 0, 1, 0, None);
+        assert_eq!(lh.hints_on(2).len(), 2);
+        assert!(lh.hints_on(3).is_empty());
+    }
+
+    #[test]
+    fn state_follows_recorded_edits() {
+        use crate::buffer::{EditRec, EditShape};
+        let rec = |line, col, removed, inserted| EditRec { at: 0, removed, inserted, line, col, rem_lines: 0, ins_lines: 0, tail_empty: false, shape: EditShape::Splice };
+        let mut st = InlayState::default();
+        st.apply(0, 10, vec![h(2, 3, ": T", false, false), h(2, 9, "x:", false, true), h(5, 0, "z", false, false)], 100);
+        st.on_edits(&[rec(2, 4, 0, 1)], 2, 100, &|_| (0, 0));
+        assert_eq!(st.hints.hints_on(2).iter().map(|x| x.col).collect::<Vec<_>>(), vec![3, 10], "no flash: hints kept and shifted");
+        assert!(st.due.is_some());
+        // a Swap drops the exchanged lines
+        let swap = EditRec { shape: EditShape::Swap { a_lines: 1, b_lines: 1, a_chars: 3, b_chars: 3, eol: 1 }, ..rec(4, 0, 0, 0) };
+        st.on_edits(&[swap], 4, 100, &|_| (0, 0));
+        assert!(st.hints.hints_on(5).is_empty());
+        assert_eq!(st.hints.hints_on(2).len(), 2);
+    }
+
+    #[test]
+    fn uncovered_viewport_is_urgent() {
+        let mut st = InlayState::default();
+        st.cover = Some((100, 200));
+        assert!(!st.viewport_uncovered(120, 160, 1000));
+        assert!(st.viewport_uncovered(300, 340, 1000));
+        assert!(st.viewport_uncovered(90, 130, 1000));
+        assert!(!st.viewport_uncovered(105, 195, 1000), "edge margin refreshes lazily, not urgently");
+        assert!(st.needs_request(105, 195, 1000));
     }
 
     #[test]

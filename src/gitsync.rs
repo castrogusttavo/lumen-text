@@ -39,6 +39,22 @@ pub fn info(top: &Path) -> SyncInfo {
     SyncInfo { upstream, ahead, behind }
 }
 
+/// Did the local branch rewrite history that is already on the upstream (amend, rebase, reset)?
+/// True when the upstream has commits HEAD lacks and every one of them was once checked out or
+/// committed here (it is in HEAD's reflog), i.e. they are the old versions of our own commits and
+/// not somebody else's work. Overwriting them (force with lease) is then what the user means;
+/// otherwise the right move is to pull first.
+pub fn rewrote_published(top: &Path) -> bool {
+    let Ok(theirs) = git_run(top, &["rev-list", "HEAD..@{u}"]) else { return false };
+    let theirs: Vec<&str> = theirs.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if theirs.is_empty() {
+        return false;
+    }
+    let Ok(log) = git_run(top, &["reflog", "--format=%H", "HEAD"]) else { return false };
+    let mine: std::collections::HashSet<&str> = log.lines().map(str::trim).collect();
+    theirs.iter().all(|h| mine.contains(h))
+}
+
 /// Remote a branch without upstream should be published to: `branch.<b>.pushRemote`,
 /// `remote.pushDefault`, `origin`, else the only / first remote. None = no remotes at all.
 pub fn default_remote(top: &Path, branch: &str) -> Option<String> {
@@ -66,11 +82,62 @@ pub fn commit_amend(top: &Path, msg: &str) -> Result<String, String> {
     git_run(top, &["commit", "--amend", "-m", msg.trim()]).map(|o| o.lines().next().unwrap_or("commit emendado").to_string())
 }
 
+/// How a pull integrates the remote commits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PullStrategy {
+    Merge,
+    Rebase,
+    FfOnly,
+}
+
+impl PullStrategy {
+    /// Name stored in `git_pull_strategy`.
+    pub fn name(self) -> &'static str {
+        match self {
+            PullStrategy::Merge => "merge",
+            PullStrategy::Rebase => "rebase",
+            PullStrategy::FfOnly => "ff-only",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<PullStrategy> {
+        Some(match s {
+            "merge" => PullStrategy::Merge,
+            "rebase" => PullStrategy::Rebase,
+            "ff-only" => PullStrategy::FfOnly,
+            _ => return None,
+        })
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PullStrategy::Merge => "Merge",
+            PullStrategy::Rebase => "Rebase",
+            PullStrategy::FfOnly => "Só avanço (ff-only)",
+        }
+    }
+
+    /// One line for the picker / tooltip.
+    pub fn hint(self) -> &'static str {
+        match self {
+            PullStrategy::Merge => "Cria um commit de merge quando os históricos divergiram",
+            PullStrategy::Rebase => "Reaplica os seus commits locais por cima dos do remoto",
+            PullStrategy::FfOnly => "Só avança quando não há divergência; senão, recusa",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
     Fetch,
+    /// Pull with whatever git is configured to do, else fast-forward only.
     Pull,
+    /// Pull with an explicit strategy.
+    PullWith(PullStrategy),
     Push,
+    /// `push --force-with-lease`: overwrites the remote branch only if it is still where the last
+    /// fetch left it.
+    ForcePush,
     /// First push of a branch: `push --set-upstream <remote> <branch>`.
     Publish { remote: String, branch: String },
 }
@@ -80,16 +147,17 @@ impl Op {
     pub fn label(&self) -> &'static str {
         match self {
             Op::Fetch => "Fetch",
-            Op::Pull => "Pull",
-            Op::Push | Op::Publish { .. } => "Push",
+            Op::Pull | Op::PullWith(_) => "Pull",
+            Op::Push | Op::ForcePush | Op::Publish { .. } => "Push",
         }
     }
 
     pub fn busy(&self) -> &'static str {
         match self {
             Op::Fetch => "Buscando",
-            Op::Pull => "Baixando",
+            Op::Pull | Op::PullWith(_) => "Baixando",
             Op::Push => "Enviando",
+            Op::ForcePush => "Forçando o envio",
             Op::Publish { .. } => "Publicando",
         }
     }
@@ -97,8 +165,9 @@ impl Op {
     fn done(&self) -> &'static str {
         match self {
             Op::Fetch => "Fetch concluído",
-            Op::Pull => "Pull concluído",
+            Op::Pull | Op::PullWith(_) => "Pull concluído",
             Op::Push => "Push concluído",
+            Op::ForcePush => "Push forçado concluído",
             Op::Publish { .. } => "Branch publicado",
         }
     }
@@ -112,7 +181,11 @@ pub fn args_for(op: &Op, pull_configured: bool) -> Vec<String> {
         Op::Fetch => s(&["fetch", "--progress"]),
         Op::Pull if pull_configured => s(&["pull", "--progress", "--no-edit"]),
         Op::Pull => s(&["pull", "--progress", "--no-edit", "--ff-only"]),
+        Op::PullWith(PullStrategy::Merge) => s(&["pull", "--progress", "--no-edit", "--no-rebase"]),
+        Op::PullWith(PullStrategy::Rebase) => s(&["pull", "--progress", "--no-edit", "--rebase"]),
+        Op::PullWith(PullStrategy::FfOnly) => s(&["pull", "--progress", "--no-edit", "--ff-only"]),
         Op::Push => s(&["push", "--progress"]),
+        Op::ForcePush => s(&["push", "--progress", "--force-with-lease"]),
         Op::Publish { remote, branch } => {
             let mut v = s(&["push", "--progress", "--set-upstream"]);
             v.extend([remote.clone(), branch.clone()]);
@@ -126,7 +199,11 @@ pub enum FailKind {
     /// The branch has no upstream: the panel offers to publish it.
     NoUpstream,
     Rejected,
+    /// `--force-with-lease` refused: the remote moved since the last fetch.
+    StaleLease,
     Diverged,
+    /// A merge / rebase stopped on conflicting files.
+    Conflict,
     Auth,
     Network,
     Dirty,
@@ -146,10 +223,15 @@ pub fn classify(lines: &[String]) -> Fail {
     let has = |s: &str| all.contains(s);
     let (kind, text) = if has("has no upstream branch") || has("no upstream configured") || has("There is no tracking information") {
         (FailKind::NoUpstream, "O branch ainda não tem upstream")
+    } else if has("stale info") {
+        (FailKind::StaleLease, "O remoto mudou desde o último fetch: faça fetch e confira o que chegou antes de forçar de novo")
     } else if has("[rejected]") || has("non-fast-forward") || has("fetch first") || has("[remote rejected]") && has("fetch first") {
-        (FailKind::Rejected, "Rejeitado: o remoto tem commits novos. Faça pull antes (se emendou um commit já publicado, só com force no terminal)")
+        (FailKind::Rejected, "Rejeitado: o remoto tem commits que você não tem (ou você reescreveu commits já publicados)")
+    } else if has("CONFLICT") || has("Automatic merge failed") || has("Could not apply") || has("could not apply") {
+        let how = if has("rebase") { "resolva os arquivos e rode git rebase --continue (ou --abort) no terminal" } else { "resolva os arquivos marcados e faça commit (ou git merge --abort)" };
+        return Fail { kind: FailKind::Conflict, text: format!("Conflitos ao integrar: {how}") };
     } else if has("Not possible to fast-forward") || has("divergent branches") || has("need to specify how to reconcile") {
-        (FailKind::Diverged, "Os branches divergiram: faça merge ou rebase no terminal (git pull --no-rebase / --rebase)")
+        (FailKind::Diverged, "Os branches divergiram: escolha como integrar (merge, rebase ou só avanço)")
     } else if has("Authentication failed") || has("could not read Username") || has("could not read Password") || has("Permission denied") || has("terminal prompts disabled") || has("Host key verification failed") {
         (FailKind::Auth, "Falha de autenticação: o editor não pergunta senhas; configure o ssh-agent ou um credential helper")
     } else if has("Could not resolve host") || has("Could not read from remote repository") || has("unable to access") || has("Connection timed out") || has("Network is unreachable") || has("Connection refused") {
@@ -170,8 +252,9 @@ pub fn classify(lines: &[String]) -> Fail {
 pub fn summarize(op: &Op, stdout: &str, stderr: &[String]) -> String {
     let err = stderr.join("\n");
     match op {
-        Op::Pull if stdout.contains("Already up to date") || stdout.contains("Already up-to-date") => "Já está atualizado".into(),
-        Op::Push if err.contains("Everything up-to-date") => "Nada para enviar".into(),
+        Op::Pull | Op::PullWith(_) if stdout.contains("Already up to date") || stdout.contains("Already up-to-date") => "Já está atualizado".into(),
+        Op::Push | Op::ForcePush if err.contains("Everything up-to-date") => "Nada para enviar".into(),
+        Op::PullWith(PullStrategy::Rebase) if stdout.contains("Successfully rebased") || err.contains("Successfully rebased") => "Pull concluído (rebase)".into(),
         Op::Publish { remote, branch } => format!("Branch publicado: {remote}/{branch}"),
         _ => op.done().to_string(),
     }
@@ -377,6 +460,93 @@ mod tests {
         let o = classify(&l("hint: foo\nfatal: something odd"));
         assert_eq!((o.kind, o.text.as_str()), (FailKind::Other, "something odd"));
         assert_eq!(split_progress("Receiving objects:  45% (9/20)\rReceiving objects: 100% (20/20)\nDone\n"), ["Receiving objects:  45% (9/20)", "Receiving objects: 100% (20/20)", "Done"]);
+    }
+
+    #[test]
+    fn strategies_have_names_and_arguments() {
+        for st in [PullStrategy::Merge, PullStrategy::Rebase, PullStrategy::FfOnly] {
+            assert_eq!(PullStrategy::from_name(st.name()), Some(st));
+            assert!(!st.label().is_empty() && !st.hint().is_empty());
+        }
+        assert_eq!(PullStrategy::from_name(""), None);
+        let has = |st, flag: &str| args_for(&Op::PullWith(st), true).iter().any(|a| a == flag);
+        assert!(has(PullStrategy::Merge, "--no-rebase") && !has(PullStrategy::Merge, "--ff-only"));
+        assert!(has(PullStrategy::Rebase, "--rebase"));
+        assert!(has(PullStrategy::FfOnly, "--ff-only"));
+        assert_eq!(args_for(&Op::ForcePush, false), ["push", "--progress", "--force-with-lease"]);
+        let l = |s: &str| s.lines().map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(classify(&l(" ! [rejected]        main -> main (stale info)\nerror: failed to push")).kind, FailKind::StaleLease);
+        assert_eq!(classify(&l("CONFLICT (content): Merge conflict in a.txt\nAutomatic merge failed; fix conflicts")).kind, FailKind::Conflict);
+        assert_eq!(classify(&l("error: could not apply 1234abc... local\nhint: Resolve all conflicts manually, then run \"git rebase --continue\"")).kind, FailKind::Conflict);
+    }
+
+    #[test]
+    fn force_with_lease_overwrites_an_amended_commit_but_not_news_from_the_remote() {
+        let base = tmp("force");
+        let (remote, a, b) = (base.join("remote.git"), base.join("a"), base.join("b"));
+        init(&remote, true);
+        init(&a, false);
+        git_run(&a, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+        commit_file(&a, "f.txt", "one\n", "first");
+        wait(spawn(&a, Op::Publish { remote: "origin".into(), branch: "main".into() }, noop())).unwrap();
+        // Amend a published commit: the plain push is rejected, the forced one goes through.
+        commit_amend(&a, "first, reworded").unwrap();
+        let e = wait(spawn(&a, Op::Push, noop())).unwrap_err();
+        assert_eq!(e.kind, FailKind::Rejected, "{e:?}");
+        assert_eq!((info(&a).ahead, info(&a).behind), (1, 1), "the amended commit and its old version");
+        assert!(rewrote_published(&a), "the commit only the remote has is our own old version");
+        assert_eq!(wait(spawn(&a, Op::ForcePush, noop())).unwrap(), "Push forçado concluído");
+        assert_eq!(git_run(&remote, &["log", "-1", "--format=%s", "main"]).unwrap().trim(), "first, reworded");
+        assert_eq!(wait(spawn(&a, Op::ForcePush, noop())).unwrap(), "Nada para enviar");
+
+        // Someone else pushes after our last fetch: the lease protects their commit.
+        assert!(Command::new("git").args(["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()]).status().unwrap().success());
+        for kv in [["user.email", "t@t"], ["user.name", "Beto"], ["commit.gpgsign", "false"]] {
+            git_run(&b, &["config", kv[0], kv[1]]).unwrap();
+        }
+        commit_file(&b, "g.txt", "theirs\n", "theirs");
+        git_run(&b, &["push", "-q"]).unwrap();
+        commit_amend(&a, "reworded again").unwrap();
+        let e = wait(spawn(&a, Op::ForcePush, noop())).unwrap_err();
+        assert_eq!(e.kind, FailKind::StaleLease, "{e:?}");
+        assert_eq!(git_run(&remote, &["log", "-1", "--format=%s", "main"]).unwrap().trim(), "theirs", "their commit survived");
+        // After fetching, their commit shows up on the remote side and is not ours: no force offered.
+        wait(spawn(&a, Op::Fetch, noop())).unwrap();
+        assert!(!rewrote_published(&a), "somebody else's commit is among the ones a force would drop");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn diverged_pull_works_with_each_strategy() {
+        // Merge and rebase integrate; ff-only refuses.
+        for (name, st) in [("merge", PullStrategy::Merge), ("rebase", PullStrategy::Rebase), ("ff", PullStrategy::FfOnly)] {
+            let base = tmp(&format!("strat-{name}"));
+            let (remote, a, b) = (base.join("remote.git"), base.join("a"), base.join("b"));
+            init(&remote, true);
+            init(&a, false);
+            git_run(&a, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+            commit_file(&a, "f.txt", "one\n", "first");
+            wait(spawn(&a, Op::Publish { remote: "origin".into(), branch: "main".into() }, noop())).unwrap();
+            assert!(Command::new("git").args(["clone", "-q", remote.to_str().unwrap(), b.to_str().unwrap()]).status().unwrap().success());
+            for kv in [["user.email", "t@t"], ["user.name", "Beto"], ["commit.gpgsign", "false"]] {
+                git_run(&b, &["config", kv[0], kv[1]]).unwrap();
+            }
+            commit_file(&b, "b.txt", "b\n", "remote");
+            git_run(&b, &["push", "-q"]).unwrap();
+            commit_file(&a, "a.txt", "a\n", "local");
+            let r = wait(spawn(&a, Op::PullWith(st), noop()));
+            match st {
+                PullStrategy::FfOnly => assert_eq!(r.unwrap_err().kind, FailKind::Diverged),
+                _ => {
+                    r.unwrap();
+                    assert!(a.join("b.txt").exists() && a.join("a.txt").exists());
+                    let merges = git_run(&a, &["rev-list", "--merges", "--count", "HEAD"]).unwrap();
+                    assert_eq!(merges.trim(), if st == PullStrategy::Merge { "1" } else { "0" }, "{name}");
+                    assert_eq!(info(&a), SyncInfo { upstream: Some("origin/main".into()), ahead: if st == PullStrategy::Merge { 2 } else { 1 }, behind: 0 });
+                }
+            }
+            std::fs::remove_dir_all(&base).ok();
+        }
     }
 
     #[test]

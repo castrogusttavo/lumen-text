@@ -10,6 +10,7 @@
 
 use crate::{
     app::App,
+    scroller::{self, Scroller, WHEEL_ROWS},
     ui::{Canvas, Rect, VBar, line_h},
 };
 use winit::event::MouseScrollDelta;
@@ -17,7 +18,7 @@ use winit::event::MouseScrollDelta;
 /// Width of the drag/hit strip at the right edge of a region.
 const TRACK_W: i32 = 11;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Reg {
     Output,
     Terminal,
@@ -31,6 +32,8 @@ pub enum Reg {
     Completion,
     Md,
     Diff,
+    /// The list of the open settings / shortcuts modal.
+    Modal,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -48,9 +51,23 @@ pub struct Region {
     pub int: bool,
 }
 
+/// Glide state of one animated region (see [`animated`]).
+pub struct Anim {
+    pub id: Reg,
+    pub sc: Scroller,
+    /// Fraction of a row the list is scrolled past its integer `scroll` (row regions only; pixel
+    /// regions keep the whole position in their owner).
+    pub frac: f64,
+    /// `total` the glide was started for: a different list (typing in a picker) restarts it.
+    total: f64,
+}
+
 #[derive(Default)]
 pub struct Regions {
     pub list: Vec<Region>,
+    /// The previous frame's `list`, kept while the new frame is being drawn (animation reads it).
+    pub prev: Vec<Region>,
+    pub anim: Vec<Anim>,
     /// Index in `list` where the open overlay started registering.
     pub modal_from: usize,
     /// Bar being dragged: (region, pointer offset inside the thumb).
@@ -59,7 +76,7 @@ pub struct Regions {
 
 impl Regions {
     pub fn clear(&mut self) {
-        self.list.clear();
+        self.prev = std::mem::take(&mut self.list);
         self.modal_from = 0;
     }
 
@@ -80,6 +97,13 @@ impl Regions {
     pub fn get(&self, id: Reg) -> Option<Region> {
         self.list.iter().rev().find(|r| r.id == id).copied()
     }
+}
+
+/// Regions whose wheel / touchpad scrolling glides through the shared [`Scroller`]: pickers, menus,
+/// completion, the Git panel, the diff and the Markdown preview. (The editor, sidebar and output
+/// panel have their own `Scroller`s in `doc_scroll` / `app_input`.)
+pub fn animated(id: Reg) -> bool {
+    matches!(id, Reg::Picker | Reg::TopMenu | Reg::Completion | Reg::GitChanges | Reg::GitLog | Reg::Md | Reg::Diff)
 }
 
 /// New position after the wheel: `px` pixels, clamped to `[0, total - visible]`.
@@ -117,6 +141,10 @@ impl App {
     pub fn regions_wheel(&mut self, delta: MouseScrollDelta) -> bool {
         let (x, y) = self.mouse;
         let Some(r) = self.regions.at(self.modal_open(), x, y) else { return false };
+        if animated(r.id) {
+            self.region_glide(r, delta);
+            return true;
+        }
         let px = match delta {
             MouseScrollDelta::LineDelta(_, dy) => -(dy as f64) * 3.0 * if r.unit > 1.5 { r.unit } else { line_h() as f64 },
             MouseScrollDelta::PixelDelta(p) => -p.y,
@@ -124,6 +152,135 @@ impl App {
         let v = wheel_pos(&r, px);
         self.set_region(r.id, v, (r.total - r.visible).max(0.0));
         true
+    }
+
+    /// The owner's current scroll position of an animated region (in the region's unit).
+    fn region_value(&self, id: Reg) -> Option<f64> {
+        use crate::app_overlay::Overlay;
+        match id {
+            Reg::Picker => match &self.overlay {
+                Overlay::Picker(p) => Some(p.scroll as f64),
+                _ => None,
+            },
+            Reg::TopMenu => match &self.overlay {
+                Overlay::TopMenu(m) => Some(m.scroll as f64),
+                _ => None,
+            },
+            Reg::Completion => self.completion.as_ref().map(|c| c.scroll as f64),
+            Reg::GitChanges => self.gitpanel.as_ref().map(|g| g.scroll[0]),
+            Reg::GitLog => self.gitpanel.as_ref().map(|g| g.scroll[1]),
+            Reg::Md => self.docs.get(self.active)?.md.as_ref().map(|m| m.scroll),
+            Reg::Diff => self.diff.as_ref().map(|d| d.scroll),
+            _ => None,
+        }
+    }
+
+    /// Index of the glide state for `id`, created on first use.
+    fn anim_slot(&mut self, id: Reg) -> usize {
+        if let Some(i) = self.regions.anim.iter().position(|a| a.id == id) {
+            return i;
+        }
+        self.regions.anim.push(Anim { id, sc: Scroller::new(0.01), frac: 0.0, total: -1.0 });
+        self.regions.anim.len() - 1
+    }
+
+    /// Bring the glide state in line with the owner (somebody else moved the list: keyboard
+    /// selection, a jump, a new list) and return its slot.
+    fn anim_sync(&mut self, r: &Region) -> usize {
+        let i = self.anim_slot(r.id);
+        let owner = self.region_value(r.id).unwrap_or(r.pos);
+        let a = &mut self.regions.anim[i];
+        a.sc.eps = (0.5 / r.unit.max(1.0)).min(0.05);
+        let moved = if r.int { a.sc.pos.floor() != owner } else { (a.sc.pos - owner).abs() > 1e-6 };
+        if moved || (r.int && a.total != r.total) {
+            a.sc.reset(owner);
+            a.frac = 0.0;
+        }
+        a.total = r.total;
+        i
+    }
+
+    /// Write the glide position to the owner (whole rows + remembered fraction for row regions).
+    fn anim_apply(&mut self, i: usize, r: &Region) {
+        let max = (r.total - r.visible).max(0.0);
+        let pos = self.regions.anim[i].sc.pos.clamp(0.0, max);
+        let (v, frac) = if r.int {
+            let f = pos.floor();
+            (f, pos - f)
+        } else {
+            (pos, 0.0)
+        };
+        self.regions.anim[i].frac = frac;
+        self.set_region(r.id, v, max);
+    }
+
+    /// Wheel / touchpad over an animated region: notches glide (with acceleration), pixel deltas
+    /// follow the fingers exactly.
+    fn region_glide(&mut self, r: Region, delta: MouseScrollDelta) {
+        let w = self.wheel_in(delta);
+        let d = if w.dy != 0.0 { w.dy } else if self.mods.shift_key() { w.dx } else { 0.0 };
+        if d == 0.0 {
+            return;
+        }
+        let max = (r.total - r.visible).max(0.0);
+        let unit = r.unit.max(1.0);
+        let i = self.anim_sync(&r);
+        let now = scroller::now();
+        let sc = &mut self.regions.anim[i].sc;
+        if w.pixels {
+            sc.pixels(d / unit, max, now);
+        } else {
+            // Region units are rows when `unit` is a row height, pixels otherwise.
+            let step = if r.unit > 1.5 { WHEEL_ROWS } else { WHEEL_ROWS * line_h() as f64 };
+            sc.wheel(d, step, max, now);
+        }
+        self.anim_apply(i, &r);
+    }
+
+    /// Fingers lifted over an animated region: let it coast.
+    pub fn regions_fling(&mut self) -> bool {
+        let (x, y) = self.mouse;
+        let Some(r) = self.regions.at(self.modal_open(), x, y).filter(|r| animated(r.id)) else { return false };
+        let i = self.anim_sync(&r);
+        self.regions.anim[i].sc.fling(scroller::now());
+        true
+    }
+
+    /// Per-frame step of every gliding region (called while a frame starts, before drawing).
+    /// True while any is still moving.
+    pub fn regions_frame(&mut self, dt: f64) -> bool {
+        let mut busy = false;
+        let mut i = 0;
+        while i < self.regions.anim.len() {
+            let id = self.regions.anim[i].id;
+            let Some(r) = self.regions.prev.iter().rev().find(|r| r.id == id).copied() else {
+                // The region is not on screen any more: forget its glide.
+                self.regions.anim.remove(i);
+                continue;
+            };
+            let i2 = self.anim_sync(&r);
+            let max = (r.total - r.visible).max(0.0);
+            let before = self.regions.anim[i2].sc.pos;
+            if self.regions.anim[i2].sc.step(dt, max) {
+                busy = true;
+            }
+            if self.regions.anim[i2].sc.pos != before {
+                self.anim_apply(i2, &r);
+            }
+            i += 1;
+        }
+        busy
+    }
+
+    /// One-line description of the gliding regions for the headless `state` token.
+    pub fn regions_state(&self) -> String {
+        self.regions.anim.iter().map(|a| format!("{:?}={:.2}(frac {:.2}{})", a.id, a.sc.pos, a.frac, if a.sc.settled() { "" } else { ",moving" })).collect::<Vec<_>>().join(" ")
+    }
+
+    /// Pixel offset of the fractional row an animated row-region is scrolled past (draw the rows
+    /// that much higher and one more row at the bottom). 0 when it is not mid-glide.
+    pub fn region_off(&self, id: Reg, row_px: i32) -> i32 {
+        self.regions.anim.iter().find(|a| a.id == id).map_or(0, |a| (a.frac * row_px as f64).round() as i32)
     }
 
     /// Press on a bar: starts a drag (jumping there when the track, not the thumb, was hit).
@@ -220,6 +377,11 @@ impl App {
             Reg::Diff => {
                 if let Some(dv) = self.diff.as_mut() {
                     dv.scroll = v;
+                }
+            }
+            Reg::Modal => {
+                if let crate::app_overlay::Overlay::Settings(m) = &mut self.overlay {
+                    m.set_scroll(v);
                 }
             }
         }

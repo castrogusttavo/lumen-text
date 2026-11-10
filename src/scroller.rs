@@ -74,6 +74,15 @@ impl Scroller {
         }
     }
 
+    /// Forget everything (animation, fling, pending travel) and sit at `pos`.
+    pub fn reset(&mut self, pos: f64) {
+        self.pos = pos;
+        self.target = pos;
+        self.vel = 0.0;
+        self.glide = None;
+        self.pvel = 0.0;
+    }
+
     /// Like `adopt` for containers that also keep the destination (`Doc::target`).
     pub fn adopt_both(&mut self, pos: f64, target: f64) {
         if (pos - self.pos).abs() > 1e-6 || (target - self.target).abs() > 1e-6 {

@@ -20,6 +20,7 @@ use crate::{
     hover_md::{self as md, Blk, JsTag, Kind, ListItem, Span},
     lsp::{self, DefKind, Pending},
     theme::{Rgba, Theme},
+    scroller::{self, Scroller},
     ui::{Canvas, Rect, TextCtx, VBar, font_size, line_h},
 };
 use serde_json::{Value, json};
@@ -140,6 +141,8 @@ pub struct Seg {
     pub text: String,
     pub color: Rgba,
     pub bold: bool,
+    /// Synthetic slant (the UI font has no italic face).
+    pub italic: bool,
     pub mono: bool,
     pub strike: bool,
     pub link: Option<usize>,
@@ -202,7 +205,12 @@ pub struct HoverTip {
     blocks_ver: u64,
     laid: Option<(LayKey, Laid)>,
     pub scroll: f64,
-    pub sel: Option<(usize, usize)>,
+    /// Glide of the wheel / touchpad over `scroll`.
+    scr: Scroller,
+    /// Selected text: (anchor, head) as (line, char) points, in any order.
+    pub sel: Option<(SelPt, SelPt)>,
+    /// Per-char geometry of the lines the selection touches (valid for the layout key).
+    cells: (Option<LayKey>, std::collections::HashMap<usize, Vec<CharBox>>),
     pub side_below: Option<bool>,
     // geometry of the last draw (screen coordinates)
     pub rect: Rect,
@@ -214,13 +222,24 @@ pub struct HoverTip {
 
 type LayKey = (i32, u32, u32, u32, u64);
 
+/// A point of the text selection: (index into `Laid::lines`, char boundary inside that line).
+pub type SelPt = (usize, usize);
+
+/// One visible char of a laid-out line with its horizontal extent (relative to the content origin).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CharBox {
+    pub ch: char,
+    pub x0: i32,
+    pub x1: i32,
+}
+
 #[derive(Default)]
 pub struct HoverCtl {
     pub serial: u64,
     pub hide_at: Option<Instant>,
     cache: Vec<HoverTip>,
     drag_bar: Option<f64>,
-    drag_sel: Option<usize>,
+    drag_sel: Option<SelPt>,
     hot: Option<Hit>,
 }
 
@@ -260,7 +279,9 @@ impl HoverTip {
             blocks_ver: 0,
             laid: None,
             scroll: 0.0,
+            scr: Scroller::new(0.3),
             sel: None,
+            cells: (None, Default::default()),
             side_below: None,
             rect: Rect::default(),
             view: Rect::default(),
@@ -439,7 +460,11 @@ impl HoverTip {
             out.push(Blk::Label(if ex.len() > 1 { "Exemplos".into() } else { "Exemplo".to_string() }));
             for t in ex {
                 if !t.body.is_empty() {
-                    out.push(Blk::Para(t.body.clone()));
+                    // The title of an example (`@example Basic usage`) reads as a caption: italic.
+                    out.push(Blk::Para(t.body.iter().cloned().map(|mut s| {
+                        s.italic = true;
+                        s
+                    }).collect()));
                 }
                 out.extend(t.extra.iter().cloned());
             }
@@ -690,6 +715,7 @@ fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i32, color: 
     if rows.last().is_some_and(|r| r.is_empty()) && rows.len() > 1 {
         rows.pop();
     }
+    let slant = env.tx.italic_works();
     for row in rows {
         let y = b.y;
         let mut segs: Vec<Seg> = Vec::new();
@@ -707,7 +733,7 @@ fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i32, color: 
                 let wd = row[i].w;
                 let li = lk.as_deref().map(|u| b.url(u));
                 b.decos.push(Deco { x, y: y + 1, w: wd, h: PROSE_LH - 2, kind: DecoKind::Fill(env.pal.chip_bg, 3) });
-                segs.push(Seg { x: x + 3, w: wd - 6, text: t.text.clone(), color: if li.is_some() { env.pal.link } else { env.pal.fg }, bold: false, mono: true, strike: t.strike, link: li, size: None });
+                segs.push(Seg { x: x + 3, w: wd - 6, text: t.text.clone(), color: if li.is_some() { env.pal.link } else { env.pal.fg }, bold: false, italic: false, mono: true, strike: t.strike, link: li, size: None });
                 if let Some(li) = li {
                     b.links.push((Rect::new(x, y, wd, PROSE_LH), li));
                 }
@@ -733,13 +759,14 @@ fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i32, color: 
             let li = lk.as_deref().map(|u| b.url(u));
             let c = if li.is_some() {
                 env.pal.link
-            } else if t.italic {
+            } else if t.italic && !slant {
+                // Fallback only: the slant did not render, so italics are shown a little lighter.
                 color.with_alpha((color.3 as u32 * 220 / 255) as u8)
             } else {
                 color
             };
             plain.push_str(&text);
-            segs.push(Seg { x, w: wd, text, color: c, bold: t.bold, mono: false, strike: t.strike, link: li, size: None });
+            segs.push(Seg { x, w: wd, text, color: c, bold: t.bold, italic: t.italic && slant, mono: false, strike: t.strike, link: li, size: None });
             if let Some(li) = li {
                 b.links.push((Rect::new(x, y, wd, PROSE_LH), li));
             }
@@ -858,7 +885,7 @@ fn label(env: &mut Env, b: &mut Builder, text: &str, x0: i32) {
     };
     let wd = env.tx.ui_width_sized(&up, true, 10.5);
     b.right = b.right.max(x0 + wd);
-    b.lines.push(LLine { y: b.y, h: LABEL_LH, segs: vec![Seg { x: x0, w: wd, text: up.clone(), color: env.pal.dim, bold: true, mono: false, strike: false, link: None, size: Some(10.5) }], x0: 0, runs: vec![], plain: text.to_string() });
+    b.lines.push(LLine { y: b.y, h: LABEL_LH, segs: vec![Seg { x: x0, w: wd, text: up.clone(), color: env.pal.dim, bold: true, italic: false, mono: false, strike: false, link: None, size: Some(10.5) }], x0: 0, runs: vec![], plain: text.to_string() });
     b.y += LABEL_LH;
 }
 
@@ -872,7 +899,7 @@ fn block(env: &mut Env, b: &mut Builder, blk: &Blk, x0: i32, w: i32) {
                 let ind = x0 + *depth as i32 * 14;
                 let y = b.y;
                 let mw = env.tx.ui_width(marker, false);
-                b.lines.push(LLine { y, h: PROSE_LH, segs: vec![Seg { x: ind + 12 - mw, w: mw, text: marker.clone(), color: env.pal.dim, bold: false, mono: false, strike: false, link: None, size: None }], x0: 0, runs: vec![], plain: String::new() });
+                b.lines.push(LLine { y, h: PROSE_LH, segs: vec![Seg { x: ind + 12 - mw, w: mw, text: marker.clone(), color: env.pal.dim, bold: false, italic: false, mono: false, strike: false, link: None, size: None }], x0: 0, runs: vec![], plain: String::new() });
                 let n0 = b.lines.len();
                 flow(env, b, spans, ind + 16, w - ind - 16 + x0, fg, false);
                 // the marker line shares its row with the first text line
@@ -948,7 +975,7 @@ fn block(env: &mut Env, b: &mut Builder, blk: &Blk, x0: i32, w: i32) {
             let n0 = b.lines.len();
             flow(env, b, val, x0 + kw, w - x0 - kw, fg, false);
             let kwid = env.tx.ui_width_sized(key, true, 11.5);
-            let seg = Seg { x: x0, w: kwid, text: key.clone(), color: env.pal.dim, bold: true, mono: false, strike: false, link: None, size: Some(11.5) };
+            let seg = Seg { x: x0, w: kwid, text: key.clone(), color: env.pal.dim, bold: true, italic: false, mono: false, strike: false, link: None, size: Some(11.5) };
             if b.lines.len() > n0 {
                 b.lines[n0].segs.insert(0, seg);
                 b.lines[n0].plain = format!("{key}: {}", b.lines[n0].plain);
@@ -1623,10 +1650,10 @@ impl App {
             } else if y > bot {
                 h.scroll += 14.0;
             }
-            if let Some(k) = line_at(h, x, y.clamp(top, bot - 1.0)) {
-                h.sel = Some((anchor.min(k), anchor.max(k)));
-            }
             clamp_scroll(h);
+            if let Some(head) = pos_at(h, &mut self.tx, x, y.clamp(top, bot - 1.0)) {
+                h.sel = (head != anchor).then_some((anchor, head));
+            }
             return true;
         }
         if !h.rect.contains(x, y) || self.dragging {
@@ -1678,9 +1705,10 @@ impl App {
             return true;
         }
         if h.view.contains(x, y) {
-            if let Some(k) = line_at(h, x, y) {
-                h.sel = Some((k, k));
-                self.hv.drag_sel = Some(k);
+            // A press puts the caret between two chars; dragging extends the selection from there.
+            h.sel = None;
+            if let Some(pt) = pos_at(h, &mut self.tx, x, y) {
+                self.hv.drag_sel = Some(pt);
             }
         }
         true
@@ -1693,34 +1721,58 @@ impl App {
 
     pub fn hover_wheel(&mut self, delta: MouseScrollDelta) -> bool {
         let (x, y) = self.mouse;
+        let w = self.wheel_in(delta);
         let Some(h) = &mut self.hover else { return false };
         if !h.rect.contains(x, y) {
             return false;
         }
-        let px = match delta {
-            MouseScrollDelta::LineDelta(_, dy) => -(dy as f64) * 3.0 * PROSE_LH as f64,
-            MouseScrollDelta::PixelDelta(p) => -p.y,
-        };
-        h.scroll += px;
+        let d = if w.dy != 0.0 { w.dy } else { w.dx };
         clamp_scroll(h);
+        let max = max_scroll(h);
+        h.scr.adopt(h.scroll);
+        if w.pixels {
+            h.scr.pixels(d, max, scroller::now());
+        } else {
+            h.scr.wheel(d, 3.0 * PROSE_LH as f64, max, scroller::now());
+        }
+        h.scroll = h.scr.pos;
+        true
+    }
+
+    /// Per-frame glide of the wheel scroll. True while the popup is still moving.
+    pub fn hover_frame(&mut self, dt: f64) -> bool {
+        let Some(h) = &mut self.hover else { return false };
+        let max = max_scroll(h);
+        h.scr.adopt(h.scroll);
+        let moving = h.scr.step(dt, max);
+        h.scroll = h.scr.pos;
+        moving
+    }
+
+    /// Touchpad fingers lifted over the popup: coast.
+    pub fn hover_wheel_end(&mut self, now: f64) -> bool {
+        let (x, y) = self.mouse;
+        let Some(h) = &mut self.hover else { return false };
+        if !h.rect.contains(x, y) {
+            return false;
+        }
+        h.scr.adopt(h.scroll);
+        h.scr.fling(now);
         true
     }
 
     /// Esc closes; Ctrl+C copies the selected lines. Returns true when the key was used.
     pub fn hover_key(&mut self, ev: &KeyIn) -> bool {
-        let Some(h) = &self.hover else { return false };
+        let ctrl = self.mods.control_key();
+        let Some(h) = &mut self.hover else { return false };
         match &ev.key {
             Key::Named(NamedKey::Escape) => {
                 self.hover = None;
                 self.request_redraw();
                 true
             }
-            Key::Character(c) if self.mods.control_key() && c.eq_ignore_ascii_case("c") => {
-                let (Some((a, b)), Some((_, l))) = (h.sel, h.laid.as_ref()) else { return false };
-                if l.lines.is_empty() {
-                    return false;
-                }
-                let text = l.lines[a.min(l.lines.len() - 1)..=b.min(l.lines.len() - 1)].iter().map(|x| x.plain.as_str()).collect::<Vec<_>>().join("\n");
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("c") => {
+                let Some(text) = sel_text(h, &mut self.tx) else { return false };
                 self.clip.set(&text);
                 self.say("copiado");
                 true
@@ -1854,12 +1906,11 @@ impl App {
         let clip = Rect::new(rect.x + 1, view.y, rect.w - 2, view.h);
         let (vt, vb) = (h.scroll.round() as i32, h.scroll.round() as i32 + view.h);
 
-        // selection
-        if let Some((a, b)) = h.sel {
-            for l in laid.lines.iter().skip(a).take(b + 1 - a) {
-                cv.fill_clip(Rect::new(view.x - 4, oy + l.y, view.w + 8, l.h), chrome.accent.with_alpha(0x40), clip);
-            }
+        // selection (per character)
+        for r in sel_rects(h, &mut self.tx) {
+            cv.fill_clip(Rect::new(view.x + r.x, oy + r.y, r.w, r.h), chrome.accent.with_alpha(0x40), clip);
         }
+        let laid = &h.laid.as_ref().unwrap().1;
         for d in &laid.decos {
             if d.y + d.h < vt || d.y > vb {
                 continue;
@@ -1887,7 +1938,9 @@ impl App {
                     let ly = y + (l.h - line_h() as i32) / 2;
                     self.tx.draw_line(cv, x, ly, &s.text, s.color, clip);
                 } else if let Some(sz) = s.size {
-                    self.tx.draw_ui_sized(cv, x, y + 2, &s.text, s.color, clip, s.bold, sz);
+                    self.tx.draw_ui_sized_i(cv, x, y + 2, &s.text, s.color, clip, s.bold, s.italic, sz);
+                } else if s.italic {
+                    self.tx.draw_ui_italic(cv, x, y, &s.text, s.color, clip, s.bold);
                 } else {
                     self.tx.draw_ui(cv, x, y, &s.text, s.color, clip, s.bold);
                 }
@@ -1959,9 +2012,13 @@ pub fn footer_rows(widths: &[i32], gap: i32, w: i32) -> Vec<Vec<usize>> {
     rows
 }
 
-fn clamp_scroll(h: &mut HoverTip) {
+fn max_scroll(h: &HoverTip) -> f64 {
     let total = h.laid.as_ref().map_or(0, |l| l.1.h) as f64;
-    h.scroll = h.scroll.clamp(0.0, (total - h.view.h as f64).max(0.0));
+    (total - h.view.h as f64).max(0.0)
+}
+
+fn clamp_scroll(h: &mut HoverTip) {
+    h.scroll = h.scroll.clamp(0.0, max_scroll(h));
 }
 
 /// Index of the laid-out line at screen (x, y).
@@ -1970,6 +2027,112 @@ fn line_at(h: &HoverTip, _x: f64, y: f64) -> Option<usize> {
     let cy = (y - h.view.y as f64 + h.scroll) as i32;
     let i = l.lines.partition_point(|ln| ln.y + ln.h <= cy);
     (!l.lines.is_empty()).then(|| i.min(l.lines.len() - 1))
+}
+
+/// Every visible char of a line with its x extent: code runs on the monospace grid, text segments
+/// measured glyph by glyph. A gap between two segments counts as one space.
+pub fn line_boxes(tx: &mut TextCtx, l: &LLine) -> Vec<CharBox> {
+    let mut out: Vec<CharBox> = Vec::new();
+    let mut i = 0usize;
+    for (t, ..) in &l.runs {
+        for ch in t.chars().filter(|c| *c != '\n') {
+            out.push(CharBox { ch, x0: l.x0 + tx.cells(i), x1: l.x0 + tx.cells(i + 1) });
+            i += 1;
+        }
+    }
+    for seg in &l.segs {
+        if seg.text.is_empty() {
+            continue;
+        }
+        if let Some(last) = out.last().copied() {
+            if seg.x > last.x1 + 1 && !last.ch.is_whitespace() {
+                out.push(CharBox { ch: ' ', x0: last.x1, x1: seg.x });
+            }
+        }
+        if seg.mono {
+            for (k, ch) in seg.text.chars().enumerate() {
+                out.push(CharBox { ch, x0: seg.x + tx.cells(k), x1: seg.x + tx.cells(k + 1) });
+            }
+        } else {
+            let xs = tx.ui_char_xs(&seg.text, seg.bold, seg.size);
+            for (k, ch) in seg.text.chars().enumerate() {
+                out.push(CharBox { ch, x0: seg.x + xs[k].round() as i32, x1: seg.x + xs[k + 1].round() as i32 });
+            }
+        }
+    }
+    out
+}
+
+/// The cached char boxes of line `line` of the current layout.
+fn boxes_of<'a>(h: &'a mut HoverTip, tx: &mut TextCtx, line: usize) -> &'a [CharBox] {
+    let key = h.laid.as_ref().map(|l| l.0);
+    if h.cells.0 != key || key.is_none() {
+        h.cells = (key, Default::default());
+    }
+    if !h.cells.1.contains_key(&line) {
+        let b = h.laid.as_ref().and_then(|l| l.1.lines.get(line)).map(|l| line_boxes(tx, l)).unwrap_or_default();
+        h.cells.1.insert(line, b);
+    }
+    &h.cells.1[&line]
+}
+
+/// Char boundary of `boxes` nearest to content-relative x (0 = before the first char).
+pub fn col_at(boxes: &[CharBox], x: i32) -> usize {
+    boxes.iter().position(|b| x < (b.x0 + b.x1 + 1) / 2).unwrap_or(boxes.len())
+}
+
+/// The selection point under screen (x, y): nearest line, nearest char boundary.
+fn pos_at(h: &mut HoverTip, tx: &mut TextCtx, x: f64, y: f64) -> Option<SelPt> {
+    let line = line_at(h, x, y)?;
+    let rel = (x - h.view.x as f64).round() as i32;
+    Some((line, col_at(boxes_of(h, tx, line), rel)))
+}
+
+fn ordered(a: SelPt, b: SelPt) -> (SelPt, SelPt) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Highlight rectangles of the selection, relative to the content origin (x) and the top of the
+/// laid-out content (y).
+fn sel_rects(h: &mut HoverTip, tx: &mut TextCtx) -> Vec<Rect> {
+    let Some((a, b)) = h.sel else { return vec![] };
+    let ((l0, c0), (l1, c1)) = ordered(a, b);
+    let n = h.laid.as_ref().map_or(0, |l| l.1.lines.len());
+    let mut out = Vec::new();
+    for line in l0..=l1.min(n.saturating_sub(1)) {
+        let (y, lh) = match h.laid.as_ref().and_then(|l| l.1.lines.get(line)) {
+            Some(l) => (l.y, l.h),
+            None => break,
+        };
+        let boxes = boxes_of(h, tx, line);
+        let from = if line == l0 { c0 } else { 0 }.min(boxes.len());
+        let to = if line == l1 { c1 } else { boxes.len() }.min(boxes.len());
+        if from < to {
+            // A line that continues into the next one is highlighted a little past its end.
+            let tail = if line < l1 { 4 } else { 0 };
+            out.push(Rect::new(boxes[from].x0, y, boxes[to - 1].x1 - boxes[from].x0 + tail, lh));
+        }
+    }
+    out
+}
+
+/// The selected text, exactly the highlighted chars, lines joined with `\n`.
+pub fn sel_text(h: &mut HoverTip, tx: &mut TextCtx) -> Option<String> {
+    let (a, b) = h.sel?;
+    let ((l0, c0), (l1, c1)) = ordered(a, b);
+    let n = h.laid.as_ref()?.1.lines.len();
+    if n == 0 {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for line in l0..=l1.min(n - 1) {
+        let boxes = boxes_of(h, tx, line);
+        let from = if line == l0 { c0 } else { 0 }.min(boxes.len());
+        let to = if line == l1 { c1 } else { boxes.len() }.min(boxes.len());
+        parts.push(boxes[from.min(to)..to].iter().map(|b| b.ch).collect());
+    }
+    let text = parts.join("\n");
+    (!text.is_empty()).then_some(text)
 }
 
 fn open_external(url: &str) {
@@ -2139,5 +2302,84 @@ mod tests {
         t.scroll = -5.0;
         clamp_scroll(&mut t);
         assert_eq!(t.scroll, 0.0);
+    }
+
+    // ───────────── per-character selection ─────────────
+
+    fn tip_with(blocks: &[Blk], tx: &mut TextCtx) -> HoverTip {
+        let th = dark();
+        let mut hl = |_: &str, _: &str| None;
+        let l = {
+            let mut env = Env::new(tx, Pal::new(&th), &mut hl);
+            layout(blocks, 400, &mut env)
+        };
+        let mut t = HoverTip::new("", (0, 0), (0, 0));
+        t.laid = Some(((7, 7, 7, 7, 7), l));
+        t.view = Rect::new(10, 10, 400, 300);
+        t
+    }
+
+    #[test]
+    fn selection_is_per_character_and_copies_exactly() {
+        let mut tx = TextCtx::new(None);
+        let blocks = vec![Blk::Para(vec![Span::plain("hello wonderful world")]), Blk::Code { text: "const a = 1;\nconst b = 22;".into(), lang: "ts".into() }];
+        let mut t = tip_with(&blocks, &mut tx);
+        let boxes = boxes_of(&mut t, &mut tx, 0).to_vec();
+        assert_eq!(boxes.iter().map(|b| b.ch).collect::<String>(), "hello wonderful world");
+        assert!(boxes.windows(2).all(|w| w[0].x0 < w[1].x0 && w[0].x1 <= w[1].x0 + 1), "chars advance left to right: {boxes:?}");
+        // inside one line
+        t.sel = Some(((0, 6), (0, 15)));
+        assert_eq!(sel_text(&mut t, &mut tx).as_deref(), Some("wonderful"));
+        t.sel = Some(((0, 15), (0, 6)));
+        assert_eq!(sel_text(&mut t, &mut tx).as_deref(), Some("wonderful"), "order does not matter");
+        let rects = sel_rects(&mut t, &mut tx);
+        assert_eq!(rects.len(), 1);
+        assert_eq!((rects[0].x, rects[0].right()), (boxes[6].x0, boxes[14].x1));
+        // across lines: tail of the prose, a whole code line, head of the next
+        t.sel = Some(((0, 16), (2, 5)));
+        assert_eq!(sel_text(&mut t, &mut tx).as_deref(), Some("world\nconst a = 1;\nconst"));
+        assert_eq!(sel_rects(&mut t, &mut tx).len(), 3);
+        // an empty selection copies nothing
+        t.sel = Some(((1, 3), (1, 3)));
+        assert_eq!(sel_text(&mut t, &mut tx), None);
+        t.sel = None;
+        assert_eq!(sel_text(&mut t, &mut tx), None);
+    }
+
+    #[test]
+    fn pointer_maps_to_the_nearest_char_boundary() {
+        let mut tx = TextCtx::new(None);
+        let mut t = tip_with(&[Blk::Para(vec![Span::plain("abcdef ghij")])], &mut tx);
+        let b = boxes_of(&mut t, &mut tx, 0).to_vec();
+        let (vx, vy) = (t.view.x as f64, t.view.y as f64 + 3.0);
+        // just inside the left half of char 3 -> boundary 3; right half -> boundary 4
+        assert_eq!(pos_at(&mut t, &mut tx, vx + b[3].x0 as f64 + 0.5, vy), Some((0, 3)));
+        assert_eq!(pos_at(&mut t, &mut tx, vx + b[3].x1 as f64 - 0.5, vy), Some((0, 4)));
+        // before the text / past the end / far below
+        assert_eq!(pos_at(&mut t, &mut tx, vx - 30.0, vy), Some((0, 0)));
+        assert_eq!(pos_at(&mut t, &mut tx, vx + 390.0, vy), Some((0, b.len())));
+        assert_eq!(pos_at(&mut t, &mut tx, vx + 5.0, vy + 250.0).map(|p| p.0), Some(0));
+    }
+
+    #[test]
+    fn code_lines_select_on_the_monospace_grid() {
+        let mut tx = TextCtx::new(None);
+        let mut t = tip_with(&[Blk::Code { text: "let value = 42;".into(), lang: "ts".into() }], &mut tx);
+        t.sel = Some(((0, 4), (0, 9)));
+        assert_eq!(sel_text(&mut t, &mut tx).as_deref(), Some("value"));
+        let b = boxes_of(&mut t, &mut tx, 0).to_vec();
+        let step = b[1].x0 - b[0].x0;
+        assert!(step > 3 && b.windows(2).all(|w| (w[1].x0 - w[0].x0 - step).abs() <= 1), "fixed-width cells");
+    }
+
+    #[test]
+    fn inline_code_and_styled_runs_keep_their_text() {
+        let mut tx = TextCtx::new(None);
+        let sp = vec![Span::plain("use "), Span::code("add"), Span::plain(" or "), Span { text: "sum".into(), bold: true, ..Default::default() }, Span::plain(" now")];
+        let mut t = tip_with(&[Blk::Para(sp)], &mut tx);
+        let b = boxes_of(&mut t, &mut tx, 0).to_vec();
+        assert_eq!(b.iter().map(|c| c.ch).collect::<String>(), "use add or sum now");
+        t.sel = Some(((0, 4), (0, 10)));
+        assert_eq!(sel_text(&mut t, &mut tx).as_deref(), Some("add or"));
     }
 }

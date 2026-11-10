@@ -70,6 +70,12 @@ pub struct LineInfo {
     pub blank: bool,
 }
 
+/// Spans of a whole line (byte ranges) restricted to the row that covers bytes `b0..b1` of it,
+/// re-based to the row's own text (continuation rows of a wrapped line).
+pub fn row_spans(spans: impl Iterator<Item = (usize, usize, Rgba)>, b0: usize, b1: usize) -> Vec<(usize, usize, Rgba)> {
+    spans.filter(|&(s, e, _)| e > b0 && s < b1).map(|(s, e, c)| (s.max(b0) - b0, e.min(b1) - b0, c)).collect()
+}
+
 pub fn line_info(text: &str, spans: Option<&[(usize, usize, Rgba)]>, fg: Rgba, tab_w: usize) -> LineInfo {
     let tab_w = tab_w.max(1);
     let trimmed = text.trim_end();
@@ -307,6 +313,18 @@ mod tests {
         let t = "let abcdefgh = 1";
         let spans = [(0, 3, BLUE), (4, 12, RED)];
         assert_eq!(line_info(t, Some(&spans), FG, 4).color, RED);
+    }
+    #[test]
+    fn continuation_rows_keep_the_token_colors() {
+        // "let abcdefgh = 1" wrapped after 9 bytes: the second row "efgh = 1" is mostly the RED span
+        let spans = [(0usize, 3usize, BLUE), (4, 12, RED)];
+        let row = row_spans(spans.iter().copied(), 9, 16);
+        assert_eq!(row, vec![(0, 3, RED)]);
+        assert_eq!(line_info("fgh = 1", Some(&row), FG, 4).color, RED, "not the plain foreground");
+        // a span that starts before the row is clipped to its start
+        assert_eq!(row_spans(spans.iter().copied(), 6, 16), vec![(0, 6, RED)]);
+        // nothing overlaps: no spans at all
+        assert!(row_spans(spans.iter().copied(), 12, 16).is_empty());
     }
     #[test]
     fn unknown_uses_fg() {

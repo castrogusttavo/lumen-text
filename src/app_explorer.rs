@@ -6,7 +6,7 @@
 
 use crate::{
     app::{App, Focus, ROW_H, SidebarMode, TAB_H},
-    app_ctxmenu::{FileClip, paste_one},
+    app_ctxmenu::paste_one,
     tree::{self, Drag},
     ui::{Canvas, Rect},
 };
@@ -65,8 +65,14 @@ impl App {
             return;
         }
         self.tree.select_only(i);
-        self.activate_row(i);
-        self.tree.drag = Some(mk(vec![row.path.clone()], None, row.is_dir.then(|| row.path.clone())));
+        if row.is_dir {
+            // A folder toggles on press (put back if the press turns into a drag).
+            self.activate_row(i);
+            self.tree.drag = Some(mk(vec![row.path.clone()], None, Some(row.path.clone())));
+        } else {
+            // A file opens on release, and only if the pointer never dragged it.
+            self.tree.drag = Some(mk(vec![row.path.clone()], Some(i), None));
+        }
     }
 
     /// Folder a drop at (x, y) would land in: the folder under the pointer, the folder holding the
@@ -122,11 +128,12 @@ impl App {
         true
     }
 
-    /// Button released: finish a drag (drop), or turn a press on a multi-selection into a click.
+    /// Button released: finish a drag (drop), or turn a press that never moved into a click (a file
+    /// opens here; so does a press on a multi-selection, which collapses to that row).
     pub fn tree_drag_release(&mut self) -> bool {
         let Some(d) = self.tree.drag.take() else { return false };
         if !d.active {
-            if let Some(i) = d.click_row.filter(|&i| i < self.tree.rows.len()) {
+            if let Some(i) = d.click_row.filter(|&i| self.tree.rows.get(i).is_some_and(|r| d.paths.contains(&r.path))) {
                 self.tree.select_only(i);
                 self.activate_row(i);
                 self.request_redraw();
@@ -194,7 +201,7 @@ impl App {
                 }
                 let cut = k == "x";
                 self.say(format!("{}: {}", if cut { "recortado" } else { "copiado" }, describe(&paths)));
-                self.file_clip = FileClip { paths, cut };
+                self.set_file_clip(paths, cut);
             }
             "v" => {
                 let dir = self.explorer_target_dir();

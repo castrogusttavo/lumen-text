@@ -17,6 +17,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::mpsc::{channel, Receiver, Sender},
+    time::{Duration, Instant, SystemTime},
 };
 
 /// Decoded pixels kept for the images that were drawn recently.
@@ -27,6 +28,12 @@ const MAX_FILE: u64 = 48 << 20;
 const MAX_PIXELS: u64 = 40_000_000;
 /// Decoder threads running at once.
 const WORKERS: usize = 2;
+/// An animation keeps all its frames scaled to the drawn size; past this many bytes (or frames)
+/// the image shows its first frame with an "animado" badge instead of playing.
+pub const ANIM_BYTES: usize = 16 << 20;
+pub const ANIM_FRAMES: usize = 300;
+/// Animations that play at once; the other visible ones stay on their first frame (and get the badge).
+pub const MAX_PLAYING: usize = 4;
 
 /// Straight-alpha pixels, `0xAARRGGBB`.
 #[derive(Clone, Debug)]
@@ -188,22 +195,76 @@ fn decode_jpeg(b: &[u8]) -> Option<Pix> {
     from_rgba(w, h, &px, ch.clamp(1, 4))
 }
 
-fn decode_gif(b: &[u8]) -> Option<Pix> {
+/// Frame delay as a browser would play it: the very short and zero delays that old GIFs carry
+/// mean "about a tenth of a second", and nothing runs faster than ~25 fps (low CPU).
+pub fn frame_ms(raw_ms: u32) -> u32 {
+    if raw_ms <= 10 { 100 } else { raw_ms.max(40) }
+}
+
+/// Every frame of a GIF composited on the full canvas (disposal methods honoured), handed to
+/// `sink` with its delay in ms as soon as it is ready; `sink` returns false to stop early.
+fn gif_each(b: &[u8], mut sink: impl FnMut(Pix, u32) -> bool) -> Option<()> {
     let mut o = gif::DecodeOptions::new();
     o.set_color_output(gif::ColorOutput::RGBA);
     let mut d = o.read_info(Cursor::new(b)).ok()?;
     let (sw, sh) = (d.width() as u32, d.height() as u32);
-    let f = d.read_next_frame().ok()??;
-    let mut px = vec![0u32; (sw * sh) as usize];
-    let (fl, ft, fw, fh) = (f.left as u32, f.top as u32, f.width as u32, f.height as u32);
-    for y in 0..fh.min(sh.saturating_sub(ft)) {
-        for x in 0..fw.min(sw.saturating_sub(fl)) {
-            let i = ((y * fw + x) * 4) as usize;
-            let p = f.buffer.get(i..i + 4)?;
-            px[((ft + y) * sw + fl + x) as usize] = argb(p[0], p[1], p[2], p[3]);
+    let mut canvas = vec![0u32; (sw * sh) as usize];
+    let mut any = false;
+    // What the previous frame asks to be undone before the next one is drawn.
+    let mut undo: Option<(gif::DisposalMethod, (u32, u32, u32, u32), Option<Vec<u32>>)> = None;
+    while let Some(f) = d.read_next_frame().ok()? {
+        if let Some((method, (fl, ft, fw, fh), saved)) = undo.take() {
+            match (method, saved) {
+                (gif::DisposalMethod::Background, _) => {
+                    for y in ft..(ft + fh).min(sh) {
+                        for x in fl..(fl + fw).min(sw) {
+                            canvas[(y * sw + x) as usize] = 0;
+                        }
+                    }
+                }
+                (gif::DisposalMethod::Previous, Some(prev)) => canvas = prev,
+                _ => {}
+            }
+        }
+        let rect = (f.left as u32, f.top as u32, f.width as u32, f.height as u32);
+        let saved = (f.dispose == gif::DisposalMethod::Previous).then(|| canvas.clone());
+        let (fl, ft, fw, fh) = rect;
+        for y in 0..fh.min(sh.saturating_sub(ft)) {
+            for x in 0..fw.min(sw.saturating_sub(fl)) {
+                let i = ((y * fw + x) * 4) as usize;
+                let p = f.buffer.get(i..i + 4)?;
+                if p[3] != 0 {
+                    canvas[((ft + y) * sw + fl + x) as usize] = argb(p[0], p[1], p[2], p[3]);
+                }
+            }
+        }
+        undo = Some((f.dispose, rect, saved));
+        let ms = f.delay as u32 * 10;
+        any = true;
+        if !sink(Pix { w: sw, h: sh, px: canvas.clone() }, ms) {
+            break;
         }
     }
-    Some(Pix { w: sw, h: sh, px })
+    any.then_some(())
+}
+
+/// Frames of an animated WebP (each one the full canvas, composited by the decoder) through
+/// `sink`; `None` when the file is not animated.
+fn webp_each(b: &[u8], mut sink: impl FnMut(Pix, u32) -> bool) -> Option<()> {
+    let mut d = image_webp::WebPDecoder::new(Cursor::new(b)).ok()?;
+    if !d.is_animated() {
+        return None;
+    }
+    let (w, h) = d.dimensions();
+    let ch = if d.has_alpha() { 4 } else { 3 };
+    let mut buf = vec![0; d.output_buffer_size()?];
+    for _ in 0..d.num_frames() {
+        let ms = d.read_frame(&mut buf).ok()?;
+        if !sink(from_rgba(w, h, &buf, ch)?, ms) {
+            break;
+        }
+    }
+    Some(())
 }
 
 fn decode_webp(b: &[u8]) -> Option<Pix> {
@@ -215,29 +276,81 @@ fn decode_webp(b: &[u8]) -> Option<Pix> {
     from_rgba(w, h, &buf, ch)
 }
 
-/// Decode `path` and scale it to exactly `tw` x `th` pixels.
-pub fn decode(path: &Path, tw: u32, th: u32) -> Option<Pix> {
+/// What a worker hands back for one image at one size.
+pub enum Decoded {
+    /// One picture.
+    Still(Pix),
+    /// An animation: every frame scaled to the drawn size, with its delay in ms.
+    Anim(Vec<(Pix, u32)>),
+    /// An animation that is too big to play: its first frame (shown with a badge).
+    Badge(Pix),
+}
+
+impl Decoded {
+    pub fn bytes(&self) -> usize {
+        match self {
+            Decoded::Still(p) | Decoded::Badge(p) => p.bytes(),
+            Decoded::Anim(f) => f.iter().map(|(p, _)| p.bytes()).sum(),
+        }
+    }
+
+    /// The first frame.
+    pub fn first(self) -> Option<Pix> {
+        match self {
+            Decoded::Still(p) | Decoded::Badge(p) => Some(p),
+            Decoded::Anim(f) => f.into_iter().next().map(|(p, _)| p),
+        }
+    }
+}
+
+/// Collect the frames an `each` source produces, scaled to `tw` x `th`, within the animation caps.
+fn collect_frames(each: impl FnOnce(&mut dyn FnMut(Pix, u32) -> bool) -> Option<()>, tw: u32, th: u32) -> Option<Decoded> {
+    let mut frames: Vec<(Pix, u32)> = Vec::new();
+    let (mut bytes, mut over) = (0usize, false);
+    each(&mut |p, ms| {
+        let sc = scale_to(p, tw, th);
+        if !frames.is_empty() && (frames.len() >= ANIM_FRAMES || bytes + sc.bytes() > ANIM_BYTES) {
+            over = true;
+            return false;
+        }
+        bytes += sc.bytes();
+        frames.push((sc, frame_ms(ms)));
+        true
+    })?;
+    match (frames.len(), over) {
+        (0, _) => None,
+        (1, false) => frames.pop().map(|(p, _)| Decoded::Still(p)),
+        (_, false) => Some(Decoded::Anim(frames)),
+        (_, true) => frames.into_iter().next().map(|(p, _)| Decoded::Badge(p)),
+    }
+}
+
+/// Decode `path` scaled to exactly `tw` x `th` pixels; animated GIF / WebP keep their frames.
+pub fn decode_any(path: &Path, tw: u32, th: u32) -> Option<Decoded> {
     if tw == 0 || th == 0 {
         return None;
     }
     let bytes = read_prefix(path, MAX_FILE)?;
     let fmt = sniff(&bytes)?;
     if fmt == Fmt::Svg {
-        return svg::render(&bytes, tw, th);
+        return svg::render(&bytes, tw, th).map(Decoded::Still);
     }
     let (w, h) = header_size(&bytes)?;
     if (w as u64) * (h as u64) > MAX_PIXELS {
         return None;
     }
-    let pix = match fmt {
-        Fmt::Png => decode_png(&bytes),
-        Fmt::Jpeg => decode_jpeg(&bytes),
-        Fmt::Gif => decode_gif(&bytes),
-        Fmt::Webp => decode_webp(&bytes),
+    match fmt {
+        Fmt::Gif => collect_frames(|sink| gif_each(&bytes, sink), tw, th),
+        Fmt::Webp => collect_frames(|sink| webp_each(&bytes, sink), tw, th).or_else(|| decode_webp(&bytes).map(|p| Decoded::Still(scale_to(p, tw, th)))),
+        Fmt::Png => decode_png(&bytes).map(|p| Decoded::Still(scale_to(p, tw, th))),
+        Fmt::Jpeg => decode_jpeg(&bytes).map(|p| Decoded::Still(scale_to(p, tw, th))),
         Fmt::Svg => None,
-    }?;
-    drop(bytes);
-    Some(scale_to(pix, tw, th))
+    }
+}
+
+/// Decode `path` and scale it to exactly `tw` x `th` pixels (first frame of an animation).
+pub fn decode(path: &Path, tw: u32, th: u32) -> Option<Pix> {
+    decode_any(path, tw, th)?.first()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -331,18 +444,79 @@ pub fn blit(cv: &mut Canvas, x: i32, y: i32, pix: &Pix, clip: Rect) {
 
 #[derive(Clone)]
 pub enum Tex {
+    /// Pixels to draw (a still image, or the current frame of a playing animation).
     Ready(Rc<Pix>),
+    /// An animation that does not play (too big, or too many are on screen): its first frame,
+    /// drawn with an "animado" badge.
+    Badged(Rc<Pix>),
     Pending,
     Failed,
+}
+
+/// Frames of a playing animation and where each one ends (ms from the start of a loop).
+pub struct Anim {
+    frames: Vec<Rc<Pix>>,
+    ends: Vec<u64>,
+}
+
+impl Anim {
+    fn new(frames: Vec<(Pix, u32)>) -> Self {
+        let mut t = 0u64;
+        let ends = frames.iter().map(|(_, ms)| { t += *ms as u64; t }).collect();
+        Anim { frames: frames.into_iter().map(|(p, _)| Rc::new(p)).collect(), ends }
+    }
+
+    fn total(&self) -> u64 {
+        self.ends.last().copied().unwrap_or(1).max(1)
+    }
+
+    /// Frame showing `ms` after the animation started (it loops forever).
+    pub fn frame_at(&self, ms: u64) -> usize {
+        let t = ms % self.total();
+        self.ends.partition_point(|e| *e <= t).min(self.frames.len() - 1)
+    }
+
+    /// Milliseconds from `ms` until the next frame is due.
+    pub fn until_next(&self, ms: u64) -> u64 {
+        let t = ms % self.total();
+        self.ends[self.frame_at(ms)].saturating_sub(t).max(1)
+    }
+
+    fn bytes(&self) -> usize {
+        self.frames.iter().map(|f| f.bytes()).sum()
+    }
 }
 
 enum Slot {
     Pending,
     Ready(Rc<Pix>, u64),
+    Badged(Rc<Pix>, u64),
+    /// A playing animation: the clock it started on.
+    Anim(Rc<Anim>, u64, Instant),
     Failed,
 }
 
+impl Slot {
+    /// (last drawn tick, bytes held) of a decoded slot.
+    fn held(&self) -> Option<(u64, usize)> {
+        match self {
+            Slot::Ready(p, u) | Slot::Badged(p, u) => Some((*u, p.bytes())),
+            Slot::Anim(a, u, _) => Some((*u, a.bytes())),
+            Slot::Pending | Slot::Failed => None,
+        }
+    }
+}
+
+/// (image id, device width, device height).
 type Key = (u32, u32, u32);
+
+/// What a file looked like when it was probed: a change means the cache entry is stale.
+type Stamp = Option<(SystemTime, u64)>;
+
+fn stamp_of(path: &Path) -> Stamp {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
 
 /// Image paths, probed sizes and the decoded textures of one preview.
 pub struct ImgStore {
@@ -350,13 +524,21 @@ pub struct ImgStore {
     paths: Vec<PathBuf>,
     ids: HashMap<PathBuf, u32>,
     sizes: HashMap<u32, Option<(u32, u32)>>,
+    /// File state at probe time, per image id (see [`ImgStore::changed_on_disk`]).
+    stamps: HashMap<u32, Stamp>,
+    /// Bumped when an image's file changed: results of older decodes are dropped.
+    gens: HashMap<u32, u32>,
     tex: HashMap<Key, Slot>,
     jobs: VecDeque<Key>,
     inflight: usize,
-    tx: Sender<(Key, Option<Pix>)>,
-    rx: Receiver<(Key, Option<Pix>)>,
+    tx: Sender<(Key, u32, Option<Decoded>)>,
+    rx: Receiver<(Key, u32, Option<Decoded>)>,
     clock: u64,
     bytes: usize,
+    /// Earliest moment a drawn animation needs its next frame (reset by [`ImgStore::begin_frame`]).
+    anim_due: Option<Instant>,
+    /// Animations that played in the current frame.
+    playing: usize,
 }
 
 impl Default for ImgStore {
@@ -386,7 +568,7 @@ fn percent_decode(s: &str) -> String {
 impl ImgStore {
     pub fn new() -> Self {
         let (tx, rx) = channel();
-        ImgStore { base: None, paths: vec![], ids: HashMap::new(), sizes: HashMap::new(), tex: HashMap::new(), jobs: VecDeque::new(), inflight: 0, tx, rx, clock: 0, bytes: 0 }
+        ImgStore { base: None, paths: vec![], ids: HashMap::new(), sizes: HashMap::new(), stamps: HashMap::new(), gens: HashMap::new(), tex: HashMap::new(), jobs: VecDeque::new(), inflight: 0, tx, rx, clock: 0, bytes: 0, anim_due: None, playing: 0 }
     }
 
     /// Directory relative image paths are resolved against. True when it changed.
@@ -432,17 +614,68 @@ impl ImgStore {
         }
         let s = self.paths.get(id as usize).and_then(|p| probe(p));
         self.sizes.insert(id, s);
+        self.stamps.insert(id, self.paths.get(id as usize).and_then(|p| stamp_of(p)));
         s
     }
 
+    /// Forget what is cached about images whose file changed since it was probed (size, decoded
+    /// pixels, queued and running decodes). True when any did: the layout has to be redone.
+    pub fn changed_on_disk(&mut self) -> bool {
+        let stale: Vec<u32> = self.stamps.iter().filter(|(id, st)| self.paths.get(**id as usize).is_none_or(|p| stamp_of(p) != **st)).map(|(id, _)| *id).collect();
+        for id in &stale {
+            self.sizes.remove(id);
+            self.stamps.remove(id);
+            *self.gens.entry(*id).or_insert(0) += 1;
+            let keys: Vec<Key> = self.tex.keys().filter(|k| k.0 == *id).copied().collect();
+            for k in keys {
+                if let Some((_, b)) = self.tex.remove(&k).and_then(|s| s.held()) {
+                    self.bytes = self.bytes.saturating_sub(b);
+                }
+            }
+            self.jobs.retain(|k| k.0 != *id);
+        }
+        !stale.is_empty()
+    }
+
+    /// Start of a draw pass: no animation has asked for a frame yet.
+    pub fn begin_frame(&mut self) {
+        self.anim_due = None;
+        self.playing = 0;
+    }
+
+    /// When the animations drawn in the last pass need their next frame (None = nothing moves,
+    /// so no timer is needed: off-screen animations cost nothing).
+    pub fn anim_due(&self) -> Option<Instant> {
+        self.anim_due
+    }
+
     /// Pixels of image `id` scaled to `w` x `h` device pixels; starts decoding on first request.
+    /// Call it only for images that are on screen: an animation answers with the frame due now
+    /// and registers when the next one is.
     pub fn texture(&mut self, id: u32, w: u32, h: u32) -> Tex {
         let key = (id, w, h);
         self.clock += 1;
+        let clock = self.clock;
+        let can_play = self.playing < MAX_PLAYING;
         match self.tex.get_mut(&key) {
             Some(Slot::Ready(p, used)) => {
-                *used = self.clock;
+                *used = clock;
                 Tex::Ready(p.clone())
+            }
+            Some(Slot::Badged(p, used)) => {
+                *used = clock;
+                Tex::Badged(p.clone())
+            }
+            Some(Slot::Anim(a, used, t0)) => {
+                *used = clock;
+                let el = t0.elapsed().as_millis() as u64;
+                if !can_play {
+                    return Tex::Badged(a.frames[0].clone());
+                }
+                self.playing += 1;
+                let due = Instant::now() + Duration::from_millis(a.until_next(el));
+                self.anim_due = Some(self.anim_due.map_or(due, |d| d.min(due)));
+                Tex::Ready(a.frames[a.frame_at(el)].clone())
             }
             Some(Slot::Pending) => Tex::Pending,
             Some(Slot::Failed) => Tex::Failed,
@@ -460,10 +693,11 @@ impl ImgStore {
             let Some(key) = self.jobs.pop_front() else { break };
             let Some(path) = self.paths.get(key.0 as usize).cloned() else { continue };
             let tx = self.tx.clone();
+            let gen_ = self.gens.get(&key.0).copied().unwrap_or(0);
             self.inflight += 1;
             let spawned = std::thread::Builder::new().name("md-image".into()).spawn(move || {
-                let pix = std::panic::catch_unwind(|| decode(&path, key.1, key.2)).ok().flatten();
-                let _ = tx.send((key, pix));
+                let pix = std::panic::catch_unwind(|| decode_any(&path, key.1, key.2)).ok().flatten();
+                let _ = tx.send((key, gen_, pix));
             });
             if spawned.is_err() {
                 self.inflight -= 1;
@@ -475,18 +709,24 @@ impl ImgStore {
     /// Collect finished decodes. True when something new arrived (a redraw is due).
     pub fn poll(&mut self) -> bool {
         let mut any = false;
-        while let Ok((key, pix)) = self.rx.try_recv() {
+        while let Ok((key, gen_, out)) = self.rx.try_recv() {
             self.inflight = self.inflight.saturating_sub(1);
-            any = true;
-            match pix {
-                Some(p) => {
-                    self.bytes += p.bytes();
-                    self.tex.insert(key, Slot::Ready(Rc::new(p), self.clock));
-                }
-                None => {
-                    self.tex.insert(key, Slot::Failed);
-                }
+            if gen_ != self.gens.get(&key.0).copied().unwrap_or(0) || !matches!(self.tex.get(&key), Some(Slot::Pending)) {
+                continue; // the file changed while this was decoding: a newer request owns the slot
             }
+            any = true;
+            let slot = match out {
+                Some(d) => {
+                    self.bytes += d.bytes();
+                    match d {
+                        Decoded::Still(p) => Slot::Ready(Rc::new(p), self.clock),
+                        Decoded::Badge(p) => Slot::Badged(Rc::new(p), self.clock),
+                        Decoded::Anim(f) => Slot::Anim(Rc::new(Anim::new(f)), self.clock, Instant::now()),
+                    }
+                }
+                None => Slot::Failed,
+            };
+            self.tex.insert(key, slot);
         }
         self.start_jobs();
         any
@@ -500,13 +740,13 @@ impl ImgStore {
     /// Drop the least recently drawn textures while over [`CACHE_BYTES`].
     pub fn trim(&mut self) {
         while self.bytes > CACHE_BYTES {
-            let oldest = self.tex.iter().filter_map(|(k, s)| if let Slot::Ready(_, u) = s { Some((*u, *k)) } else { None }).min();
+            let oldest = self.tex.iter().filter_map(|(k, s)| s.held().map(|(u, _)| (u, *k))).min();
             let Some((used, key)) = oldest else { break };
             if used == self.clock {
                 break; // everything left was drawn in this very frame
             }
-            if let Some(Slot::Ready(p, _)) = self.tex.remove(&key) {
-                self.bytes = self.bytes.saturating_sub(p.bytes());
+            if let Some((_, b)) = self.tex.remove(&key).and_then(|s| s.held()) {
+                self.bytes = self.bytes.saturating_sub(b);
             }
         }
     }
@@ -1293,6 +1533,220 @@ mod tests {
         assert_eq!(s.cached_bytes(), 8 * 8 * 4);
         let missing = s.resolve("nope.png").unwrap();
         assert_eq!(s.size(missing), None);
+    }
+
+    // ---- animation ----
+
+    /// GIF with one solid-color frame per `(palette index, delay in 1/100 s)`, 4x4, palette R G B.
+    fn anim_gif(frames: &[(u8, u16)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut enc = gif::Encoder::new(&mut out, 4, 4, &[255, 0, 0, 0, 255, 0, 0, 0, 255]).unwrap();
+            enc.set_repeat(gif::Repeat::Infinite).unwrap();
+            for &(i, delay) in frames {
+                let mut f = gif::Frame::default();
+                (f.width, f.height, f.delay) = (4, 4, delay);
+                f.buffer = std::borrow::Cow::Owned(vec![i; 16]);
+                enc.write_frame(&f).unwrap();
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn frame_delays_follow_browser_conventions_and_cap_the_rate() {
+        assert_eq!([frame_ms(0), frame_ms(10), frame_ms(20), frame_ms(40), frame_ms(100)], [100, 100, 40, 40, 100]);
+    }
+
+    #[test]
+    fn animated_gif_keeps_its_frames_and_delays() {
+        let p = dir().join("anim3.gif");
+        std::fs::write(&p, anim_gif(&[(0, 10), (1, 5), (2, 20)])).unwrap();
+        let Some(Decoded::Anim(frames)) = decode_any(&p, 4, 4) else { panic!("expected an animation") };
+        // GIF delays are in 1/100 s: 10 -> 100 ms, 5 -> 50 ms, 20 -> 200 ms.
+        assert_eq!(frames.iter().map(|(_, ms)| *ms).collect::<Vec<_>>(), vec![100, 50, 200]);
+        assert_eq!(frames.iter().map(|(f, _)| f.px[0]).collect::<Vec<_>>(), [0xffff0000, 0xff00ff00, 0xff0000ff]);
+        // `decode` (still image users) gets the first frame.
+        assert_eq!(decode(&p, 4, 4).unwrap().px[0], 0xffff0000);
+        // A single frame is a still image, whatever the format.
+        let q = dir().join("anim1.gif");
+        std::fs::write(&q, anim_gif(&[(1, 10)])).unwrap();
+        assert!(matches!(decode_any(&q, 4, 4), Some(Decoded::Still(_))));
+    }
+
+    #[test]
+    fn gif_partial_frames_composite_on_the_canvas_and_honour_disposal() {
+        let mut out = Vec::new();
+        {
+            let mut enc = gif::Encoder::new(&mut out, 2, 2, &[255, 0, 0, 0, 0, 255]).unwrap();
+            let mut base = gif::Frame::default();
+            (base.width, base.height, base.delay) = (2, 2, 10);
+            base.buffer = std::borrow::Cow::Owned(vec![0; 4]);
+            enc.write_frame(&base).unwrap();
+            // A 1x1 blue patch at (1,1) that is wiped before the next frame...
+            let mut patch = gif::Frame::default();
+            (patch.left, patch.top, patch.width, patch.height, patch.delay) = (1, 1, 1, 1, 10);
+            patch.dispose = gif::DisposalMethod::Previous;
+            patch.buffer = std::borrow::Cow::Owned(vec![1]);
+            enc.write_frame(&patch).unwrap();
+            // ...so this empty-looking patch shows the base again.
+            let mut again = gif::Frame::default();
+            (again.left, again.top, again.width, again.height, again.delay) = (0, 0, 1, 1, 10);
+            again.buffer = std::borrow::Cow::Owned(vec![0]);
+            enc.write_frame(&again).unwrap();
+        }
+        let p = dir().join("anim-composite.gif");
+        std::fs::write(&p, out).unwrap();
+        let Some(Decoded::Anim(f)) = decode_any(&p, 2, 2) else { panic!("animation") };
+        assert_eq!(f[0].0.px, vec![0xffff0000; 4]);
+        assert_eq!(f[1].0.px, vec![0xffff0000, 0xffff0000, 0xffff0000, 0xff0000ff], "the patch lands on the previous canvas");
+        assert_eq!(f[2].0.px, vec![0xffff0000; 4], "disposal `previous` restored the canvas before the third frame");
+    }
+
+    #[test]
+    fn too_long_an_animation_falls_back_to_a_badged_first_frame() {
+        let frames: Vec<(u8, u16)> = (0..ANIM_FRAMES + 1).map(|i| ((i % 3) as u8, 10)).collect();
+        let p = dir().join("anim-long.gif");
+        std::fs::write(&p, anim_gif(&frames)).unwrap();
+        let Some(Decoded::Badge(first)) = decode_any(&p, 4, 4) else { panic!("expected the badge fallback") };
+        assert_eq!(first.px[0], 0xffff0000);
+    }
+
+    /// Animated WebP assembled by hand from lossless single-frame files (the encoder only writes stills).
+    fn anim_webp(colors: &[[u8; 4]]) -> Vec<u8> {
+        let vp8l = |c: [u8; 4]| -> Vec<u8> {
+            let mut still = Vec::new();
+            image_webp::WebPEncoder::new(&mut still).encode(&c.repeat(4), 2, 2, image_webp::ColorType::Rgba8).unwrap();
+            // RIFF size WEBP, then the chunk we need: "VP8L" size data.
+            still[12..].to_vec()
+        };
+        let le24 = |n: u32| [n as u8, (n >> 8) as u8, (n >> 16) as u8];
+        let chunk = |tag: &[u8; 4], body: &[u8]| -> Vec<u8> {
+            let mut v = tag.to_vec();
+            v.extend((body.len() as u32).to_le_bytes());
+            v.extend(body);
+            if body.len() % 2 == 1 {
+                v.push(0);
+            }
+            v
+        };
+        let mut body = b"WEBP".to_vec();
+        let mut vp8x = vec![0x12, 0, 0, 0];
+        vp8x.extend(le24(1));
+        vp8x.extend(le24(1));
+        body.extend(chunk(b"VP8X", &vp8x));
+        body.extend(chunk(b"ANIM", &[0, 0, 0, 0, 0, 0]));
+        for c in colors {
+            let mut f = Vec::new();
+            f.extend(le24(0));
+            f.extend(le24(0));
+            f.extend(le24(1));
+            f.extend(le24(1));
+            f.extend(le24(120));
+            f.push(0);
+            f.extend(vp8l(*c));
+            body.extend(chunk(b"ANMF", &f));
+        }
+        let mut out = b"RIFF".to_vec();
+        out.extend((body.len() as u32).to_le_bytes());
+        out.extend(body);
+        out
+    }
+
+    #[test]
+    fn animated_webp_plays_every_frame() {
+        let p = dir().join("anim.webp");
+        std::fs::write(&p, anim_webp(&[[255, 0, 0, 255], [0, 0, 255, 255]])).unwrap();
+        let Some(Decoded::Anim(f)) = decode_any(&p, 2, 2) else { panic!("expected an animated WebP") };
+        assert_eq!(f.len(), 2);
+        assert_eq!((f[0].1, f[1].1), (120, 120));
+        // (the decoder's alpha blending may be off by one in a channel)
+        let near = |a: u32, b: u32| (0..4).all(|i| ((a >> (8 * i)) & 0xff).abs_diff((b >> (8 * i)) & 0xff) <= 1);
+        assert!(near(f[0].0.px[0], 0xffff0000) && near(f[1].0.px[0], 0xff0000ff), "{:08x} {:08x}", f[0].0.px[0], f[1].0.px[0]);
+    }
+
+    #[test]
+    fn animation_clock_picks_frames_and_loops() {
+        let mk = |ms: &[u32]| Anim::new(ms.iter().map(|&m| (Pix { w: 1, h: 1, px: vec![0xff000000 | m] }, m)).collect());
+        let a = mk(&[100, 100, 100]);
+        let at = |t| (a.frame_at(t), a.until_next(t));
+        assert_eq!([at(0), at(99), at(100), at(250), at(299)], [(0, 100), (0, 1), (1, 100), (2, 50), (2, 1)]);
+        assert_eq!(at(300), (0, 100), "loops");
+        assert_eq!(a.frame_at(650), 0);
+    }
+
+    fn wait_ready(s: &mut ImgStore) {
+        let t0 = Instant::now();
+        while s.pending() && t0.elapsed().as_secs() < 10 {
+            s.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        s.poll();
+    }
+
+    #[test]
+    fn store_plays_animations_only_while_drawn_and_caps_how_many() {
+        let d = dir();
+        let mut s = ImgStore::new();
+        s.set_base(Some(&d));
+        let ids: Vec<u32> = (0..MAX_PLAYING + 1)
+            .map(|i| {
+                std::fs::write(d.join(format!("play{i}.gif")), anim_gif(&[(0, 10), (1, 10), (2, 10)])).unwrap();
+                s.resolve(&format!("play{i}.gif")).unwrap()
+            })
+            .collect();
+        for &id in &ids {
+            s.size(id);
+            assert!(matches!(s.texture(id, 4, 4), Tex::Pending));
+        }
+        wait_ready(&mut s);
+        s.begin_frame();
+        assert!(s.anim_due().is_none(), "nothing drawn, nothing to wake up for");
+        let first_px = |t: Tex| match t {
+            Tex::Ready(p) | Tex::Badged(p) => p.px[0],
+            _ => panic!("not decoded"),
+        };
+        let mut kinds = Vec::new();
+        for &id in &ids {
+            kinds.push(matches!(s.texture(id, 4, 4), Tex::Ready(_)));
+        }
+        assert_eq!(kinds, [true, true, true, true, false], "at most {MAX_PLAYING} play at once; the rest show the badge");
+        let due = s.anim_due().expect("a playing animation asks for its next frame");
+        assert!(due <= Instant::now() + Duration::from_millis(100), "frames are 100 ms apart");
+        // After the first delay the next frame is the one drawn.
+        std::thread::sleep(Duration::from_millis(130));
+        s.begin_frame();
+        assert_ne!(first_px(s.texture(ids[0], 4, 4)), 0xffff0000, "the clock moved on to a later frame");
+        // A new pass starts clean: not drawing means no timer.
+        s.begin_frame();
+        assert!(s.anim_due().is_none());
+        assert!(s.cached_bytes() >= 3 * 4 * 4 * 4 * ids.len(), "frames count towards the cache budget");
+    }
+
+    #[test]
+    fn edited_image_files_are_noticed_and_decoded_again() {
+        let d = dir();
+        let p = d.join("edited.png");
+        std::fs::write(&p, png_bytes(16, 16, |_, _| [255, 0, 0, 255])).unwrap();
+        let mut s = ImgStore::new();
+        s.set_base(Some(&d));
+        let id = s.resolve("edited.png").unwrap();
+        assert_eq!(s.size(id), Some((16, 16)));
+        assert!(!s.changed_on_disk(), "untouched files stay cached");
+        assert!(matches!(s.texture(id, 16, 16), Tex::Pending));
+        wait_ready(&mut s);
+        let Tex::Ready(px) = s.texture(id, 16, 16) else { panic!("decoded") };
+        assert_eq!(px.px[0], 0xffff0000);
+        // The user saves a different image over it.
+        std::fs::write(&p, png_bytes(32, 8, |_, _| [0, 0, 255, 255])).unwrap();
+        assert!(s.changed_on_disk());
+        assert_eq!(s.cached_bytes(), 0, "stale pixels are dropped");
+        assert_eq!(s.size(id), Some((32, 8)), "the size is probed again");
+        assert!(matches!(s.texture(id, 32, 8), Tex::Pending));
+        wait_ready(&mut s);
+        let Tex::Ready(px) = s.texture(id, 32, 8) else { panic!("decoded again") };
+        assert_eq!(px.px[0], 0xff0000ff);
+        assert!(!s.changed_on_disk(), "and then it is stable");
     }
 
     #[test]

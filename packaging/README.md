@@ -18,6 +18,14 @@ actual work and can be run locally with any release binary.
 repository variable `ENABLE_ARM_BUILDS` is `true` (GitHub-hosted arm runners are not available to
 private repositories); that leg is `continue-on-error`.
 
+## Updates and signing
+
+CI signs the AppImage and the tarball (`<file>.minisig`, minisign) and publishes `latest.json` with
+all package URLs; the app's updater reads it. The user layout it maintains (and `lumen-text
+--install-user` creates) is `~/.local/share/lumen-text/<version>/{bin,share}` plus a `current`
+symlink, i.e. exactly the tarball contents, so the layout contract below holds there too. See
+CONTRIBUTING.md (Releases) for keys, secrets and rotation.
+
 ## Layout contract
 
 `config::assets_dir()` looks for `language-manifest.json` in `$LUMEN_ASSETS`, then
@@ -37,7 +45,10 @@ place: `./bin/lumen-text`).
 
 The binary links only glibc and libgcc. The windowing libraries (libxkbcommon, Wayland, X11) are
 loaded with `dlopen` at run time, so the packages depend on `libxkbcommon` and only *recommend*
-the rest. Release binaries are built on Ubuntu 22.04 and need glibc 2.35 or newer.
+the rest.
+The editor also needs at least one system font (it panics with `no default font found` otherwise), so
+the deb/rpm/Arch packages depend on fontconfig plus a font; with the AppImage and the tarball you must
+have one installed (e.g. `fonts-dejavu-core`, `dejavu-sans-mono-fonts`, `ttf-dejavu`). Release binaries are built on Ubuntu 22.04 and need glibc 2.35 or newer.
 
 ## Installing
 

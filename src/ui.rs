@@ -457,6 +457,8 @@ pub struct TextCtx {
     /// Every font file already in the database (main, variants, UI, fallbacks), canonicalized.
     loaded: Vec<PathBuf>,
     fallbacks_loaded: bool,
+    /// Cached result of [`TextCtx::italic_works`].
+    italic_ok: Option<bool>,
 }
 
 pub const UI_SIZE: f32 = 13.0;
@@ -628,6 +630,11 @@ impl TextCtx {
     fn new_bare(font: Option<&Path>) -> Self {
         let found = font.map(Path::to_path_buf).or_else(find_mono_font);
         let (mut fonts, family, ui_family, loaded) = single_font_system(found.as_deref());
+        if fonts.db().faces().next().is_none() {
+            // cosmic-text would panic ("no default font found") on the first shaped glyph.
+            eprintln!("lumen-text: no fonts found. Install fontconfig and a font (e.g. DejaVu Sans Mono: `apt install fonts-dejavu-core`, `dnf install dejavu-sans-mono-fonts`, `pacman -S ttf-dejavu`).");
+            std::process::exit(1);
+        }
         let attrs = family_attrs(&family);
         let cell_w = measure_cell(&mut fonts, &attrs, font_size());
         let buf = TextBuf::new(&mut fonts, Metrics::new(font_size() * scale(), line_h() * scale()));
@@ -644,6 +651,7 @@ impl TextCtx {
             icons: crate::icons::Icons::new(),
             loaded,
             fallbacks_loaded: false,
+            italic_ok: None,
         }
     }
 
@@ -713,7 +721,18 @@ impl TextCtx {
         self.draw_spans(cv, x, y, &spans, clip);
     }
 
+    /// Draw an inlay hint label: the code font at `inlay::HINT_SCALE` of its size, italic. (x, y)
+    /// is the top-left of the *row*, so the smaller text keeps the baseline of the full-size text.
+    pub fn draw_hint(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect) {
+        let dy = (font_size() * (1.0 - crate::inlay::HINT_SCALE) * 0.35).round() as i32;
+        self.draw_spans_scaled(cv, x, y + dy, &[(text, color, ITALIC)], clip, crate::inlay::HINT_SCALE);
+    }
+
     fn draw_spans(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(&str, Rgba, u8)], clip: Rect) {
+        self.draw_spans_scaled(cv, x, y, pieces, clip, 1.0);
+    }
+
+    fn draw_spans_scaled(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(&str, Rgba, u8)], clip: Rect, mul: f32) {
         if pieces.is_empty() || clip.w <= 0 || clip.h <= 0 {
             return;
         }
@@ -727,7 +746,7 @@ impl TextCtx {
             attrs = attrs.font_features(plain_features());
         }
         let s = scale();
-        self.buf.set_metrics_and_size(Metrics::new(font_size() * s, line_h() * s), Some(4000.0 * s), Some((clip.h as f32 + 2.0 * line_h()) * s));
+        self.buf.set_metrics_and_size(Metrics::new(font_size() * s * mul, line_h() * s), Some(4000.0 * s), Some((clip.h as f32 + 2.0 * line_h()) * s));
         self.buf.set_wrap(Wrap::None);
         let spans: Vec<(&str, Attrs)> = pieces.iter().map(|(s, c, f)| (*s, styled(&attrs, *c, *f))).collect();
         self.buf.set_rich_text(spans, &attrs, if wide { Shaping::Advanced } else { Shaping::Basic }, None);
@@ -792,8 +811,74 @@ impl TextCtx {
         w.round() as i32
     }
 
+    /// X offset (px, unscaled) of every char boundary of `text` in the UI font: `n + 1` values, the
+    /// last being the full width. `size` None = the standard UI size. Used to place a text
+    /// selection per character.
+    pub fn ui_char_xs(&mut self, text: &str, bold: bool, size: Option<f32>) -> Vec<f32> {
+        let n = text.chars().count();
+        if n == 0 {
+            return vec![0.0];
+        }
+        if !self.fallbacks_loaded && needs_fallback(text) {
+            self.ensure_fallbacks();
+        }
+        let (sz, lh) = match size {
+            Some(sz) => (sz, (sz * 1.4).round()),
+            None => (UI_SIZE, UI_LINE),
+        };
+        let fam = self.ui_family.clone();
+        let mut a = match &fam {
+            Some(f) => Attrs::new().family(Family::Name(f)),
+            None => Attrs::new().family(Family::SansSerif),
+        };
+        if bold {
+            a = a.weight(cosmic_text::Weight::SEMIBOLD);
+        }
+        let s = scale();
+        let mut b = TextBuf::new(&mut self.fonts, Metrics::new(sz * s, lh * s));
+        b.set_size(Some(8000.0 * s), Some(lh * 2.0 * s));
+        b.set_wrap(Wrap::None);
+        b.set_text(text, &a, Shaping::Advanced, None);
+        b.shape_until_scroll(&mut self.fonts, false);
+        let mut idx = vec![0usize; text.len() + 1];
+        for (ci, (bi, _)) in text.char_indices().enumerate() {
+            idx[bi] = ci;
+        }
+        idx[text.len()] = n;
+        let mut xs = vec![f32::NAN; n + 1];
+        let mut total = 0.0f32;
+        if let Some(run) = b.layout_runs().next() {
+            total = run.line_w;
+            for g in run.glyphs {
+                let (s0, e0) = (idx[g.start.min(text.len())], idx[g.end.min(text.len())]);
+                let k = e0.saturating_sub(s0).max(1);
+                for j in 0..k {
+                    if s0 + j < n {
+                        xs[s0 + j] = g.x + g.w * j as f32 / k as f32;
+                    }
+                }
+            }
+        }
+        xs[n] = total;
+        let mut last = 0.0f32;
+        for x in xs.iter_mut() {
+            if x.is_nan() {
+                *x = last;
+            }
+            last = *x;
+        }
+        xs.iter().map(|x| x / s).collect()
+    }
+
     /// Draw UI-font runs on one line at (x, y) (top-left), clipped.
     pub fn draw_ui_pieces(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(String, Rgba)], clip: Rect, bold: bool) {
+        self.draw_ui_pieces_i(cv, x, y, pieces, clip, bold, false);
+    }
+
+    /// [`draw_ui_pieces`](Self::draw_ui_pieces) with an `italic` switch. The UI family has no italic
+    /// face, so cosmic-text slants the upright glyphs (`CacheKeyFlags::FAKE_ITALIC`); advances are
+    /// unchanged, which keeps `ui_width` valid for italic text.
+    pub fn draw_ui_pieces_i(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(String, Rgba)], clip: Rect, bold: bool, italic: bool) {
         if pieces.is_empty() || clip.w <= 0 || clip.h <= 0 {
             return;
         }
@@ -807,6 +892,9 @@ impl TextCtx {
         };
         if bold {
             base = base.weight(cosmic_text::Weight::SEMIBOLD);
+        }
+        if italic {
+            base = base.style(cosmic_text::Style::Italic);
         }
         let s = scale();
         self.ui_buf.set_metrics_and_size(Metrics::new(UI_SIZE * s, UI_LINE * s), Some(4000.0 * s), Some(UI_LINE * 2.0 * s));
@@ -838,6 +926,32 @@ impl TextCtx {
         self.draw_ui_pieces(cv, x, y, &[(text.to_string(), color)], clip, bold);
     }
 
+    /// [`draw_ui`](Self::draw_ui) in (synthetic) italic.
+    pub fn draw_ui_italic(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool) {
+        self.draw_ui_pieces_i(cv, x, y, &[(text.to_string(), color)], clip, bold, true);
+    }
+
+    /// True when italic UI text really renders slanted (the synthetic slant works). Measured once
+    /// by drawing the same word upright and italic; callers keep a lighter-color fallback for the
+    /// case where it does not (a font stack that refuses the transform).
+    pub fn italic_works(&mut self) -> bool {
+        if let Some(v) = self.italic_ok {
+            return v;
+        }
+        let white = Rgba(255, 255, 255, 255);
+        let clip = Rect::new(0, 0, 80, 30);
+        let mut render = |ctx: &mut TextCtx, italic: bool| {
+            let mut px = vec![0u32; 80 * 30];
+            let mut cv = Canvas { px: &mut px, w: 80, h: 30 };
+            ctx.draw_ui_pieces_i(&mut cv, 2, 2, &[("Hlfi".to_string(), white)], clip, false, italic);
+            px
+        };
+        let (a, b) = (render(self, false), render(self, true));
+        let v = a != b;
+        self.italic_ok = Some(v);
+        v
+    }
+
     /// Draw an icon (see `icons.rs`) tinted with `color`. Size is in pixels and independent of the
     /// code font size, so zooming the code never changes the interface.
     pub fn icon(&mut self, cv: &mut Canvas, name: &str, x: i32, y: i32, size: i32, color: Rgba, clip: Rect) {
@@ -856,6 +970,12 @@ impl TextCtx {
     /// Draw `text` in the UI font at an arbitrary `size` (line height `round(size * 1.4)`) with its
     /// top-left at (x, y), clipped. Same family / weight rules as [`draw_ui`](Self::draw_ui).
     pub fn draw_ui_sized(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool, size: f32) {
+        self.draw_ui_sized_i(cv, x, y, text, color, clip, bold, false, size);
+    }
+
+    /// [`draw_ui_sized`](Self::draw_ui_sized) with an `italic` switch (synthetic slant, see
+    /// [`draw_ui_pieces_i`](Self::draw_ui_pieces_i)).
+    pub fn draw_ui_sized_i(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool, italic: bool, size: f32) {
         if text.is_empty() || clip.w <= 0 || clip.h <= 0 {
             return;
         }
@@ -870,6 +990,9 @@ impl TextCtx {
         };
         if bold {
             a = a.weight(cosmic_text::Weight::SEMIBOLD);
+        }
+        if italic {
+            a = a.style(cosmic_text::Style::Italic);
         }
         let a = a.color(to_color(color));
         let s = scale();
@@ -1052,6 +1175,45 @@ mod tests {
         let mut cv = Canvas { px: &mut px, w: 240, h: 40 };
         ctx.draw(&mut cv, 2, 2, &[("iiHH".into(), white)], Rect::new(0, 0, 240, 40));
         assert_eq!(px, plain);
+    }
+
+    #[test]
+    fn ui_italic_is_slanted_not_just_recolored() {
+        let mut ctx = TextCtx::new(None);
+        let white = Rgba(255, 255, 255, 255);
+        let clip = Rect::new(0, 0, 160, 30);
+        let mut render = |italic: bool, bold: bool| {
+            let mut px = vec![0u32; 160 * 30];
+            let mut cv = Canvas { px: &mut px, w: 160, h: 30 };
+            ctx.draw_ui_pieces_i(&mut cv, 2, 4, &[("Illl lIIl iil".to_string(), white)], clip, bold, italic);
+            px
+        };
+        let (up, it, itb) = (render(false, false), render(true, false), render(true, true));
+        assert_ne!(up, it, "the synthetic slant must change the pixels");
+        assert_ne!(it, itb);
+        // Same ink amount (+-30%), same colour: it is a shear, not a dimmed copy.
+        let ink = |p: &Vec<u32>| p.iter().filter(|v| **v != 0).count() as f64;
+        let ratio = ink(&it) / ink(&up);
+        assert!((0.7..1.3).contains(&ratio), "ink ratio {ratio}");
+        // Vertical stems lean right at the top: the ink centroid of the top third moves right of the
+        // bottom third's by more than in the upright text.
+        let third = |p: &Vec<u32>, top: bool| -> f64 {
+            let rows: Vec<usize> = (0..30).filter(|r| (0..160).any(|x| p[r * 160 + x] != 0)).collect();
+            let n = (rows.len() / 3).max(1);
+            let sel: Vec<usize> = if top { rows[..n].to_vec() } else { rows[rows.len() - n..].to_vec() };
+            let (mut w, mut sx) = (0.0, 0.0);
+            for r in sel {
+                for x in 0..160 {
+                    let a = (p[r * 160 + x] & 0xff) as f64;
+                    w += a;
+                    sx += a * x as f64;
+                }
+            }
+            sx / w.max(1.0)
+        };
+        let lean = |p: &Vec<u32>| third(p, true) - third(p, false);
+        assert!(lean(&it) > lean(&up) + 0.8, "italic leans right: {} vs {}", lean(&it), lean(&up));
+        assert!(ctx.italic_works());
     }
 
     fn covered_by_loaded(ctx: &TextCtx, ch: char) -> bool {

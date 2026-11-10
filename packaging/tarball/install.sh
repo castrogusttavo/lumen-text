@@ -16,5 +16,16 @@ install -Dm644 "$here/share/applications/lumen-text.desktop" "$prefix/share/appl
 # Absolute Exec= so the launcher works even when $prefix/bin is not in the desktop's PATH.
 sed -i "s|^Exec=.*|Exec=$prefix/bin/lumen-text %F|" "$prefix/share/applications/lumen-text.desktop"
 
+# lumen-text needs at least one system font (it exits at start-up without any) and the
+# libxkbcommon shared library; a tarball cannot declare dependencies, so check here.
+if command -v fc-list >/dev/null 2>&1; then
+  [ -n "$(fc-list 2>/dev/null | head -n 1)" ] || echo "warning: no fonts found - install one (e.g. fonts-dejavu-core / dejavu-sans-mono-fonts / ttf-dejavu)" >&2
+else
+  echo "warning: fontconfig not found - install fontconfig and a font (e.g. fonts-dejavu-core, dejavu-sans-mono-fonts, ttf-dejavu)" >&2
+fi
+if command -v ldconfig >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep -q 'libxkbcommon\.so'; then
+  echo "warning: libxkbcommon not found - install libxkbcommon0 / libxkbcommon" >&2
+fi
+
 echo "installed to $prefix (make sure $prefix/bin is in PATH)"
 echo "TypeScript support: npm i --prefix \"$prefix/share/lumen-text/tsgo\" @typescript/native-preview"

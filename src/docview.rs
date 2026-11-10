@@ -354,7 +354,17 @@ impl Doc {
         let (sub, _) = locate(&breaks, col);
         let sub = sub.min(self.view.map.rows_in(line).saturating_sub(1));
         let c0 = if sub == 0 { 0 } else { breaks[sub - 1] };
-        (self.view.map.row_of(line) + sub, visual_col_from(&text, c0, col, self.ed.tab_w))
+        let row = self.view.map.row_of(line) + sub;
+        let hs = self.inlay.hints.hints_on(line);
+        if hs.is_empty() {
+            return (row, visual_col_from(&text, c0, col, self.ed.tab_w));
+        }
+        // Inlay hints on a wrapped row: slice them to the row and measure its text alone.
+        let len = text.chars().count();
+        let (r0, r1) = row_range(&breaks, sub, len);
+        let rh = crate::inlay::row_hints(hs, len, r0, r1, sub >= breaks.len());
+        let rowtext: String = text.chars().skip(r0).take(r1 - r0).collect();
+        (row, crate::inlay::vcol_in(&rh.hints, &rowtext, col - c0, self.ed.tab_w, false))
     }
 
     /// First and last logical line touched by the viewport (for LSP requests keyed by line).
@@ -416,9 +426,10 @@ impl Doc {
     }
 
     /// Text changed: first changed line `l`. Keeps folds, wrap rows and the map consistent.
-    pub fn view_on_edit(&mut self, l: usize) {
+    pub fn view_on_edit(&mut self, l: usize) -> Vec<EditRec> {
         let recs = self.buf.take_edits();
         self.view.on_edit(&recs, l, &self.buf);
+        recs
     }
 
     /// Before scrolling to the caret: unfold what hides it and make its row count exact.
@@ -687,6 +698,31 @@ impl Doc {
         self.ed.delete_lines(&mut self.buf, l0, l1);
     }
 
+    /// Ctrl+C: the selection(s), or with nothing selected the caret's line (a folded header copies
+    /// its hidden lines too, so the clipboard holds what the cut would remove).
+    pub fn copy_cmd(&self) -> String {
+        if self.ed.sel.is_empty() && self.ed.extra.is_empty() {
+            let (l0, l1) = self.fold_extend_caret();
+            return Editor::lines_text(&self.buf, l0, l1);
+        }
+        self.ed.copy_text_multi(&self.buf)
+    }
+
+    /// Ctrl+X with a single cursor: the selection, or the caret's line with its hidden fold body.
+    pub fn cut_cmd(&mut self) -> String {
+        if self.ed.sel.is_empty() {
+            let (l0, l1) = self.fold_extend_caret();
+            return self.ed.cut_lines(&mut self.buf, l0, l1);
+        }
+        self.ed.cut(&mut self.buf)
+    }
+
+    /// The caret's line, widened over the lines its fold hides.
+    fn fold_extend_caret(&self) -> (usize, usize) {
+        let l = self.caret_line();
+        self.fold_extend(l, l)
+    }
+
     // ── movement ──
 
     /// Up/Down/PageUp/PageDown by `delta` visual rows, for every cursor.
@@ -698,37 +734,56 @@ impl Doc {
         self.ed.move_multi(&mut self.buf, |e, b| vertical_rows(e, b, extend, delta, view));
     }
 
-    /// End key with word wrap: first to the end of the visual row, then of the line.
-    pub fn row_end_target(&self, c: usize) -> Option<usize> {
-        if self.view.cols == 0 {
-            return None;
-        }
-        let (line, col) = self.buf.line_col(c);
-        let text = self.buf.line(line);
-        let breaks = self.view.breaks(&text);
-        let (sub, _) = locate(&breaks, col);
-        if sub >= breaks.len() {
-            return None;
-        }
-        let end = col_at(&breaks, sub + 1, 0).saturating_sub(1);
-        (end != col).then(|| self.buf.pos(line, end))
+    /// Home for every cursor: the start of the visual row when wrapped, else the line's start /
+    /// first non-blank.
+    pub fn home_cmd(&mut self, extend: bool) {
+        let view = &self.view;
+        self.ed.move_multi(&mut self.buf, |e, b| match row_home_in(view, b, e.head()) {
+            Some(p) => e.click(b, p, extend),
+            None => e.home(b, extend),
+        });
     }
 
-    /// Home key with word wrap: start of the visual row when the caret is past it.
-    pub fn row_home_target(&self, c: usize) -> Option<usize> {
-        if self.view.cols == 0 {
-            return None;
-        }
-        let (line, col) = self.buf.line_col(c);
-        let text = self.buf.line(line);
-        let breaks = self.view.breaks(&text);
-        let (sub, _) = locate(&breaks, col);
-        if sub == 0 {
-            return None;
-        }
-        let start = col_at(&breaks, sub, 0);
-        (start != col).then(|| self.buf.pos(line, start))
+    /// End for every cursor: the end of the visual row when wrapped, else of the line.
+    pub fn end_cmd(&mut self, extend: bool) {
+        let view = &self.view;
+        self.ed.move_multi(&mut self.buf, |e, b| match row_end_in(view, b, e.head()) {
+            Some(p) => e.click(b, p, extend),
+            None => e.end(b, extend),
+        });
     }
+}
+
+/// End key with word wrap: the end of the visual row (None on the last row: then the line's end).
+fn row_end_in(view: &ViewMap, buf: &Buffer, c: usize) -> Option<usize> {
+    if view.cols == 0 {
+        return None;
+    }
+    let (line, col) = buf.line_col(c);
+    let text = buf.line(line);
+    let breaks = view.breaks(&text);
+    let (sub, _) = locate(&breaks, col);
+    if sub >= breaks.len() {
+        return None;
+    }
+    let end = col_at(&breaks, sub + 1, 0).saturating_sub(1);
+    (end != col).then(|| buf.pos(line, end))
+}
+
+/// Home key with word wrap: the start of the visual row when the caret is past it.
+fn row_home_in(view: &ViewMap, buf: &Buffer, c: usize) -> Option<usize> {
+    if view.cols == 0 {
+        return None;
+    }
+    let (line, col) = buf.line_col(c);
+    let text = buf.line(line);
+    let breaks = view.breaks(&text);
+    let (sub, _) = locate(&breaks, col);
+    if sub == 0 {
+        return None;
+    }
+    let start = col_at(&breaks, sub, 0);
+    (start != col).then(|| buf.pos(line, start))
 }
 
 #[cfg(test)]
@@ -868,6 +923,68 @@ mod tests {
         }
     }
 
+    fn hint(line: usize, col: usize, label: &str, pad_left: bool, pad_right: bool) -> crate::inlay::Hint {
+        crate::inlay::Hint { line, col, label: label.into(), kind: crate::inlay::HintKind::Type, pad_left, pad_right, links: Vec::new(), edits: Vec::new() }
+    }
+
+    #[test]
+    fn inlay_hints_on_wrapped_rows_keep_caret_and_clicks_exact() {
+        let long = "abcdefgh".repeat(12); // 96 chars, hard breaks at 30, 60, 90
+        let mut d = doc(&format!("{long}\nnext\n"));
+        d.set_word_wrap(true);
+        d.cell_w = 8.0;
+        d.view_prepare(30);
+        let hs = vec![hint(0, 35, ": number", true, false), hint(0, 70, "x:", false, true), hint(0, 96, ": T", false, false)];
+        d.inlay.apply(0, 1, hs, d.buf.line_count());
+        let lh = crate::ui::line_h() as f64;
+        let base = (d.rect.x + d.gutter_w()) as f64;
+        for col in [0usize, 5, 29, 30, 34, 35, 36, 59, 60, 69, 70, 71, 89, 90, 96] {
+            let c = d.buf.pos(0, col);
+            let (row, vcol) = d.caret_geom(c);
+            let (x, y) = (base + vcol as f64 * 8.0, d.rect.y as f64 + row as f64 * lh + lh / 2.0);
+            assert_eq!(d.pos_at(x, y), c, "col {col}");
+        }
+        // the caret after the hint's column sits past the hint's cells (1 pad + 7 label cells)
+        let (_, before) = d.caret_geom(d.buf.pos(0, 35));
+        let (_, after) = d.caret_geom(d.buf.pos(0, 36));
+        assert_eq!((before, after), (5, 5 + 1 + 1 + 7));
+        // a pointer over the hint's label reports it (and the label char); over text it does not
+        let row = 1; // second row of line 0
+        let y = d.rect.y as f64 + row as f64 * lh + lh / 2.0;
+        let over_label = base + (5.0 + 1.0 + 3.0) * 8.0;
+        let (p, hit) = d.hit_at(over_label, y);
+        assert_eq!(p, d.buf.pos(0, 35));
+        let hit = hit.expect("over the hint");
+        assert_eq!((hit.line, hit.idx), (0, 0));
+        assert!(hit.off.is_some());
+        let pad = d.hit_at(base + 5.0 * 8.0 + 2.0, y).1.expect("padding is part of the hint");
+        assert_eq!(pad.off, None);
+        assert!(d.hit_at(base + 2.0 * 8.0, y).1.is_none());
+        // the third row's hint "x:" (col 70) is hit with its own index
+        let y2 = d.rect.y as f64 + 2.0 * lh + lh / 2.0;
+        assert_eq!(d.hit_at(base + (10.0 + 0.5) * 8.0, y2).1.map(|h| h.idx), Some(1));
+        // the hint at the very end of the last row
+        let y3 = d.rect.y as f64 + 3.0 * lh + lh / 2.0;
+        assert_eq!(d.hit_at(base + (6.0 + 0.5) * 8.0, y3).1.map(|h| h.idx), Some(2));
+    }
+
+    #[test]
+    fn double_click_hint_edit_is_one_undo_step() {
+        let mut d = doc("const x = 5;\n");
+        d.inlay.apply(0, 0, vec![hint(0, 7, ": number", true, false)], d.buf.line_count());
+        let hit = crate::doc::HintHit { line: 0, idx: 0, off: Some(2) };
+        assert!(d.apply_hint_edits(hit));
+        assert_eq!(d.buf.line(0), "const x: number = 5;");
+        d.ed.undo(&mut d.buf);
+        assert_eq!(d.buf.line(0), "const x = 5;");
+        // a parameter-name hint has nothing to insert
+        let mut p = hint(0, 7, "name:", false, true);
+        p.kind = crate::inlay::HintKind::Parameter;
+        d.inlay.apply(0, 0, vec![p], d.buf.line_count());
+        assert!(!d.apply_hint_edits(hit));
+        assert_eq!(d.buf.line(0), "const x = 5;");
+    }
+
     #[test]
     fn wrap_vertical_moves_by_visual_row() {
         let long = "abcdefgh".repeat(12); // 96 chars, no spaces -> hard breaks at 30
@@ -893,10 +1010,65 @@ mod tests {
         d.set_word_wrap(true);
         d.view_prepare(30);
         let mid = d.buf.pos(0, 35);
-        assert_eq!(d.row_home_target(mid), Some(d.buf.pos(0, 30)));
-        assert_eq!(d.row_end_target(mid), Some(d.buf.pos(0, 59)));
+        assert_eq!(row_home_in(&d.view, &d.buf, mid), Some(d.buf.pos(0, 30)));
+        assert_eq!(row_end_in(&d.view, &d.buf, mid), Some(d.buf.pos(0, 59)));
         let last = d.buf.pos(0, 70);
-        assert_eq!(d.row_end_target(last), None);
+        assert_eq!(row_end_in(&d.view, &d.buf, last), None);
+    }
+
+    #[test]
+    fn home_and_end_use_the_visual_row_for_every_cursor() {
+        let long = "abcdefgh".repeat(10); // 80 chars, breaks at 30, 60
+        let mut d = doc(&format!("{long}\n{long}\n"));
+        d.set_word_wrap(true);
+        d.view_prepare(30);
+        // primary on line 0 / row 2 (col 70), second cursor on line 1 / row 1 (col 35)
+        click(&mut d, 0, 70);
+        let p = d.buf.pos(1, 35);
+        d.ed.add_cursor_at(p);
+        d.end_cmd(false);
+        let cols: Vec<(usize, usize)> = d.ed.all_sels().iter().map(|s| d.buf.line_col(s.head)).collect();
+        assert!(cols.contains(&(0, 80)) && cols.contains(&(1, 59)), "{cols:?}: the row end, the line end on the last row");
+        d.home_cmd(false);
+        let cols: Vec<(usize, usize)> = d.ed.all_sels().iter().map(|s| d.buf.line_col(s.head)).collect();
+        assert!(cols.contains(&(0, 60)) && cols.contains(&(1, 30)), "{cols:?}: each cursor to the start of its own row");
+        // selecting with shift keeps every anchor
+        d.end_cmd(true);
+        assert!(d.ed.all_sels().iter().all(|s| s.anchor != s.head));
+    }
+
+    #[test]
+    fn cut_and_copy_without_selection_take_the_folded_body_along() {
+        let mut d = doc(&code());
+        click(&mut d, 0, 2);
+        assert!(d.fold_at_cursor()); // fn a: lines 0..5
+        d.view_prepare(80);
+        click(&mut d, 0, 2);
+        let whole = "fn a() {\n    if x {\n        y();\n    }\n    z();\n"; // the fold hides lines 1..=4
+        assert_eq!(d.copy_cmd(), whole, "copy has the hidden lines too");
+        assert_eq!(d.buf.line_count(), 10, "copy changes nothing");
+        let t = d.cut_cmd();
+        assert_eq!(t, whole, "the clipboard text is complete");
+        assert_eq!(d.buf.to_string(), "}\nfn b() {\n    w();\n}\n");
+        d.sync_edits();
+        d.view_prepare(80);
+        assert!(d.view.folds.is_empty(), "the fold went with its lines");
+        // pasting it back restores the text
+        click(&mut d, 0, 0);
+        d.ed.paste(&mut d.buf, &t);
+        assert_eq!(d.buf.to_string(), code());
+        // a header that is not folded still cuts one line
+        let mut d = doc(&code());
+        click(&mut d, 6, 0);
+        assert_eq!(d.cut_cmd(), "fn b() {\n");
+        // the last line (no line break after it) still ends the clipboard text with one
+        let mut d = doc("a\nb");
+        click(&mut d, 1, 0);
+        assert_eq!(d.copy_cmd(), "b\n");
+        // with a selection nothing changes: the selection is copied
+        let mut d = doc(&code());
+        d.ed.select_range(&mut d.buf, 0, 2);
+        assert_eq!(d.copy_cmd(), "fn");
     }
 
     #[test]

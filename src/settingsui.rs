@@ -86,12 +86,14 @@ pub fn default_settings() -> Vec<SettingDef> {
     let d = |key, section, label, help, kind| SettingDef { key, section, label, help, kind };
     vec![
         d("format_on_save", "Geral", "Formatar ao salvar", "Roda o formatador do servidor de linguagem sempre que um arquivo é salvo.", Bool),
+        d("updates", "Geral", "Atualizações", "Automático verifica a cada 4 horas e baixa a nova versão em segundo plano; Avisar só mostra um aviso; Desligado nunca verifica (o comando \"Verificar atualizações\" continua funcionando).", Choice(&["auto", "notify", "off"])),
         d("font_size", "Editor", "Tamanho da fonte", "Tamanho do texto do código em pixels (8 a 40). Ctrl + roda do mouse ajusta temporariamente.", Number { min: 8.0, max: 40.0, step: 1.0 }),
         // --- not in config.rs yet (see PENDING_KEYS) ---
         d("minimap", "Editor", "Minimapa", "Mostra a miniatura do arquivo na borda direita do editor.", Bool),
         d("minimap_style", "Editor", "Estilo do minimapa", "Sutil é mais estreito e de baixo contraste; Normal é a aparência original.", Choice(&["subtle", "normal"])),
         d("word_wrap", "Editor", "Quebra de linha", "Quebra linhas longas na largura da janela em vez de rolar na horizontal.", Bool),
         d("sticky_scroll", "Editor", "Rolagem fixa", "Mantém os escopos (função, classe) visíveis no topo enquanto você rola.", Bool),
+        d("tab_width", "Editor", "Largura da tabulação", "Quantas colunas um caractere de tabulação ocupa no editor (2, 4 ou 8). A indentação por arquivo continua na barra inferior.", Choice(&["2", "4", "8"])),
         d("indent_guides", "Editor", "Guias de indentação", "Desenha linhas verticais finas nos níveis de indentação.", Bool),
         d("breadcrumbs", "Editor", "Breadcrumbs", "Mostra o caminho do arquivo e dos símbolos acima do editor. Desligado, o editor ocupa o espaço da linha.", Bool),
         // --- end of pending keys ---
@@ -103,9 +105,14 @@ pub fn default_settings() -> Vec<SettingDef> {
         d("ui_scale", "Aparência", "Escala da interface", "Escala de telas hi-DPI (0,5 a 4). 0 = automático, usa a escala do sistema (também aceita LUMEN_SCALE).", Number { min: 0.0, max: 4.0, step: 0.25 }),
         d("auto_import", "TypeScript", "Importação automática", "Adiciona imports ausentes automaticamente ao aceitar uma sugestão.", Bool),
         d("lsp_narrow", "TypeScript", "Modo enxuto", "Limita o servidor de linguagem ao essencial para gastar menos memória e CPU.", Bool),
-        d("code_lens", "TypeScript", "Code lens", "Mostra contagem de referências e implementações acima dos símbolos (custa CPU do servidor).", Bool),
+        d("code_lens", "TypeScript", "Code lens", "Mostra contagem de referências e implementações ao lado dos símbolos (custa CPU do servidor).", Bool),
+        d("code_lens_refs", "TypeScript", "Code lens: referências", "Mostra \"N referências\" (precisa do Code lens ligado).", Bool),
+        d("code_lens_impls", "TypeScript", "Code lens: implementações", "Mostra \"N implementações\" (precisa do Code lens ligado).", Bool),
         d("inlay_hints", "TypeScript", "Inlay hints", "Mostra tipos inferidos e nomes de parâmetros em cinza dentro do código (só para as linhas visíveis).", Bool),
+        d("inlay_hints_params", "TypeScript", "Inlay hints: parâmetros", "Mostra o nome do parâmetro antes de cada argumento (precisa dos Inlay hints ligados).", Bool),
+        d("inlay_hints_types", "TypeScript", "Inlay hints: tipos", "Mostra os tipos inferidos de variáveis, parâmetros e retornos; clique duplo no tipo insere a anotação, Ctrl+clique vai à definição (precisa dos Inlay hints ligados).", Bool),
         d("tsgo_source", "TypeScript", "Origem do tsgo", "Automático usa o tsgo do projeto se instalado, senão o embutido.", Choice(&["auto", "project", "bundled"])),
+        d("git_pull_strategy", "Git", "Estratégia do pull", "Como o Pull integra os commits do remoto quando os históricos divergiram. \"Perguntar\" mostra a escolha na hora; também dá para trocar com o botão direito em Pull.", Choice(&["ask", "merge", "rebase", "ff-only"])),
         d("git_blame", "Git", "Git blame na linha", "Mostra autor e data do último commit da linha do cursor, em cinza ao fim da linha. Também no comando \"Alternar git blame\".", Bool),
         // Bottom bar: one switch per item. The sidebar toggle (left corner) is mandatory and has none.
         d("status_search", "Barra inferior", "Buscar no projeto", "Botão de busca no projeto (canto esquerdo).", Bool),
@@ -117,15 +124,18 @@ pub fn default_settings() -> Vec<SettingDef> {
         d("status_debug", "Barra inferior", "Depuração", "Botão que abre o painel de depuração.", Bool),
         d("status_git", "Barra inferior", "Git", "Botão do painel Git com a contagem de arquivos alterados.", Bool),
         d("status_ram", "Barra inferior", "Memória", "Uso de memória do editor e dos servidores de linguagem.", Bool),
-        // Order of the right-hand items: a stepper per item with its slot (1 = leftmost); - moves it
-        // left, + moves it right. Hidden items keep their slot.
-        d("status_pos_position", "Barra inferior", "Ordem: Linha e coluna", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_indent", "Barra inferior", "Ordem: Indentação", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_language", "Barra inferior", "Ordem: Linguagem", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_terminal", "Barra inferior", "Ordem: Terminal", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_debug", "Barra inferior", "Ordem: Depuração", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_git", "Barra inferior", "Ordem: Git", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_ram", "Barra inferior", "Ordem: Memória", "Posição deste item no grupo da direita (1 = mais à esquerda). − move para a esquerda, + para a direita.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        // Order of the items: a stepper per item with its position among the visible ones of its group
+        // (1 = leftmost); - moves it left, + moves it right, hopping over hidden items.
+        d("status_pos_sidebar", "Barra inferior", "Ordem: Barra lateral", "Posição no grupo da esquerda (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 3.0, step: 1.0 }),
+        d("status_pos_search", "Barra inferior", "Ordem: Buscar no projeto", "Posição no grupo da esquerda (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 3.0, step: 1.0 }),
+        d("status_pos_problems", "Barra inferior", "Ordem: Problemas", "Posição no grupo da esquerda (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 3.0, step: 1.0 }),
+        d("status_pos_position", "Barra inferior", "Ordem: Linha e coluna", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_indent", "Barra inferior", "Ordem: Indentação", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_language", "Barra inferior", "Ordem: Linguagem", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_terminal", "Barra inferior", "Ordem: Terminal", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_debug", "Barra inferior", "Ordem: Depuração", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_git", "Barra inferior", "Ordem: Git", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_ram", "Barra inferior", "Ordem: Memória", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
         d("ram_display", "Barra inferior", "Formato da memória", "Longa mostra os números (\"RAM 13 MB + tsgo 65 MB\"); curta mostra só um ícone de chip, com os valores no tooltip.", Choice(&["long", "short"])),
     ]
 }
@@ -133,17 +143,25 @@ pub fn default_settings() -> Vec<SettingDef> {
 /// Defaults matching `Config::default()` plus the pending keys. Used for the per-row reset icon
 /// and as the display value of keys missing from the values map.
 pub fn default_values() -> Value {
-    json!({
-        "format_on_save": false, "auto_import": false, "font_size": 14, "lsp_narrow": true,
-        "code_lens": false, "inlay_hints": false, "appearance": "fixed", "theme_chrome": "derived", "theme_light": "github-light-default",
+    let mut v = json!({
+        "format_on_save": false, "updates": "auto", "auto_import": false, "font_size": 14, "lsp_narrow": true,
+        "code_lens": false, "code_lens_refs": true, "code_lens_impls": true, "inlay_hints": false, "inlay_hints_params": true, "inlay_hints_types": true, "appearance": "fixed", "theme_chrome": "derived", "theme_light": "github-light-default",
         "theme_dark": "github-dark-default", "tsgo_source": "auto",
         "minimap": true, "minimap_style": "subtle", "word_wrap": false, "sticky_scroll": true, "indent_guides": true, "ui_scale": 0,
-        "breadcrumbs": true, "git_blame": true, "ram_display": "long",
+        "breadcrumbs": true, "git_blame": true, "ram_display": "long", "tab_width": "4", "git_pull_strategy": "ask",
+    });
+    // Split in two: one `json!` this long hits the macro recursion limit.
+    let bar = json!({
         "status_search": true, "status_problems": true, "status_position": true, "status_indent": true, "status_language": true,
         "status_terminal": true, "status_debug": true, "status_git": true, "status_ram": true,
+        "status_pos_sidebar": 1, "status_pos_search": 2, "status_pos_problems": 3,
         "status_pos_position": 1, "status_pos_indent": 2, "status_pos_language": 3, "status_pos_terminal": 4,
         "status_pos_debug": 5, "status_pos_git": 6, "status_pos_ram": 7,
-    })
+    });
+    if let (Some(dst), Some(src)) = (v.as_object_mut(), bar.as_object()) {
+        dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
+    }
+    v
 }
 
 fn choice_label(s: &str) -> String {
@@ -151,12 +169,18 @@ fn choice_label(s: &str) -> String {
         "fixed" => "Fixo".into(),
         "system" => "Sistema".into(),
         "auto" => "Automático".into(),
+        "notify" => "Avisar".into(),
+        "off" => "Desligado".into(),
         "project" => "Projeto".into(),
         "bundled" => "Embutido".into(),
         "long" => "Longa".into(),
         "short" => "Curta".into(),
         "derived" => "Derivadas".into(),
         "theme" => "Do tema".into(),
+        "ask" => "Perguntar".into(),
+        "merge" => "Merge".into(),
+        "rebase" => "Rebase".into(),
+        "ff-only" => "Só avanço".into(),
         "subtle" => "Sutil".into(),
         "normal" => "Normal".into(),
         o => o.to_string(),
@@ -1304,6 +1328,9 @@ pub struct Modal {
     pub keybinds: KeybindsPage,
     hits: Vec<(Rect, Hit)>,
     rect: Rect,
+    /// The scrolling list of the page drawn last: (its rectangle, content height in px). The app
+    /// paints and drags the thin scrollbar (`ui::VBar`) from this.
+    list: Option<(Rect, i32)>,
 }
 
 const HEAD_H: i32 = 48;
@@ -1312,7 +1339,26 @@ const FOOT_H: i32 = 46;
 
 impl Modal {
     pub fn new(settings: SettingsPage, keybinds: KeybindsPage, page: Page) -> Self {
-        Self { page, settings, keybinds, hits: vec![], rect: Rect::default() }
+        Self { page, settings, keybinds, hits: vec![], rect: Rect::default(), list: None }
+    }
+
+    /// (list area, content height, visible height, scroll) in px for the scrollbar; `None` when
+    /// everything fits or a dropdown covers the list.
+    pub fn bar_info(&self) -> Option<(Rect, f64, f64, f64)> {
+        let (area, content) = self.list?;
+        if self.page == Page::Settings && self.settings.dropdown_open() {
+            return None;
+        }
+        let scroll = if self.page == Page::Settings { self.settings.scroll } else { self.keybinds.scroll };
+        Some((area, content as f64, area.h as f64, scroll))
+    }
+
+    /// Scrollbar drag: move the list of the current page to `v` px.
+    pub fn set_scroll(&mut self, v: f64) {
+        match self.page {
+            Page::Settings => self.settings.scroll = v.clamp(0.0, self.settings.max_scroll()),
+            Page::Keybinds => self.keybinds.scroll = v.clamp(0.0, self.keybinds.max_scroll()),
+        }
     }
 
     /// Modal rectangle for a window: min(window-80, 860) x min(window-80, 560), centered.
@@ -1501,10 +1547,10 @@ impl Modal {
         cv.fill(Rect::new(r.x + 1, r.y + HEAD_H, r.w - 2, 1), c.border);
 
         let body = Rect::new(r.x, r.y + HEAD_H + 1, r.w, r.h - HEAD_H - 1);
-        match self.page {
+        self.list = match self.page {
             Page::Settings => draw_settings(&mut self.settings, cv, tx, theme, body, &mut self.hits),
             Page::Keybinds => draw_keybinds(&mut self.keybinds, cv, tx, theme, body, &mut self.hits),
-        }
+        };
     }
 }
 
@@ -1632,7 +1678,7 @@ fn draw_chips(tx: &mut TextCtx, cv: &mut Canvas, th: &Theme, x: i32, cy: i32, co
 
 // ───────────────────────────── settings drawing ─────────────────────────────
 
-fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &Theme, area: Rect, hits: &mut Vec<(Rect, Hit)>) {
+fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &Theme, area: Rect, hits: &mut Vec<(Rect, Hit)>) -> Option<(Rect, i32)> {
     let c = th.chrome;
     let fg = th.foreground;
     let dim = c.tab_inactive_fg;
@@ -1821,7 +1867,8 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
             }
         }
     }
-    scrollbar(cv, list, p.scroll, vis.len() as i32 * SET_ROW, dim.with_alpha(110));
+    // The list's scrollbar is the app's draggable `ui::VBar` (see `Modal::bar_info`).
+    let list_info = (list, vis.len() as i32 * SET_ROW);
 
     // Dropdown popup, above everything else.
     if let (Some(a), Some(dr)) = (drop_anchor, p.drop.clone()) {
@@ -1857,11 +1904,12 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
     // Footer hint.
     let hint = fit(tx, "↑↓ navegar   Enter/Espaço alterar   ←→ ajustar   Tab trocar de seção   Esc fechar", rw, false);
     tx.draw_ui(cv, rx, area.bottom() - 26, &hint, dim.with_alpha(170), area, false);
+    Some(list_info)
 }
 
 // ───────────────────────────── keybindings drawing ─────────────────────────────
 
-fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &Theme, area: Rect, hits: &mut Vec<(Rect, Hit)>) {
+fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &Theme, area: Rect, hits: &mut Vec<(Rect, Hit)>) -> Option<(Rect, i32)> {
     let c = th.chrome;
     let fg = th.foreground;
     let dim = c.tab_inactive_fg;
@@ -1948,7 +1996,7 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
             push_hit(hits, ic.inset(-5), list, Hit::KbReset(k));
         }
     }
-    scrollbar(cv, list, p.scroll, p.filtered.len() as i32 * KB_ROW, dim.with_alpha(110));
+    let list_info = (list, p.filtered.len() as i32 * KB_ROW);
 
     // Footer: hints, record prompt, conflict question.
     let fy = area.bottom() - FOOT_H;
@@ -2000,6 +2048,7 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
             hits.push((b2, Hit::KbCancel));
         }
     }
+    Some(list_info)
 }
 
 // ───────────────────────────── tests ─────────────────────────────
@@ -2171,9 +2220,9 @@ mod tests {
     fn sections_in_order_and_visible_by_section() {
         let mut p = page_with(json!({}));
         assert_eq!(p.sections(), vec!["Geral", "Editor", "Aparência", "TypeScript", "Git", "Barra inferior"]);
-        assert_eq!(p.visible().len(), 1);
+        assert_eq!(p.visible().len(), 2);
         p.set_section(3);
-        assert_eq!(keys_of(&p), vec!["auto_import", "lsp_narrow", "code_lens", "inlay_hints", "tsgo_source"]);
+        assert_eq!(keys_of(&p), vec!["auto_import", "lsp_narrow", "code_lens", "code_lens_refs", "code_lens_impls", "inlay_hints", "inlay_hints_params", "inlay_hints_types", "tsgo_source"]);
         p.set_section(99);
         assert_eq!(p.section, 3, "out of range ignored");
     }
@@ -2194,7 +2243,7 @@ mod tests {
         let keys = keys_of(&m.settings);
         assert!(keys.contains(&"theme_dark") && !keys.contains(&"font_size"), "{keys:?}");
         m.settings.search = TextField::with("   ");
-        assert_eq!(keys_of(&m.settings), vec!["format_on_save"], "blank search = section list");
+        assert_eq!(keys_of(&m.settings), vec!["format_on_save", "updates"], "blank search = section list");
     }
 
     #[test]
@@ -2210,7 +2259,7 @@ mod tests {
             press(&mut m, named(NamedKey::Backspace));
         }
         assert!(m.settings.search.text.is_empty());
-        assert_eq!(m.settings.visible().len(), 1, "back to the section list");
+        assert_eq!(m.settings.visible().len(), 2, "back to the section list");
     }
 
     #[test]
@@ -2364,21 +2413,21 @@ mod tests {
     #[test]
     fn settings_navigation_bounds_and_tab() {
         let mut m = modal();
-        m.settings.set_section(3); // 5 rows
+        m.settings.set_section(3); // 7 rows
         press(&mut m, named(NamedKey::ArrowUp));
         assert_eq!(m.settings.sel, 0);
         for _ in 0..10 {
             press(&mut m, named(NamedKey::ArrowDown));
         }
-        assert_eq!(m.settings.sel, 4);
+        assert_eq!(m.settings.sel, 8);
         press(&mut m, named(NamedKey::Home));
         assert_eq!(m.settings.sel, 0);
         press(&mut m, named(NamedKey::End));
-        assert_eq!(m.settings.sel, 4);
+        assert_eq!(m.settings.sel, 8);
         press(&mut m, named(NamedKey::PageUp));
-        assert_eq!(m.settings.sel, 0);
+        assert_eq!(m.settings.sel, 2);
         press(&mut m, named(NamedKey::PageDown));
-        assert_eq!(m.settings.sel, 4);
+        assert_eq!(m.settings.sel, 8);
         // Tab walks sections and wraps
         let last = m.settings.sections().len() - 1;
         m.settings.set_section(last);

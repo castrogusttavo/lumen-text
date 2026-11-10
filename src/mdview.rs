@@ -19,8 +19,9 @@
 //! y offset). Layouts are cached per width / font size.
 //!
 //! Supported: ATX/setext headings (H1-H6, hairline under H1/H2), paragraphs with word wrap,
-//! **bold** (semibold face), *emphasis* (the UI family has no italic face: emphasis is drawn in the
-//! text colour mixed toward the accent), ~~strikethrough~~ (line through), `inline code` (monospace
+//! **bold** (semibold face), *emphasis* (the UI family has no italic face: emphasis is slanted
+//! synthetically by cosmic-text; if that ever fails it falls back to the text colour mixed toward
+//! the accent), ~~strikethrough~~ (line through), `inline code` (monospace
 //! chip), links (accent + underline, hit-testable with [`MdView::link_at`]), images (local
 //! files are decoded: png, jpg, gif, webp, svg, see `mdimg`; remote URLs keep a bordered placeholder
 //! with alt text and URL), bullet / ordered / nested / task lists (a click on a checkbox toggles the
@@ -30,7 +31,7 @@
 //! [`MdView::draw_with`]), GFM tables (content-sized columns, ellipsized cells, alignment),
 //! hard and soft breaks, and `<img>` / `<br>` / `<a href>` found in raw HTML (other tags are
 //! stripped; HTML comments are dropped).
-//! Not supported: definition lists, metadata blocks, admonition quotes, real italics, inline images
+//! Not supported: definition lists, metadata blocks, admonition quotes, true italic faces, inline images
 //! in the middle of a text line (an image ends the paragraph text before it; consecutive images
 //! share a row), animated GIF/WebP (first frame only), SVG text / CSS classes / filters / gradients
 //! (a gradient paints its first stop color), LaTeX typesetting.
@@ -1324,6 +1325,16 @@ impl Lay<'_> {
         self.op(r.y, r.bottom(), Op::Fill { r, col, rad });
     }
 
+    /// Register the `fnref-<label>` anchor of every footnote reference in `inl` (laid out at `y`):
+    /// the back-link of the footnote returns to the block that first mentions it.
+    fn ref_anchors(&mut self, inl: &[Inl], y: i32) {
+        for item in inl {
+            if let Inl::FootRef(label) = item {
+                self.heads.push((format!("fnref-{label}"), y, true));
+            }
+        }
+    }
+
     fn anchor(&mut self, b: &Block, y0: i32, y1: i32) {
         let (mut l0, mut l1) = (b.line as i64, b.end as i64);
         if let Some(p) = self.anchors.last() {
@@ -1485,6 +1496,7 @@ impl Lay<'_> {
         match &b.kind {
             Kind::Heading { level, inl, slug } => {
                 let si = (*level - 1) as usize;
+                self.ref_anchors(inl, y);
                 let lines = self.flow(inl, w, si, true, true);
                 let n = lines.len().max(1) as i32;
                 self.heads.push((slug.clone(), y, false));
@@ -1499,6 +1511,7 @@ impl Lay<'_> {
                 y + h
             }
             Kind::Para(inl) => {
+                self.ref_anchors(inl, y);
                 let lines = self.flow(inl, w, BODY, false, true);
                 let h = lines.len().max(1) as i32 * LH[BODY];
                 self.emit(lines, x, y, BODY, if st.dim { F_DIM } else { 0 });
@@ -1720,7 +1733,12 @@ impl Lay<'_> {
             let indent = (lw + 12).max(26);
             let iy = y;
             self.heads.push((format!("fn-{label}"), iy, true));
-            let mut ey = self.blocks(blocks, x + indent, w - indent, iy, St { depth: 1, tight: Some(4), dim: false });
+            // The back-link (the return arrow) sits at the right edge of the definition's first line.
+            let back = "\u{21a9}";
+            let bw = self.m.w(self.tx, back, false, BODY).ceil() as i32;
+            let link = self.urls.id(&format!("#fnref-{label}"));
+            let mut ey = self.blocks(blocks, x + indent, w - indent - bw - 10, iy, St { depth: 1, tight: Some(4), dim: false });
+            self.emit(vec![vec![Run { x: (w - bw) as f32, w: bw as f32, text: back.into(), flags: F_LINK, link }]], x, iy, BODY, 0);
             if blocks.is_empty() {
                 ey = iy + LH[BODY];
             }
@@ -2084,6 +2102,22 @@ impl MdView {
         self.imgs.pending()
     }
 
+    /// When an animated image drawn in the last pass needs its next frame (None = nothing moves).
+    pub fn anim_due(&self) -> Option<std::time::Instant> {
+        self.imgs.anim_due()
+    }
+
+    /// Image files edited on disk since they were laid out: forget them (size and pixels) and lay
+    /// the document out again. True when anything changed (a redraw is due).
+    pub fn refresh_images(&mut self) -> bool {
+        if !self.imgs.changed_on_disk() {
+            return false;
+        }
+        self.base_gen += 1;
+        self.lay = None;
+        true
+    }
+
     /// Footnote numbers (by first reference, then the definitions nobody references) and the
     /// definitions in that order.
     fn footnotes(&self) -> (HashMap<String, usize>, Vec<(String, Vec<Block>)>) {
@@ -2192,6 +2226,7 @@ impl MdView {
         }
         cv.fill_clip(rect, pal.bg, rect);
         self.imgs.poll();
+        self.imgs.begin_frame();
         self.ensure_layout(tx, rect.w);
         let theme_key = fxhash(theme.name.as_bytes(), ((theme.background.0 as u64) << 40) | ((theme.background.1 as u64) << 32) | ((theme.foreground.0 as u64) << 24) | ((theme.foreground.1 as u64) << 16) | theme.foreground.2 as u64);
         if self.hl_theme != theme_key {
@@ -2238,7 +2273,10 @@ impl MdView {
                         let (sx, sy) = (x + ox, d.y0 + oy);
                         let base_col = if flags & F_DIM != 0 { pal.dim } else { pal.fg };
                         let mut color = base_col;
-                        if flags & F_I != 0 {
+                        // Emphasis is slanted synthetically; the accent tint stays only as a fallback
+                        // when the slant does not render.
+                        let slant = flags & F_I != 0 && tx.italic_works();
+                        if flags & F_I != 0 && !slant {
                             color = color.mix(pal.accent, 0.45);
                         }
                         if flags & F_LINK != 0 {
@@ -2253,7 +2291,7 @@ impl MdView {
                             tx.draw_line(cv, sx + CHIP_PAD, sy + (*lh - cl) / 2, text, color, clip);
                         } else {
                             let off = (*lh - (size * 1.4).round() as i32) / 2;
-                            tx.draw_ui_sized(cv, sx, sy + off, text, color, clip, flags & F_B != 0, size);
+                            tx.draw_ui_sized_i(cv, sx, sy + off, text, color, clip, flags & F_B != 0, slant, size);
                         }
                         if flags & F_S != 0 {
                             cv.fill_clip(Rect::new(sx, sy + *lh / 2 + 1, *w, 1), color, clip);
@@ -2294,6 +2332,16 @@ impl MdView {
                             Tex::Ready(p) => {
                                 let dclip = cv.to_dev(clip);
                                 crate::mdimg::blit(cv, dev.x, dev.y, &p, dclip);
+                            }
+                            Tex::Badged(p) => {
+                                let dclip = cv.to_dev(clip);
+                                crate::mdimg::blit(cv, dev.x, dev.y, &p, dclip);
+                                // First frame only: say so instead of looking like a broken animation.
+                                let label = "animado";
+                                let lw = tx.ui_width_sized(label, false, SIZES[TINY]);
+                                let pill = Rect::new(sr.x + 6, sr.y + 6, lw + 12, 18).intersect(&sr);
+                                round_clip(cv, pill, 9, pal.bg.with_alpha(0xd0), clip);
+                                tx.draw_ui_sized(cv, pill.x + 6, pill.y + 2, label, pal.fg, clip.intersect(&pill), false, SIZES[TINY]);
                             }
                             Tex::Pending => card_clip(cv, sr, 4, pal.widget, pal.border, clip),
                             Tex::Failed => {
@@ -3341,10 +3389,45 @@ after it.
         assert!(pos("Beta note") < pos("Alpha note"), "definitions follow the numbering: {all}");
         assert!(pos("Tail") < pos("Beta note"), "footnotes come after the body: {all}");
         let names: Vec<String> = v.heading_anchors().into_iter().map(|(n, _)| n).collect();
-        assert_eq!(names, ["fn-b", "fn-a"]);
+        assert_eq!(names, ["fnref-b", "fnref-a", "fnref-b", "fn-b", "fn-a"], "every reference is an anchor for the back-link; the first one wins");
         // the reference links to its definition
         assert!(v.all_links().iter().any(|l| v.urls.get(l.link).is_some_and(|u| u == "#fn-b")));
         assert_eq!(v.blocks().iter().filter(|b| matches!(b.kind, Kind::FootDef { .. })).count(), 2);
+    }
+
+    #[test]
+    fn footnote_definitions_get_a_back_link_to_the_first_reference() {
+        let src = "Intro paragraph.\n\nSecond paragraph cites it[^a] and again[^a].\n\n[^a]: The note.\n";
+        let (v, _) = laid(src, 800);
+        let arrows: Vec<&Op> = v.ops().iter().map(|o| &o.op).filter(|o| matches!(o, Op::Text { text, .. } if text == "\u{21a9}")).collect();
+        assert_eq!(arrows.len(), 1, "one return arrow per footnote definition");
+        let back = v.all_links().iter().filter(|l| v.urls.get(l.link).is_some_and(|u| u == "#fnref-a")).count();
+        assert_eq!(back, 1, "and it is a link");
+        let anchors = v.heading_anchors();
+        let y = |n: &str| anchors.iter().find(|(a, _)| a == n).map(|(_, y)| *y).unwrap_or_else(|| panic!("{n} missing in {anchors:?}"));
+        // The link target is the paragraph that mentions the footnote (not the first one), above the definition.
+        assert!(y("fnref-a") > PAD && y("fnref-a") < y("fn-a"));
+        // A definition nobody references still gets its arrow, but no anchor to land on.
+        let (v, _) = laid("Text.\n\n[^z]: Orphan.\n", 800);
+        assert!(!v.heading_anchors().iter().any(|(a, _)| a == "fnref-z"));
+    }
+
+    #[test]
+    fn edited_image_files_relayout_the_preview() {
+        let name = "md-edit-me.png";
+        let dir = png_file(name, 64, 32, [255, 0, 0, 255]);
+        let mut tx = TextCtx::new(None);
+        let mut v = view("![x](md-edit-me.png)\n");
+        v.set_base_dir(Some(&dir));
+        v.ensure_layout(&mut tx, 800);
+        let size_of = |v: &MdView| v.ops().iter().find_map(|o| if let Op::Image { r, .. } = &o.op { Some((r.w, r.h)) } else { None });
+        assert_eq!(size_of(&v), Some((64, 32)));
+        assert!(!v.refresh_images(), "nothing changed on disk");
+        png_file(name, 40, 90, [0, 255, 0, 255]);
+        assert!(v.refresh_images());
+        v.ensure_layout(&mut tx, 800);
+        assert_eq!(size_of(&v), Some((40, 90)), "the layout uses the new file's size");
+        assert!(!v.refresh_images());
     }
 
     #[test]

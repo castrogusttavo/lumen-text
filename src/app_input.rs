@@ -57,17 +57,43 @@ impl DragSel {
                 }
             }
             2 => {
-                d.ed.select_word_at(&mut d.buf, p);
+                if let Some((ws, we)) = Self::word_span(d, p) {
+                    d.ed.select_range(&mut d.buf, ws, we);
+                }
                 ds.kind = DragKind::Word;
                 (ds.lo, ds.hi) = (d.ed.sel.start(), d.ed.sel.end());
             }
             _ => {
-                d.ed.select_line_at(&mut d.buf, p);
+                let (ls, le) = Self::line_span(d, p);
+                d.ed.select_range(&mut d.buf, ls, le);
                 ds.kind = DragKind::Line;
                 (ds.lo, ds.hi) = (d.ed.sel.start(), d.ed.sel.end());
             }
         }
         ds
+    }
+
+    /// The line holding `p` for line selection; a folded header takes its hidden lines along
+    /// (the row on screen stands for all of them).
+    fn line_span(d: &Doc, p: usize) -> (usize, usize) {
+        let (s, e) = Editor::line_range(&d.buf, p);
+        let (l, _) = d.buf.line_col(p);
+        let (_, last) = d.fold_extend(l, l);
+        if last > l {
+            let n = d.buf.line_count();
+            return (s, if last + 1 < n { d.buf.line_start(last + 1) } else { d.buf.len_chars() });
+        }
+        (s, e)
+    }
+
+    /// The word under `p`; on an empty line there is no word, so the range is just that point
+    /// (not the previous line's break).
+    fn word_span(d: &Doc, p: usize) -> Option<(usize, usize)> {
+        let (l, _) = d.buf.line_col(p);
+        if d.buf.line_len(l) == 0 {
+            return Some((p, p));
+        }
+        Editor::word_range(&d.buf, p)
     }
 
     /// Alt+press: a new cursor at `p` that becomes a block selection when dragged.
@@ -93,7 +119,7 @@ impl DragSel {
                 }
             }
             DragKind::Word => {
-                if let Some((ws, we)) = Editor::word_range(&d.buf, p) {
+                if let Some((ws, we)) = Self::word_span(d, p) {
                     if ws < self.lo {
                         d.ed.select_range(&mut d.buf, self.hi, ws);
                     } else {
@@ -102,7 +128,7 @@ impl DragSel {
                 }
             }
             DragKind::Line => {
-                let (ls, le) = Editor::line_range(&d.buf, p);
+                let (ls, le) = Self::line_span(d, p);
                 if ls < self.lo {
                     d.ed.select_range(&mut d.buf, self.hi, ls);
                 } else {
@@ -209,6 +235,9 @@ impl App {
     pub fn on_wheel_end(&mut self) {
         let (x, y) = self.mouse;
         let now = scroller::now();
+        if self.hover_wheel_end(now) || self.regions_fling() {
+            return self.request_redraw();
+        }
         if self.sidebar_open && self.layout.sidebar.contains(x, y) {
             self.inp.tree_v.adopt(self.tree.scroll);
             self.inp.tree_v.fling(now);
@@ -309,6 +338,8 @@ impl App {
     /// the panel, and auto-scroll while a selection is dragged outside the text. True while busy.
     pub fn input_frame(&mut self, dt: f64) -> bool {
         let mut busy = self.drag_autoscroll(dt);
+        busy |= self.regions_frame(dt);
+        busy |= self.hover_frame(dt);
         if self.sidebar_open {
             self.inp.tree_cw = self.sidebar_measure();
             let (max_v, max_h) = (self.sidebar_max_v(), self.sidebar_max_h());
@@ -654,6 +685,60 @@ mod tests {
         ds.update(&mut d, pend, 4);
         let lines: Vec<(usize, usize, usize)> = d.ed.all_sels().iter().map(|s| (d.buf.line_col(s.start()).0, d.buf.line_col(s.start()).1, d.buf.line_col(s.end()).1)).collect();
         assert!(lines.contains(&(3, 1, 2)), "{lines:?}");
+    }
+
+    fn folded_doc() -> Doc {
+        // 0 fn a() {  1     x();  2 }  3 fn b() {  4     y();  5 }  6 tail
+        let mut d = doc("fn a() {\n    x();\n}\nfn b() {\n    y();\n}\ntail\n");
+        let p = d.buf.pos(3, 0);
+        d.ed.click(&mut d.buf, p, false);
+        assert!(d.fold_at_cursor()); // fold `fn b` (lines 3..4)
+        d.view_prepare(80);
+        d
+    }
+
+    #[test]
+    fn line_selection_takes_a_folded_headers_hidden_lines() {
+        let mut d = folded_doc();
+        let (l3, l5) = (d.buf.line_start(3), d.buf.line_start(5));
+        // triple click on the folded header selects it with its body
+        let ds = DragSel::press(&mut d, l3 + 2, 3, false);
+        assert_eq!(sel(&d), (l3, l5), "header + hidden line, not just the header");
+        assert_eq!((ds.lo, ds.hi), (l3, l5));
+        // a plain line still selects one line
+        let _ = DragSel::press(&mut d, 2, 3, false);
+        assert_eq!(sel(&d), (0, d.buf.line_start(1)));
+    }
+
+    #[test]
+    fn line_drag_over_a_folded_header_includes_its_body_in_both_directions() {
+        let mut d = folded_doc();
+        let (l0, l3, l5, l6) = (d.buf.line_start(0), d.buf.line_start(3), d.buf.line_start(5), d.buf.line_start(6));
+        // gutter-style line drag from line 0 down to the folded header: its body is selected too
+        let mut ds = DragSel::press(&mut d, 1, 3, false);
+        ds.update(&mut d, l3 + 3, 3);
+        assert_eq!(sel(&d), (l0, l5));
+        // and on to the next visible line
+        ds.update(&mut d, l6 + 1, 1);
+        assert_eq!(sel(&d), (l0, d.buf.len_chars()));
+        // from the folded header upwards: the anchor block is the whole fold
+        let mut ds = DragSel::press(&mut d, l3 + 1, 3, false);
+        ds.update(&mut d, 1, 1);
+        assert_eq!(sel(&d), (l5, l0));
+    }
+
+    #[test]
+    fn word_drag_on_empty_lines_does_not_grab_the_previous_break() {
+        let mut d = doc("one two\n\nthree\n");
+        let blank = d.buf.line_start(1);
+        let mut ds = DragSel::press(&mut d, 5, 2, false); // "two" = 4..7
+        assert_eq!(sel(&d), (4, 7));
+        ds.update(&mut d, blank, 0);
+        assert_eq!(sel(&d), (4, blank), "extends to the empty line itself");
+        let mut ds = DragSel::press(&mut d, 14, 2, false); // "three" = 9..14
+        assert_eq!(sel(&d), (9, 14));
+        ds.update(&mut d, blank, 0);
+        assert_eq!(sel(&d), (14, blank), "backwards: the head sits on the empty line, not before its break");
     }
 
     #[test]

@@ -1,0 +1,44 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected and what you got. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Open ...\n2. Press ...\n3. ..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `lumen-text --version`
+      placeholder: lumen-text 2026.11.10.1
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installed from
+      options: [".deb", ".rpm", "Arch package", "AppImage", "Tarball", "Built from source"]
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and display server
+      placeholder: Fedora 41, Wayland (GNOME)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or config
+      description: Run with `LUMEN_DEBUG=1` from a terminal and paste relevant output; include `config.json` if settings matter.
+      render: shell

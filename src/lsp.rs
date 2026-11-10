@@ -1,14 +1,15 @@
 //! Minimal LSP client: JSON-RPC over stdio, one reader thread and one writer thread.
 //! The server is spawned lazily and with a Go memory limit (tsgo is written in Go).
 
+use crate::lsp_stream::{Frame, Limits, Policy, policy_for, read_message};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    io::{Read, Write},
+    io::{BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         mpsc::{Receiver, Sender, channel},
     },
     thread,
@@ -17,41 +18,6 @@ use std::{
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 // ───────────────────────────── framing ─────────────────────────────
-
-/// Incremental `Content-Length` frame parser.
-#[derive(Default)]
-pub struct FrameReader {
-    buf: Vec<u8>,
-}
-
-impl FrameReader {
-    pub fn push(&mut self, bytes: &[u8]) -> Vec<Value> {
-        self.buf.extend_from_slice(bytes);
-        let mut out = Vec::new();
-        loop {
-            let Some(hdr_end) = self.buf.windows(4).position(|w| w == b"\r\n\r\n") else { break };
-            let header = String::from_utf8_lossy(&self.buf[..hdr_end]).to_ascii_lowercase();
-            let len = header
-                .lines()
-                .find_map(|l| l.strip_prefix("content-length:"))
-                .and_then(|v| v.trim().parse::<usize>().ok());
-            let Some(len) = len else {
-                // Malformed header: drop it and resync after the blank line.
-                self.buf.drain(..hdr_end + 4);
-                continue;
-            };
-            let total = hdr_end + 4 + len;
-            if self.buf.len() < total {
-                break;
-            }
-            if let Ok(v) = serde_json::from_slice::<Value>(&self.buf[hdr_end + 4..total]) {
-                out.push(v);
-            }
-            self.buf.drain(..total);
-        }
-        out
-    }
-}
 
 pub fn frame(v: &Value) -> Vec<u8> {
     let body = v.to_string();
@@ -64,6 +30,10 @@ pub fn frame(v: &Value) -> Vec<u8> {
 
 pub enum Msg {
     Response { id: i64, result: Result<Value, Value> },
+    /// A `semanticTokens/*` response, with its integers packed (see `lsp_stream`).
+    Tokens { id: i64, data: Vec<u32> },
+    /// A `documentSymbol` response, flattened (and trimmed when huge; see `lsp_stream`).
+    Symbols { id: i64, syms: Vec<crate::doc::Sym> },
     Notification { method: String, params: Value },
     Request { id: Value, method: String, params: Value },
     Exited,
@@ -90,6 +60,8 @@ pub enum Pending {
     SymbolsCache { uri: String },
     Folding { uri: String },
     SemTokens { uri: String },
+    /// `semanticTokens/range` for lines `first..=last` of document `version` (big files).
+    SemRange { uri: String, version: i32, first: usize, last: usize },
     CodeLens { uri: String },
     InlayHint { uri: String, version: i32, first: usize, last: usize },
     ResolveLens { uri: String, line: usize },
@@ -114,6 +86,8 @@ pub struct Lsp {
     pub rx: Receiver<Msg>,
     next_id: i64,
     pub pending: HashMap<i64, Pending>,
+    /// How the reader thread should parse each in-flight response (see `lsp_stream`).
+    policies: Arc<Mutex<HashMap<i64, Policy>>>,
     pub ready: bool,
     queue: Vec<Value>,
     pub caps: Value,
@@ -137,7 +111,7 @@ impl Lsp {
             .env("GOGC", "50");
         let mut child = cmd.spawn()?;
         let mut stdin = child.stdin.take().unwrap();
-        let mut stdout = child.stdout.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
 
         let (tx, wrx) = channel::<Vec<u8>>();
         thread::spawn(move || {
@@ -149,23 +123,29 @@ impl Lsp {
         });
 
         let (mtx, rx) = channel::<Msg>();
+        let policies: Arc<Mutex<HashMap<i64, Policy>>> = Arc::default();
+        let reader_policies = policies.clone();
         thread::spawn(move || {
-            let mut fr = FrameReader::default();
-            let mut chunk = vec![0u8; 64 * 1024];
+            // Frames are parsed while they are read, so a huge response never sits in memory.
+            let mut input = BufReader::with_capacity(64 * 1024, stdout);
+            let lim = Limits::default();
+            let policy_of = |id: i64| reader_policies.lock().ok().and_then(|m| m.get(&id).copied()).unwrap_or_default();
             loop {
-                match stdout.read(&mut chunk) {
-                    Ok(0) | Err(_) => {
+                match read_message(&mut input, &lim, &policy_of) {
+                    Ok(Frame::Eof) | Err(_) => {
                         let _ = mtx.send(Msg::Exited);
                         wake();
                         break;
                     }
-                    Ok(n) => {
-                        for v in fr.push(&chunk[..n]) {
-                            if let Some(m) = classify(v) {
-                                if mtx.send(m).is_err() {
-                                    return;
-                                }
+                    Ok(Frame::Skipped) => {}
+                    Ok(Frame::Msg(m)) => {
+                        if let Msg::Response { id, .. } | Msg::Tokens { id, .. } | Msg::Symbols { id, .. } = &m {
+                            if let Ok(mut p) = reader_policies.lock() {
+                                p.remove(id);
                             }
+                        }
+                        if mtx.send(m).is_err() {
+                            return;
                         }
                         wake();
                     }
@@ -180,6 +160,7 @@ impl Lsp {
             rx,
             next_id: 1,
             pending: HashMap::new(),
+            policies,
             ready: false,
             queue: Vec::new(),
             caps: Value::Null,
@@ -215,6 +196,12 @@ impl Lsp {
     pub fn request(&mut self, method: &str, params: Value, what: Pending) -> i64 {
         let id = self.alloc_id();
         self.pending.insert(id, what);
+        let policy = policy_for(method);
+        if policy != Policy::Value {
+            if let Ok(mut p) = self.policies.lock() {
+                p.insert(id, policy);
+            }
+        }
         self.send_or_queue(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
         id
     }
@@ -258,7 +245,7 @@ impl Drop for Lsp {
     }
 }
 
-fn classify(v: Value) -> Option<Msg> {
+pub(crate) fn classify(v: Value) -> Option<Msg> {
     let method = v.get("method").and_then(Value::as_str).map(str::to_string);
     match (method, v.get("id")) {
         (Some(method), Some(id)) => Some(Msg::Request { id: id.clone(), method, params: v.get("params").cloned().unwrap_or(Value::Null) }),
@@ -483,22 +470,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frames_split_across_chunks_and_back_to_back() {
-        let a = frame(&json!({"id": 1, "result": "ç"}));
-        let b = frame(&json!({"method": "x"}));
-        let mut all = a.clone();
-        all.extend_from_slice(&b);
-        let mut fr = FrameReader::default();
-        let mut got = Vec::new();
-        for chunk in all.chunks(7) {
-            got.extend(fr.push(chunk));
-        }
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0]["result"], "ç", "Content-Length counts bytes, not chars");
-        assert_eq!(got[1]["method"], "x");
-    }
-
-    #[test]
     fn classify_routes_messages() {
         assert!(matches!(classify(json!({"id": 3, "result": null})), Some(Msg::Response { id: 3, .. })));
         assert!(matches!(classify(json!({"id": 3, "error": {"code": 1}})), Some(Msg::Response { result: Err(_), .. })));
@@ -592,5 +563,62 @@ mod tests {
         let msgs: Vec<String> = items.as_array().unwrap().iter().map(|d| d["message"].as_str().unwrap_or("").to_string()).collect();
         assert!(msgs.iter().any(|m| m.contains("not assignable")), "{msgs:?}");
         assert!(msgs.iter().any(|m| m.contains("Cannot find name")), "{msgs:?}");
+    }
+
+    /// Big-file path against a real tsgo: a range of semantic tokens (absolute lines, packed by the
+    /// reader) and a trimmed outline for a 30k-line file, in a throwaway project under the cache dir.
+    #[test]
+    fn real_tsgo_serves_token_ranges_and_outline_of_a_big_file() {
+        let Some(bin) = find_tsgo(Path::new("/nonexistent"), "bundled") else {
+            eprintln!("tsgo not installed, skipping");
+            return;
+        };
+        let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache"))).unwrap_or_else(std::env::temp_dir);
+        let root = base.join(format!("lumen-bigtest-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"strict":true,"noEmit":true},"include":["*.ts"]}"#).unwrap();
+        let mut src = String::new();
+        for i in 0..3000 {
+            src.push_str(&format!("export class C{i} {{\n  m{i}(x: number): number {{\n    const y = x + {i}\n    return y\n  }}\n}}\n\n\n\n\n"));
+        }
+        let file = root.join("big.ts");
+        std::fs::write(&file, &src).unwrap();
+        let uri = crate::doc::path_to_uri(&file);
+        let mut lsp = Lsp::spawn("tsgo", &bin, &["--lsp", "--stdio"], &root, &root, 512, Arc::new(|| {})).unwrap();
+        lsp.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri, "languageId": "typescript", "version": 1, "text": src}}));
+        let (first, last) = (15_000u64, 15_050u64);
+        lsp.request("textDocument/semanticTokens/range", json!({"textDocument": {"uri": uri}, "range": {"start": {"line": first, "character": 0}, "end": {"line": last, "character": 0}}}), Pending::SemRange { uri: uri.clone(), version: 1, first: first as usize, last: last as usize });
+        lsp.request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri}}), Pending::SymbolsCache { uri: uri.clone() });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let (mut tokens, mut syms) = (None, None);
+        while std::time::Instant::now() < deadline && (tokens.is_none() || syms.is_none()) {
+            let Ok(m) = lsp.rx.recv_timeout(std::time::Duration::from_millis(200)) else { continue };
+            match m {
+                Msg::Response { id, result } => {
+                    if let Some(Pending::Initialize) = lsp.pending.remove(&id) {
+                        lsp.on_initialized(&result.unwrap());
+                    }
+                }
+                Msg::Tokens { id, data } => {
+                    lsp.pending.remove(&id);
+                    tokens = Some(data);
+                }
+                Msg::Symbols { id, syms: s } => {
+                    lsp.pending.remove(&id);
+                    syms = Some(s);
+                }
+                Msg::Request { id, .. } => lsp.respond(id, Value::Null),
+                _ => {}
+            }
+        }
+        lsp.shutdown();
+        std::fs::remove_dir_all(&root).ok();
+        let tokens = tokens.expect("no semantic token response");
+        assert!(!tokens.is_empty() && tokens.len() % 5 == 0, "{} ints", tokens.len());
+        assert!(tokens[0] as u64 >= first, "the first token's delta line is absolute from line 0: {}", tokens[0]);
+        let syms = syms.expect("no outline response");
+        assert!(syms.len() >= 3000, "{} symbols", syms.len());
+        assert!(syms.iter().all(|s| s.depth <= 2));
     }
 }
