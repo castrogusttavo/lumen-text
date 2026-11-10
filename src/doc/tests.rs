@@ -1,0 +1,73 @@
+use super::*;
+
+#[test]
+fn uri_roundtrip() {
+    #[cfg(unix)]
+    let (p, want) = (Path::new("/home/a b/ç/x.ts"), "file:///home/a%20b/%C3%A7/x.ts");
+    #[cfg(windows)]
+    let (p, want) = (Path::new("C:\\home\\a b\\ç\\x.ts"), "file:///C:/home/a%20b/%C3%A7/x.ts");
+    let u = path_to_uri(p);
+    assert_eq!(u, want);
+    assert_eq!(uri_to_path(&u).unwrap(), p);
+}
+
+#[test]
+fn replace_text_is_one_undo_step_and_keeps_cursor() {
+    let mut d = Doc::new(Buffer::from_str("const  a=1\nlet b = 2\n"), None, None, "//", 8.0);
+    d.ed.click(&mut d.buf, 17, false); // inside "let b = 2"
+    d.replace_text("const a = 1\nlet b = 2\n");
+    assert_eq!(d.buf.to_string(), "const a = 1\nlet b = 2\n");
+    // text before the cursor changed by +0 chars net (two edits in the first line): cursor stays on the same token
+    assert_eq!(d.buf.line_col(d.ed.head()).0, 1);
+    d.ed.undo(&mut d.buf);
+    assert_eq!(d.buf.to_string(), "const  a=1\nlet b = 2\n", "single undo restores everything");
+    assert!(!d.buf.is_dirty(), "undo returns to the saved version");
+}
+
+#[test]
+fn lsp_format_edits_apply_in_order_as_one_undo_step() {
+    let e = |sl, sc, el, ec, t: &str| LspEdit { sl, sc, el, ec, text: t.into() };
+    let mut d = Doc::new(Buffer::from_str("a  b{c\nd\n"), None, None, "//", 8.0);
+    d.ed.click(&mut d.buf, 9, false); // end of the text, after the edits
+    // Two inserts at the same spot must land in list order ("\n" then "  "), plus a replace.
+    d.apply_lsp_edits(&[e(0, 1, 0, 3, " "), e(0, 5, 0, 5, "\n"), e(0, 5, 0, 5, "  "), e(1, 0, 1, 0, "  ")]);
+    assert_eq!(d.buf.to_string(), "a b{\n  c\n  d\n");
+    assert_eq!(d.buf.line_col(d.ed.head()), (3, 0), "cursor stays at the end of the text");
+    d.ed.undo(&mut d.buf);
+    assert_eq!(d.buf.to_string(), "a  b{c\nd\n", "one undo step");
+}
+
+#[test]
+fn lsp_positions_use_utf16() {
+    let b = Buffer::from_str("a😀b\nx");
+    let d = Doc::new(b, None, None, "//", 8.0);
+    // 'b' is char 2 -> utf16 col 3 (the emoji takes two units)
+    assert_eq!(d.lsp_pos(2), (0, 3));
+    assert_eq!(d.pos_from_lsp(0, 3), 2);
+    assert_eq!(d.pos_from_lsp(1, 1), 5);
+}
+
+#[test]
+fn sticky_keeps_the_two_innermost_headers() {
+    assert_eq!(sticky_pick(&[1, 5, 9], STICKY_MAX), vec![5, 9]);
+    assert_eq!(sticky_pick(&[4], STICKY_MAX), vec![4]);
+    assert!(sticky_pick(&[], STICKY_MAX).is_empty());
+}
+
+#[test]
+fn sticky_band_snaps_to_the_row_grid_at_rest() {
+    let lh = 22;
+    // Aligned text, or nothing pinned: exactly n lines.
+    assert_eq!(sticky_band_h(2, lh, 0, true), 44);
+    assert_eq!(sticky_band_h(0, lh, 7, true), 0);
+    // Rows start at k*lh - frac; the band ends on one of those boundaries.
+    for frac in 1..lh {
+        let h = sticky_band_h(2, lh, frac, true);
+        assert!(h >= 44 && h < 44 + lh);
+        assert_eq!((h + frac) % lh, 0, "frac {frac}: band end {h} is a row boundary");
+    }
+    // Fully scrolled to the next row: already aligned.
+    assert_eq!(sticky_band_h(2, lh, lh, true), 44);
+    // While the text glides the band keeps its size.
+    assert_eq!(sticky_band_h(2, lh, 9, false), 44);
+}

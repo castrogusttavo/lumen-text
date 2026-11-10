@@ -1,6 +1,6 @@
 // Generates docs reference data from the Rust sources so the docs cannot drift from the app:
 //   src/keymap.rs      DEFAULTS    -> keymap.json
-//   src/app_overlay.rs COMMANDS    -> commands.json (palette labels, shortcuts)
+//   src/app_overlay/commands.rs COMMANDS    -> commands.json (palette labels, shortcuts)
 //   src/settingsui/model.rs + config.rs  -> settings.json (labels, help, kind, defaults)
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -14,7 +14,7 @@ const keymap = [...block.matchAll(/\("([^"]+)",\s*"([^"]+)"\)/g)].map(([, combo,
 await out("keymap.json", keymap);
 
 // --- commands (palette)
-const ov = await src("app_overlay.rs");
+const ov = await src("app_overlay/commands.rs");
 const cstart = ov.indexOf("pub const COMMANDS");
 const cblock = ov.slice(cstart, ov.indexOf("\n];", cstart));
 const commands = [...cblock.matchAll(/\("([^"]+)",\s*"([^"]*)",\s*Cmd::(\w+)\)/g)].map(([, label, shortcut, id]) => ({ label, shortcut: shortcut.replace(/\\\\/g, "\\"), id }));

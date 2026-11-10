@@ -288,7 +288,7 @@ Assets are searched in `$LUMEN_ASSETS`, then `<exe dir>/../share/lumen-text/asse
 
 ### `keybindings.json`
 
-Maps a key combination to a command id (the `Cmd` variant names in `src/app_overlay.rs`; `none` disables a built-in shortcut).
+Maps a key combination to a command id (the `Cmd` variant names in `src/app_overlay/commands.rs`; `none` disables a built-in shortcut).
 Chords use a space, explorer-only bindings use the `explorer:` prefix.
 
 ```json
@@ -320,14 +320,15 @@ src/
   buffer.rs, editor.rs     rope (ropey), grouped/tree undo, atomic save; cursors, selections, multi-cursor
   textmate.rs, highlight.rs  vscode-textmate port on onig; background, incremental tokenization
   theme.rs, zedtheme.rs    VS Code themes, WCAG-checked chrome; Zed theme import, custom template
-  ui.rs, doc.rs, docview.rs  drawing primitives (cosmic-text, tiny-skia); document render, word wrap/folds
+  ui.rs, doc/, docview.rs  drawing primitives (cosmic-text, tiny-skia); document state and render, word wrap/folds
   rowmap.rs, minimap.rs, scroller.rs  visual rows, minimap sampling, exponential-glide scrolling
-  app.rs, app_*.rs         window (winit + softbuffer), tabs, sidebar, overlays, panels, split panes, settings
+  app/, app_*.rs           window (winit + softbuffer), tabs, sidebar, overlays, panels, split panes, settings
+                           (the biggest ones are directory modules: app/, app_overlay/, app_gitpanel/, app_hover/, settingsui/)
   keymap.rs, config.rs     DEFAULTS table + keybindings.json; config.json and paths
   lsp.rs, inlay.rs, eslint.rs, format.rs  JSON-RPC client (lazy tsgo), inlay hints, lint, formatters
   dap.rs, tasks.rs, terminal.rs  debug adapters, processes and ANSI output, PTY + VT emulator
   git.rs, gitx.rs, gitsync.rs  status, blame, hunks, diff, history, conflicts, fetch/pull/push
-  mdview.rs, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)
+  mdview/, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)
   search.rs, fuzzy.rs, snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs
   script.rs                headless mode for tests and screenshots
 assets/   grammars, themes, language-manifest.json, icons, licenses

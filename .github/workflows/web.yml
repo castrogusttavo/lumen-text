@@ -7,7 +7,7 @@ name: Web
 on:
   push:
     branches: [main]
-    paths: ["web/**", ".github/workflows/web.yml", "src/keymap.rs", "src/app_overlay.rs", "src/settingsui/**", "src/config.rs"]
+    paths: ["web/**", ".github/workflows/web.yml", "src/keymap.rs", "src/app_overlay/**", "src/settingsui/**", "src/config.rs"]
   release:
     types: [published]
   workflow_dispatch:

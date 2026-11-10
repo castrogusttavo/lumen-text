@@ -96,7 +96,7 @@ Tests must not write to `/tmp` or your real config: use `std::env::temp_dir()` s
 
 ## How to add things
 
-**A command.** Add a variant to `enum Cmd` and a row `("Label", "shortcut text", Cmd::X)` to `COMMANDS` in `src/app_overlay.rs`, then handle it in `App::run_cmd`.
+**A command.** Add a variant to `enum Cmd` and a row `("Label", "shortcut text", Cmd::X)` to `COMMANDS` in `src/app_overlay/commands.rs`, then handle it in `App::run_cmd`.
 The palette, fuzzy search and the shortcut modal pick it up automatically.
 
 **A shortcut.** Add `("ctrl+shift+x", "VariantName")` to `DEFAULTS` in `src/keymap.rs` (the first row for a command is its main default and must match the palette text; later rows are aliases).

@@ -1,0 +1,234 @@
+//! Overlays: command/file palette, find & replace bar, input prompts.
+
+use crate::{
+    app::{App, Focus, KeyIn},
+    buffer::EditKind,
+    field::TextField,
+    fuzzy::fuzzy,
+    search::{self, Hit},
+    ui::{Canvas, Rect},
+};
+use regex::RegexBuilder;
+use serde_json::Value;
+use std::{path::PathBuf, sync::atomic::Ordering, thread, time::Instant};
+use winit::{
+    event::MouseScrollDelta,
+    keyboard::{Key, NamedKey},
+};
+
+mod commands;
+mod draw;
+mod find;
+mod input;
+mod open;
+mod run;
+
+pub use commands::*;
+
+#[derive(Clone)]
+pub enum Action {
+    Open(PathBuf, Option<(usize, usize)>),
+    Cmd(Cmd),
+    Goto(usize),
+    /// Bottom bar pickers: indentation of the current document (see `app_topbar::indent_from_spec`).
+    SetIndent(String),
+    /// Language of the current document (`None` = plain text).
+    SetLang(Option<String>),
+    WorkspaceEdit(Value),
+    Run(String),
+    TestRunner(crate::testrun::Runner),
+    Theme(String),
+    UndoBranch(usize),
+    GitShow(PathBuf, String, String),
+}
+
+#[derive(Clone)]
+pub struct Item {
+    pub label: String,
+    pub detail: String,
+    pub action: Action,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PickKind {
+    QuickOpen,
+    Commands,
+    ProjectSearch,
+    Locations,
+    Symbols,
+    CodeActions,
+    WorkspaceSymbols,
+    Themes,
+    /// Short list of choices opened from the bottom bar (indentation, language).
+    Choice,
+}
+
+pub struct Picker {
+    pub kind: PickKind,
+    pub title: String,
+    pub field: TextField,
+    pub items: Vec<Item>,
+    pub filtered: Vec<(usize, Vec<usize>)>, // (item index, matched label positions)
+    pub sel: usize,
+    pub scroll: usize,
+    pub case: bool,
+    pub regex: bool,
+}
+
+pub enum PromptKind {
+    Rename {
+        line: usize,
+        col: usize,
+    },
+    GotoLine,
+    NewFile {
+        dir: PathBuf,
+    },
+    NewDir {
+        dir: PathBuf,
+    },
+    RenamePath {
+        from: PathBuf,
+    },
+    DeletePath {
+        path: PathBuf,
+    },
+    GitDiscard {
+        path: PathBuf,
+    },
+    GitCommit,
+    /// "Save as" for an untitled document; `rest` (more documents to save) and `then` (the
+    /// action that was waiting for the save) continue after it.
+    SaveAs {
+        doc: usize,
+        rest: Vec<usize>,
+        then: Option<crate::app_unsaved::Pending>,
+    },
+}
+
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub title: String,
+    pub field: TextField,
+}
+
+pub enum Overlay {
+    None,
+    Picker(Picker),
+    Prompt(Prompt),
+    Settings(Box<crate::settingsui::Modal>),
+    /// Top bar dropdowns (project switcher, branch list).
+    TopMenu(Box<crate::app_topbar::TopMenu>),
+    /// Right-click menu (explorer rows, tabs) and its delete confirmation.
+    Ctx(Box<crate::app_ctxmenu::CtxMenu>),
+}
+
+impl Overlay {
+    pub fn is_none(&self) -> bool {
+        matches!(self, Overlay::None)
+    }
+}
+
+pub struct FindBar {
+    pub field: TextField,
+    pub replace: TextField,
+    pub show_replace: bool,
+    pub focused: bool,
+    pub in_replace: bool,
+    pub case: bool,
+    pub regex: bool,
+    pub matches: Vec<(usize, usize)>,
+    pub current: Option<usize>,
+    pub valid: bool,
+    sig: (usize, i32, String, bool, bool),
+}
+
+const PICKER_ROWS: usize = 10;
+const ROW: i32 = 34;
+const INPUT_H: i32 = 54;
+
+/// A picker over a short list of choices with row `sel` highlighted (and scrolled into view).
+pub fn choice_picker(title: &str, items: Vec<Item>, sel: usize) -> Picker {
+    let mut p = Picker::new(PickKind::Choice, title, items);
+    p.sel = sel.min(p.filtered.len().saturating_sub(1));
+    p.keep_visible();
+    p
+}
+
+impl Picker {
+    fn new(kind: PickKind, title: &str, items: Vec<Item>) -> Self {
+        let mut p = Picker {
+            kind,
+            title: title.to_string(),
+            field: TextField::default(),
+            items,
+            filtered: Vec::new(),
+            sel: 0,
+            scroll: 0,
+            case: false,
+            regex: false,
+        };
+        p.refilter();
+        p
+    }
+
+    pub fn refilter(&mut self) {
+        let q = self.field.text.trim().to_string();
+        let filter = matches!(
+            self.kind,
+            PickKind::QuickOpen
+                | PickKind::Commands
+                | PickKind::Symbols
+                | PickKind::CodeActions
+                | PickKind::Themes
+                | PickKind::Choice
+        );
+        if !filter || q.is_empty() {
+            self.filtered = (0..self.items.len().min(2000)).map(|i| (i, Vec::new())).collect();
+        } else {
+            // Several words narrow the list: every term must match somewhere in the label.
+            let terms: Vec<&str> = q.split_whitespace().collect();
+            let mut scored: Vec<(i32, usize, Vec<usize>)> = self
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, it)| {
+                    let (mut total, mut pos) = (0, Vec::new());
+                    for t in &terms {
+                        let (s, p) = fuzzy(t, &it.label)?;
+                        total += s;
+                        pos.extend(p);
+                    }
+                    pos.sort_unstable();
+                    pos.dedup();
+                    Some((total, i, pos))
+                })
+                .collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            self.filtered = scored.into_iter().take(300).map(|(_, i, p)| (i, p)).collect();
+        }
+        self.sel = self.sel.min(self.filtered.len().saturating_sub(1));
+        self.scroll = 0;
+        self.keep_visible();
+    }
+
+    fn keep_visible(&mut self) {
+        if self.sel < self.scroll {
+            self.scroll = self.sel;
+        } else if self.sel >= self.scroll + PICKER_ROWS {
+            self.scroll = self.sel + 1 - PICKER_ROWS;
+        }
+    }
+
+    fn move_sel(&mut self, d: isize) {
+        let n = self.filtered.len() as isize;
+        if n > 0 {
+            self.sel = (self.sel as isize + d).rem_euclid(n) as usize;
+            self.keep_visible();
+        }
+    }
+
+    fn selected(&self) -> Option<Item> {
+        self.filtered.get(self.sel).map(|(i, _)| self.items[*i].clone())
+    }
+}
