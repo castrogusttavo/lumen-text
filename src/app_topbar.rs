@@ -706,7 +706,7 @@ impl App {
     // ───────────── actions ─────────────
 
     /// Open `path` as the project. With unsaved tabs or a running debug session it asks first
-    /// (Salvar tudo / Descartar / Cancelar) instead of refusing.
+    /// (Save all / Discard / Cancel) instead of refusing.
     pub fn switch_project(&mut self, path: PathBuf) {
         let path = path.canonicalize().unwrap_or(path);
         if !path.is_dir() {

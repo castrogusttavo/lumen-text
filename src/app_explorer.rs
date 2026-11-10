@@ -25,7 +25,7 @@ fn name_of(p: &Path) -> String {
 pub fn describe(paths: &[PathBuf]) -> String {
     match paths {
         [one] => name_of(one),
-        many => format!("{} itens", many.len()),
+        many => format!("{} items", many.len()),
     }
 }
 
@@ -183,8 +183,8 @@ impl App {
             (None, 0) => self.say("already in this folder"),
             (None, n) => self.say(format!(
                 "{} {}",
-                if n == 1 { "1 item".to_string() } else { format!("{n} itens") },
-                if cut { "movido(s)" } else { "copiado(s)" }
+                if n == 1 { "1 item".to_string() } else { format!("{n} items") },
+                if cut { "moved" } else { "copied" }
             )),
         }
         done
@@ -212,7 +212,7 @@ impl App {
                     return true;
                 }
                 let cut = k == "x";
-                self.say(format!("{}: {}", if cut { "recortado" } else { "copiado" }, describe(&paths)));
+                self.say(format!("{}: {}", if cut { "cut" } else { "copied" }, describe(&paths)));
                 self.set_file_clip(paths, cut);
             }
             "v" => {
@@ -260,7 +260,7 @@ impl App {
         match err {
             Some(e) => self.say(format!("error: {e} ({ok} {verb})")),
             None if ok == 1 => self.say(format!("{verb}: {}", describe(paths))),
-            None => self.say(format!("{ok} itens {verb}")),
+            None => self.say(format!("{ok} items {verb}")),
         }
     }
 
@@ -312,6 +312,6 @@ mod tests {
     #[test]
     fn describe_names_one_or_counts_many() {
         assert_eq!(describe(&[PathBuf::from("/p/a.ts")]), "a.ts");
-        assert_eq!(describe(&[PathBuf::from("/p/a.ts"), PathBuf::from("/p/b.ts")]), "2 itens");
+        assert_eq!(describe(&[PathBuf::from("/p/a.ts"), PathBuf::from("/p/b.ts")]), "2 items");
     }
 }

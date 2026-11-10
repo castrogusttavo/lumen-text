@@ -18,7 +18,7 @@ for name, cmd in tools.items():
         return (time.monotonic() - t) * 1000, r.stdout.count("error TS")
     once()  # warm-up
     ts = [once() for _ in range(runs)]
-    v = subprocess.run(cmd[:-4] + ["--version"], capture_output=True, text=True).stdout.strip()
+    v = subprocess.run(cmd[:-3] + ["--version"], capture_output=True, text=True).stdout.strip()
     ms = [t for t, _ in ts]
     res[name] = {"command": " ".join(c.replace(home, "~") for c in cmd), "version": v, "errors_reported": ts[0][1],
                  "median_ms": statistics.median(ms), "min_ms": min(ms), "max_ms": max(ms), "runs": runs}

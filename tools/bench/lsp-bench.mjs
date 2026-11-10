@@ -4,8 +4,8 @@
 // that contain the error. Then read the PSS of the server's process tree.
 //
 // Usage: lsp-bench.mjs --mode tsgo-lumen|tsgo-full|tsserver-vscode|vtsls-zed [--runs N] [--out file.json]
-//   tsgo-lumen      tsgo --lsp --stdio inside Lumen's "narrow mirror" (src/lsp.rs write_mirror), pull diagnostics
-//   tsgo-full       same binary on the real tsconfig (whole project)
+//   tsgo-lumen      tsgo --lsp --stdio inside Lumen's opt-in "narrow mirror" (settings: lsp_narrow) (src/lsp.rs write_mirror), pull diagnostics
+//   tsgo-full       same binary on the real tsconfig (whole project): Lumen's default since lsp_narrow = false
 //   tsserver-vscode the tsserver bundled with the VS Code tarball (run with its own Electron as node)
 //   vtsls-zed       the vtsls Zed downloaded into the isolated profile (what Zed uses for TypeScript)
 import { spawn } from "node:child_process";
@@ -109,7 +109,7 @@ async function runTsgo(lumen) {
   const text = fs.readFileSync(FILE, "utf8");
   const t0 = performance.now();
   const child = spawn(TSGO, ["--lsp", "--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"],
-    env: { ...process.env, ...(lumen ? { GOMEMLIMIT: "512MiB", GOGC: "50" } : {}) } });
+    env: { ...process.env, GOMEMLIMIT: "512MiB", GOGC: "50" } }); // Lumen always starts tsgo with these (src/lsp.rs)
   const c = lspClient(child);
   await c.request("initialize", initParams(root));
   c.notify("initialized", {});

@@ -1995,7 +1995,7 @@ impl App {
                     gp.hits.push((cbhit.intersect(&vis), Hit::Check(i)));
                     if ch.discardable() {
                         if gp.confirm == Some(i) {
-                            let label = "Descartar?";
+                            let label = "Discard?";
                             let w = self.tx.ui_width(label, false) + 16;
                             let br = Rect::new(r.right() - 34 - w, y + 3, w, 24);
                             let bh = self.hv(br);
@@ -2210,7 +2210,7 @@ impl App {
             }
             y += h;
         }
-        let msg = if gp.log_done { format!("{} commits", gp.commits.len()) } else { "Carregando…".to_string() };
+        let msg = if gp.log_done { format!("{} commits", gp.commits.len()) } else { "Loading…".to_string() };
         let w = self.tx.ui_width(&msg, false);
         self.tx.draw_ui(cv, body.x + (body.w - w) / 2, y + 4, &msg, dim, body, false);
         let (pos, visible) = (gp.scroll[1], body.h as f64);

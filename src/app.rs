@@ -131,8 +131,8 @@ pub struct App {
 
     pub lsps: Vec<Lsp>,
     pub lsp_warned: bool,
-    pub auto_import: bool,
-    pub format_on_save: bool,
+    /// Formatter file types already reported as unsupported (one message per type and session).
+    pub fmt_told: std::collections::HashSet<String>,
     pub config: crate::config::Config,
 
     pub overlay: Overlay,
@@ -269,8 +269,7 @@ impl App {
             focus: Focus::Editor,
             lsps: Vec::new(),
             lsp_warned: false,
-            auto_import: std::env::var("LUMEN_AUTOIMPORT").map_or(config.auto_import, |v| v == "1"),
-            format_on_save: config.format_on_save,
+            fmt_told: Default::default(),
             config,
             overlay: Overlay::None,
             file_clip: Default::default(),
@@ -403,6 +402,11 @@ impl App {
 
     pub fn say(&mut self, msg: impl Into<String>) {
         self.status = Some((msg.into(), Instant::now()));
+    }
+
+    /// Like [`say`](Self::say), but the message stays visible `extra_secs` longer (warnings).
+    pub fn say_for(&mut self, msg: impl Into<String>, extra_secs: u64) {
+        self.status = Some((msg.into(), Instant::now() + Duration::from_secs(extra_secs)));
     }
 
     pub fn request_redraw(&self) {
@@ -582,9 +586,7 @@ impl App {
             // Untitled document: nowhere to write yet, ask for a path.
             return self.ask_save_as(self.active, Vec::new(), None, String::new());
         }
-        if self.format_on_save {
-            self.format_external_active(true);
-        }
+        let warn = self.format_for_save(self.active);
         let Some(d) = self.docs.get_mut(self.active) else { return };
         let name = d.name.clone();
         match d.buf.save() {
@@ -595,7 +597,10 @@ impl App {
                 let idx = self.active;
                 self.lsp_did_save(idx);
                 self.refresh_git_status();
-                self.say(format!("{name} salvo"));
+                match warn {
+                    Some(w) => self.say_for(format!("Saved {name}, but {w}"), 8),
+                    None => self.say(format!("Saved {name}")),
+                }
                 self.tests_on_save();
             }
             Err(e) => self.say(format!("Error saving {name}: {e}")),

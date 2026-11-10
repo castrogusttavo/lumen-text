@@ -194,7 +194,7 @@ impl App {
         }
     }
 
-    fn apply_setting(&mut self, key: &str, v: &Value) {
+    pub(crate) fn apply_setting(&mut self, key: &str, v: &Value) {
         let b = v.as_bool();
         let s = v.as_str().map(str::to_string);
         match key {
@@ -203,7 +203,14 @@ impl App {
                 self.config.updates = crate::config::normalize_updates(s.as_deref());
                 self.update_setting_changed();
             }
-            "auto_import" => self.config.auto_import = b.unwrap_or(false),
+            "auto_import" => {
+                self.config.auto_import = b.unwrap_or(false);
+                // The server reads `suggest.autoImports` again; stale candidates go.
+                for l in &mut self.lsps {
+                    l.notify("workspace/didChangeConfiguration", json!({"settings": {}}));
+                }
+                self.completion = None;
+            }
             "lsp_narrow" => self.config.lsp_narrow = b.unwrap_or(false),
             "code_lens_refs" | "code_lens_impls" => {
                 let on = b.unwrap_or(true);

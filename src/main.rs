@@ -4,6 +4,7 @@ mod app_ctxmenu;
 mod app_debug;
 mod app_explorer;
 mod app_files;
+mod app_format;
 mod app_git;
 mod app_gitbg;
 mod app_gitpanel;

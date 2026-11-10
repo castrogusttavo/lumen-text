@@ -288,7 +288,7 @@ pub struct Doc {
     pub md: Option<Box<crate::app_md::MdState>>,
     /// LSP inlay hints for the lines around the viewport (empty = no cost anywhere).
     pub inlay: crate::inlay::InlayState,
-    /// Pinned tab (drawn first, kept by "Fechar todas").
+    /// Pinned tab (drawn first, kept by "Close all").
     pub pinned: bool,
 }
 
@@ -783,7 +783,11 @@ impl Doc {
         if ranges.is_empty() {
             return;
         }
-        ranges.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+        // Last edit first so earlier positions stay valid; edits at the same spot keep their list
+        // order in the result (the later one is applied first), as LSP requires.
+        let mut order: Vec<usize> = (0..ranges.len()).collect();
+        order.sort_by(|&a, &b| ranges[b].0.cmp(&ranges[a].0).then(ranges[b].1.cmp(&ranges[a].1)).then(b.cmp(&a)));
+        ranges = order.into_iter().map(|k| ranges[k].clone()).collect();
         let before = self.ed.sel;
         let shift = |p: usize| {
             let mut np = p as isize;
@@ -1850,6 +1854,19 @@ mod tests {
         d.ed.undo(&mut d.buf);
         assert_eq!(d.buf.to_string(), "const  a=1\nlet b = 2\n", "single undo restores everything");
         assert!(!d.buf.is_dirty(), "undo returns to the saved version");
+    }
+
+    #[test]
+    fn lsp_format_edits_apply_in_order_as_one_undo_step() {
+        let e = |sl, sc, el, ec, t: &str| LspEdit { sl, sc, el, ec, text: t.into() };
+        let mut d = Doc::new(Buffer::from_str("a  b{c\nd\n"), None, None, "//", 8.0);
+        d.ed.click(&mut d.buf, 9, false); // end of the text, after the edits
+        // Two inserts at the same spot must land in list order ("\n" then "  "), plus a replace.
+        d.apply_lsp_edits(&[e(0, 1, 0, 3, " "), e(0, 5, 0, 5, "\n"), e(0, 5, 0, 5, "  "), e(1, 0, 1, 0, "  ")]);
+        assert_eq!(d.buf.to_string(), "a b{\n  c\n  d\n");
+        assert_eq!(d.buf.line_col(d.ed.head()), (3, 0), "cursor stays at the end of the text");
+        d.ed.undo(&mut d.buf);
+        assert_eq!(d.buf.to_string(), "a  b{c\nd\n", "one undo step");
     }
 
     #[test]

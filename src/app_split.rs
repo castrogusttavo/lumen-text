@@ -789,7 +789,7 @@ impl App {
         self.split_add(true);
     }
 
-    /// "Fechar painel dividido": back to a single editor on the focused pane's document.
+    /// "Close split": back to a single editor on the focused pane's document.
     pub fn split_close(&mut self) {
         if self.split.take().is_none() {
             return self.say("The editor is not split");
@@ -800,7 +800,7 @@ impl App {
         self.request_redraw();
     }
 
-    /// "Fechar painel focado": the others stay; the focus goes to the previous pane (or the next).
+    /// "Close focused pane": the others stay; the focus goes to the previous pane (or the next).
     pub fn close_focused_pane(&mut self) {
         let Some(mut sp) = self.split.take() else { return self.say("The editor is not split") };
         let old = sp.focus;
@@ -885,7 +885,7 @@ impl App {
         self.say("Tab moved to the other pane");
     }
 
-    /// "Abrir ao lado" and friends: put document `idx` in the pane after the focused one.
+    /// "Open to the side" and friends: put document `idx` in the pane after the focused one.
     pub fn split_set_other_doc(&mut self, idx: usize) {
         if idx >= self.docs.len() {
             return;

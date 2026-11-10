@@ -48,12 +48,17 @@ def cell(mid, ed, value, note, source="measured", reason=None):
     metric[mid]["values"][ed] = c
 
 
+def tops(runs):
+    t = [r["top"] for r in runs if r.get("top")]
+    return " Largest processes (last run, MB PSS): " + ", ".join(f"{n} {p:.0f}" for n, p in t[-1]) + "." if t else ""
+
+
 def unavailable(mid, ed, reason):
     metric[mid]["values"][ed] = {"value": None, "source": "unavailable", "reason": reason}
 
 
 # ---------------------------------------------------------------- machine + versions
-cpu = re.sub(r"\s+", " ", sh("lscpu | grep -m1 'Model name' | cut -d: -f2")).replace("(R)", "").replace("(TM)", "")
+cpu = re.sub(r"\s+", " ", sh("grep -m1 'model name' /proc/cpuinfo | cut -d: -f2")).replace("(R)", "").replace("(TM)", "")
 mem_kb = int(sh("awk '/MemTotal/{print $2}' /proc/meminfo") or 0)
 disk_model = sh("lsblk -dno MODEL $(findmnt -no SOURCE / | sed 's/p\\?[0-9]*$//') 2>/dev/null | head -1") or "NVMe SSD"
 os_name = sh("grep -m1 PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '\"'")
@@ -92,7 +97,7 @@ for e in IDS:
         s = i["stats"]
         cell("ram-idle", e, s["pss_mb"]["median"],
              f"PSS summed over the whole process tree, {i['wait_s']:.0f} s after the window settled: {rng(s['pss_mb'], 0, ' MB')}. "
-             f"RSS median {fm(s['rss_mb']['median'])} MB, {fm(s['procs']['median'])} processes. Peak PSS median {fm(s['pss_peak_mb']['median'])} MB.")
+             f"RSS median {fm(s['rss_mb']['median'])} MB, {fm(s['procs']['median'])} process(es). Peak PSS median {fm(s['pss_peak_mb']['median'])} MB.")
         cell("startup", e, s["settled_ms"]["median"],
              f"Spawn to window pixels stable with the workspace and README.md shown: {rng(s['settled_ms'], 0, ' ms')}. "
              f"Window mapped at {fm(s['mapped_ms']['median'])} ms (median).")
@@ -101,7 +106,7 @@ for e in IDS:
         base = idle[e]["stats"]["settled_ms"]["median"] if i else None
         cell("ram-open-100k", e, s["pss_mb"]["median"],
              f"PSS of the whole process tree {b['wait_s']:.0f} s after launching with the 100k-line file: {rng(s['pss_mb'], 0, ' MB')}; "
-             f"peak median {fm(s['pss_peak_mb']['median'])} MB; RSS median {fm(s['rss_mb']['median'])} MB; {fm(s['procs']['median'])} processes (language servers included if the editor started one).")
+             f"peak median {fm(s['pss_peak_mb']['median'])} MB; RSS median {fm(s['rss_mb']['median'])} MB; {fm(s['procs']['median'])} processes (language servers included if the editor started one)." + tops(b["runs"]))
         cell("open-100k", e, s["settled_ms"]["median"],
              f"Launch straight into the 100k-line file (startup included): {rng(s['settled_ms'], 0, ' ms')}"
              + (f"; the empty-README launch took {fm(base)} ms, so the file itself adds about {fm(s['settled_ms']['median'] - base)} ms." if base else "."))
@@ -123,7 +128,7 @@ for mid in ("scroll-frame", "keystroke"):
 # ---------------------------------------------------------------- language servers (protocol level)
 lsp = {m: load(f"lsp-{m}") for m in ("tsgo-lumen", "tsgo-full", "tsserver-vscode", "vtsls-zed")}
 lab = "Language-server speed measured over the LSP protocol, not through the GUI: "
-src = {"lumen": ("tsgo-lumen", "tsgo 7.0.0-dev (Lumen's narrow mirror, GOMEMLIMIT=512MiB GOGC=50)"),
+src = {"lumen": ("tsgo-full", "tsgo 7.0.0-dev as Lumen starts it by default (whole project, GOMEMLIMIT=512MiB GOGC=50)"),
        "vscode": ("tsserver-vscode", "tsserver of TypeScript 6.0.3 bundled in VS Code 1.145.2, run with VS Code's own Electron as node"),
        "zed": ("vtsls-zed", "vtsls 0.3.0 (TypeScript 5.9.3), the server Zed installs for TypeScript, run with system node")}
 for e, (m, what) in src.items():
@@ -131,9 +136,9 @@ for e, (m, what) in src.items():
     if r and r["stats"]["ms"]:
         s = r["stats"]
         extra = ""
-        if e == "lumen" and lsp.get("tsgo-full") and lsp["tsgo-full"]["stats"]["ms"]:
-            f = lsp["tsgo-full"]["stats"]
-            extra = f" Same tsgo on the whole 300-file project (no mirror): {fm(f['ms']['median'])} ms, {fm(f['pss_mb']['median'])} MB."
+        if e == "lumen" and lsp.get("tsgo-lumen") and lsp["tsgo-lumen"]["stats"]["ms"]:
+            f = lsp["tsgo-lumen"]["stats"]
+            extra = f" With the opt-in narrow mirror (lsp_narrow, loads only the open file and its imports): {fm(f['ms']['median'])} ms, {fm(f['pss_mb']['median'])} MB."
         cell("lsp-first-diagnostics", e, s["ms"]["median"],
              lab + f"{what}; spawn to the first diagnostics for src/broken.ts in the 302-file sample project: {rng(s['ms'], 0, ' ms')}." + extra)
         cell("lsp-memory", e, s["pss_mb"]["median"],
@@ -145,7 +150,7 @@ for e, why in (("sublime", "Sublime Text has no built-in TypeScript language ser
 metric["lsp-first-diagnostics"]["description"] = ("Open src/broken.ts of a 302-file TypeScript project and wait for the first diagnostics. "
     "Measured at the language-server protocol level: Lumen runs tsgo (the native compiler); VS Code uses its bundled tsserver; Zed uses vtsls.")
 metric["lsp-memory"]["description"] = ("PSS of the TypeScript server after the first diagnostics on the same project. "
-    "Lumen's lean mode loads only the open file and its imports through a narrow mirror.")
+    "Lumen's default is the whole project; its opt-in lean mode loads only the open file and its imports.")
 metric["ram-idle"]["description"] = ("Whole process tree (helpers, renderers, GPU) after opening a generated 302-file TypeScript workspace "
     "and README.md and letting it settle for 20 s. README.md starts no language server in any editor.")
 metric["ram-open-100k"]["description"] = ("Same workspace, launched straight into a generated 100,000-line TypeScript file (about 5.8 MB), 10 s after the window settled. "

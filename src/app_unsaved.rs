@@ -222,9 +222,7 @@ impl App {
     /// Save document `i` the way Ctrl+S does: format-on-save first (external formatter), then the
     /// atomic write and the follow-ups (LSP `didSave`, git gutter, disk stamp).
     pub fn save_doc(&mut self, i: usize) -> Result<(), String> {
-        if self.format_on_save {
-            self.format_external_doc(i, true);
-        }
+        let warn = self.format_for_save(i);
         let Some(d) = self.docs.get_mut(i) else { return Ok(()) };
         let name = d.name.clone();
         match d.buf.save() {
@@ -233,6 +231,9 @@ impl App {
                 d.disk_mtime = d.stat_mtime();
                 d.conflict = false;
                 self.lsp_did_save(i);
+                if let Some(w) = warn {
+                    self.say_for(format!("Saved {name}, but {w}"), 8);
+                }
                 Ok(())
             }
             Err(e) => Err(format!("could not save {name}: {e}")),
@@ -312,7 +313,7 @@ impl App {
         self.refresh_tree();
         self.tree.reveal(&path);
         let name = self.docs.get(i).map(|d| d.name.clone()).unwrap_or_default();
-        self.say(format!("{name} salvo"));
+        self.say(format!("Saved {name}"));
         self.save_docs_then(rest, then);
     }
 
@@ -507,6 +508,11 @@ pub(crate) mod testkit {
         app.docs.len() - 1
     }
 
+    /// Base directory for scratch projects: under the user's cache, never `/tmp`.
+    pub fn scratch_base() -> PathBuf {
+        std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache/lumen-agents")).unwrap_or_else(std::env::temp_dir)
+    }
+
     pub fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("lumen-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -580,7 +586,7 @@ mod tests {
         assert_eq!(u.key(&ch("D")), Some(Choice::Discard));
         assert_eq!(u.key(&ch("x")), None);
         assert_eq!(u.key(&Key::Named(NamedKey::Enter)), Some(Choice::Save));
-        // Arrows walk Cancelar | Descartar | Salvar tudo and wrap.
+        // Arrows walk Cancel | Discard | Save all and wrap.
         assert_eq!(u.key(&Key::Named(NamedKey::ArrowRight)), None);
         assert_eq!(u.sel, Choice::Cancel, "wraps from the last button");
         u.step(1);

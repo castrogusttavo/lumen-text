@@ -70,7 +70,7 @@ fn parse_edit(e: &Value) -> Option<LspEdit> {
     })
 }
 
-fn parse_edits(v: &Value) -> Vec<LspEdit> {
+pub(crate) fn parse_edits(v: &Value) -> Vec<LspEdit> {
     v.as_array().map(|a| a.iter().filter_map(parse_edit).collect()).unwrap_or_default()
 }
 
@@ -89,7 +89,7 @@ impl App {
         self.lsp_index_for_root(d.lsp_root.as_ref()?)
     }
 
-    fn ensure_lsp(&mut self, doc: usize) -> Option<usize> {
+    pub(crate) fn ensure_lsp(&mut self, doc: usize) -> Option<usize> {
         let d = self.docs.get_mut(doc)?;
         if !ts_family(d.lang) {
             return None;
@@ -150,14 +150,8 @@ impl App {
     /// Auto-import candidates make completion ~200x slower and add hundreds of MB, so they are
     /// opt-in. Quick fixes (Ctrl+.) still offer "add import" for unresolved names.
     pub fn toggle_auto_import(&mut self) {
-        self.auto_import = !self.auto_import;
-        self.config.auto_import = self.auto_import;
-        self.config.save();
-        for l in &mut self.lsps {
-            l.notify("workspace/didChangeConfiguration", json!({"settings": {}}));
-        }
-        self.completion = None;
-        let on = self.auto_import;
+        let on = !self.config.auto_import;
+        self.apply_setting("auto_import", &json!(on));
         self.say(if on {
             "auto-import in completion: on (slower, uses more RAM)"
         } else {
@@ -288,7 +282,7 @@ impl App {
         self.say("servers restarted");
     }
 
-    fn doc_text_params(d: &Doc) -> Option<Value> {
+    pub(crate) fn doc_text_params(d: &Doc) -> Option<Value> {
         Self::doc_open_params(d, d.uri()?)
     }
 
@@ -602,7 +596,7 @@ impl App {
     }
 
     /// Make sure the server has our latest text before asking it something.
-    fn flush(&mut self, i: usize) {
+    pub(crate) fn flush(&mut self, i: usize) {
         if self.docs.get(i).is_some_and(|d| d.changed_at.is_some() && d.lsp_open) {
             self.send_change(i);
         }
@@ -710,27 +704,36 @@ impl App {
         }
         let mut dead: Vec<usize> = Vec::new();
         for (li, m) in all {
-            if li >= self.lsps.len() {
-                continue;
-            }
-            match m {
-                Msg::Exited => dead.push(li),
-                Msg::Response { id, result } => {
-                    let Some(what) = self.lsps[li].pending.remove(&id) else { continue };
-                    self.on_response(li, what, result);
-                }
-                Msg::Symbols { id, syms } => {
-                    let Some(what) = self.lsps[li].pending.remove(&id) else { continue };
-                    self.on_symbol_list(what, syms);
-                }
-                Msg::Tokens { id, data } => {
-                    let Some(what) = self.lsps[li].pending.remove(&id) else { continue };
-                    self.on_tokens(li, what, data);
-                }
-                Msg::Notification { method, params } => self.on_notification(li, &method, &params),
-                Msg::Request { id, method, params } => self.on_server_request(li, id, &method, &params),
-            }
+            self.handle_lsp_msg(li, m, &mut dead);
         }
+        self.drop_dead_servers(dead);
+    }
+
+    /// Route one message from server `li` (servers that exited are only noted in `dead`).
+    pub(crate) fn handle_lsp_msg(&mut self, li: usize, m: Msg, dead: &mut Vec<usize>) {
+        if li >= self.lsps.len() {
+            return;
+        }
+        match m {
+            Msg::Exited => dead.push(li),
+            Msg::Response { id, result } => {
+                let Some(what) = self.lsps[li].pending.remove(&id) else { return };
+                self.on_response(li, what, result);
+            }
+            Msg::Symbols { id, syms } => {
+                let Some(what) = self.lsps[li].pending.remove(&id) else { return };
+                self.on_symbol_list(what, syms);
+            }
+            Msg::Tokens { id, data } => {
+                let Some(what) = self.lsps[li].pending.remove(&id) else { return };
+                self.on_tokens(li, what, data);
+            }
+            Msg::Notification { method, params } => self.on_notification(li, &method, &params),
+            Msg::Request { id, method, params } => self.on_server_request(li, id, &method, &params),
+        }
+    }
+
+    pub(crate) fn drop_dead_servers(&mut self, mut dead: Vec<usize>) {
         dead.sort_unstable();
         dead.dedup();
         for li in dead.into_iter().rev() {
@@ -776,7 +779,7 @@ impl App {
         let result = match method {
             "workspace/configuration" => {
                 // tsgo asks for "js/ts", "typescript", "javascript" and "editor" settings.
-                let auto = self.auto_import;
+                let auto = self.auto_import_on();
                 let ts = json!({
                     "suggest": {"autoImports": auto, "includeCompletionsForModuleExports": auto},
                     "referencesCodeLens": {"enabled": self.config.code_lens, "showOnAllFunctions": true},
@@ -940,21 +943,7 @@ impl App {
                 }
             }
             Pending::Rename => self.apply_workspace_edit(&v),
-            Pending::Format { uri, version } => {
-                if let Some(i) = self.doc_by_uri(&uri) {
-                    if self.docs[i].version == version {
-                        let edits = parse_edits(&v);
-                        if edits.is_empty() {
-                            self.say("already formatted");
-                        } else {
-                            self.docs[i].apply_lsp_edits(&edits);
-                            self.docs[i].reveal = true;
-                        }
-                    } else {
-                        self.say("the text changed during formatting — try again");
-                    }
-                }
-            }
+            Pending::Blocking => {}
             Pending::CodeActions => self.on_code_actions(li, &v),
             Pending::Signature { uri } => self.on_signature(&uri, &v),
             what @ (Pending::Symbols { .. } | Pending::SymbolsCache { .. }) => {
@@ -1194,43 +1183,6 @@ impl App {
         self.lsps[li].request("textDocument/rename", params, Pending::Rename);
     }
 
-    /// Format with the project's formatter (Biome/Prettier) if there is one.
-    /// Returns false when no external formatter applies.
-    pub fn format_external_active(&mut self, quiet: bool) -> bool {
-        self.format_external_doc(self.active, quiet)
-    }
-
-    /// [`format_external_active`](Self::format_external_active) for the document at `i`.
-    pub fn format_external_doc(&mut self, i: usize, quiet: bool) -> bool {
-        let Some(d) = self.docs.get(i) else { return false };
-        let Some(f) = d.path().and_then(crate::format::detect) else { return false };
-        let text = d.buf.to_string();
-        match crate::format::run(&f, &self.root, &text) {
-            Ok(new) if new == text => {
-                if !quiet {
-                    self.say(format!("already formatted ({})", f.name));
-                }
-            }
-            Ok(new) => {
-                self.docs[i].replace_text(&new);
-                self.docs[i].reveal = true;
-                if !quiet {
-                    self.say(format!("formatted with {}", f.name));
-                }
-            }
-            Err(e) => self.say(format!("failed to format — {e}")),
-        }
-        true
-    }
-
-    pub fn toggle_format_on_save(&mut self) {
-        self.format_on_save = !self.format_on_save;
-        self.config.format_on_save = self.format_on_save;
-        self.config.save();
-        let on = self.format_on_save;
-        self.say(if on { "format on save: on" } else { "format on save: off" });
-    }
-
     pub fn organize_imports(&mut self) {
         let Some((i, li)) = self.with_server() else {
             return self.say("organize imports needs the language server (TS/JS file)");
@@ -1241,21 +1193,6 @@ impl App {
         let uri = d.uri().unwrap_or_default();
         let params = json!({"textDocument": {"uri": uri}, "range": range, "context": {"diagnostics": [], "only": ["source.organizeImports"]}});
         self.lsps[li].request("textDocument/codeAction", params, Pending::Organize);
-    }
-
-    pub fn format_document(&mut self) {
-        if self.format_external_active(false) {
-            return;
-        }
-        let Some((i, li)) = self.with_server() else {
-            return self.say("format needs the language server (TS/JS file)");
-        };
-        let d = &self.docs[i];
-        let uri = d.uri().unwrap_or_default();
-        let version = d.version;
-        let tab = if d.ed.indent.contains('\t') { d.ed.tab_w } else { d.ed.indent.len().max(1) };
-        let params = json!({"textDocument": {"uri": uri}, "options": {"tabSize": tab, "insertSpaces": !d.ed.indent.contains('\t')}});
-        self.lsps[li].request("textDocument/formatting", params, Pending::Format { uri, version });
     }
 
     pub fn open_symbols(&mut self) {

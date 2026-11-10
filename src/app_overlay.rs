@@ -1719,7 +1719,7 @@ impl App {
                 &mut self.tx,
                 r.y + 43,
                 &f.replace.text,
-                "Substituir",
+                "Replace",
                 f.replace.cursor,
                 f.focused && f.in_replace,
                 false,

@@ -986,7 +986,7 @@ enum Mode {
     Browse,
     /// Waiting for the next key combo for the selected command.
     Record,
-    /// The captured combo belongs to `other` (a command id): waiting for "Substituir".
+    /// The captured combo belongs to `other` (a command id): waiting for "Replace".
     Confirm {
         combo: String,
         other: String,
@@ -1234,7 +1234,7 @@ impl KeybindsPage {
         self.mode != Mode::Browse
     }
 
-    /// `(combo, other command id)` while a "Substituir" question is pending.
+    /// `(combo, other command id)` while a "Replace" question is pending.
     pub fn pending_conflict(&self) -> Option<(&str, &str)> {
         match &self.mode {
             Mode::Confirm { combo, other } => Some((combo.as_str(), other.as_str())),

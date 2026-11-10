@@ -825,7 +825,7 @@ impl App {
                     (Target::Tab(i), Act::CloseOthers) => Some(*i),
                     _ => None,
                 };
-                // Unsaved tabs among them: asks (Salvar tudo / Descartar / Cancelar) first.
+                // Unsaved tabs among them: asks (Save all / Discard / Cancel) first.
                 self.close_tabs_request(keep);
             }
             Act::TogglePin => {

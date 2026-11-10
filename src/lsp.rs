@@ -81,10 +81,8 @@ pub enum Pending {
     },
     References,
     Rename,
-    Format {
-        uri: String,
-        version: i32,
-    },
+    /// A request the caller waits for synchronously (`App::lsp_request_wait`); a late answer is dropped.
+    Blocking,
     CodeActions,
     Signature {
         uri: String,
