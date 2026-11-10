@@ -1,15 +1,25 @@
 # Maintainer: castrogusttavo
+# AUR-style source package: builds the tagged source tree with cargo.
+# Versions are CalVer (YYYY.M.D.N); release tags are v$pkgver. Bump pkgver, then `updpkgsums`.
 pkgname=lumen-text
-pkgver=0.1.2
+pkgver=2026.11.9.1
 pkgrel=1
 pkgdesc='Lightweight code editor in Rust with TextMate highlighting and a TypeScript workflow'
 arch=('x86_64' 'aarch64')
 url='https://github.com/castrogusttavo/lumen-text'
-license=('custom')  # TODO: set to the repository license once one is added
-depends=('fontconfig' 'libxkbcommon' 'wayland' 'gcc-libs' 'glibc')
+license=('MIT')
+# Only libc/libgcc are linked; the windowing libraries are dlopen()ed at run time.
+depends=('gcc-libs' 'glibc' 'libxkbcommon' 'fontconfig')
 makedepends=('cargo' 'clang' 'pkgconf')
-optdepends=('wl-clipboard: clipboard support on Wayland'
-            'xclip: clipboard support on X11')
+optdepends=('wayland: Wayland sessions'
+            'libxkbcommon-x11: X11 sessions'
+            'libx11: X11 sessions'
+            'libxcursor: X11 sessions'
+            'libxi: X11 sessions'
+            'wl-clipboard: clipboard support on Wayland'
+            'xclip: clipboard support on X11'
+            'npm: install the TypeScript language server (tsgo)')
+options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')  # run updpkgsums once the tag is published
 
@@ -23,6 +33,7 @@ build() {
   cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
+  export LUMEN_VERSION="$pkgver"   # stamps the About/--version string (Cargo.toml is not bumped)
   cargo build --release --locked
 }
 
@@ -34,5 +45,7 @@ package() {
   install -dm755 "$pkgdir/usr/share/$pkgname"
   cp -r assets "$pkgdir/usr/share/$pkgname/assets"
   install -Dm644 "$pkgname.desktop" "$pkgdir/usr/share/applications/$pkgname.desktop"
+  install -Dm644 packaging/icons/$pkgname.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$pkgname.svg"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

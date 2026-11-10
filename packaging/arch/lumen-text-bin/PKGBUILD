@@ -1,0 +1,41 @@
+# Maintainer: castrogusttavo
+# AUR-style binary package: repackages the portable release tarball (no compilation).
+# Versions are CalVer (YYYY.M.D.N); release tags are v$pkgver. Bump pkgver, then `updpkgsums`.
+# CI builds this exact file against the tarball it just produced (see packaging/arch/build-arch.sh).
+pkgname=lumen-text-bin
+_name=lumen-text
+pkgver=2026.11.9.1
+pkgrel=1
+pkgdesc='Lightweight code editor in Rust with TextMate highlighting and a TypeScript workflow (prebuilt binary)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/castrogusttavo/lumen-text'
+license=('MIT')
+depends=('gcc-libs' 'glibc' 'libxkbcommon' 'fontconfig')
+optdepends=('wayland: Wayland sessions'
+            'libxkbcommon-x11: X11 sessions'
+            'libx11: X11 sessions'
+            'libxcursor: X11 sessions'
+            'libxi: X11 sessions'
+            'wl-clipboard: clipboard support on Wayland'
+            'xclip: clipboard support on X11'
+            'npm: install the TypeScript language server (tsgo)')
+provides=("$_name=$pkgver")
+conflicts=("$_name")
+options=('!strip' '!debug')
+_rel="$url/releases/download/v$pkgver/$_name-$pkgver-linux"
+source_x86_64=("$_name-$pkgver-x86_64.tar.gz::$_rel-x86_64.tar.gz")
+source_aarch64=("$_name-$pkgver-aarch64.tar.gz::$_rel-aarch64.tar.gz")
+sha256sums_x86_64=('SKIP')   # run updpkgsums after publishing the release
+sha256sums_aarch64=('SKIP')
+
+package() {
+  cd "$_name-$pkgver-linux-$CARCH"
+  install -Dm755 "bin/$_name" "$pkgdir/usr/bin/$_name"
+  # config::assets_dir() looks at <exe dir>/../share/lumen-text/assets.
+  install -dm755 "$pkgdir/usr/share/$_name"
+  cp -r "share/$_name/assets" "$pkgdir/usr/share/$_name/assets"
+  install -Dm644 "share/applications/$_name.desktop" "$pkgdir/usr/share/applications/$_name.desktop"
+  install -Dm644 "share/icons/hicolor/scalable/apps/$_name.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_name.svg"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$_name/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_name/LICENSE"
+}

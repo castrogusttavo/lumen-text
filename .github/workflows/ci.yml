@@ -8,6 +8,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Pushes to main run one at a time end to end (version -> build -> publish), so two quick pushes
+# never race for the same CalVer number. Pull requests just cancel their own stale runs.
+concurrency:
+  group: ${{ github.event_name == 'push' && 'release' || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: Build and test
@@ -51,24 +57,25 @@ jobs:
           name: perf-log
           path: perf.log
 
-  release:
-    name: Version, build and publish
+  version:
+    name: Compute version
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    # One release at a time so two quick pushes never race for the same version number.
-    concurrency:
-      group: release
-      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      matrix: ${{ steps.version.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Compute version (CalVer YYYY.M.D.N)
+      - name: Compute version (CalVer YYYY.M.D.N) and build matrix
         id: version
         shell: bash
+        env:
+          # Repository variable (Settings -> Variables): set to "true" to also build aarch64.
+          # GitHub-hosted arm runners are not available to private repositories.
+          ENABLE_ARM_BUILDS: ${{ vars.ENABLE_ARM_BUILDS }}
         run: |
           git fetch --tags --force
           prefix="$(date -u +%Y.%-m.%-d)"
@@ -76,39 +83,118 @@ jobs:
           version="${prefix}.$((n + 1))"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Releasing ${version}"
+          # Built on 22.04 so the binary only needs glibc 2.35 (Debian 12, Ubuntu 22.04+, Fedora, ...).
+          # To add another OS later, add a sibling build job next to `build-linux` and list it in
+          # the `release` job's `needs`; its artifacts are picked up by the `dist-*` pattern.
+          matrix='[{"arch":"x86_64","runner":"ubuntu-22.04","experimental":false}'
+          if [ "${ENABLE_ARM_BUILDS}" = "true" ]; then
+            matrix="${matrix},{\"arch\":\"aarch64\",\"runner\":\"ubuntu-22.04-arm\",\"experimental\":true}"
+          fi
+          echo "matrix=${matrix}]" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    name: Build and package (linux-${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.version.outputs.matrix) }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
       - name: System dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
-            libfontconfig1-dev libclang-dev libonig-dev
+            libfontconfig1-dev libclang-dev libonig-dev rpm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.arch }}
       - name: Build release binary
         env:
-          LUMEN_VERSION: ${{ steps.version.outputs.version }}
-        run: cargo build --release
-      - name: Package
-        id: package
+          LUMEN_VERSION: ${{ env.VERSION }}
+        run: |
+          cargo build --release
+          got="$(target/release/lumen-text --version)"
+          echo "$got"
+          [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
+      - name: Package (tar.gz, deb, rpm, AppImage)
         shell: bash
         run: |
-          v="${{ steps.version.outputs.version }}"
-          name="lumen-text-${v}-linux-x86_64"
-          mkdir -p "dist/${name}"
-          cp target/release/lumen-text "dist/${name}/"
-          cp -r assets "dist/${name}/assets"
-          cp LICENSE README.md install.sh lumen-text.desktop "dist/${name}/" 2>/dev/null || true
-          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
-          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
-          echo "archive=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "checksum=dist/${name}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
+          set -euo pipefail
+          bin=target/release/lumen-text
+          mkdir -p dist
+          packaging/tarball/build-tarball.sh "$bin" "$VERSION" "${{ matrix.arch }}" dist
+          packaging/deb/build-deb.sh "$bin" "$VERSION" "${{ matrix.arch }}" dist
+          packaging/rpm/build-rpm.sh "$bin" "$VERSION" "${{ matrix.arch }}" dist
+          packaging/appimage/build-appimage.sh "$bin" "$VERSION" "${{ matrix.arch }}" dist
+          rm -rf dist/AppDir dist/appimagetool-*.AppImage
+      - name: Package (Arch pkg.tar.zst in an archlinux container)
+        if: matrix.arch == 'x86_64'
         run: |
-          v="${{ steps.version.outputs.version }}"
-          gh release create "v${v}" \
-            "${{ steps.package.outputs.archive }}" \
-            "${{ steps.package.outputs.checksum }}" \
+          packaging/arch/build-arch.sh "dist/lumen-text-${VERSION}-linux-x86_64.tar.gz" "$VERSION" dist
+      - name: Inspect packages
+        run: |
+          set -x
+          ls -l dist
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb | head -30
+          rpm -qp --info dist/*.rpm
+          rpm -qpl dist/*.rpm | head -30
+          rpm -qp --requires dist/*.rpm
+      - name: Smoke test the .deb (install and run --version)
+        if: matrix.arch == 'x86_64'
+        run: |
+          sudo apt-get install -y ./dist/lumen-text_*.deb
+          lumen-text --version
+          test -f /usr/share/lumen-text/assets/language-manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [version, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Verify the expected files exist
+        run: |
+          ls -l dist
+          for f in \
+            "lumen-text-${VERSION}-linux-x86_64.tar.gz" \
+            "lumen-text-${VERSION}-linux-x86_64.tar.gz.sha256" \
+            "lumen-text_${VERSION}-1_amd64.deb" \
+            "lumen-text-${VERSION}-1.x86_64.rpm" \
+            "lumen-text-bin-${VERSION}-1-x86_64.pkg.tar.zst" \
+            "lumen-text-${VERSION}-x86_64.AppImage"; do
+            [ -f "dist/$f" ] || { echo "missing release file: $f" >&2; exit 1; }
+          done
+      - name: Checksums for every file
+        run: |
+          cd dist
+          find . -maxdepth 1 -type f ! -name '*.sha256' ! -name SHA256SUMS -printf '%f\n' | sort | xargs sha256sum > ../SHA256SUMS
+          mv ../SHA256SUMS SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish release
+        run: |
+          gh release create "v${VERSION}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
-            --title "lumen-text ${v}" \
+            --title "lumen-text ${VERSION}" \
             --generate-notes

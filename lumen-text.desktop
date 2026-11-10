@@ -4,6 +4,7 @@ Name=lumen-text
 GenericName=Code Editor
 Comment=Lightweight code editor written in Rust
 Exec=lumen-text %F
+Icon=lumen-text
 Terminal=false
 Categories=Development;TextEditor;
 MimeType=text/plain;text/x-rust;text/x-typescript;application/json;text/markdown;
