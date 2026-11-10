@@ -338,6 +338,57 @@ mod tests {
         assert!(avg < 12.0, "frame too slow: {avg:.1} ms cpu");
     }
 
+    /// The steady scroll budget also holds with a taller line height, a medium weight and ligatures
+    /// (advanced shaping), the costliest font settings.
+    #[test]
+    fn render_frame_steady_scroll_other_fonts() {
+        let (_g, mut app, mut px, (w, h)) = big_app("steadyfonts");
+        app.apply_setting("buffer_line_height", &serde_json::json!(1.9));
+        app.apply_setting("buffer_font_weight", &serde_json::json!(500));
+        app.apply_setting("buffer_font_ligatures", &serde_json::json!(true));
+        settle(&mut app, &mut px, w, h, 31_000);
+        let n = 240;
+        let t0 = thread_cpu();
+        for i in 0..n {
+            let d = &mut app.docs[app.active];
+            d.top = 30_000.0 + (i * 3) as f64;
+            d.target = d.top;
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        let avg = (thread_cpu() - t0) * 1e3 / n as f64;
+        eprintln!("[perf] steady scroll, line height 1.9 + weight 500 + ligatures: {avg:.2} ms cpu avg over {n}");
+        assert!(avg < 16.0, "frame too slow with non-default fonts: {avg:.1} ms cpu");
+    }
+
+    /// Typing latency with a taller line height and no line numbers.
+    #[test]
+    fn typing_steady_other_line_height() {
+        use crate::app::KeyIn;
+        use winit::keyboard::{Key, SmolStr};
+        let (_g, mut app, mut px, (w, h)) = big_app("typingfonts");
+        app.apply_setting("buffer_line_height", &serde_json::json!(2.0));
+        app.apply_setting("show_line_numbers", &serde_json::json!(false));
+        settle(&mut app, &mut px, w, h, 50_200);
+        {
+            let d = &mut app.docs[app.active];
+            let p = d.buf.line_start(50_000);
+            d.ed.sel = Sel::caret(p);
+            d.top = 49_990.0;
+            d.target = d.top;
+        }
+        app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        let n = 200;
+        let t0 = thread_cpu();
+        for _ in 0..n {
+            let ki = KeyIn { key: Key::Character(SmolStr::new("a")), text: Some("a".into()) };
+            app.handle_key(&ki);
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        let avg = (thread_cpu() - t0) * 1e3 / n as f64;
+        eprintln!("[perf] steady keystroke + frame, line height 2.0, no numbers: {avg:.2} ms cpu avg over {n}");
+        assert!(avg < 25.0, "typing latency too high with non-default line height: {avg:.1} ms cpu per key");
+    }
+
     /// Steady state typing: the file is fully tokenized, a key is typed mid-file.
     #[test]
     fn typing_steady() {

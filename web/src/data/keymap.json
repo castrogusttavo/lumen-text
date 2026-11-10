@@ -180,6 +180,18 @@
   "id": "ToggleBreakpoint"
  },
  {
+  "combo": "ctrl+f2",
+  "id": "ToggleBookmark"
+ },
+ {
+  "combo": "ctrl+alt+f2",
+  "id": "NextBookmark"
+ },
+ {
+  "combo": "ctrl+alt+shift+f2",
+  "id": "PrevBookmark"
+ },
+ {
   "combo": "f10",
   "id": "StepOver"
  },

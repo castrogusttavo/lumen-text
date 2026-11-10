@@ -108,7 +108,7 @@ fn default_settings_have_unique_real_keys() {
     for k in [
         "theme",
         "appearance",
-        "font_size",
+        "buffer_font_size",
         "format_on_save",
         "auto_import",
         "lsp_narrow",
@@ -123,7 +123,7 @@ fn default_settings_have_unique_real_keys() {
         assert!(defs.iter().any(|d| d.key == *k), "{k}");
     }
     assert!(
-        matches!(defs.iter().find(|d| d.key == "font_size").unwrap().kind, SettingKind::Number { min, max, .. } if min == 8.0 && max == 40.0)
+        matches!(defs.iter().find(|d| d.key == "buffer_font_size").unwrap().kind, SettingKind::Number { min, max, .. } if min == 8.0 && max == 40.0)
     );
 }
 
@@ -177,7 +177,10 @@ fn set_values_replaces_what_the_rows_show() {
 #[test]
 fn sections_in_order_and_visible_by_section() {
     let mut p = page_with(json!({}));
-    assert_eq!(p.sections(), vec!["General", "Editor", "Appearance", "TypeScript", "Git", "Status bar"]);
+    assert_eq!(
+        p.sections(),
+        vec!["General", "Editor", "Appearance", "TypeScript", "Git", "Status bar", "Fonts", "Editor display"]
+    );
     assert_eq!(p.visible().len(), 2);
     p.set_section(3);
     assert_eq!(
@@ -215,7 +218,7 @@ fn search_filters_label_and_help_case_insensitive_across_sections() {
     // multiple terms are ANDed (label or help)
     m.settings.search = TextField::with("dark theme");
     let keys = keys_of(&m.settings);
-    assert!(keys.contains(&"theme_dark") && !keys.contains(&"font_size"), "{keys:?}");
+    assert!(keys.contains(&"theme_dark") && !keys.contains(&"buffer_font_size"), "{keys:?}");
     m.settings.search = TextField::with("   ");
     assert_eq!(keys_of(&m.settings), vec!["format_on_save", "updates"], "blank search = section list");
 }
@@ -330,14 +333,14 @@ fn dropdown_selection_is_clamped_and_scrolls() {
 
 #[test]
 fn number_step_clamps_to_range() {
-    let mut p = page_with(json!({"font_size": 39}));
-    let d = def_idx(&p, "font_size");
-    assert_eq!(p.step(d, 1), Event::Setting { key: "font_size".into(), value: json!(40) });
+    let mut p = page_with(json!({"buffer_font_size": 39}));
+    let d = def_idx(&p, "buffer_font_size");
+    assert_eq!(p.step(d, 1), Event::Setting { key: "buffer_font_size".into(), value: json!(40) });
     assert_eq!(p.step(d, 1), Event::None, "already at max");
-    assert_eq!(p.set_number(d, 8.0), Event::Setting { key: "font_size".into(), value: json!(8) });
+    assert_eq!(p.set_number(d, 8.0), Event::Setting { key: "buffer_font_size".into(), value: json!(8) });
     assert_eq!(p.step(d, -1), Event::None, "already at min");
-    assert_eq!(p.set_number(d, 1000.0), Event::Setting { key: "font_size".into(), value: json!(40) });
-    assert_eq!(p.set_number(d, -5.0), Event::Setting { key: "font_size".into(), value: json!(8) });
+    assert_eq!(p.set_number(d, 1000.0), Event::Setting { key: "buffer_font_size".into(), value: json!(40) });
+    assert_eq!(p.set_number(d, -5.0), Event::Setting { key: "buffer_font_size".into(), value: json!(8) });
 }
 
 #[test]
@@ -362,13 +365,18 @@ fn number_out_of_range_value_is_pulled_in_and_fractions_survive() {
 #[test]
 fn number_via_keyboard_arrows() {
     let mut m = modal();
-    m.settings.set_section(1);
-    assert_eq!(m.settings.selected_def(), Some(def_idx(&m.settings, "font_size")));
+    m.settings.set_section(6); // Fonts
+    let fs = def_idx(&m.settings, "buffer_font_size");
+    m.settings.select_def(fs);
+    assert_eq!(m.settings.selected_def(), Some(fs));
     assert_eq!(
         press(&mut m, named(NamedKey::ArrowRight)),
-        Event::Setting { key: "font_size".into(), value: json!(15) }
+        Event::Setting { key: "buffer_font_size".into(), value: json!(15) }
     );
-    assert_eq!(press(&mut m, named(NamedKey::ArrowLeft)), Event::Setting { key: "font_size".into(), value: json!(14) });
+    assert_eq!(
+        press(&mut m, named(NamedKey::ArrowLeft)),
+        Event::Setting { key: "buffer_font_size".into(), value: json!(14) }
+    );
     assert_eq!(press(&mut m, named(NamedKey::Enter)), Event::None);
 }
 
@@ -404,10 +412,10 @@ fn text_setting_edit_commit_and_cancel() {
 
 #[test]
 fn reset_row_restores_default_and_flags_modified() {
-    let mut p = page_with(json!({"lsp_narrow": true, "font_size": 14}));
+    let mut p = page_with(json!({"lsp_narrow": true, "buffer_font_size": 14}));
     let d = def_idx(&p, "lsp_narrow");
     assert!(p.is_modified(d));
-    assert!(!p.is_modified(def_idx(&p, "font_size")));
+    assert!(!p.is_modified(def_idx(&p, "buffer_font_size")));
     assert_eq!(p.reset_def(d), Event::Setting { key: "lsp_narrow".into(), value: json!(false) });
     assert!(!p.is_modified(d));
     assert_eq!(p.reset_def(d), Event::None);
@@ -882,13 +890,13 @@ fn settings_clicks_toggle_step_and_dropdown_via_hits() {
     let d = def_idx(&m.settings, "format_on_save");
     let (x, y) = center(hit_rect(&m, Hit::Toggle(d)));
     assert_eq!(m.mouse_down(x, y), Event::Setting { key: "format_on_save".into(), value: json!(true) });
-    // Editor section: "+" on font size
-    let (x, y) = center(hit_rect(&m, Hit::Section(1)));
+    // Fonts section: "+" on the buffer font size
+    let (x, y) = center(hit_rect(&m, Hit::Section(6)));
     m.mouse_down(x, y);
     redraw(&mut m);
-    let d = def_idx(&m.settings, "font_size");
+    let d = def_idx(&m.settings, "buffer_font_size");
     let (x, y) = center(hit_rect(&m, Hit::Step(d, 1)));
-    assert_eq!(m.mouse_down(x, y), Event::Setting { key: "font_size".into(), value: json!(15) });
+    assert_eq!(m.mouse_down(x, y), Event::Setting { key: "buffer_font_size".into(), value: json!(15) });
     // Appearance: segmented option click, then dropdown open + pick
     m.settings.set_choices("theme", vec!["x".into(), "y".into(), "z".into(), "w".into(), "v".into()]);
     let (x, y) = center(hit_rect(&m, Hit::Section(2)));

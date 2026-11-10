@@ -373,7 +373,8 @@ pub(super) fn draw_settings(
                     None => {
                         let s = p.cur_str(d);
                         if s.is_empty() {
-                            tx.draw_ui(cv, b.x + 10, b.y + 6, "—", dim, inner, false);
+                            let empty = if def.key.ends_with("_font_family") { "System default" } else { "—" };
+                            tx.draw_ui(cv, b.x + 10, b.y + 6, empty, dim, inner, false);
                         } else {
                             tx.draw_ui(cv, b.x + 10, b.y + 6, &s, fg, inner, false);
                         }

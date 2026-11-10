@@ -23,7 +23,11 @@ await out("commands.json", commands);
 // --- settings
 const ui = await src("settingsui/model.rs");
 const sstart = ui.indexOf("pub fn default_settings");
-const sblock = ui.slice(sstart, ui.indexOf("\n    ]\n}", sstart));
+const ext = await src("settings_ext.rs");
+const estart = ext.indexOf("pub fn defs");
+// The font / editor-display rows live in settings_ext.rs and are appended to the main list.
+const sblock =
+  ui.slice(sstart, ui.indexOf("\n    ]", sstart)) + "\n" + ext.slice(estart, ext.indexOf("\n    ]\n}", estart));
 const defs = [];
 const re = /d\(\s*"(\w+)",\s*"([^"]+)",\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)",\s*([^;]*?)\),?\s*(?=\n\s*(?:d\(|\/\/|$))/gs;
 for (const m of sblock.matchAll(re)) {
@@ -44,6 +48,7 @@ const defaults = {};
 for (const m of dblock.matchAll(/^\s+(\w+):\s*(.+?),\s*$/gm)) {
   let v = m[2].trim();
   if (/^".*"\.into\(\)$/.test(v)) v = v.slice(1, v.indexOf('".into'));
+  else if (v === "String::new()") v = "";
   else if (v === "true" || v === "false") v = v === "true";
   else if (/^-?[\d.]+$/.test(v)) v = Number(v);
   else v = null;

@@ -16,6 +16,14 @@ impl App {
             self.ctxmenu_key(ev);
             return false;
         }
+        if matches!(self.overlay, Overlay::Font(_)) {
+            self.fontpicker_key(ev);
+            return false;
+        }
+        if matches!(self.overlay, Overlay::Font(_)) {
+            self.fontpicker_key(ev);
+            return false;
+        }
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let alt = self.mods.alt_key();
@@ -49,7 +57,9 @@ impl App {
         let mut field = match &mut self.overlay {
             Overlay::Picker(p) => std::mem::take(&mut p.field),
             Overlay::Prompt(p) => std::mem::take(&mut p.field),
-            Overlay::None | Overlay::Settings(_) | Overlay::TopMenu(_) | Overlay::Ctx(_) => return false,
+            Overlay::None | Overlay::Settings(_) | Overlay::TopMenu(_) | Overlay::Ctx(_) | Overlay::Font(_) => {
+                return false;
+            }
         };
         let sel_move = |app: &mut App, d: isize| {
             if let Overlay::Picker(p) = &mut app.overlay {
@@ -132,7 +142,7 @@ impl App {
         match &mut self.overlay {
             Overlay::Picker(p) => p.field = field,
             Overlay::Prompt(p) => p.field = field,
-            Overlay::None | Overlay::Settings(_) | Overlay::TopMenu(_) | Overlay::Ctx(_) => {}
+            Overlay::None | Overlay::Settings(_) | Overlay::TopMenu(_) | Overlay::Ctx(_) | Overlay::Font(_) => {}
         }
 
         match next {
@@ -164,7 +174,7 @@ impl App {
     pub fn overlay_accept(&mut self) {
         let overlay = std::mem::replace(&mut self.overlay, Overlay::None);
         match overlay {
-            Overlay::Settings(_) | Overlay::TopMenu(_) | Overlay::Ctx(_) => {}
+            Overlay::Settings(_) | Overlay::TopMenu(_) | Overlay::Ctx(_) | Overlay::Font(_) => {}
             Overlay::Picker(p) => {
                 if let Some(item) = p.selected() {
                     self.run_action(item.action);
@@ -274,6 +284,9 @@ impl App {
         if matches!(self.overlay, Overlay::Ctx(_)) {
             return self.ctxmenu_mouse(x, y);
         }
+        if matches!(self.overlay, Overlay::Font(_)) {
+            return self.fontpicker_mouse(x, y);
+        }
         let rows = self.layout.overlay_rows.clone();
         if let Some((_, idx)) = rows.iter().find(|(r, _)| r.contains(x, y)) {
             if let Overlay::Picker(p) = &mut self.overlay {
@@ -304,6 +317,14 @@ impl App {
             return true;
         }
         if matches!(self.overlay, Overlay::Ctx(_)) {
+            return true;
+        }
+        if matches!(self.overlay, Overlay::Font(_)) {
+            self.fontpicker_wheel(delta);
+            return true;
+        }
+        if matches!(self.overlay, Overlay::Font(_)) {
+            self.fontpicker_wheel(delta);
             return true;
         }
         let Overlay::Picker(p) = &mut self.overlay else { return !self.overlay.is_none() };

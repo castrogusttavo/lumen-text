@@ -131,7 +131,7 @@ pub(super) struct SegLay {
 /// The whole document: segments stacked, with everything hit-testing and line mapping need
 /// flattened into absolute coordinates.
 pub(super) struct Layout {
-    pub(super) key: (i32, u32, u32, u64, u32),
+    pub(super) key: (i32, u32, u32, u64, u32, u32),
     pub(super) height: i32,
     /// The segments that take space, in document order (nothing is copied out of them: line
     /// mapping and hit-testing look into the segment that owns the line / point).

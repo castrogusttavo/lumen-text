@@ -100,6 +100,7 @@ impl App {
             Overlay::Settings(_) => self.draw_settings(cv),
             Overlay::TopMenu(_) => self.draw_topmenu(cv),
             Overlay::Ctx(_) => self.draw_ctxmenu(cv),
+            Overlay::Font(_) => self.draw_fontpicker(cv),
             Overlay::Prompt(p) => {
                 let r = Rect::new(base.x, base.y, base.w, 86);
                 cv.shadow(r, 12);

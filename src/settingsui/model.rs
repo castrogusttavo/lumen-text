@@ -30,7 +30,7 @@ pub const PENDING_KEYS: &[&str] = &["minimap", "word_wrap", "sticky_scroll", "in
 pub fn default_settings() -> Vec<SettingDef> {
     use SettingKind::*;
     let d = |key, section, label, help, kind| SettingDef { key, section, label, help, kind };
-    vec![
+    let mut defs = vec![
         d(
             "format_on_save",
             "General",
@@ -44,13 +44,6 @@ pub fn default_settings() -> Vec<SettingDef> {
             "Updates",
             "Automatic checks every 4 hours and downloads the new version in the background; Notify only shows a notice; Off never checks (the \"Check for updates\" command still works).",
             Choice(&["auto", "notify", "off"]),
-        ),
-        d(
-            "font_size",
-            "Editor",
-            "Font size",
-            "Code text size in pixels (8 to 40). Ctrl + mouse wheel adjusts it temporarily.",
-            Number { min: 8.0, max: 40.0, step: 1.0 },
         ),
         // --- not in config.rs yet (see PENDING_KEYS) ---
         d("minimap", "Editor", "Minimap", "Shows a thumbnail of the file at the right edge of the editor.", Bool),
@@ -307,14 +300,16 @@ pub fn default_settings() -> Vec<SettingDef> {
             "Long shows the numbers (\"RAM 13 MB + tsgo 65 MB\"); Short shows just a chip icon, with the values in the tooltip.",
             Choice(&["long", "short"]),
         ),
-    ]
+    ];
+    defs.extend(crate::settings_ext::defs());
+    defs
 }
 
 /// Defaults matching `Config::default()` plus the pending keys. Used for the per-row reset icon
 /// and as the display value of keys missing from the values map.
 pub fn default_values() -> Value {
     let mut v = json!({
-        "format_on_save": false, "updates": "auto", "auto_import": false, "font_size": 14, "lsp_narrow": false,
+        "format_on_save": false, "updates": "auto", "auto_import": false, "lsp_narrow": false,
         "code_lens": false, "code_lens_refs": true, "code_lens_impls": true, "inlay_hints": false, "inlay_hints_params": true, "inlay_hints_types": true, "appearance": "fixed", "theme_chrome": "derived", "theme_light": "github-light-default",
         "theme_dark": "github-dark-default", "tsgo_source": "auto",
         "minimap": true, "minimap_style": "subtle", "word_wrap": false, "sticky_scroll": true, "indent_guides": true, "ui_scale": 0, "scroll_speed": 1,
@@ -330,6 +325,12 @@ pub fn default_values() -> Value {
         "status_pos_debug": 5, "status_pos_git": 6, "status_pos_ram": 7,
     });
     if let (Some(dst), Some(src)) = (v.as_object_mut(), bar.as_object()) {
+        dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
+    }
+    if let (Some(dst), Some(src)) = (v.as_object_mut(), crate::settings_ext::defaults().as_object()) {
+        dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
+    }
+    if let (Some(dst), Some(src)) = (v.as_object_mut(), crate::settings_ext::defaults().as_object()) {
         dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
     }
     v
@@ -362,12 +363,22 @@ pub(super) fn section_icon(s: &str) -> &'static str {
     match s {
         "General" => "settings",
         "Editor" => "edit",
+        "Fonts" => "font",
+        "Editor display" => "layout",
         "Appearance" => "palette",
         "TypeScript" | "Language servers" => "code",
         "Git" => "branch",
         "Terminal" => "terminal",
         "Status bar" => "layout",
         _ => "settings",
+    }
+}
+
+/// Equal values; numbers compare as numbers (14 and 14.0 are the same setting).
+pub(super) fn same_value(a: &Value, b: &Value) -> bool {
+    match (a.as_f64(), b.as_f64()) {
+        (Some(x), Some(y)) if a.is_number() && b.is_number() => (x - y).abs() < 1e-6,
+        _ => a == b,
     }
 }
 

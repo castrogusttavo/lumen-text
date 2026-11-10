@@ -17,8 +17,14 @@ impl App {
         let ed = self.layout.editor.intersect(&cv.bounds());
         let maxw = (ed.w - 40).clamp(240, 640);
         let inner_w = maxw - 2 * PAD_X;
-        let key: LayKey =
-            (inner_w, font_size().to_bits(), self.tx.cell_w.to_bits(), crate::ui::scale().to_bits(), h.blocks_ver);
+        let key: LayKey = (
+            inner_w,
+            font_size().to_bits(),
+            self.tx.cell_w.to_bits(),
+            crate::ui::scale().to_bits(),
+            h.blocks_ver,
+            crate::fontcfg::generation(),
+        );
         if h.laid.as_ref().is_none_or(|(k, _)| *k != key) {
             let lang_blocks = h.blocks.clone();
             let App { tx, theme, tokenizers, assets, .. } = &mut *self;

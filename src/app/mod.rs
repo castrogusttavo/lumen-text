@@ -248,9 +248,7 @@ impl App {
         crate::minimap::set_style(crate::minimap::Style::from_name(&config.minimap_style));
         crate::editor::set_default_tab_w(config.tab_width);
         crate::scroller::set_speed(config.scroll_speed);
-        if (config.font_size - 14.0).abs() > f32::EPSILON {
-            tx.set_zoom(config.font_size);
-        }
+        let missing_fonts = crate::app_display::startup_fonts(&mut tx, &config);
         mem::report("fonts ready");
         let assets = crate::config::assets_dir();
         let (stx, srx) = mpsc::channel();
@@ -374,6 +372,9 @@ impl App {
         }
         if app.docs.is_empty() {
             app.say("Ctrl+P opens a file · Ctrl+Shift+P commands");
+        }
+        if !missing_fonts.is_empty() {
+            app.say(format!("font not found: {} (using the default)", missing_fonts.join(", ")));
         }
         app
     }

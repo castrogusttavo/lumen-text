@@ -862,6 +862,11 @@ impl App {
                 _ => {}
             }
         }
+        if !self.lsp_enabled() {
+            let w = self.tx.ui_width("LSP off", false);
+            self.tx.draw_ui(cv, x + 2, y, "LSP off", dim, Rect::new(x, r.y, w + 8, r.h), false);
+            x += w + 14;
+        }
         // A chord waits for its second stroke: say so (Esc gives up).
         if let Some(prefix) = self.chord.clone() {
             let label = crate::keymap::chord_label(&prefix);

@@ -530,13 +530,15 @@ impl Doc {
             let color = if row.line == cur_line { theme.line_number_active } else { theme.line_number };
             gutter.push((if row.sub == 0 { format!("{:>digits$}\n", row.line + 1) } else { "\n".to_string() }, color));
         }
-        tx.draw(
-            cv,
-            rect.x + cell_w.round() as i32,
-            rect.y + y_off,
-            &gutter,
-            Rect::new(rect.x, rect.y, gutter_w, rect.h),
-        );
+        if crate::display::show_line_numbers() {
+            tx.draw(
+                cv,
+                rect.x + cell_w.round() as i32,
+                rect.y + y_off,
+                &gutter,
+                Rect::new(rect.x, rect.y, gutter_w, rect.h),
+            );
+        }
         let gclip = Rect::new(rect.x, rect.y, gutter_w, rect.h);
         for (r, row) in rows.iter().enumerate() {
             if row.sub != 0 {
@@ -637,14 +639,16 @@ impl Doc {
             for (k, l) in heads.iter().enumerate() {
                 let y = rect.y + k as i32 * lh;
                 let num = format!("{:>digits$}", l + 1, digits = self.gutter_digits());
-                tx.draw_line(
-                    cv,
-                    rect.x + cell_w.round() as i32,
-                    y,
-                    &num,
-                    theme.line_number,
-                    Rect::new(rect.x, y, gutter_w, lh),
-                );
+                if crate::display::show_line_numbers() {
+                    tx.draw_line(
+                        cv,
+                        rect.x + cell_w.round() as i32,
+                        y,
+                        &num,
+                        theme.line_number,
+                        Rect::new(rect.x, y, gutter_w, lh),
+                    );
+                }
                 let mut pieces = Vec::new();
                 let head_text = self.buf.line(*l);
                 let hs = if wrap_cols == 0 { inl.hints_on(*l) } else { &[] };
@@ -686,9 +690,18 @@ impl Doc {
         }
 
         // Breakpoints and the execution arrow, in the gutter.
-        for &bl in &self.bps {
-            if let Some(y) = line_y(bl) {
-                cv.fill_round(Rect::new(rect.x + 2, y + (lh - 10) / 2, 10, 10), 5, c.error);
+        if crate::display::show_breakpoints() {
+            for &bl in &self.bps {
+                if let Some(y) = line_y(bl) {
+                    cv.fill_round(Rect::new(rect.x + 2, y + (lh - 10) / 2, 10, 10), 5, c.error);
+                }
+            }
+        }
+        if crate::display::show_bookmarks() {
+            for &ml in &self.marks {
+                if let Some(y) = line_y(ml) {
+                    tx.icon(cv, "ui/bookmark", rect.x + gw0 - 14, y + (lh - 9) / 2, 9, c.accent, gclip);
+                }
             }
         }
         if let Some(dl) = self.debug_line
@@ -711,7 +724,16 @@ impl Doc {
             let key = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
-                (self.buf.line_count(), total, live, self.view.cols, tab_w, (fgc.0, fgc.1, fgc.2), l.rect.h)
+                (
+                    self.buf.line_count(),
+                    total,
+                    live,
+                    self.view.cols,
+                    tab_w,
+                    (fgc.0, fgc.1, fgc.2),
+                    l.rect.h,
+                    crate::fontcfg::generation(),
+                )
                     .hash(&mut h);
                 self.view.folds.hidden_ranges().hash(&mut h);
                 h.finish()

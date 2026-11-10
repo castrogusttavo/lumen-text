@@ -390,7 +390,7 @@ impl App {
     /// Change the font size by `delta` px (0 resets), keeping the cursor in view.
     pub fn zoom(&mut self, delta: f32) {
         let size = if delta == 0.0 { self.tx.reset_zoom() } else { self.tx.set_zoom(crate::ui::font_size() + delta) };
-        self.config.font_size = size;
+        self.config.buffer_font_size = size;
         self.config.save();
         for d in &mut self.docs {
             d.cell_w = self.tx.cell_w;

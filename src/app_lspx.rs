@@ -112,13 +112,6 @@ fn tail(log: &str, n: usize) -> String {
 }
 
 impl App {
-    /// MASTER SWITCH HOOK (single place): wire the `enable_lsp` setting here. When it returns false no
-    /// registry server is planned, started or kept (`lspx_plan` yields nothing), so tsgo/Biome gating
-    /// stays in `app_lsp.rs`.
-    pub(crate) fn lsp_enabled(&self) -> bool {
-        true
-    }
-
     // ───────────── registry and plans ─────────────
 
     /// Rebuild the registry when `language_servers` changed in the configuration.

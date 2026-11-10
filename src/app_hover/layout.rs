@@ -214,7 +214,7 @@ pub(super) fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i
             if t.code {
                 let wd = row[i].w;
                 let li = lk.as_deref().map(|u| b.url(u));
-                b.decos.push(Deco { x, y: y + 1, w: wd, h: PROSE_LH - 2, kind: DecoKind::Fill(env.pal.chip_bg, 3) });
+                b.decos.push(Deco { x, y: y + 1, w: wd, h: prose_lh() - 2, kind: DecoKind::Fill(env.pal.chip_bg, 3) });
                 segs.push(Seg {
                     x: x + 3,
                     w: wd - 6,
@@ -228,7 +228,7 @@ pub(super) fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i
                     size: None,
                 });
                 if let Some(li) = li {
-                    b.links.push((Rect::new(x, y, wd, PROSE_LH), li));
+                    b.links.push((Rect::new(x, y, wd, prose_lh()), li));
                 }
                 plain.push_str(&t.text);
                 x += wd;
@@ -272,14 +272,14 @@ pub(super) fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i
                 size: None,
             });
             if let Some(li) = li {
-                b.links.push((Rect::new(x, y, wd, PROSE_LH), li));
+                b.links.push((Rect::new(x, y, wd, prose_lh()), li));
             }
             x += wd;
             i = j;
         }
         b.right = b.right.max(x);
-        b.lines.push(LLine { y, h: PROSE_LH, segs, x0: 0, runs: vec![], plain });
-        b.y += PROSE_LH;
+        b.lines.push(LLine { y, h: prose_lh(), segs, x0: 0, runs: vec![], plain });
+        b.y += prose_lh();
     }
 }
 
@@ -429,7 +429,7 @@ pub(super) fn block(env: &mut Env, b: &mut Builder, blk: &Blk, x0: i32, w: i32) 
                 let mw = env.tx.ui_width(marker, false);
                 b.lines.push(LLine {
                     y,
-                    h: PROSE_LH,
+                    h: prose_lh(),
                     segs: vec![Seg {
                         x: ind + 12 - mw,
                         w: mw,
@@ -547,8 +547,8 @@ pub(super) fn block(env: &mut Env, b: &mut Builder, blk: &Blk, x0: i32, w: i32) 
                 b.lines[n0].segs.insert(0, seg);
                 b.lines[n0].plain = format!("{key}: {}", b.lines[n0].plain);
             } else {
-                b.lines.push(LLine { y, h: PROSE_LH, segs: vec![seg], x0: 0, runs: vec![], plain: key.clone() });
-                b.y += PROSE_LH;
+                b.lines.push(LLine { y, h: prose_lh(), segs: vec![seg], x0: 0, runs: vec![], plain: key.clone() });
+                b.y += prose_lh();
             }
         }
     }

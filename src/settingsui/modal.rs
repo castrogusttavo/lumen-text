@@ -197,6 +197,9 @@ impl Modal {
             }
             Hit::EditText(d) => {
                 self.settings.select_def(d);
+                if let Some(key) = crate::settings_ext::picker_key(self.settings.defs[d].key) {
+                    return Event::PickFont { key: key.into() };
+                }
                 if !self.settings.is_editing() {
                     self.settings.start_edit(d);
                 }

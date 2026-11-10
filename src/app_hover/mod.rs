@@ -48,7 +48,10 @@ pub use text::*;
 const PAD_X: i32 = 12;
 const PAD_Y: i32 = 8;
 const GAP: i32 = 7;
-const PROSE_LH: i32 = 19;
+/// Prose line height: 19 px at the default UI line height, scaled by the `ui_line_height` setting.
+fn prose_lh() -> i32 {
+    (19.0 * crate::fontcfg::prose_scale()).round() as i32
+}
 const LABEL_LH: i32 = 15;
 const CODE_PAD: i32 = 7;
 const BAR_W: i32 = 12;
@@ -234,7 +237,7 @@ pub struct HoverTip {
     pub has_lsp: bool,
 }
 
-type LayKey = (i32, u32, u32, u32, u64);
+type LayKey = (i32, u32, u32, u32, u64, u32);
 
 /// A point of the text selection: (index into `Laid::lines`, char boundary inside that line).
 pub type SelPt = (usize, usize);

@@ -20,7 +20,7 @@ impl App {
     fn config_values(&self) -> Value {
         let c = &self.config;
         let mut v = json!({
-            "format_on_save": c.format_on_save, "updates": c.updates, "auto_import": c.auto_import, "font_size": c.font_size,
+            "format_on_save": c.format_on_save, "updates": c.updates, "auto_import": c.auto_import,
             "lsp_narrow": c.lsp_narrow, "code_lens": c.code_lens, "code_lens_refs": c.code_lens_refs, "code_lens_impls": c.code_lens_impls, "inlay_hints": c.inlay_hints, "inlay_hints_params": c.inlay_hints_params, "inlay_hints_types": c.inlay_hints_types, "appearance": c.appearance, "theme_chrome": c.theme_chrome,
             "theme": c.theme.clone().unwrap_or_else(|| self.theme.name.clone()),
             "theme_light": c.theme_light, "theme_dark": c.theme_dark, "tsgo_source": c.tsgo_source,
@@ -44,6 +44,9 @@ impl App {
             "status_pos_ram": c.status_rank("ram"),
         });
         if let (Some(dst), Some(src)) = (v.as_object_mut(), pos.as_object()) {
+            dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
+        }
+        if let (Some(dst), Some(src)) = (v.as_object_mut(), crate::settings_ext::values(c).as_object()) {
             dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
         }
         v
@@ -142,6 +145,12 @@ impl App {
                     return;
                 }
                 Event::Setting { key, value } => self.apply_setting(&key, &value),
+                Event::PickFont { key } => {
+                    if let Some(k) = crate::settings_ext::picker_key(&key) {
+                        self.open_font_picker(k, true);
+                    }
+                    return;
+                }
                 // Re-assigning a command also switches its built-in combo off ("none").
                 Event::Bind { combo, command_id } => self.edit_keybindings(|m| keymap::bind_in(m, &combo, &command_id)),
                 Event::Unbind { combo } => self.edit_keybindings(|m| {
@@ -259,10 +268,6 @@ impl App {
                 }
                 self.refresh_inlay_hints();
             }
-            "font_size" => {
-                let size = self.tx.set_zoom(v.as_f64().unwrap_or(14.0) as f32);
-                self.config.font_size = size;
-            }
             "appearance" => {
                 self.config.appearance = s.unwrap_or_else(|| "fixed".into());
                 self.follow_system_theme();
@@ -373,7 +378,11 @@ impl App {
             "git_pull_strategy" => {
                 self.config.git_pull_strategy = crate::config::clean_pull_strategy(s.as_deref().unwrap_or(""))
             }
-            _ => return,
+            _ => {
+                if !self.apply_ext_setting(key, v) {
+                    return;
+                }
+            }
         }
         self.config.save();
     }

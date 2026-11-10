@@ -169,6 +169,10 @@ impl App {
         if clicks == 1 && !alt && d.click_fold(x, y) {
             return self.request_redraw();
         }
+        if clicks == 1 && !alt && self.gutter_breakpoint_click(x, y) {
+            return self.request_redraw();
+        }
+        let d = &mut self.docs[self.active];
         let (p, hint) = d.hit_at(x, y);
         if alt && clicks == 1 {
             self.drag_press_block(p);

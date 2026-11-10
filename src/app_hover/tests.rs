@@ -27,7 +27,7 @@ fn prose_wraps_to_width_and_keeps_links() {
         assert!(right <= 300 + 6, "line too wide: {right}");
     }
     assert_eq!(l.links.len(), 1);
-    assert_eq!(l.h, l.lines.len() as i32 * PROSE_LH);
+    assert_eq!(l.h, l.lines.len() as i32 * prose_lh());
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn diagnostics_come_first_with_quick_fix() {
 #[test]
 fn scroll_is_clamped() {
     let mut t = HoverTip::new("```ts\nconst a: 1\n```\n", (0, 1), (0, 0));
-    t.laid = Some(((0, 0, 0, 0, 0), Laid { h: 500, ..Default::default() }));
+    t.laid = Some(((0, 0, 0, 0, 0, 0), Laid { h: 500, ..Default::default() }));
     t.view = Rect::new(0, 0, 100, 200);
     t.scroll = 900.0;
     clamp_scroll(&mut t);
@@ -189,7 +189,7 @@ fn tip_with(blocks: &[Blk], tx: &mut TextCtx) -> HoverTip {
         layout(blocks, 400, &mut env)
     };
     let mut t = HoverTip::new("", (0, 0), (0, 0));
-    t.laid = Some(((7, 7, 7, 7, 7), l));
+    t.laid = Some(((7, 7, 7, 7, 7, 0), l));
     t.view = Rect::new(10, 10, 400, 300);
     t
 }
