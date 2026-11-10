@@ -738,6 +738,8 @@ mod tests {
     }
 
     #[test]
+    // Wall-clock frame budget: only meaningful on the Linux runners it was tuned for.
+    #[cfg(target_os = "linux")]
     fn big_file_background_does_not_block_ui() {
         let buf = Buffer::from_str(&gen_text(100_000));
         let theme = theme();
