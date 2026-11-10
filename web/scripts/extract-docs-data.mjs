@@ -1,7 +1,7 @@
 // Generates docs reference data from the Rust sources so the docs cannot drift from the app:
 //   src/keymap.rs      DEFAULTS    -> keymap.json
 //   src/app_overlay.rs COMMANDS    -> commands.json (palette labels, shortcuts)
-//   src/settingsui.rs + config.rs  -> settings.json (labels, help, kind, defaults)
+//   src/settingsui/model.rs + config.rs  -> settings.json (labels, help, kind, defaults)
 import { readFile, writeFile } from "node:fs/promises";
 
 const src = (f) => readFile(new URL(`../../src/${f}`, import.meta.url), "utf8");
@@ -21,7 +21,7 @@ const commands = [...cblock.matchAll(/\("([^"]+)",\s*"([^"]*)",\s*Cmd::(\w+)\)/g
 await out("commands.json", commands);
 
 // --- settings
-const ui = await src("settingsui.rs");
+const ui = await src("settingsui/model.rs");
 const sstart = ui.indexOf("pub fn default_settings");
 const sblock = ui.slice(sstart, ui.indexOf("\n    ]\n}", sstart));
 const defs = [];

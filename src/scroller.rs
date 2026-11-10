@@ -466,16 +466,42 @@ mod tests {
         // Only these may look inside a LineDelta: the shared converter, `App::wheel_in` (notches for
         // the Scroller), and the script/HiDPI plumbing that builds deltas.
         let allowed = ["scroller.rs", "app_input.rs", "app.rs", "script.rs"];
-        for e in std::fs::read_dir(&dir).unwrap() {
-            let path = e.unwrap().path();
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
-            if !name.ends_with(".rs") || allowed.contains(&name.as_str()) {
+        // Every .rs file under src/, directory modules included (`name` = path relative to src/).
+        fn walk(dir: &std::path::Path, rel: &str, out: &mut Vec<(String, std::path::PathBuf)>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let path = e.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().to_string();
+                let rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+                if path.is_dir() {
+                    walk(&path, &rel, out);
+                } else if name.ends_with(".rs") {
+                    out.push((rel, path));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&dir, "", &mut files);
+        for (name, path) in &files {
+            // `app.rs` may be a directory module: `app/mod.rs` and its children count as `app.rs`.
+            let top = name.split('/').next().unwrap();
+            let module = if name.contains('/') { format!("{top}.rs") } else { name.clone() };
+            if allowed.contains(&module.as_str()) {
                 continue;
             }
-            let src = std::fs::read_to_string(&path).unwrap();
+            let src = std::fs::read_to_string(path).unwrap();
             let code = src.split("#[cfg(test)]").next().unwrap();
             assert!(!code.contains("LineDelta("), "{name} converts wheel notches itself; use scroller::wheel_*");
         }
+        // A surface may live in `file` or, once split, in the directory module of the same name.
+        let source_of = |file: &str| -> String {
+            let stem = file.trim_end_matches(".rs");
+            files
+                .iter()
+                .filter(|(n, _)| n == file || n.starts_with(&format!("{stem}/")))
+                .map(|(_, p)| std::fs::read_to_string(p).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         // (file, what its wheel path must call)
         let surfaces = [
             ("doc_scroll.rs", "scr.v.wheel("),          // editor, vertical and horizontal
@@ -493,7 +519,7 @@ mod tests {
             ("app_panel.rs", "scroller::wheel_rows_int("),
         ];
         for (file, needle) in surfaces {
-            let src = std::fs::read_to_string(dir.join(file)).unwrap();
+            let src = source_of(file);
             assert!(src.contains(needle), "{file} must scroll through `{needle}`");
         }
     }
