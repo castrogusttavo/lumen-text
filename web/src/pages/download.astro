@@ -22,7 +22,7 @@ const appimage = A.appimage?.name ?? `lumen-text-${v}-x86_64.AppImage`;
 const pubkey = "RWQoQesrU+NXnwocGP2j42WnwJuiGX/qTELkdL0ykq6TA+ASp5mmzyYU";
 const installUser = `curl -fLO ${A.tarball?.url ?? `${GITHUB}/releases/latest/download/${tar}`} && tar xzf ${tar} && ./${dir}/bin/lumen-text --install-user`;
 ---
-<Base title="Download" description="Download Lumen for Linux: .deb, .rpm, Arch, AppImage and tar.gz, with checksums and minisign signatures." path="/download">
+<Base title="Download" description="Download Lumen for Linux (.deb, .rpm, Arch, AppImage, tar.gz), Windows (.zip) and macOS (.dmg), with checksums and minisign signatures." path="/download">
   <section class="container-x py-20 md:py-28" id="dl" data-repo={REPO} data-version={release.version ?? ""}>
     <SectionHead eyebrow="Download">
       <Fragment slot="title">Get <span class="accent-word">Lumen</span></Fragment>
@@ -77,11 +77,21 @@ minisign -Vm ${appimage} -P ${pubkey}`}</code></pre><button type="button" class=
       </article>
 
       <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-        {[["Windows", "Planned. The release pipeline is structured so other platforms add their own artifacts."], ["macOS", "Planned. Follow the roadmap on GitHub for progress."]].map(([n, d]) => (
-          <article class="rounded-card border border-dashed border-line2 p-6" data-reveal data-os-card={n!.toLowerCase()}>
-            <div class="flex items-center justify-between"><h3 class="text-lg font-medium">{n}</h3><span class="rounded-full border border-line2 px-3 py-1 text-xs text-muted">Coming soon</span></div>
-            <p class="mt-2 text-sm text-muted">{d}</p>
-            <a class="mt-3 inline-block text-sm underline decoration-line2 underline-offset-4 hover:text-fg" href={GITHUB} rel="noopener">Get notified: Watch the repository on GitHub, choose Custom, then Releases</a>
+        {[
+          { id: "windows", n: "Windows", d: "Windows 10 or newer, x86_64. Portable zip: unzip and run lumen-text.exe. Not code-signed, so SmartScreen may warn: More info, then Run anyway.", links: [{ a: A.windows, label: "Download .zip", fb: `lumen-text-${v}-windows-x86_64.zip` }] },
+          { id: "macos", n: "macOS", d: "macOS 11 or newer. Open the .dmg and drag Lumen Text to Applications. Ad-hoc signed, not notarized: right-click, Open on first launch.", links: [{ a: A.macosArm, label: "Apple Silicon .dmg", fb: `lumen-text-${v}-macos-aarch64.dmg` }, { a: A.macosIntel, label: "Intel .dmg", fb: `lumen-text-${v}-macos-x86_64.dmg` }] },
+        ].map((c) => (
+          <article class="rounded-card border border-line bg-card p-6" data-reveal data-os-card={c.id}>
+            <div class="flex items-center justify-between"><h3 class="text-lg font-medium">{c.n}</h3><span class="rounded-full border border-line2 px-3 py-1 text-xs text-muted">Beta</span></div>
+            <p class="mt-2 text-sm text-muted">{c.d}</p>
+            <div class="mt-4 flex flex-wrap gap-3">
+              {c.links.map((l) => (
+                <div>
+                  <a class="btn btn-primary whitespace-nowrap" href={l.a?.url ?? `${GITHUB}/releases/latest`} rel="noopener">{l.label}</a>
+                  <p class="mt-1 break-all font-mono text-[10.5px] text-faint">{l.a?.name ?? l.fb} {l.a ? `· ${mb(l.a.size)}` : ""}</p>
+                </div>
+              ))}
+            </div>
           </article>
         ))}
       </div>
@@ -90,7 +100,7 @@ minisign -Vm ${appimage} -P ${pubkey}`}</code></pre><button type="button" class=
         <article class="rounded-card border border-line bg-card p-6" data-reveal>
           <p class="eyebrow">System requirements</p>
           <ul class="mt-3 space-y-2 text-sm text-muted">
-            <li><strong class="text-fg">OS:</strong> Linux x86_64 (aarch64 packages exist when the repository enables them)</li>
+            <li><strong class="text-fg">OS:</strong> Linux x86_64 (aarch64 when enabled), Windows 10+ x86_64, macOS 11+ (Apple Silicon and Intel)</li>
             <li><strong class="text-fg">C library:</strong> glibc 2.35 or newer (built on Ubuntu 22.04)</li>
             <li><strong class="text-fg">Display:</strong> Wayland or X11. No GPU needed: everything is drawn on the CPU</li>
             <li><strong class="text-fg">Libraries:</strong> libxkbcommon, Wayland and X11 are loaded at run time</li>
@@ -114,7 +124,7 @@ minisign -Vm ${appimage} -P ${pubkey}`}</code></pre><button type="button" class=
               <a class="font-mono font-medium hover:underline" href={r.url} rel="noopener">{r.tag}</a>
               <time class="text-faint" datetime={r.publishedAt}>{new Date(r.publishedAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" })}</time>
               <span class="ml-auto flex flex-wrap gap-3">
-                {r.assets.map((a) => <a class="text-muted underline decoration-line2 underline-offset-4 hover:text-fg" href={a.url} rel="noopener">{a.name.endsWith(".deb") ? ".deb" : a.name.endsWith(".rpm") ? ".rpm" : a.name.endsWith(".zst") ? "Arch" : a.name.endsWith("AppImage") ? "AppImage" : ".tar.gz"}</a>)}
+                {r.assets.map((a) => <a class="text-muted underline decoration-line2 underline-offset-4 hover:text-fg" href={a.url} rel="noopener">{a.name.endsWith(".deb") ? ".deb" : a.name.endsWith(".rpm") ? ".rpm" : a.name.endsWith(".zst") ? "Arch" : a.name.endsWith("AppImage") ? "AppImage" : a.name.endsWith(".zip") ? "Windows" : a.name.endsWith(".dmg") ? (a.name.includes("aarch64") ? "macOS arm64" : "macOS Intel") : ".tar.gz"}</a>)}
               </span>
             </li>
           ))}
@@ -158,7 +168,7 @@ minisign -Vm ${appimage} -P ${pubkey}`}</code></pre><button type="button" class=
   const note = document.getElementById("os-note");
   if (note && os !== "linux") {
     note.hidden = false;
-    note.textContent = os === "mobile" ? "Open this page on your Linux desktop to download Lumen." : `We detected ${os === "windows" ? "Windows" : "macOS"}. Lumen for ${os === "windows" ? "Windows" : "macOS"} is coming soon; the Linux packages are below.`;
+    note.textContent = os === "mobile" ? "Open this page on your desktop to download Lumen." : `We detected ${os === "windows" ? "Windows" : "macOS"}: your download is in the ${os === "windows" ? "Windows" : "macOS"} card below.`;
     document.querySelector(`[data-os-card="${os}"]`)?.classList.add("ring-1", "ring-[var(--accent)]");
   }
   document.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((b) =>

@@ -280,6 +280,201 @@
     ]
   },
   {
+    "tag": "v2026.11.10.14",
+    "name": "lumen-text 2026.11.10.14",
+    "publishedAt": "2026-11-10T19:29:27Z",
+    "url": "https://github.com/castrogusttavo/lumen-text/releases/tag/v2026.11.10.14",
+    "prerelease": false,
+    "notes": "## What changed (7 commits)\n\n- Arm Linux builds are no longer experimental; gate wall-clock highlight budget test to Linux (`73dea91`)\n- Fix zip creation on Git Bash and drop timeout on macOS (`f4237af`)\n- Verify Windows/macOS packaging on the platforms branch; steadier animation test (`a68a6dc`)\n- Terminal query replies (ConPTY needs them), gate env-dependent git test (`9c8fd67`)\n- Windows/macOS fonts, test gating, docs (`742dd06`)\n- Gate unix-script tests; fix macOS openpty signature (`9c39eaa`)\n- Port to Windows and macOS: cfg-gated platform layers, packaging, CI (`cad3296`)\n\n**Full diff:** https://github.com/castrogusttavo/lumen-text/compare/v2026.11.10.13...v2026.11.10.14\n",
+    "assets": [
+      {
+        "name": "lumen-text-2026.11.10.14-1.aarch64.rpm",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-1.aarch64.rpm",
+        "size": 10514008
+      },
+      {
+        "name": "lumen-text-2026.11.10.14-1.x86_64.rpm",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-1.x86_64.rpm",
+        "size": 10935148
+      },
+      {
+        "name": "lumen-text-2026.11.10.14-aarch64.AppImage",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-aarch64.AppImage",
+        "size": 10676744
+      },
+      {
+        "name": "lumen-text-2026.11.10.14-linux-aarch64.tar.gz",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-linux-aarch64.tar.gz",
+        "size": 10509736
+      },
+      {
+        "name": "lumen-text-2026.11.10.14-linux-x86_64.tar.gz",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-linux-x86_64.tar.gz",
+        "size": 10951759
+      },
+      {
+        "name": "lumen-text-2026.11.10.14-macos-aarch64.dmg",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-macos-aarch64.dmg",
+        "size": 12347757
+      },
+      {
+        "name": "lumen-text-2026.11.10.14-macos-x86_64.dmg",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-macos-x86_64.dmg",
+        "size": 12777821
+      },
+      {
+        "name": "lumen-text-2026.11.10.14-windows-x86_64.zip",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-windows-x86_64.zip",
+        "size": 10214437
+      },
+      {
+        "name": "lumen-text-2026.11.10.14-x86_64.AppImage",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-x86_64.AppImage",
+        "size": 11119096
+      },
+      {
+        "name": "lumen-text-bin-2026.11.10.14-1-x86_64.pkg.tar.zst",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-bin-2026.11.10.14-1-x86_64.pkg.tar.zst",
+        "size": 10534837
+      },
+      {
+        "name": "lumen-text_2026.11.10.14-1_amd64.deb",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text_2026.11.10.14-1_amd64.deb",
+        "size": 8516360
+      },
+      {
+        "name": "lumen-text_2026.11.10.14-1_arm64.deb",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text_2026.11.10.14-1_arm64.deb",
+        "size": 7893484
+      }
+    ]
+  },
+  {
+    "tag": "v2026.11.10.13",
+    "name": "lumen-text 2026.11.10.13",
+    "publishedAt": "2026-11-10T18:26:40Z",
+    "url": "https://github.com/castrogusttavo/lumen-text/releases/tag/v2026.11.10.13",
+    "prerelease": false,
+    "notes": "## What changed (1 commits)\n\n- tsgo memory: no GC-starving limit, big projects start lean on small machines, over-budget restart; release notes list every commit (`27dc9da`)\n\n**Full diff:** https://github.com/castrogusttavo/lumen-text/compare/v2026.11.10.12...v2026.11.10.13\n",
+    "assets": [
+      {
+        "name": "lumen-text-2026.11.10.13-1.aarch64.rpm",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.13/lumen-text-2026.11.10.13-1.aarch64.rpm",
+        "size": 10504029
+      },
+      {
+        "name": "lumen-text-2026.11.10.13-1.x86_64.rpm",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.13/lumen-text-2026.11.10.13-1.x86_64.rpm",
+        "size": 10930164
+      },
+      {
+        "name": "lumen-text-2026.11.10.13-aarch64.AppImage",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.13/lumen-text-2026.11.10.13-aarch64.AppImage",
+        "size": 10680840
+      },
+      {
+        "name": "lumen-text-2026.11.10.13-linux-aarch64.tar.gz",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.13/lumen-text-2026.11.10.13-linux-aarch64.tar.gz",
+        "size": 10502275
+      },
+      {
+        "name": "lumen-text-2026.11.10.13-linux-x86_64.tar.gz",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.13/lumen-text-2026.11.10.13-linux-x86_64.tar.gz",
+        "size": 10945693
+      },
+      {
+        "name": "lumen-text-2026.11.10.13-x86_64.AppImage",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.13/lumen-text-2026.11.10.13-x86_64.AppImage",
+        "size": 11127288
+      },
+      {
+        "name": "lumen-text-bin-2026.11.10.13-1-x86_64.pkg.tar.zst",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.13/lumen-text-bin-2026.11.10.13-1-x86_64.pkg.tar.zst",
+        "size": 10536289
+      },
+      {
+        "name": "lumen-text_2026.11.10.13-1_amd64.deb",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.13/lumen-text_2026.11.10.13-1_amd64.deb",
+        "size": 8514308
+      },
+      {
+        "name": "lumen-text_2026.11.10.13-1_arm64.deb",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.13/lumen-text_2026.11.10.13-1_arm64.deb",
+        "size": 7896184
+      }
+    ]
+  },
+  {
+    "tag": "v2026.11.10.12",
+    "name": "lumen-text 2026.11.10.12",
+    "publishedAt": "2026-11-10T15:42:19Z",
+    "url": "https://github.com/castrogusttavo/lumen-text/releases/tag/v2026.11.10.12",
+    "prerelease": false,
+    "notes": "**Full Changelog**: https://github.com/castrogusttavo/lumen-text/compare/v2026.11.10.11...v2026.11.10.12\n",
+    "assets": [
+      {
+        "name": "lumen-text-2026.11.10.12-1.x86_64.rpm",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.12/lumen-text-2026.11.10.12-1.x86_64.rpm",
+        "size": 10933930
+      },
+      {
+        "name": "lumen-text-2026.11.10.12-linux-x86_64.tar.gz",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.12/lumen-text-2026.11.10.12-linux-x86_64.tar.gz",
+        "size": 10948221
+      },
+      {
+        "name": "lumen-text-2026.11.10.12-x86_64.AppImage",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.12/lumen-text-2026.11.10.12-x86_64.AppImage",
+        "size": 11131384
+      },
+      {
+        "name": "lumen-text-bin-2026.11.10.12-1-x86_64.pkg.tar.zst",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.12/lumen-text-bin-2026.11.10.12-1-x86_64.pkg.tar.zst",
+        "size": 10538139
+      },
+      {
+        "name": "lumen-text_2026.11.10.12-1_amd64.deb",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.12/lumen-text_2026.11.10.12-1_amd64.deb",
+        "size": 8515736
+      }
+    ]
+  },
+  {
+    "tag": "v2026.11.10.11",
+    "name": "lumen-text 2026.11.10.11",
+    "publishedAt": "2026-11-10T15:34:19Z",
+    "url": "https://github.com/castrogusttavo/lumen-text/releases/tag/v2026.11.10.11",
+    "prerelease": false,
+    "notes": "**Full Changelog**: https://github.com/castrogusttavo/lumen-text/compare/v2026.11.10.10...v2026.11.10.11\n",
+    "assets": [
+      {
+        "name": "lumen-text-2026.11.10.11-1.x86_64.rpm",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.11/lumen-text-2026.11.10.11-1.x86_64.rpm",
+        "size": 10933932
+      },
+      {
+        "name": "lumen-text-2026.11.10.11-linux-x86_64.tar.gz",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.11/lumen-text-2026.11.10.11-linux-x86_64.tar.gz",
+        "size": 10948549
+      },
+      {
+        "name": "lumen-text-2026.11.10.11-x86_64.AppImage",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.11/lumen-text-2026.11.10.11-x86_64.AppImage",
+        "size": 11131384
+      },
+      {
+        "name": "lumen-text-bin-2026.11.10.11-1-x86_64.pkg.tar.zst",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.11/lumen-text-bin-2026.11.10.11-1-x86_64.pkg.tar.zst",
+        "size": 10538064
+      },
+      {
+        "name": "lumen-text_2026.11.10.11-1_amd64.deb",
+        "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.11/lumen-text_2026.11.10.11-1_amd64.deb",
+        "size": 8515056
+      }
+    ]
+  },
+  {
     "tag": "v2026.11.10.10",
     "name": "lumen-text 2026.11.10.10",
     "publishedAt": "2026-11-10T14:50:06Z",

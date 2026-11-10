@@ -1,55 +1,76 @@
 {
   "repo": "castrogusttavo/lumen-text",
-  "tag": "v2026.11.10.10",
-  "version": "2026.11.10.10",
-  "publishedAt": "2026-11-10T14:50:06Z",
-  "htmlUrl": "https://github.com/castrogusttavo/lumen-text/releases/tag/v2026.11.10.10",
-  "notes": "**Full Changelog**: https://github.com/castrogusttavo/lumen-text/compare/v2026.11.10.9...v2026.11.10.10\n",
+  "tag": "v2026.11.10.14",
+  "version": "2026.11.10.14",
+  "publishedAt": "2026-11-10T19:29:27Z",
+  "htmlUrl": "https://github.com/castrogusttavo/lumen-text/releases/tag/v2026.11.10.14",
+  "notes": "## What changed (7 commits)\n\n- Arm Linux builds are no longer experimental; gate wall-clock highlight budget test to Linux (`73dea91`)\n- Fix zip creation on Git Bash and drop timeout on macOS (`f4237af`)\n- Verify Windows/macOS packaging on the platforms branch; steadier animation test (`a68a6dc`)\n- Terminal query replies (ConPTY needs them), gate env-dependent git test (`9c8fd67`)\n- Windows/macOS fonts, test gating, docs (`742dd06`)\n- Gate unix-script tests; fix macOS openpty signature (`9c39eaa`)\n- Port to Windows and macOS: cfg-gated platform layers, packaging, CI (`cad3296`)\n\n**Full diff:** https://github.com/castrogusttavo/lumen-text/compare/v2026.11.10.13...v2026.11.10.14\n",
   "assets": {
     "latest": {
       "name": "latest.json",
-      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.10/latest.json",
-      "size": 2056,
-      "sha256": "ea12815ac502d45b30a5fb68fe68e0b6caed0f399c9fb7c9c2c939e18a1d76c0"
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/latest.json",
+      "size": 6204,
+      "sha256": "0d231c8c2248d1fdb9aa01082d97b5ec394ecc39b38b0da9e4d3b8a0ca7b7c47"
     },
     "rpm": {
-      "name": "lumen-text-2026.11.10.10-1.x86_64.rpm",
-      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.10/lumen-text-2026.11.10.10-1.x86_64.rpm",
-      "size": 10933889,
-      "sha256": "8afd9819a69efa7056a30592919adefe6562aa9ed62e3eec24e73723b2cab41f"
+      "name": "lumen-text-2026.11.10.14-1.x86_64.rpm",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-1.x86_64.rpm",
+      "size": 10935148,
+      "sha256": "663b404b5b3a4b38d634d73e1bd982edee206a514002310ba9a09419f298d17d"
     },
     "tarball": {
-      "name": "lumen-text-2026.11.10.10-linux-x86_64.tar.gz",
-      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.10/lumen-text-2026.11.10.10-linux-x86_64.tar.gz",
-      "size": 10948833,
-      "sha256": "3c00ea59b93ad2f2b89a00737b981f01f9fe94986210cdb1c332e8963a8c7163",
-      "signatureUrl": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.10/lumen-text-2026.11.10.10-linux-x86_64.tar.gz.minisig"
+      "name": "lumen-text-2026.11.10.14-linux-x86_64.tar.gz",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-linux-x86_64.tar.gz",
+      "size": 10951759,
+      "sha256": "5c5cc52e9f1ff3cd7f09923b7d70ea1abba33a7c13355c38a9ab8595016d07dc",
+      "signatureUrl": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-linux-x86_64.tar.gz.minisig"
+    },
+    "macosArm": {
+      "name": "lumen-text-2026.11.10.14-macos-aarch64.dmg",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-macos-aarch64.dmg",
+      "size": 12347757,
+      "sha256": "c823cfb5dcd3c324328c3cd4f51a8d506145d2ea50b009155f5888139b107ead",
+      "signatureUrl": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-macos-aarch64.dmg.minisig"
+    },
+    "macosIntel": {
+      "name": "lumen-text-2026.11.10.14-macos-x86_64.dmg",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-macos-x86_64.dmg",
+      "size": 12777821,
+      "sha256": "3741a3e78ec4bd386015ad743ed54ec2da52aeec5457135ca7287dae2eb31cdf",
+      "signatureUrl": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-macos-x86_64.dmg.minisig"
+    },
+    "windows": {
+      "name": "lumen-text-2026.11.10.14-windows-x86_64.zip",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-windows-x86_64.zip",
+      "size": 10214437,
+      "sha256": "f795f4db8b1d9845039f0efe165f47686feb979782b867b955ebd0a21436a75a",
+      "signatureUrl": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-windows-x86_64.zip.minisig"
     },
     "appimage": {
-      "name": "lumen-text-2026.11.10.10-x86_64.AppImage",
-      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.10/lumen-text-2026.11.10.10-x86_64.AppImage",
-      "size": 11131384,
-      "sha256": "2f85a5b4d319a5476151529fb0bad2c6925d46d45f690e07272e12734f6356bf",
-      "signatureUrl": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.10/lumen-text-2026.11.10.10-x86_64.AppImage.minisig"
+      "name": "lumen-text-2026.11.10.14-x86_64.AppImage",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-x86_64.AppImage",
+      "size": 11119096,
+      "sha256": "c00cbbef501e4604cec3fa3b10aaccabf8e99d75d734fa6502e1af937cbfb923",
+      "signatureUrl": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-2026.11.10.14-x86_64.AppImage.minisig"
     },
     "arch": {
-      "name": "lumen-text-bin-2026.11.10.10-1-x86_64.pkg.tar.zst",
-      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.10/lumen-text-bin-2026.11.10.10-1-x86_64.pkg.tar.zst",
-      "size": 10538396,
-      "sha256": "4873435801f93b14ecfd98de7c7e8ce30325a46a90c57303914da75dc1cd2602"
+      "name": "lumen-text-bin-2026.11.10.14-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text-bin-2026.11.10.14-1-x86_64.pkg.tar.zst",
+      "size": 10534837,
+      "sha256": "b05695f2b6ddb9b3358da61f2b993d5fa9df7cfb5d7bd5547986cbfe5e1a74f5"
     },
     "deb": {
-      "name": "lumen-text_2026.11.10.10-1_amd64.deb",
-      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.10/lumen-text_2026.11.10.10-1_amd64.deb",
-      "size": 8512844,
-      "sha256": "8c1faadd4c5a6cb303a4e4e34511e6e94169e414d5c7158e12a278cc14acd357"
+      "name": "lumen-text_2026.11.10.14-1_amd64.deb",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/lumen-text_2026.11.10.14-1_amd64.deb",
+      "size": 8516360,
+      "sha256": "e461c57920fbd51d88a955385d43b6004c1a509327ff3a546eb0e45d467b7330"
     },
     "checksums": {
       "name": "SHA256SUMS",
-      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.10/SHA256SUMS",
-      "size": 853,
-      "sha256": "662cf2552252f4923f943fcfeaed7badc74379baadb7141c7ba679e16034c691"
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.14/SHA256SUMS",
+      "size": 2195,
+      "sha256": "e4c68276034e051ca0c68cc06dec58b709a2d06eb7f819e6ff63613d931607cf"
     }
   },
-  "resolvedAt": "2026-11-10T15:07:07.349Z"
+  "resolvedAt": "2026-11-10T23:16:09.426Z"
 }

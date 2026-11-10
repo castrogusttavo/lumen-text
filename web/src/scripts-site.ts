@@ -33,9 +33,14 @@ const ua = navigator.userAgent;
 const os = /Windows/i.test(ua) ? "windows" : /Mac/i.test(ua) && !/iPhone|iPad/i.test(ua) ? "macos" : /Android|iPhone|iPad/i.test(ua) ? "mobile" : "linux";
 document.documentElement.dataset.os = os;
 document.querySelectorAll<HTMLElement>("[data-os-label]").forEach((el) => {
-  if (os === "windows") el.textContent = "Windows build coming soon";
-  else if (os === "macos") el.textContent = "macOS build coming soon";
+  if (os === "windows") el.textContent = "Download for Windows";
+  else if (os === "macos") el.textContent = "Download for macOS";
   else if (os === "mobile") el.textContent = "Download on your desktop";
+});
+// Point the primary buttons at the build for the visitor's OS (Linux keeps its server-rendered href).
+document.querySelectorAll<HTMLAnchorElement>("[data-download]").forEach((a) => {
+  const h = os === "windows" ? a.dataset.hrefWindows : os === "macos" ? a.dataset.hrefMacos : undefined;
+  if (h) a.href = h;
 });
 
 // Theme toggle
