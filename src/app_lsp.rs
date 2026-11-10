@@ -8,6 +8,7 @@ use crate::{
     doc::{Diag, Doc, LspEdit, path_to_uri, uri_to_path},
     fuzzy::fuzzy,
     lsp::{self, DefKind, Lsp, Msg, Pending},
+    lspmerge::MultiKind,
     theme::Rgba,
     ui::{Canvas, Rect, line_h},
 };
@@ -85,6 +86,9 @@ impl App {
     }
 
     pub(crate) fn doc_lsp(&self, doc: usize) -> Option<usize> {
+        if let Some(li) = self.lspx_doc_lsp(doc) {
+            return Some(li);
+        }
         let d = self.docs.get(doc)?;
         if !ts_family(d.lang) {
             return None;
@@ -93,6 +97,9 @@ impl App {
     }
 
     pub(crate) fn ensure_lsp(&mut self, doc: usize) -> Option<usize> {
+        if let Some(generic) = self.lspx_ensure_primary(doc) {
+            return generic;
+        }
         let d = self.docs.get_mut(doc)?;
         if !ts_family(d.lang) {
             return None;
@@ -207,7 +214,7 @@ impl App {
     pub fn lsp_fs_events(&mut self, evs: &[crate::watcher::FsEvent]) {
         use crate::watcher::FsKind;
         let mut restart = false;
-        let mut touched = false;
+        let mut touched = self.lspx_fs_events(evs);
         for li in 0..self.lsps.len() {
             if self.lsps[li].name != "tsgo" {
                 continue;
@@ -299,6 +306,7 @@ impl App {
     }
 
     pub fn restart_lsp(&mut self) {
+        self.lspx_restart_all();
         for l in &mut self.lsps {
             crate::doc::unregister_mirror(&l.root);
             l.shutdown();
@@ -318,8 +326,8 @@ impl App {
         Self::doc_open_params(d, d.uri()?)
     }
 
-    fn doc_open_params(d: &Doc, uri: String) -> Option<Value> {
-        let lang = lsp_language_id(d.lang);
+    pub(crate) fn doc_open_params(d: &Doc, uri: String) -> Option<Value> {
+        let lang = crate::lspreg::language_id(d.lang, d.path());
         Some(json!({"textDocument": {"uri": uri, "languageId": lang, "version": d.version, "text": d.buf.to_string()}}))
     }
 
@@ -411,6 +419,8 @@ impl App {
     /// Open new TS documents, send debounced changes, and pull diagnostics.
     pub fn lsp_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
         let n = self.docs.len();
+        self.lspx_sync_config();
+        self.lspx_tick(now, want);
         self.sync_mirrors();
         let mut pull: Vec<usize> = Vec::new(); // server indexes needing a diagnostics refresh
         let mut comp: Option<Option<char>> = None;
@@ -424,7 +434,8 @@ impl App {
         }
         for i in 0..n {
             self.biome_sync(i, now, want);
-            if !ts_family(self.docs[i].lang) {
+            self.lspx_companions(i, now, want, &mut pull);
+            if !ts_family(self.docs[i].lang) && self.lspx_primary_entry(i).is_none() {
                 continue;
             }
             let Some(li) = self.ensure_lsp(i) else { continue };
@@ -441,6 +452,7 @@ impl App {
                 if t + SYNC_DEBOUNCE <= now {
                     self.send_change(i);
                     pull.push(li);
+                    pull.extend(self.lspx_open_companions(i));
                 } else {
                     want(t + SYNC_DEBOUNCE);
                 }
@@ -528,7 +540,7 @@ impl App {
             if t <= now {
                 self.lsp_refresh_at = None;
                 for li in 0..self.lsps.len() {
-                    if self.lsps[li].name == "tsgo" {
+                    if self.lsps[li].name == "tsgo" || self.lsps[li].is_generic() {
                         pull.push(li);
                     }
                 }
@@ -618,13 +630,19 @@ impl App {
         self.request_redraw();
     }
 
-    fn send_change(&mut self, i: usize) {
-        let Some(li) = self.doc_lsp(i) else { return };
+    pub(crate) fn send_change(&mut self, i: usize) {
+        let li = self.doc_lsp(i);
         let d = &mut self.docs[i];
+        if li.is_none() && d.real_uri().is_none() {
+            return;
+        }
         d.changed_at = None;
         let Some(uri) = d.uri() else { return };
         let params = json!({"textDocument": {"uri": uri, "version": d.version}, "contentChanges": [{"text": d.buf.to_string()}]});
-        self.lsps[li].notify("textDocument/didChange", params);
+        self.lspx_send_change(i, &params);
+        if let Some(li) = li {
+            self.lsps[li].notify("textDocument/didChange", params);
+        }
     }
 
     /// Make sure the server has our latest text before asking it something.
@@ -635,6 +653,9 @@ impl App {
     }
 
     fn pull_diagnostics(&mut self, li: usize) {
+        if self.lsps[li].is_generic() {
+            return self.lspx_pull(li);
+        }
         let root = self.lsps[li].root.clone();
         for i in 0..self.docs.len() {
             let d = &self.docs[i];
@@ -654,15 +675,24 @@ impl App {
         if let (Some(lb), Some(uri)) = (self.biome_index(i), self.docs.get(i).and_then(|d| d.real_uri())) {
             self.lsps[lb].notify("textDocument/didSave", json!({"textDocument": {"uri": uri}}));
         }
-        let Some(li) = self.doc_lsp(i) else { return };
+        let Some(li) = self.doc_lsp(i) else {
+            for c in self.lspx_did_save(i) {
+                self.pull_diagnostics(c);
+            }
+            return;
+        };
         let Some(uri) = self.docs[i].uri() else { return };
         self.flush(i);
         self.lsps[li].notify("textDocument/didSave", json!({"textDocument": {"uri": uri}}));
         self.pull_diagnostics(li);
+        for c in self.lspx_did_save(i) {
+            self.pull_diagnostics(c);
+        }
     }
 
     /// Tell the server a document is gone from this URI, without touching server lifetime.
     pub fn lsp_notify_close(&mut self, i: usize) {
+        self.lspx_close_doc(i);
         let Some(li) = self.doc_lsp(i) else { return };
         let d = &self.docs[i];
         if d.lsp_open
@@ -707,6 +737,12 @@ impl App {
 
     pub fn lsp_did_close(&mut self, i: usize) {
         self.biome_close(i);
+        // Registry servers: didClose everywhere; they are stopped after an idle grace period.
+        let was_generic = self.doc_lsp(i).is_some_and(|li| self.lsps[li].is_generic());
+        self.lspx_close_doc(i);
+        if was_generic {
+            return;
+        }
         let Some(li) = self.doc_lsp(i) else { return };
         let d = &self.docs[i];
         if d.lsp_open
@@ -750,6 +786,15 @@ impl App {
             Msg::Exited => dead.push(li),
             Msg::Response { id, result } => {
                 let Some(what) = self.lsps[li].pending.remove(&id) else { return };
+                if matches!(what, Pending::Initialize)
+                    && let (true, Err(e)) = (self.lsps[li].is_generic(), &result)
+                {
+                    let msg = e["message"].as_str().unwrap_or("?").to_string();
+                    self.lsps[li].log_line("app", &format!("initialize failed: {msg}"));
+                    self.say_for(format!("{} failed to start: {msg}", self.lsps[li].name), 6);
+                    dead.push(li);
+                    return;
+                }
                 self.on_response(li, what, result);
             }
             Msg::Symbols { id, syms } => {
@@ -769,6 +814,10 @@ impl App {
         dead.sort_unstable();
         dead.dedup();
         for li in dead.into_iter().rev() {
+            if li < self.lsps.len() && self.lsps[li].is_generic() {
+                self.lspx_server_gone(li);
+                continue;
+            }
             if li < self.lsps.len() {
                 let root = self.lsps[li].root.clone();
                 crate::doc::unregister_mirror(&root);
@@ -788,6 +837,9 @@ impl App {
     }
 
     fn on_notification(&mut self, li: usize, method: &str, params: &Value) {
+        if self.lspx_on_notification(li, method, params) {
+            return;
+        }
         match method {
             "textDocument/publishDiagnostics" => {
                 let lint = self.lsps.get(li).is_some_and(|l| l.name == "biome");
@@ -807,6 +859,9 @@ impl App {
     fn on_server_request(&mut self, li: usize, id: Value, method: &str, params: &Value) {
         if std::env::var_os("LUMEN_DEBUG").is_some() {
             eprintln!("[lsp] server request {method}: {}", params.to_string().chars().take(400).collect::<String>());
+        }
+        if self.lspx_on_request(li, &id, method, params) {
+            return;
         }
         let result = match method {
             "workspace/configuration" => {
@@ -861,6 +916,12 @@ impl App {
     }
 
     fn set_diags(&mut self, uri: &str, items: &Value, lint: bool) {
+        self.set_diags_from(uri, items, if lint { Some(true) } else { None }, "");
+    }
+
+    /// Diagnostics from tsgo (`lint = None`), Biome (`Some(true)`), or a registry server whose id is
+    /// `source` (`lint = Some(false)`: stored per server, merged by the document).
+    pub(crate) fn set_diags_from(&mut self, uri: &str, items: &Value, lint: Option<bool>, source: &str) {
         let Some(i) = self.doc_by_uri(uri) else { return };
         let d = &mut self.docs[i];
         let mut out = Vec::new();
@@ -891,13 +952,27 @@ impl App {
                 severity: it["severity"].as_u64().unwrap_or(1) as u8,
                 message: it["message"].as_str().unwrap_or("").to_string(),
                 code,
+                source: if source.is_empty() {
+                    String::new()
+                } else {
+                    it["source"].as_str().filter(|s| !s.is_empty()).unwrap_or(source).to_string()
+                },
             });
         }
         out.sort_by_key(|d| (d.sl, d.sc));
-        d.set_source_diags(lint, out);
+        match lint {
+            Some(false) => d.set_ext_diags(source, out),
+            l => d.set_source_diags(l.unwrap_or(false), out),
+        }
     }
 
     fn on_response(&mut self, li: usize, what: Pending, result: Result<Value, Value>) {
+        if let Pending::Multi { kind, serial } = what {
+            return self.lspx_on_multi(li, kind, serial, result.unwrap_or(Value::Null));
+        }
+        if let (Pending::Initialize, Ok(v), true) = (&what, &result, self.lsps[li].is_generic()) {
+            return self.lspx_initialized(li, v);
+        }
         if let Pending::Initialize = what {
             match result {
                 Ok(v) => {
@@ -939,13 +1014,18 @@ impl App {
         match what {
             Pending::Initialize => {}
             Pending::Diagnostic { uri } => {
+                let generic = self.lsps[li].generic.as_ref().map(|g| g.id.clone());
+                let put = |app: &mut App, u: &str, items: &Value| match &generic {
+                    Some(id) => app.set_diags_from(u, items, Some(false), id),
+                    None => app.set_diags(u, items, false),
+                };
                 if v["kind"].as_str() == Some("full") {
-                    self.set_diags(&uri, &v["items"], false);
+                    put(self, &uri, &v["items"]);
                 }
                 if let Some(rel) = v["relatedDocuments"].as_object() {
                     for (u, r) in rel {
                         if r["kind"].as_str() == Some("full") {
-                            self.set_diags(u, &r["items"], false);
+                            put(self, u, &r["items"]);
                         }
                     }
                 }
@@ -1064,7 +1144,7 @@ impl App {
                     self.say("action made no changes");
                 }
             }
-            Pending::ExecuteCommand => {}
+            Pending::ExecuteCommand | Pending::Multi { .. } => {}
         }
     }
 
@@ -1139,6 +1219,9 @@ impl App {
         let Some((i, li)) = self.with_server() else { return self.show_diag_hover(at) };
         let params = self.pos_params(i, at);
         let uri = self.docs[i].uri().unwrap_or_default();
+        if self.lspx_request_multi(MultiKind::Hover, i, li, at, "textDocument/hover", params.clone(), "hoverProvider") {
+            return;
+        }
         self.lsps[li].request("textDocument/hover", params, Pending::Hover { uri, at });
     }
 
@@ -1156,7 +1239,7 @@ impl App {
         }
     }
 
-    fn on_hover(&mut self, uri: &str, at: usize, v: &Value) {
+    pub(crate) fn on_hover(&mut self, uri: &str, at: usize, v: &Value) {
         self.hover_response(uri, at, v);
     }
 
@@ -1304,7 +1387,7 @@ impl App {
             .map(|g| {
                 let (sl, sc) = d.lsp_pos(d.buf.pos(g.sl, g.sc));
                 let (el, ec) = d.lsp_pos(d.buf.pos(g.el, g.ec));
-                let mut o = json!({"range": {"start": {"line": sl, "character": sc}, "end": {"line": el, "character": ec}}, "message": g.message, "severity": g.severity, "source": "ts"});
+                let mut o = json!({"range": {"start": {"line": sl, "character": sc}, "end": {"line": el, "character": ec}}, "message": g.message, "severity": g.severity, "source": if g.source.is_empty() { "ts" } else { g.source.as_str() }});
                 o["code"] = g.code.parse::<i64>().map(Value::from).unwrap_or_else(|_| Value::from(g.code.clone()));
                 o
             })
@@ -1322,12 +1405,15 @@ impl App {
             self.lsps[lb].request("textDocument/codeAction", mk(&real_uri), Pending::CodeActions);
             self.actions_expected += 1;
         }
+        let params = mk(&real_uri);
+        self.actions_expected += self.lspx_code_actions(i, &params);
         if self.actions_expected == 0 {
-            self.say("actions need a language server (TS/JS file or project with Biome)");
+            self.say("actions need a language server (none is running for this file)");
         }
     }
 
-    fn on_code_actions(&mut self, _li: usize, v: &Value) {
+    fn on_code_actions(&mut self, li: usize, v: &Value) {
+        let server = self.lsps.get(li).filter(|l| l.is_generic()).map(|l| l.name.clone());
         let mut items = Vec::new();
         for a in v.as_array().into_iter().flatten() {
             let Some(title) = a["title"].as_str() else { continue };
@@ -1335,6 +1421,10 @@ impl App {
                 Action::WorkspaceEdit(a["edit"].clone())
             } else if a["data"].is_object() || a["command"].is_object() {
                 // Resolved lazily when chosen.
+                let mut a = a.clone();
+                if let Some(n) = &server {
+                    a["__server"] = json!(n);
+                }
                 Action::WorkspaceEdit(json!({"__resolve": a}))
             } else {
                 continue;
@@ -1347,6 +1437,7 @@ impl App {
     /// One server answered; when all have, show the combined list.
     fn actions_response(&mut self, items: Vec<Item>) {
         self.actions_items.extend(items);
+        Self::lspx_dedupe_actions(&mut self.actions_items);
         self.actions_expected = self.actions_expected.saturating_sub(1);
         if self.actions_expected > 0 {
             return;
@@ -1360,7 +1451,17 @@ impl App {
 
     /// Code actions that arrive without an edit are resolved (or executed) when chosen.
     pub fn resolve_code_action(&mut self, action: &Value) {
-        let Some((_, li)) = self.with_server() else { return };
+        let mut action = action.clone();
+        let named =
+            action.as_object_mut().and_then(|o| o.remove("__server")).and_then(|n| n.as_str().map(str::to_string));
+        let action = &action;
+        let li = match named.and_then(|n| self.lspx_server_named(&n, self.active)) {
+            Some(li) => li,
+            None => match self.with_server() {
+                Some((_, li)) => li,
+                None => return,
+            },
+        };
         if action["data"].is_object() && !action["command"].is_object() {
             self.lsps[li].request("codeAction/resolve", action.clone(), Pending::ResolveAction);
         } else if action["command"].is_object() {
@@ -1549,10 +1650,21 @@ impl App {
         };
         self.comp_t0 = Some(Instant::now());
         let uri = self.docs[i].uri().unwrap_or_default();
+        if self.lspx_request_multi(
+            MultiKind::Completion,
+            i,
+            li,
+            at,
+            "textDocument/completion",
+            params.clone(),
+            "completionProvider",
+        ) {
+            return;
+        }
         self.lsps[li].request("textDocument/completion", params, Pending::Completion { uri, at });
     }
 
-    fn on_completion(&mut self, uri: &str, at: usize, v: &Value) {
+    pub(crate) fn on_completion(&mut self, uri: &str, at: usize, v: &Value) {
         let Some(i) = self.doc_by_uri(uri) else { return };
         if i != self.active {
             return;
@@ -1767,7 +1879,9 @@ impl App {
         let extra = parse_edits(&item.raw["additionalTextEdits"]);
         if !extra.is_empty() {
             self.docs[i].apply_lsp_edits(&extra);
-        } else if let Some(li) = self.doc_lsp(i) {
+        } else if let Some(li) =
+            item.raw["__server"].as_str().and_then(|n| self.lspx_server_named(n, i)).or_else(|| self.doc_lsp(i))
+        {
             let can = self.lsps[li].caps["completionProvider"]["resolveProvider"].as_bool().unwrap_or(false);
             if can {
                 self.lsps[li].request(
@@ -1957,6 +2071,7 @@ impl App {
         if i >= self.docs.len() {
             return;
         }
+        self.lspx_language_changed(i);
         let plan = lang_change_plan(old, new);
         if plan.ts_close && self.docs[i].lsp_open {
             if plan.ts_after {

@@ -14,9 +14,13 @@ impl App {
             .map(|g| DiagInfo {
                 sev: g.severity,
                 msg: g.message.clone(),
-                url: (!g.code.is_empty() && g.code.chars().all(|c| c.is_ascii_digit()))
+                url: (g.source.is_empty() && !g.code.is_empty() && g.code.chars().all(|c| c.is_ascii_digit()))
                     .then(|| format!("https://typescript.tv/errors/#TS{}", g.code)),
-                code: g.code.clone(),
+                code: match (g.source.is_empty(), g.code.is_empty()) {
+                    (true, _) => g.code.clone(),
+                    (false, true) => g.source.clone(),
+                    (false, false) => format!("{}: {}", g.source, g.code),
+                },
                 line: g.sl,
                 col: g.sc,
             })

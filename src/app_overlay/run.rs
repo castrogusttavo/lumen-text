@@ -57,6 +57,7 @@ impl App {
             Cmd::PrevDiagnostic => self.next_diagnostic(false),
             Cmd::ReloadFile => self.reload_active(),
             Cmd::RestartLsp => self.restart_lsp(),
+            Cmd::ShowLspLog => self.lspx_show_log(),
             Cmd::ToggleAutoImport => self.toggle_auto_import(),
             Cmd::RunTask => self.open_task_picker(),
             Cmd::RepeatTask => self.repeat_task(),

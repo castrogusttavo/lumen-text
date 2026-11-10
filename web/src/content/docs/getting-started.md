@@ -55,7 +55,7 @@ TypeScript is served by `tsgo`, the native TypeScript compiler. It is optional; 
 npm i --prefix ~/.local/share/lumen-text/tsgo @typescript/native-preview
 ```
 
-A project that already has `@typescript/native-preview` installed is used first. See [Language tooling](/docs/typescript).
+A project that already has `@typescript/native-preview` installed is used first. See [Language tooling](/docs/typescript) and [Language servers](/docs/language-servers).
 
 ## Open a project
 

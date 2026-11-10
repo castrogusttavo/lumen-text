@@ -2,10 +2,11 @@
 //! The server is spawned lazily and with a Go memory limit (tsgo is written in Go).
 
 use crate::lsp_stream::{Frame, Limits, Policy, policy_for, read_message};
+use crate::lsplog::{self, SharedLog};
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
-    io::{BufReader, Write},
+    collections::{HashMap, HashSet},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -13,6 +14,7 @@ use std::{
         mpsc::{Receiver, Sender, channel},
     },
     thread,
+    time::Instant,
 };
 
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -136,6 +138,11 @@ pub enum Pending {
         query: String,
     },
     ExecuteCommand,
+    /// One answer of a request sent to several servers of a document (see `lspmerge`).
+    Multi {
+        kind: crate::lspmerge::MultiKind,
+        serial: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,7 +154,8 @@ pub enum DefKind {
 
 pub struct Lsp {
     pub root: PathBuf,
-    child: Child,
+    child: Option<Child>,
+    pid: u32,
     tx: Sender<Vec<u8>>,
     pub rx: Receiver<Msg>,
     next_id: i64,
@@ -161,6 +169,36 @@ pub struct Lsp {
     /// Narrow mirror this server runs in (None: the real project directory).
     pub mirror: Option<PathBuf>,
     pub includes: Vec<PathBuf>,
+    /// Set for servers from the registry (everything but tsgo and Biome): the registry id, and what they need at runtime.
+    pub generic: Option<Generic>,
+    /// Documents (server-side URIs) currently open on this server.
+    pub open_uris: HashSet<String>,
+    /// When the last document closed (the server is stopped after an idle grace period).
+    pub idle_since: Option<Instant>,
+    pub started: Instant,
+    pub log: Option<SharedLog>,
+    /// Latest `$/progress` title, shown in the status bar while it is running.
+    pub progress: HashMap<String, String>,
+    /// Dynamic registrations by registration id -> method.
+    pub registrations: HashMap<String, String>,
+    pub shutting_down: bool,
+}
+
+/// What a registry server needs after the handshake.
+#[derive(Clone, Debug)]
+pub struct Generic {
+    pub id: String,
+    pub settings: Value,
+    pub primary: bool,
+    pub command: PathBuf,
+}
+
+/// Everything `Lsp::spawn_with` needs beyond the plain `spawn` arguments.
+pub struct Extra {
+    pub env: Vec<(String, String)>,
+    pub go_limit: bool,
+    pub generic: Option<Generic>,
+    pub init_options: Value,
 }
 
 impl Lsp {
@@ -174,18 +212,42 @@ impl Lsp {
         mem_limit_mib: u32,
         wake: Wake,
     ) -> std::io::Result<Lsp> {
+        let extra = Extra { env: Vec::new(), go_limit: true, generic: None, init_options: Value::Null };
+        Lsp::spawn_with(name, bin, args, root, work_dir, mem_limit_mib, wake, extra)
+    }
+
+    /// `spawn` with environment, registry metadata and `initializationOptions`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with(
+        name: &str,
+        bin: &Path,
+        args: &[&str],
+        root: &Path,
+        work_dir: &Path,
+        mem_limit_mib: u32,
+        wake: Wake,
+        extra: Extra,
+    ) -> std::io::Result<Lsp> {
         let mut cmd = Command::new(bin);
-        cmd.args(args)
-            .current_dir(work_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+        cmd.args(args).current_dir(work_dir).stdin(Stdio::piped()).stdout(Stdio::piped());
+        let log: Option<SharedLog> = extra.generic.as_ref().map(|_| SharedLog::default());
+        cmd.stderr(if log.is_some() { Stdio::piped() } else { Stdio::null() });
+        if extra.go_limit {
             // Go runtime: make the GC work harder before growing the heap.
-            .env("GOMEMLIMIT", format!("{mem_limit_mib}MiB"))
-            .env("GOGC", "50");
+            cmd.env("GOMEMLIMIT", format!("{mem_limit_mib}MiB")).env("GOGC", "50");
+        }
+        cmd.envs(extra.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         let mut child = cmd.spawn()?;
         let mut stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
+        if let (Some(log), Some(err)) = (log.clone(), child.stderr.take()) {
+            thread::spawn(move || {
+                for line in BufReader::new(err).lines() {
+                    let Ok(line) = line else { break };
+                    lsplog::push(&log, "stderr", &line);
+                }
+            });
+        }
 
         let (tx, wrx) = channel::<Vec<u8>>();
         thread::spawn(move || {
@@ -199,6 +261,7 @@ impl Lsp {
         let (mtx, rx) = channel::<Msg>();
         let policies: Arc<Mutex<HashMap<i64, Policy>>> = Arc::default();
         let reader_policies = policies.clone();
+        let rlog = log.clone();
         thread::spawn(move || {
             // Frames are parsed while they are read, so a huge response never sits in memory.
             let mut input = BufReader::with_capacity(64 * 1024, stdout);
@@ -213,6 +276,9 @@ impl Lsp {
                     }
                     Ok(Frame::Skipped) => {}
                     Ok(Frame::Msg(m)) => {
+                        if let Some(l) = &rlog {
+                            lsplog::push(l, "<-", &summary(&m));
+                        }
                         if let Msg::Response { id, .. } | Msg::Tokens { id, .. } | Msg::Symbols { id, .. } = &m
                             && let Ok(mut p) = reader_policies.lock()
                         {
@@ -229,7 +295,8 @@ impl Lsp {
 
         let mut lsp = Lsp {
             root: root.to_path_buf(),
-            child,
+            pid: child.id(),
+            child: Some(child),
             tx,
             rx,
             next_id: 1,
@@ -241,8 +308,16 @@ impl Lsp {
             name: name.to_string(),
             mirror: None,
             includes: Vec::new(),
+            open_uris: HashSet::new(),
+            idle_since: None,
+            started: Instant::now(),
+            log,
+            progress: HashMap::new(),
+            registrations: HashMap::new(),
+            shutting_down: false,
+            generic: extra.generic,
         };
-        let params = initialize_params(work_dir);
+        let params = initialize_params(work_dir, lsp.generic.as_ref().map(|_| &extra.init_options));
         let id = lsp.alloc_id();
         lsp.pending.insert(id, Pending::Initialize);
         lsp.write(&json!({"jsonrpc":"2.0","id":id,"method":"initialize","params":params}));
@@ -256,6 +331,11 @@ impl Lsp {
     }
 
     fn write(&self, v: &Value) {
+        if let Some(l) = &self.log {
+            let m = v["method"].as_str().unwrap_or("response");
+            let id = v.get("id").map(|i| format!(" #{i}")).unwrap_or_default();
+            lsplog::push(l, "->", &format!("{m}{id}"));
+        }
         let _ = self.tx.send(frame(v));
     }
 
@@ -281,6 +361,24 @@ impl Lsp {
     }
 
     pub fn notify(&mut self, method: &str, params: Value) {
+        // Track which documents the server has open (idle shutdown, companion sync).
+        match method {
+            "textDocument/didOpen" => {
+                if let Some(u) = params["textDocument"]["uri"].as_str() {
+                    self.open_uris.insert(u.to_string());
+                    self.idle_since = None;
+                }
+            }
+            "textDocument/didClose" => {
+                if let Some(u) = params["textDocument"]["uri"].as_str() {
+                    self.open_uris.remove(u);
+                    if self.open_uris.is_empty() {
+                        self.idle_since = Some(Instant::now());
+                    }
+                }
+            }
+            _ => {}
+        }
         self.send_or_queue(json!({"jsonrpc":"2.0","method":method,"params":params}));
     }
 
@@ -299,23 +397,84 @@ impl Lsp {
     }
 
     pub fn shutdown(&mut self) {
+        self.shutting_down = true;
         if self.ready {
             self.write(&json!({"jsonrpc":"2.0","id":self.next_id,"method":"shutdown","params":null}));
             self.write(&json!({"jsonrpc":"2.0","method":"exit"}));
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let Some(mut child) = self.child.take() else { return };
+        if self.generic.is_some() && self.ready {
+            // Give a registry server a moment to stop its own helpers (proc-macro servers, node
+            // workers) after `exit`, without blocking the UI: a thread reaps it, killing it if it lingers.
+            thread::spawn(move || {
+                let end = Instant::now() + std::time::Duration::from_millis(1500);
+                while Instant::now() < end {
+                    if child.try_wait().ok().flatten().is_some() {
+                        return;
+                    }
+                    thread::sleep(std::time::Duration::from_millis(20));
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+            });
+            return;
+        }
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     pub fn pid(&self) -> u32 {
-        self.child.id()
+        self.pid
+    }
+
+    pub fn is_generic(&self) -> bool {
+        self.generic.is_some()
+    }
+
+    /// The server's own log (stderr and a one-line summary of the traffic), oldest first.
+    pub fn log_text(&self) -> String {
+        self.log.as_ref().and_then(|l| l.lock().ok().map(|l| l.text())).unwrap_or_default()
+    }
+
+    pub fn log_line(&self, tag: &str, text: &str) {
+        if let Some(l) = &self.log {
+            lsplog::push(l, tag, text);
+        }
+    }
+
+    /// Does the server (statically or through dynamic registration) offer `provider`
+    /// (a capability key such as `hoverProvider`)? Unknown servers are assumed not to.
+    pub fn has_cap(&self, provider: &str) -> bool {
+        let c = &self.caps[provider];
+        !c.is_null() && c.as_bool() != Some(false)
+    }
+}
+
+/// One line describing a received message for the server log.
+fn summary(m: &Msg) -> String {
+    match m {
+        Msg::Response { id, result: Ok(_) } => format!("response #{id}"),
+        Msg::Response { id, result: Err(e) } => {
+            format!("response #{id} error: {}", e["message"].as_str().unwrap_or("?"))
+        }
+        Msg::Tokens { id, .. } | Msg::Symbols { id, .. } => format!("response #{id} (streamed)"),
+        Msg::Notification { method, params } => match method.as_str() {
+            "window/logMessage" | "window/showMessage" => {
+                format!("{method}: {}", params["message"].as_str().unwrap_or(""))
+            }
+            _ => method.clone(),
+        },
+        Msg::Request { id, method, .. } => format!("request {method} #{id}"),
+        Msg::Exited => "exited".into(),
     }
 }
 
 impl Drop for Lsp {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(c) = &mut self.child {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
 }
 
@@ -340,9 +499,9 @@ pub(crate) fn classify(v: Value) -> Option<Msg> {
     }
 }
 
-fn initialize_params(root: &Path) -> Value {
+fn initialize_params(root: &Path, generic: Option<&Value>) -> Value {
     let root_uri = crate::doc::path_to_uri(root);
-    json!({
+    let mut p = json!({
         "processId": std::process::id(),
         "clientInfo": {"name": "lumen-text", "version": env!("CARGO_PKG_VERSION")},
         "rootUri": root_uri,
@@ -387,7 +546,29 @@ fn initialize_params(root: &Path) -> Value {
                 }
             }
         }
-    })
+    });
+    // Servers from the registry get the extra client features generic servers expect; tsgo's
+    // handshake stays exactly as it was.
+    if let Some(opts) = generic {
+        let caps = &mut p["capabilities"];
+        caps["workspace"]["didChangeConfiguration"] = json!({"dynamicRegistration": false});
+        caps["workspace"]["didChangeWatchedFiles"] = json!({"dynamicRegistration": true});
+        caps["window"] = json!({"workDoneProgress": true, "showMessage": {}});
+        caps["general"]["positionEncodings"] = json!(["utf-16"]);
+        let td = &mut caps["textDocument"];
+        td["synchronization"]["dynamicRegistration"] = json!(true);
+        td["formatting"] = json!({"dynamicRegistration": true});
+        td["rename"] = json!({"prepareSupport": false, "dynamicRegistration": true});
+        td["completion"]["completionItem"]["deprecatedSupport"] = json!(true);
+        td["codeAction"]["isPreferredSupport"] = json!(true);
+        td["documentSymbol"]["symbolKind"] = json!({});
+        td["publishDiagnostics"] =
+            json!({"relatedInformation": false, "versionSupport": true, "codeDescriptionSupport": true});
+        if !opts.is_null() {
+            p["initializationOptions"] = opts.clone();
+        }
+    }
+    p
 }
 
 // ───────────────────────────── server discovery ─────────────────────────────
