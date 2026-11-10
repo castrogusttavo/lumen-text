@@ -147,7 +147,7 @@ impl SettingsPage {
     }
 
     pub fn is_modified(&self, def: usize) -> bool {
-        self.defaults.get(self.defs[def].key).is_some_and(|d| *d != self.current(def))
+        self.defaults.get(self.defs[def].key).is_some_and(|d| !same_value(d, &self.current(def)))
     }
 
     pub(super) fn cur_bool(&self, def: usize) -> bool {
@@ -310,6 +310,9 @@ impl SettingsPage {
                 }
             }
             SettingKind::Text => {
+                if let Some(key) = crate::settings_ext::picker_key(self.defs[def].key) {
+                    return Event::PickFont { key: key.into() };
+                }
                 self.start_edit(def);
                 Event::None
             }

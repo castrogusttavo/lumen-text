@@ -110,6 +110,8 @@ pub struct Doc {
     pub sel_stack: Vec<crate::buffer::Sel>,
     pub symbols: Vec<Sym>,
     pub bps: Vec<usize>,
+    /// Bookmarked lines (0-based, sorted); they follow edits (see `bookmarks`).
+    pub marks: Vec<usize>,
     pub minimap: bool,
     /// Scrollbar of the last drawn frame, and whether the pointer is near it.
     pub sb: Option<crate::ui::VBar>,
@@ -236,6 +238,7 @@ impl Doc {
             sel_stack: Vec::new(),
             symbols: Vec::new(),
             bps: Vec::new(),
+            marks: Vec::new(),
             minimap: true,
             sb: None,
             sb_hot: false,
@@ -437,6 +440,9 @@ impl Doc {
     }
 
     pub fn gutter_w(&self) -> i32 {
+        if !crate::display::show_line_numbers() {
+            return crate::display::NUMLESS_MARKS_W + crate::docview::FOLD_W;
+        }
         ((self.gutter_digits() + 3) as f32 * self.cell_w).round() as i32 + crate::docview::FOLD_W
     }
 
@@ -463,6 +469,7 @@ impl Doc {
         self.eslint_due = Some(Instant::now() + std::time::Duration::from_millis(700));
         self.sel_stack.clear();
         let recs = self.view_on_edit(l);
+        crate::bookmarks::on_edits(&mut self.marks, &recs);
         let buf = &self.buf;
         self.inlay.on_edits(&recs, l, buf.line_count(), &|p| buf.line_col(p));
         // Edits that add or remove no line break leave every other line's width and minimap row as they were.

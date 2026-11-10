@@ -21,18 +21,6 @@
   "default": "auto"
  },
  {
-  "key": "font_size",
-  "section": "Editor",
-  "label": "Font size",
-  "help": "Code text size in pixels (8 to 40). Ctrl + mouse wheel adjusts it temporarily.",
-  "kind": "number",
-  "range": [
-   8,
-   40
-  ],
-  "default": 14
- },
- {
   "key": "minimap",
   "section": "Editor",
   "label": "Minimap",
@@ -261,7 +249,7 @@
    "rebase",
    "ff-only"
   ],
-  "default": null
+  "default": ""
  },
  {
   "key": "git_blame",
@@ -462,5 +450,146 @@
    7
   ],
   "default": null
+ },
+ {
+  "key": "buffer_font_family",
+  "section": "Fonts",
+  "label": "Buffer font",
+  "help": "Family of the code editor and everything monospace (terminal, output, diffs, code blocks). Click to search the installed fonts or type a name; a missing family falls back to the system monospace.",
+  "kind": "text",
+  "default": ""
+ },
+ {
+  "key": "buffer_font_size",
+  "section": "Fonts",
+  "label": "Buffer font size",
+  "help": "Code text size in pixels (8 to 40). Ctrl + mouse wheel and Ctrl +/- adjust it too.",
+  "kind": "number",
+  "range": [
+   8,
+   40
+  ],
+  "default": 14
+ },
+ {
+  "key": "buffer_font_weight",
+  "section": "Fonts",
+  "label": "Buffer font weight",
+  "help": "100 Thin, 200 Extra Light, 300 Light, 400 Regular, 500 Medium, 600 Semi Bold, 700 Bold, 800 Extra Bold, 900 Black. The nearest weight the family has is used.",
+  "kind": "number",
+  "range": [
+   100,
+   900
+  ],
+  "default": 400
+ },
+ {
+  "key": "buffer_line_height",
+  "section": "Fonts",
+  "label": "Buffer line height",
+  "help": "Row height as a multiple of the font size (1.0 to 2.5). In config.json a number above 4 means pixels.",
+  "kind": "number",
+  "range": [
+   1,
+   2.5
+  ],
+  "default": 1.57
+ },
+ {
+  "key": "buffer_font_ligatures",
+  "section": "Fonts",
+  "label": "Buffer ligatures",
+  "help": "Joins sequences such as => and != into one glyph when the font has them. Each ligature keeps the width of its characters and the caret still moves one character at a time.",
+  "kind": "bool",
+  "default": false
+ },
+ {
+  "key": "ui_font_family",
+  "section": "Fonts",
+  "label": "Interface font",
+  "help": "Family of the sidebar, tabs, menus, dialogs, status bar and hover text. Click to search the installed fonts or type a name.",
+  "kind": "text",
+  "default": ""
+ },
+ {
+  "key": "ui_font_size",
+  "section": "Fonts",
+  "label": "Interface font size",
+  "help": "Interface text size in pixels (10 to 20).",
+  "kind": "number",
+  "range": [
+   10,
+   20
+  ],
+  "default": 13
+ },
+ {
+  "key": "ui_font_weight",
+  "section": "Fonts",
+  "label": "Interface font weight",
+  "help": "100 to 900; the nearest weight the family has is used. Bold interface text stays heavier than this.",
+  "kind": "number",
+  "range": [
+   100,
+   900
+  ],
+  "default": 400
+ },
+ {
+  "key": "ui_line_height",
+  "section": "Fonts",
+  "label": "Interface line height",
+  "help": "Line spacing of multi-line interface text such as hover cards, as a multiple of the font size (1.0 to 2.5). Single-line labels keep their rows.",
+  "kind": "number",
+  "range": [
+   1,
+   2.5
+  ],
+  "default": 1.38
+ },
+ {
+  "key": "ui_font_ligatures",
+  "section": "Fonts",
+  "label": "Interface ligatures",
+  "help": "Uses the interface font's standard and contextual ligatures.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "show_line_numbers",
+  "section": "Editor display",
+  "label": "Line numbers",
+  "help": "Shows the line numbers in the gutter. Without them the gutter shrinks to the marks and the fold arrows.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "show_bookmarks",
+  "section": "Editor display",
+  "label": "Bookmarks",
+  "help": "Shows bookmark marks in the gutter. Ctrl+F2 toggles a bookmark, Ctrl+Alt+F2 and Ctrl+Alt+Shift+F2 jump to the next and previous one.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "show_breakpoints",
+  "section": "Editor display",
+  "label": "Breakpoints",
+  "help": "Shows breakpoint dots in the gutter and lets you click the gutter to toggle one. Off hides them and the click; debugging still stops at them.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "scrollbar",
+  "section": "Editor display",
+  "label": "Scrollbars",
+  "help": "Show keeps the thin bars visible; Auto fades them in while you scroll or point at them; Never hides them (the wheel and keys still scroll).",
+  "kind": "choice",
+  "options": [
+   "show",
+   "auto",
+   "never"
+  ],
+  "default": "show"
  }
 ]

@@ -378,7 +378,14 @@ impl MdView {
     /// text / width / code font size is already there). `draw` calls this itself. Only segments
     /// whose cached layout does not match are laid out again.
     pub fn ensure_layout(&mut self, tx: &mut TextCtx, width: i32) {
-        let key = (width, font_size().to_bits(), tx.cell_w.to_bits(), self.version, self.base_gen);
+        let key = (
+            width,
+            font_size().to_bits(),
+            tx.cell_w.to_bits(),
+            self.version,
+            self.base_gen,
+            crate::fontcfg::generation(),
+        );
         if self.lay.as_ref().is_some_and(|l| l.key == key) {
             return;
         }

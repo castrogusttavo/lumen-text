@@ -59,6 +59,10 @@ pub enum Event {
     ResetAll,
     /// Several events produced by one action, to be applied in order.
     Batch(Vec<Event>),
+    /// Open the font family picker for the setting `key` (a `*_font_family` row was activated).
+    PickFont {
+        key: String,
+    },
 }
 
 impl Event {

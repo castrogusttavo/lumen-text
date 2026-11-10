@@ -231,6 +231,9 @@ impl App {
                 let (l, c) = d.buf.line_col(d.ed.head());
                 let mut entry = serde_json::json!({"path": d.path()?.to_string_lossy(), "line": l, "col": c, "top": d.target, "pinned": d.pinned, "md": d.md.is_some()});
                 self.picks_to_json(d.path()?, &mut entry);
+                if !d.marks.is_empty() {
+                    entry["marks"] = serde_json::json!(d.marks);
+                }
                 Some(entry)
             })
             .collect();
@@ -268,6 +271,7 @@ impl App {
                 self.docs[i].pinned = f["pinned"].as_bool().unwrap_or(false);
                 self.docs[i].md_restore(f["md"].as_bool().unwrap_or(false));
                 self.apply_picks_json(i, f);
+                self.docs[i].marks = crate::bookmarks::from_json(&f["marks"], self.docs[i].buf.line_count());
                 self.docs[i].target = top;
                 self.docs[i].top = top;
                 self.docs[i].reveal = false;

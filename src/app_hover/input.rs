@@ -152,7 +152,7 @@ impl App {
         if w.pixels {
             h.scr.pixels(d, max, scroller::now());
         } else {
-            h.scr.wheel(d, 3.0 * PROSE_LH as f64, max, scroller::now());
+            h.scr.wheel(d, 3.0 * prose_lh() as f64, max, scroller::now());
         }
         h.scroll = h.scr.pos;
         true

@@ -450,6 +450,56 @@
   "id": "ToggleGitBlame"
  },
  {
+  "label": "View: Toggle line numbers",
+  "shortcut": "",
+  "id": "ToggleLineNumbers"
+ },
+ {
+  "label": "View: Toggle bookmark marks",
+  "shortcut": "",
+  "id": "ToggleBookmarkMarks"
+ },
+ {
+  "label": "View: Toggle breakpoint marks",
+  "shortcut": "",
+  "id": "ToggleBreakpointMarks"
+ },
+ {
+  "label": "View: Scrollbars (show / auto / never)",
+  "shortcut": "",
+  "id": "CycleScrollbar"
+ },
+ {
+  "label": "Bookmark: Toggle bookmark",
+  "shortcut": "Ctrl+F2",
+  "id": "ToggleBookmark"
+ },
+ {
+  "label": "Bookmark: Next bookmark",
+  "shortcut": "Ctrl+Alt+F2",
+  "id": "NextBookmark"
+ },
+ {
+  "label": "Bookmark: Previous bookmark",
+  "shortcut": "Ctrl+Alt+Shift+F2",
+  "id": "PrevBookmark"
+ },
+ {
+  "label": "Fonts: Buffer font…",
+  "shortcut": "",
+  "id": "ChooseBufferFont"
+ },
+ {
+  "label": "Fonts: Interface font…",
+  "shortcut": "",
+  "id": "ChooseUiFont"
+ },
+ {
+  "label": "Language servers: Toggle on / off",
+  "shortcut": "",
+  "id": "ToggleLsp"
+ },
+ {
   "label": "View: Toggle minimap",
   "shortcut": "",
   "id": "ToggleMinimap"

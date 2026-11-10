@@ -33,6 +33,8 @@ and no GPU driver:
 - Word wrap, folding, sticky scroll, indent guides, minimap, breadcrumbs, color swatches
 - Find/replace (case, regex), project search, symbols, go to line, back/forward navigation
 - Tabs, quick open (fuzzy), session restore, live reload when files change on disk (inotify)
+- Fonts: separate **interface** and **buffer** (code, terminal, diffs) fonts with a searchable picker of the installed families, weight, size, line height and ligatures, all live
+- Display options: line numbers, bookmarks (`Ctrl+F2`), breakpoint dots, scrollbars (show / auto-hide / never) and a master switch for the language servers
 - Smooth Zed-style scrolling, drag selection by word/line, Wayland and X11 clipboard, IME, fractional hi-DPI scaling
 
 **TypeScript and LSP**
@@ -231,7 +233,8 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Bottom panel / terminal | `Ctrl+J` / ``Ctrl+` `` |
 | Tests: at cursor / file / rerun / stop | `Ctrl+K T` / `Ctrl+K F` / `Ctrl+K R` / `Ctrl+K X` |
 | Tests panel: run all / re-run failed / debug at cursor | `Ctrl+K A` / `Ctrl+K E` / `Ctrl+K D` |
-| Debug: start / stop / breakpoint | `F5` / `Shift+F5` / `F9` |
+| Debug: start / stop / breakpoint | `F5` / `Shift+F5` / `F9` (or click the gutter) |
+| Bookmark: toggle / next / previous | `Ctrl+F2` / `Ctrl+Alt+F2` / `Ctrl+Alt+Shift+F2` |
 | Debug: step over / into / out | `F10` / `F11` / `Shift+F11` |
 | Zoom in / out / reset | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` |
 | Navigate back / forward | `Alt+Left` / `Alt+Right` |
@@ -262,7 +265,15 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `appearance` | `"fixed"` | `"fixed"` keeps `theme`; `"system"` follows the desktop light/dark preference |
 | `theme_light` / `theme_dark` | `github-light-default` / `github-dark-default` | Themes used when `appearance` is `"system"` |
 | `theme_chrome` | `"derived"` | `"theme"` makes sidebar, tabs and status bar use the theme's own colors where text stays readable (AA) |
-| `font_size` | `14` | 8 to 40 |
+| `buffer_font_family` / `ui_font_family` | `""` | Font family of the code (and terminal, diffs, code blocks) / of the interface; `""` = system monospace / sans-serif; a missing family falls back to it |
+| `buffer_font_size` / `ui_font_size` | `14` / `13` | 8 to 40 / 10 to 20 (`buffer_font_size` was `font_size`; old files are read as before) |
+| `buffer_font_weight` / `ui_font_weight` | `400` / `400` | 100 to 900 (the nearest weight the family has is used) |
+| `buffer_line_height` / `ui_line_height` | `1.57` / `1.38` | Multiplier of the font size, 1.0 to 2.5 (a number above 4 means pixels); the UI value spaces multi-line interface text such as hover cards |
+| `buffer_font_ligatures` / `ui_font_ligatures` | `false` / `true` | Font ligatures (`liga`, `calt`) in the code / interface |
+| `show_line_numbers` | `true` | Off shrinks the gutter to the marks and the fold arrows |
+| `show_bookmarks` / `show_breakpoints` | `true` / `true` | Gutter marks; with breakpoints off the gutter click does nothing |
+| `scrollbar` | `"show"` | `"show"`, `"auto"` (fade in while scrolling or pointing) or `"never"` |
+| `enable_lsp` | `true` | Master switch for every language server |
 | `ui_scale` | `0` | `0` = automatic from the window scale factor, else up to 4 |
 | `format_on_save` | `false` | Run the formatter on save |
 | `updates` | `"auto"` | `"auto"` (check, download and install in the background), `"notify"` (only announce) or `"off"`; see [Updates](#updates) |

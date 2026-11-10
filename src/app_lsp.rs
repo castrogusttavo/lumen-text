@@ -93,6 +93,9 @@ impl App {
     }
 
     pub(crate) fn ensure_lsp(&mut self, doc: usize) -> Option<usize> {
+        if !self.lsp_enabled() {
+            return None;
+        }
         let d = self.docs.get_mut(doc)?;
         if !ts_family(d.lang) {
             return None;
@@ -340,7 +343,8 @@ impl App {
 
     /// The Biome language server for this document's project (spawned on demand).
     fn ensure_biome(&mut self, doc: usize) -> Option<usize> {
-        if self.biome_disabled
+        if !self.lsp_enabled()
+            || self.biome_disabled
             || !matches!(self.docs.get(doc)?.lang, Some("typescript" | "tsx" | "javascript" | "jsx" | "json" | "css"))
         {
             return None;

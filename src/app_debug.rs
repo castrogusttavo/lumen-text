@@ -164,8 +164,14 @@ impl App {
 
     pub fn toggle_breakpoint(&mut self) {
         let Some(d) = self.docs.get(self.active) else { return };
-        let Some(path) = d.path().map(Path::to_path_buf) else { return };
         let (line, _) = d.buf.line_col(d.ed.head());
+        self.toggle_breakpoint_at(line);
+    }
+
+    /// Toggle the breakpoint on `line` (0-based) of the active file (gutter click, F9).
+    pub fn toggle_breakpoint_at(&mut self, line: usize) {
+        let Some(d) = self.docs.get(self.active) else { return };
+        let Some(path) = d.path().map(Path::to_path_buf) else { return };
         let lines = self.breakpoints.entry(path.clone()).or_default();
         if let Some(i) = lines.iter().position(|l| *l == line) {
             lines.remove(i);

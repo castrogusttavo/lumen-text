@@ -9,7 +9,6 @@ pub struct Config {
     pub theme: Option<String>,
     pub format_on_save: bool,
     pub auto_import: bool,
-    pub font_size: f32,
     pub lsp_narrow: bool,
     /// Start big projects in lean mode and fall back to it when the full-project server gets too large.
     pub lsp_auto_lean: bool,
@@ -73,6 +72,36 @@ pub struct Config {
     pub test_report: String,
     /// Re-run the last tests whenever a file is saved.
     pub test_watch: bool,
+    /// Buffer font: the code editor and everything monospace (terminal, output, diffs, code blocks).
+    /// Family "" = the system monospace; weight 100..900; line height is a multiplier (1.0..2.5) or
+    /// pixels (> 4); `buffer_font_size` was `font_size` before the font settings existed.
+    pub buffer_font_family: String,
+    pub buffer_font_size: f32,
+    pub buffer_font_weight: u16,
+    pub buffer_line_height: f32,
+    pub buffer_font_ligatures: bool,
+    /// UI font: sidebar, tabs, menus, modals, status bar and hover prose. Family "" = system sans-serif.
+    pub ui_font_family: String,
+    pub ui_font_size: f32,
+    pub ui_font_weight: u16,
+    pub ui_line_height: f32,
+    pub ui_font_ligatures: bool,
+    /// Editor display: gutter parts and scrollbars.
+    pub show_line_numbers: bool,
+    pub show_bookmarks: bool,
+    pub show_breakpoints: bool,
+    /// Scrollbars: "show" (always, thin), "auto" (fade in on scroll / hover) or "never".
+    pub scrollbar: String,
+    /// Master switch for every language server (see `App::lsp_enabled`).
+    pub enable_lsp: bool,
+}
+
+/// `scrollbar` setting values; anything else falls back to "show".
+pub fn normalize_scrollbar(v: Option<&str>) -> String {
+    match v {
+        Some(m @ ("show" | "auto" | "never")) => m.to_string(),
+        _ => "show".to_string(),
+    }
 }
 
 /// `updates` setting values; anything else falls back to "auto".
@@ -162,7 +191,6 @@ impl Default for Config {
             theme: None,
             format_on_save: false,
             auto_import: false,
-            font_size: 14.0,
             lsp_narrow: false,
             lsp_auto_lean: true,
             code_lens: false,
@@ -197,6 +225,21 @@ impl Default for Config {
             test_command: String::new(),
             test_report: String::new(),
             test_watch: false,
+            buffer_font_family: String::new(),
+            buffer_font_size: 14.0,
+            buffer_font_weight: 400,
+            buffer_line_height: 1.57,
+            buffer_font_ligatures: false,
+            ui_font_family: String::new(),
+            ui_font_size: 13.0,
+            ui_font_weight: 400,
+            ui_line_height: 1.38,
+            ui_font_ligatures: true,
+            show_line_numbers: true,
+            show_bookmarks: true,
+            show_breakpoints: true,
+            scrollbar: "show".into(),
+            enable_lsp: true,
         }
     }
 }
@@ -416,7 +459,36 @@ impl Config {
             test_watch: v["test_watch"].as_bool().unwrap_or(false),
             scroll_speed: v["scroll_speed"].as_f64().map_or(1.0, |f| f as f32).clamp(0.1, 5.0),
             ui_scale: v["ui_scale"].as_f64().map_or(0.0, |f| f as f32).clamp(0.0, 4.0),
-            font_size: v["font_size"].as_f64().map_or(14.0, |f| f as f32).clamp(8.0, 40.0),
+            // `font_size` is the pre-font-settings name of the buffer font size.
+            buffer_font_size: crate::fontcfg::clean_size(
+                v["buffer_font_size"].as_f64().or_else(|| v["font_size"].as_f64()).unwrap_or(14.0),
+                crate::fontcfg::BUFFER_SIZE_RANGE,
+                crate::fontcfg::DEFAULT_BUFFER_SIZE,
+            ),
+            buffer_font_family: crate::fontcfg::clean_family(v["buffer_font_family"].as_str().unwrap_or("")),
+            buffer_font_weight: crate::fontcfg::clean_weight(v["buffer_font_weight"].as_i64().unwrap_or(400)),
+            buffer_line_height: crate::fontcfg::clean_line_height(
+                v["buffer_line_height"].as_f64().unwrap_or(0.0),
+                crate::fontcfg::DEFAULT_BUFFER_LH,
+            ),
+            buffer_font_ligatures: v["buffer_font_ligatures"].as_bool().unwrap_or(false),
+            ui_font_family: crate::fontcfg::clean_family(v["ui_font_family"].as_str().unwrap_or("")),
+            ui_font_size: crate::fontcfg::clean_size(
+                v["ui_font_size"].as_f64().unwrap_or(13.0),
+                crate::fontcfg::UI_SIZE_RANGE,
+                crate::fontcfg::DEFAULT_UI_SIZE,
+            ),
+            ui_font_weight: crate::fontcfg::clean_weight(v["ui_font_weight"].as_i64().unwrap_or(400)),
+            ui_line_height: crate::fontcfg::clean_line_height(
+                v["ui_line_height"].as_f64().unwrap_or(0.0),
+                crate::fontcfg::DEFAULT_UI_LH,
+            ),
+            ui_font_ligatures: v["ui_font_ligatures"].as_bool().unwrap_or(true),
+            show_line_numbers: v["show_line_numbers"].as_bool().unwrap_or(true),
+            show_bookmarks: v["show_bookmarks"].as_bool().unwrap_or(true),
+            show_breakpoints: v["show_breakpoints"].as_bool().unwrap_or(true),
+            scrollbar: normalize_scrollbar(v["scrollbar"].as_str()),
+            enable_lsp: v["enable_lsp"].as_bool().unwrap_or(true),
         }
     }
 
@@ -428,7 +500,13 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "font_size": self.font_size, "lsp_narrow": self.lsp_narrow, "lsp_lean_v": 2, "lsp_auto_lean": self.lsp_auto_lean, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch});
+        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "lsp_narrow": self.lsp_narrow, "lsp_lean_v": 2, "lsp_auto_lean": self.lsp_auto_lean, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch});
+        // Split in two: one `json!` this long hits the macro recursion limit.
+        let fonts = json!({"buffer_font_family": self.buffer_font_family, "buffer_font_size": self.buffer_font_size, "buffer_font_weight": self.buffer_font_weight, "buffer_line_height": self.buffer_line_height, "buffer_font_ligatures": self.buffer_font_ligatures, "ui_font_family": self.ui_font_family, "ui_font_size": self.ui_font_size, "ui_font_weight": self.ui_font_weight, "ui_line_height": self.ui_line_height, "ui_font_ligatures": self.ui_font_ligatures, "show_line_numbers": self.show_line_numbers, "show_bookmarks": self.show_bookmarks, "show_breakpoints": self.show_breakpoints, "scrollbar": self.scrollbar, "enable_lsp": self.enable_lsp});
+        let mut v = v;
+        if let (Some(dst), Some(src)) = (v.as_object_mut(), fonts.as_object()) {
+            dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
+        }
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -470,7 +548,6 @@ mod tests {
             theme: Some("dracula".into()),
             format_on_save: true,
             auto_import: true,
-            font_size: 17.0,
             lsp_narrow: false,
             lsp_auto_lean: true,
             code_lens: true,
@@ -502,6 +579,21 @@ mod tests {
             test_command: "make test".into(),
             test_report: "out/junit.xml".into(),
             test_watch: true,
+            buffer_font_family: "JetBrains Mono".into(),
+            buffer_font_size: 17.0,
+            buffer_font_weight: 500,
+            buffer_line_height: 1.8,
+            buffer_font_ligatures: true,
+            ui_font_family: "Inter".into(),
+            ui_font_size: 15.0,
+            ui_font_weight: 600,
+            ui_line_height: 1.6,
+            ui_font_ligatures: false,
+            show_line_numbers: false,
+            show_bookmarks: false,
+            show_breakpoints: false,
+            scrollbar: "auto".into(),
+            enable_lsp: false,
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);
@@ -702,6 +794,72 @@ mod tests {
         assert!(!Config::load_from(&f).lsp_narrow, "pre-v2 files stored lean mode as the default");
         std::fs::write(&f, r#"{"lsp_narrow": true, "lsp_lean_v": 2}"#).unwrap();
         assert!(Config::load_from(&f).lsp_narrow, "a deliberate opt-in survives");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn font_and_display_defaults_keep_the_current_look() {
+        let c = Config::default();
+        assert_eq!((c.buffer_font_size, c.buffer_font_weight, c.buffer_line_height), (14.0, 400, 1.57));
+        assert_eq!((c.ui_font_size, c.ui_font_weight, c.ui_line_height), (13.0, 400, 1.38));
+        assert!(!c.buffer_font_ligatures && c.ui_font_ligatures);
+        assert!(c.buffer_font_family.is_empty() && c.ui_font_family.is_empty());
+        assert!(c.show_line_numbers && c.show_bookmarks && c.show_breakpoints && c.enable_lsp);
+        assert_eq!(c.scrollbar, "show");
+        // The literals above are the fontcfg constants (the docs extractor reads the literals).
+        assert_eq!(c.buffer_font_size, crate::fontcfg::DEFAULT_BUFFER_SIZE);
+        assert_eq!(c.buffer_line_height, crate::fontcfg::DEFAULT_BUFFER_LH);
+        assert_eq!(c.ui_font_size, crate::fontcfg::DEFAULT_UI_SIZE);
+        assert_eq!(c.ui_line_height, crate::fontcfg::DEFAULT_UI_LH);
+        assert_eq!(Config::load_from(Path::new("/definitely/missing.json")), c);
+    }
+
+    #[test]
+    fn old_font_size_key_migrates_to_buffer_font_size() {
+        let dir = std::env::temp_dir().join(format!("lumen-cfg-mig-{}", std::process::id()));
+        let p = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&p, r#"{"font_size": 18, "theme": "dracula"}"#).unwrap();
+        let c = Config::load_from(&p);
+        assert_eq!(c.buffer_font_size, 18.0, "the pre-font-settings key is still honoured");
+        assert_eq!(c.theme.as_deref(), Some("dracula"));
+        std::fs::write(&p, r#"{"font_size": 18, "buffer_font_size": 20}"#).unwrap();
+        assert_eq!(Config::load_from(&p).buffer_font_size, 20.0, "the new key wins");
+        // Saving writes the new key only.
+        c.save_to(&p).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("buffer_font_size") && !text.contains("\"font_size\""), "{text}");
+        assert_eq!(Config::load_from(&p).buffer_font_size, 18.0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn font_and_display_values_are_cleaned_on_load() {
+        let dir = std::env::temp_dir().join(format!("lumen-cfg-fonts-{}", std::process::id()));
+        let p = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let load = |raw: &str| {
+            std::fs::write(&p, raw).unwrap();
+            Config::load_from(&p)
+        };
+        let c = load(
+            r#"{"buffer_font_size": 500, "ui_font_size": 2, "buffer_font_weight": 449, "ui_font_weight": 5000,
+                "buffer_line_height": 9, "ui_line_height": 0.3, "buffer_font_family": "  Fira Code ",
+                "scrollbar": "sometimes", "show_line_numbers": "no"}"#,
+        );
+        assert_eq!(c.buffer_font_size, 40.0);
+        assert_eq!(c.ui_font_size, 10.0);
+        assert_eq!((c.buffer_font_weight, c.ui_font_weight), (400, 900));
+        assert_eq!(c.buffer_line_height, 9.0, "above 4 is pixels");
+        assert_eq!(c.ui_line_height, 1.0);
+        assert_eq!(c.buffer_font_family, "Fira Code");
+        assert_eq!(c.scrollbar, "show", "unknown mode falls back");
+        assert!(c.show_line_numbers, "a non-bool keeps the default");
+        let c = load(r#"{"buffer_line_height": "tall", "buffer_font_weight": "bold", "scrollbar": "never"}"#);
+        assert_eq!((c.buffer_line_height, c.buffer_font_weight), (1.57, 400));
+        assert_eq!(c.scrollbar, "never");
+        let c = load(r#"{"buffer_line_height": 1.9}"#);
+        assert_eq!(c.buffer_line_height, 1.9);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

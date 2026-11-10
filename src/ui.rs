@@ -23,8 +23,7 @@ const MAX_FALLBACK_BYTES: u64 = 25 * 1024 * 1024;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-const DEFAULT_FONT_SIZE: f32 = 14.0;
-static FONT_SIZE_BITS: AtomicU32 = AtomicU32::new(0x41600000); // 14.0
+const DEFAULT_FONT_SIZE: f32 = crate::fontcfg::DEFAULT_BUFFER_SIZE;
 
 static SCALE_BITS: AtomicU32 = AtomicU32::new(0x3f800000); // 1.0
 
@@ -91,12 +90,22 @@ pub fn parse_scale(v: &str) -> Option<f32> {
 
 /// Current font size in px (changed by zoom).
 pub fn font_size() -> f32 {
-    f32::from_bits(FONT_SIZE_BITS.load(Ordering::Relaxed))
+    crate::fontcfg::buffer_size()
 }
 
-/// Line height follows the font size at the default 20/14 ratio.
+/// Buffer row height in logical pixels: the buffer font size times the line-height setting
+/// (default 22 px at 14 px), or a fixed pixel height.
 pub fn line_h() -> f32 {
-    (font_size() * 22.0 / 14.0).round()
+    crate::fontcfg::line_px(font_size(), crate::fontcfg::buffer_line_height())
+}
+
+/// Interface text size and text box height (see `fontcfg`).
+pub fn ui_size() -> f32 {
+    crate::fontcfg::ui_size()
+}
+
+pub fn ui_line() -> f32 {
+    crate::fontcfg::ui_line()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -335,7 +344,7 @@ pub struct VBar {
 impl VBar {
     /// `None` when everything fits. `total`/`visible`/`pos` are in the same unit (rows or px).
     pub fn new(track: Rect, total: f64, visible: f64, pos: f64) -> Option<VBar> {
-        if total <= visible + 0.5 || track.h < 24 {
+        if total <= visible + 0.5 || track.h < 24 || crate::display::scrollbar() == crate::display::Scrollbar::Never {
             return None;
         }
         let th = (((track.h as f64) * (visible / total).clamp(0.0, 1.0)) as i32).clamp(32, track.h);
@@ -360,6 +369,11 @@ impl VBar {
         } else {
             0x2c
         };
+        let k = crate::display::bar_strength(hot || active);
+        if k <= 0.0 {
+            return;
+        }
+        let a = (a as f32 * k) as u8;
         let r = Rect::new(self.track.right() - w - 3, self.thumb.y + 2, w, self.thumb.h - 4);
         cv.fill_round_clip(r, w / 2, fg.with_alpha(a), self.track);
     }
@@ -376,7 +390,7 @@ pub struct HBar {
 impl HBar {
     /// `None` when everything fits.
     pub fn new(track: Rect, total: f64, visible: f64, pos: f64) -> Option<HBar> {
-        if total <= visible + 0.5 || track.w < 24 {
+        if total <= visible + 0.5 || track.w < 24 || crate::display::scrollbar() == crate::display::Scrollbar::Never {
             return None;
         }
         let tw = (((track.w as f64) * (visible / total).clamp(0.0, 1.0)) as i32).clamp(32, track.w);
@@ -401,6 +415,11 @@ impl HBar {
         } else {
             0x2c
         };
+        let k = crate::display::bar_strength(hot || active);
+        if k <= 0.0 {
+            return;
+        }
+        let a = (a as f32 * k) as u8;
         let r = Rect::new(self.thumb.x + 2, self.track.bottom() - h - 3, self.thumb.w - 4, h);
         cv.fill_round_clip(r, h / 2, fg.with_alpha(a), self.track);
     }
@@ -462,10 +481,21 @@ pub struct TextCtx {
     fallbacks_loaded: bool,
     /// Cached result of [`TextCtx::italic_works`].
     italic_ok: Option<bool>,
+    /// Buffer font weight / ligatures and UI font weight / ligatures (see `fontcfg`).
+    buf_weight: u16,
+    buf_ligs: bool,
+    ui_weight: u16,
+    ui_ligs: bool,
+    /// The families found at startup (system monospace / sans-serif), used when a chosen one is missing.
+    default_family: Option<String>,
+    default_ui_family: Option<String>,
+    /// Faces loaded for the user's buffer / UI family (removed again when the choice changes).
+    user_faces: [Vec<fontdb::ID>; 2],
+    /// The font system holds every installed font (no single-font database): families just resolve.
+    sys_all: bool,
+    /// Faces loaded to preview families in the font picker (dropped when it closes).
+    previews: Vec<(String, Vec<fontdb::ID>)>,
 }
-
-pub const UI_SIZE: f32 = 13.0;
-pub const UI_LINE: f32 = 18.0;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn find_font(query: &str) -> Option<PathBuf> {
@@ -712,13 +742,16 @@ impl TextCtx {
         }
         let attrs = family_attrs(&family);
         let cell_w = measure_cell(&mut fonts, &attrs, font_size());
+        let sys_all = family.is_none();
         let buf = TextBuf::new(&mut fonts, Metrics::new(font_size() * scale(), line_h() * scale()));
-        let ui_buf = TextBuf::new(&mut fonts, Metrics::new(UI_SIZE * scale(), UI_LINE * scale()));
+        let ui_buf = TextBuf::new(&mut fonts, Metrics::new(ui_size() * scale(), ui_line() * scale()));
         Self {
             fonts,
             swash: SwashCache::new(),
             buf,
             ui_buf,
+            default_family: family.clone(),
+            default_ui_family: ui_family.clone(),
             family,
             ui_family,
             cell_w,
@@ -727,6 +760,13 @@ impl TextCtx {
             loaded,
             fallbacks_loaded: false,
             italic_ok: None,
+            buf_weight: 400,
+            buf_ligs: false,
+            ui_weight: 400,
+            ui_ligs: true,
+            user_faces: [Vec::new(), Vec::new()],
+            sys_all,
+            previews: Vec::new(),
         }
     }
 
@@ -746,7 +786,7 @@ impl TextCtx {
             return;
         }
         self.fallbacks_loaded = true;
-        if self.family.is_none() {
+        if self.sys_all {
             return;
         }
         for p in fallback_candidates(&self.loaded) {
@@ -759,15 +799,182 @@ impl TextCtx {
     /// Change the font size (clamped) and re-measure the cell width. Returns the size in use.
     pub fn set_zoom(&mut self, px: f32) -> f32 {
         let px = px.clamp(8.0, 40.0);
-        FONT_SIZE_BITS.store(px.to_bits(), Ordering::Relaxed);
-        let family = self.family.clone();
-        let attrs = family_attrs(&family);
-        self.cell_w = measure_cell(&mut self.fonts, &attrs, font_size());
+        crate::fontcfg::store_buffer_size(px);
+        self.remeasure();
         px
+    }
+
+    /// Re-measure the buffer cell width (family, weight, size or scale changed).
+    fn remeasure(&mut self) {
+        let family = self.family.clone();
+        let attrs = buf_attrs(&family, self.buf_weight);
+        self.cell_w = measure_cell(&mut self.fonts, &attrs, font_size());
     }
 
     pub fn reset_zoom(&mut self) -> f32 {
         self.set_zoom(DEFAULT_FONT_SIZE)
+    }
+
+    /// Fresh font system on the same database: every shaping / font-match / glyph cache starts empty.
+    fn rebuild_fonts(&mut self) {
+        let db = std::mem::take(self.fonts.db_mut());
+        self.fonts = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+        self.swash = SwashCache::new();
+        self.widths.clear();
+        self.italic_ok = None;
+        crate::fontcfg::bump();
+    }
+
+    /// Load the files of `name` for font group `g` (0 = buffer, 1 = UI), dropping what the group
+    /// loaded before. Returns the family name as the database spells it, `None` when it is missing.
+    fn install_family(&mut self, name: &str, g: usize) -> Option<String> {
+        let old = std::mem::take(&mut self.user_faces[g]);
+        if !old.is_empty() {
+            let db = self.fonts.db_mut();
+            for id in old {
+                db.remove_face(id);
+            }
+        }
+        if name.is_empty() {
+            return None;
+        }
+        if !self.sys_all {
+            let files = crate::fontcfg::family_files(name, 16, 40 * 1024 * 1024);
+            let mut added = Vec::new();
+            for f in files {
+                added.extend(load_into(self.fonts.db_mut(), &f));
+            }
+            self.user_faces[g] = added;
+        }
+        self.fonts
+            .db()
+            .faces()
+            .flat_map(|f| f.families.iter().map(|(n, _)| n))
+            .find(|n| n.eq_ignore_ascii_case(name))
+            .cloned()
+    }
+
+    /// Apply the buffer font group (family, size, weight, line height, ligatures) live. Returns
+    /// false when the family is not installed: the system monospace is used instead.
+    pub fn set_buffer_font(&mut self, spec: &crate::fontcfg::FontSpec) -> bool {
+        let found = self.install_family(&spec.family, 0);
+        let ok = spec.family.is_empty() || found.is_some();
+        self.family = found.or_else(|| self.default_family.clone());
+        self.buf_weight = spec.weight;
+        self.buf_ligs = spec.ligatures;
+        crate::fontcfg::store_buffer_size(spec.size.clamp(8.0, 40.0));
+        crate::fontcfg::store_buffer_line_height(spec.line_height);
+        self.rebuild_fonts();
+        self.remeasure();
+        ok
+    }
+
+    /// Apply the UI font group live (family, size, weight, ligatures; the line height only scales
+    /// multi-line prose, see `fontcfg::prose_scale`). False when the family is not installed.
+    pub fn set_ui_font(&mut self, spec: &crate::fontcfg::FontSpec) -> bool {
+        let found = self.install_family(&spec.family, 1);
+        let ok = spec.family.is_empty() || found.is_some();
+        self.ui_family = found.or_else(|| self.default_ui_family.clone());
+        self.ui_weight = spec.weight;
+        self.ui_ligs = spec.ligatures;
+        crate::fontcfg::store_ui_size(spec.size);
+        crate::fontcfg::store_ui_line_height(spec.line_height);
+        self.rebuild_fonts();
+        ok
+    }
+
+    /// Make `family` drawable by [`draw_family`](Self::draw_family): loads its preview face once.
+    /// False for fonts that are missing or too big to load just for a preview.
+    pub fn preview_ready(&mut self, family: &str, file: &Path) -> bool {
+        if self.sys_all || self.previews.iter().any(|(n, _)| n == family) {
+            return true;
+        }
+        if std::fs::metadata(file).map_or(true, |m| m.len() > 12 * 1024 * 1024) {
+            return false;
+        }
+        if self.previews.len() >= 48 {
+            self.clear_previews();
+        }
+        let ids = load_into(self.fonts.db_mut(), file);
+        let ok = !ids.is_empty();
+        self.previews.push((family.to_string(), ids));
+        ok
+    }
+
+    /// Drop every preview face (picker closed): memory goes back to what the editor needs.
+    pub fn clear_previews(&mut self) {
+        if self.previews.is_empty() {
+            return;
+        }
+        let db = self.fonts.db_mut();
+        for (_, ids) in self.previews.drain(..) {
+            for id in ids {
+                db.remove_face(id);
+            }
+        }
+        self.rebuild_fonts();
+        self.remeasure();
+    }
+
+    /// Draw `text` in the named family at `size` px (a font preview); the UI font stands in for
+    /// families that could not be loaded.
+    pub fn draw_family(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        family: &str,
+        text: &str,
+        color: Rgba,
+        clip: Rect,
+        size: f32,
+    ) {
+        if text.is_empty() || clip.w <= 0 || clip.h <= 0 {
+            return;
+        }
+        let lh = (size * 1.4).round();
+        let a = Attrs::new().family(Family::Name(family)).color(to_color(color));
+        let s = scale();
+        let mut b = TextBuf::new(&mut self.fonts, Metrics::new(size * s, lh * s));
+        b.set_size(Some(4000.0 * s), Some(lh * 2.0 * s));
+        b.set_wrap(Wrap::None);
+        b.set_text(text, &a, Shaping::Advanced, None);
+        b.shape_until_scroll(&mut self.fonts, false);
+        let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
+        let (x, y) = (sc(x), sc(y));
+        let (w, px) = (cv.w, &mut *cv.px);
+        b.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
+            for dy in 0..gh as i32 {
+                let py = gy + dy + y;
+                if py < clip.y || py >= clip.bottom() {
+                    continue;
+                }
+                for dx in 0..gw as i32 {
+                    let pxx = gx + dx + x;
+                    if pxx < clip.x || pxx >= clip.right() {
+                        continue;
+                    }
+                    let i = (py * w + pxx) as usize;
+                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
+                }
+            }
+        });
+    }
+
+    /// Width of `n` buffer cells for ligature tests: the shaped width of `text` in the buffer font.
+    #[cfg(test)]
+    pub fn buffer_text_width(&mut self, text: &str) -> f32 {
+        let family = self.family.clone();
+        let mut attrs = buf_attrs(&family, self.buf_weight);
+        if !self.buf_ligs {
+            attrs = attrs.font_features(plain_features());
+        }
+        let s = scale();
+        let mut b = TextBuf::new(&mut self.fonts, Metrics::new(font_size() * s, line_h() * s));
+        b.set_size(Some(4000.0), Some(200.0));
+        b.set_text(text, &attrs, if self.buf_ligs { Shaping::Advanced } else { Shaping::Basic }, None);
+        b.shape_until_scroll(&mut self.fonts, false);
+        b.layout_runs().next().map_or(0.0, |r| r.line_w) / s
     }
 
     /// Change the UI scale (hi-DPI). Re-measures the code cell width and drops the width cache,
@@ -775,9 +982,8 @@ impl TextCtx {
     pub fn set_scale(&mut self, s: f32) -> f32 {
         let s = store_scale(s);
         self.widths.clear();
-        let family = self.family.clone();
-        let attrs = family_attrs(&family);
-        self.cell_w = measure_cell(&mut self.fonts, &attrs, font_size());
+        self.remeasure();
+        crate::fontcfg::bump();
         s
     }
 
@@ -823,9 +1029,10 @@ impl TextCtx {
             self.ensure_fallbacks();
         }
         let wide = pieces.iter().any(|(s, ..)| needs_fallback(s));
+        let ligs = self.buf_ligs;
         let family = self.family.clone();
-        let mut attrs = family_attrs(&family);
-        if wide {
+        let mut attrs = buf_attrs(&family, self.buf_weight);
+        if wide && !ligs {
             attrs = attrs.font_features(plain_features());
         }
         let s = scale();
@@ -836,7 +1043,7 @@ impl TextCtx {
         );
         self.buf.set_wrap(Wrap::None);
         let spans: Vec<(&str, Attrs)> = pieces.iter().map(|(s, c, f)| (*s, styled(&attrs, *c, *f))).collect();
-        self.buf.set_rich_text(spans, &attrs, if wide { Shaping::Advanced } else { Shaping::Basic }, None);
+        self.buf.set_rich_text(spans, &attrs, if wide || ligs { Shaping::Advanced } else { Shaping::Basic }, None);
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
         let (x, y) = (sc(x), sc(y));
         let (w, px) = (cv.w, &mut *cv.px);
@@ -869,16 +1076,10 @@ impl TextCtx {
             self.ensure_fallbacks();
         }
         let fam = self.ui_family.clone();
-        let mut a = match &fam {
-            Some(f) => Attrs::new().family(Family::Name(f)),
-            None => Attrs::new().family(Family::SansSerif),
-        };
-        if bold {
-            a = a.weight(cosmic_text::Weight::SEMIBOLD);
-        }
+        let a = ui_attrs(&fam, self.ui_weight, self.ui_ligs, bold);
         let s = scale();
-        let mut b = TextBuf::new(&mut self.fonts, Metrics::new(UI_SIZE * s, UI_LINE * s));
-        b.set_size(Some(8000.0 * s), Some(UI_LINE * 2.0 * s));
+        let mut b = TextBuf::new(&mut self.fonts, Metrics::new(ui_size() * s, ui_line() * s));
+        b.set_size(Some(8000.0 * s), Some(ui_line() * 2.0 * s));
         b.set_wrap(Wrap::None);
         b.set_text(text, &a, Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.fonts, false);
@@ -903,16 +1104,10 @@ impl TextCtx {
         }
         let (sz, lh) = match size {
             Some(sz) => (sz, (sz * 1.4).round()),
-            None => (UI_SIZE, UI_LINE),
+            None => (ui_size(), ui_line()),
         };
         let fam = self.ui_family.clone();
-        let mut a = match &fam {
-            Some(f) => Attrs::new().family(Family::Name(f)),
-            None => Attrs::new().family(Family::SansSerif),
-        };
-        if bold {
-            a = a.weight(cosmic_text::Weight::SEMIBOLD);
-        }
+        let a = ui_attrs(&fam, self.ui_weight, self.ui_ligs, bold);
         let s = scale();
         let mut b = TextBuf::new(&mut self.fonts, Metrics::new(sz * s, lh * s));
         b.set_size(Some(8000.0 * s), Some(lh * 2.0 * s));
@@ -982,21 +1177,15 @@ impl TextCtx {
             self.ensure_fallbacks();
         }
         let fam = self.ui_family.clone();
-        let mut base = match &fam {
-            Some(f) => Attrs::new().family(Family::Name(f)),
-            None => Attrs::new().family(Family::SansSerif),
-        };
-        if bold {
-            base = base.weight(cosmic_text::Weight::SEMIBOLD);
-        }
+        let mut base = ui_attrs(&fam, self.ui_weight, self.ui_ligs, bold);
         if italic {
             base = base.style(cosmic_text::Style::Italic);
         }
         let s = scale();
         self.ui_buf.set_metrics_and_size(
-            Metrics::new(UI_SIZE * s, UI_LINE * s),
+            Metrics::new(ui_size() * s, ui_line() * s),
             Some(4000.0 * s),
-            Some(UI_LINE * 2.0 * s),
+            Some(ui_line() * 2.0 * s),
         );
         self.ui_buf.set_wrap(Wrap::None);
         let spans: Vec<(&str, Attrs)> =
@@ -1106,13 +1295,8 @@ impl TextCtx {
         }
         let lh = (size * 1.4).round();
         let fam = self.ui_family.clone();
-        let mut a = match &fam {
-            Some(f) => Attrs::new().family(Family::Name(f)),
-            None => Attrs::new().family(Family::SansSerif),
-        };
-        if bold {
-            a = a.weight(cosmic_text::Weight::SEMIBOLD);
-        }
+        let a = ui_attrs(&fam, self.ui_weight, self.ui_ligs, bold);
+        let mut a = a;
         if italic {
             a = a.style(cosmic_text::Style::Italic);
         }
@@ -1154,13 +1338,7 @@ impl TextCtx {
         }
         let lh = (size * 1.4).round();
         let fam = self.ui_family.clone();
-        let mut a = match &fam {
-            Some(f) => Attrs::new().family(Family::Name(f)),
-            None => Attrs::new().family(Family::SansSerif),
-        };
-        if bold {
-            a = a.weight(cosmic_text::Weight::SEMIBOLD);
-        }
+        let a = ui_attrs(&fam, self.ui_weight, self.ui_ligs, bold);
         let s = scale();
         let mut b = TextBuf::new(&mut self.fonts, Metrics::new(size * s, lh * s));
         b.set_size(Some(8000.0 * s), Some(lh * 2.0 * s));
@@ -1175,13 +1353,32 @@ impl TextCtx {
 fn styled<'a>(base: &Attrs<'a>, c: Rgba, flags: u8) -> Attrs<'a> {
     let mut a = base.clone().color(to_color(c));
     if flags & BOLD != 0 {
-        a = a.weight(cosmic_text::Weight::BOLD);
+        a = a.weight(cosmic_text::Weight(crate::fontcfg::bold_weight(base.weight.0, 300, 700)));
     }
     if flags & ITALIC != 0 {
         a = a.style(cosmic_text::Style::Italic);
     }
     if flags & UNDERLINE != 0 {
         a = a.underline(UnderlineStyle::Single);
+    }
+    a
+}
+
+/// Buffer font attributes: the family (or the system monospace) at the configured weight.
+fn buf_attrs(family: &Option<String>, weight: u16) -> Attrs<'_> {
+    family_attrs(family).weight(cosmic_text::Weight(weight))
+}
+
+/// Interface font attributes; `bold` is the semibold run weight, `ligs` switches `liga`/`calt` off when false.
+fn ui_attrs(family: &Option<String>, weight: u16, ligs: bool, bold: bool) -> Attrs<'_> {
+    let mut a = match family {
+        Some(f) => Attrs::new().family(Family::Name(f)),
+        None => Attrs::new().family(Family::SansSerif),
+    };
+    let w = if bold { crate::fontcfg::bold_weight(weight, 200, 600) } else { weight };
+    a = a.weight(cosmic_text::Weight(w));
+    if !ligs {
+        a = a.font_features(plain_features());
     }
     a
 }

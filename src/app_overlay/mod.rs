@@ -121,6 +121,8 @@ pub enum Overlay {
     TopMenu(Box<crate::app_topbar::TopMenu>),
     /// Right-click menu (explorer rows, tabs) and its delete confirmation.
     Ctx(Box<crate::app_ctxmenu::CtxMenu>),
+    /// Font family picker (see `fontpicker`).
+    Font(Box<crate::fontpicker::FontPicker>),
 }
 
 impl Overlay {

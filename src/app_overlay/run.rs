@@ -4,6 +4,9 @@ impl App {
     // ───────────── commands ─────────────
 
     pub fn run_cmd(&mut self, c: Cmd) {
+        if self.run_display_cmd(c) {
+            return;
+        }
         match c {
             Cmd::Save => self.save_active(),
             Cmd::CloseTab => {
@@ -186,6 +189,17 @@ impl App {
                 self.say(if on { "inlay hints: on" } else { "inlay hints: off" });
             }
             Cmd::ToggleGitBlame => self.toggle_git_blame(),
+            // Handled by `run_display_cmd` before this match.
+            Cmd::ToggleBookmark
+            | Cmd::NextBookmark
+            | Cmd::PrevBookmark
+            | Cmd::ToggleLineNumbers
+            | Cmd::ToggleBookmarkMarks
+            | Cmd::ToggleBreakpointMarks
+            | Cmd::CycleScrollbar
+            | Cmd::ToggleLsp
+            | Cmd::ChooseBufferFont
+            | Cmd::ChooseUiFont => {}
             Cmd::ToggleOutline => {
                 self.sidebar_open = true;
                 self.sidebar_mode = if self.sidebar_mode == crate::app::SidebarMode::Files {
