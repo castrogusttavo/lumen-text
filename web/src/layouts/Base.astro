@@ -1,0 +1,62 @@
+---
+import "../styles/global.css";
+import { url, GITHUB } from "../lib/url";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
+import release from "../data/release.json";
+
+interface Props { title?: string; description?: string; path?: string; noNav?: boolean }
+const { title, description = "Lumen is a lean, CPU-rendered code editor for Linux with a first-class TypeScript workflow: tsgo, Biome, ESLint, split panes, a git panel and 65 themes in about 100 MB.", path = "/" } = Astro.props;
+const fullTitle = title ? `${title} | Lumen` : "Lumen - the lean code editor for TypeScript";
+const canonical = new URL(url(path), Astro.site).href;
+const og = new URL(url("/og.png"), Astro.site).href;
+const ld = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Lumen",
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "Linux",
+  description,
+  softwareVersion: release.version ?? undefined,
+  license: "https://opensource.org/licenses/MIT",
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  codeRepository: GITHUB,
+  downloadUrl: new URL(url("/download"), Astro.site).href,
+};
+---
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#07070a" />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href={url("/favicon.svg")} />
+    <link rel="sitemap" href={url("/sitemap-index.xml")} />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Lumen" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={og} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content={og} />
+    <script is:inline>
+      document.documentElement.classList.add("js");
+      try { var t = localStorage.getItem("lumen-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+    </script>
+    <script type="application/ld+json" set:html={JSON.stringify(ld)} />
+    <slot name="head" />
+  </head>
+  <body class="min-h-dvh antialiased">
+    <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-full focus:bg-fg focus:px-4 focus:py-2 focus:text-bg">Skip to content</a>
+    <Nav />
+    <main id="main"><slot /></main>
+    <Footer />
+    <script>import "../scripts-site";</script>
+  </body>
+</html>

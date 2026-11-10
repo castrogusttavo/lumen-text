@@ -8,3 +8,9 @@
 *.rej
 *.log
 .DS_Store
+
+# web/ (landing page)
+web/node_modules
+web/dist
+web/.astro
+.astro

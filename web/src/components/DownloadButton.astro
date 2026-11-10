@@ -1,0 +1,11 @@
+---
+import release from "../data/release.json";
+import { url } from "../lib/url";
+interface Props { size?: "lg" | "md"; class?: string }
+const { size = "lg", class: cls = "" } = Astro.props;
+const href = (release.assets as any).appimage?.url ?? url("/download");
+---
+<a href={href} class:list={["btn btn-primary", size === "lg" && "btn-lg", cls]} data-download>
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>
+  <span data-os-label>Download for Linux</span>
+</a>

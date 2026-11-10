@@ -197,6 +197,7 @@ fn main() -> ExitCode {
         instance::Role::Secondary => return ExitCode::SUCCESS,
         instance::Role::Primary(rx) => rx,
     };
+    std::thread::spawn(update::refresh_user_integration);
     let mut app = app::App::new(files, root, theme, wake, cfg.clone());
     if scale_arg.is_some() {
         app.dpi.forced = scale_arg;

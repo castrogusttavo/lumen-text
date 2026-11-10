@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-11-10",
+  "machine": {
+    "label": "Developer workstation (Linux 6.18, x86_64)",
+    "cpu": null,
+    "ramGb": 8,
+    "storage": null,
+    "os": "Arch Linux, Wayland",
+    "note": "Competitor figures will be measured on this same machine by tools/bench-compare.sh."
+  },
+  "methodology": "Lumen numbers come from the repository's own regression tests (src/perf.rs, run with cargo test --release perf -- --nocapture) and from the status bar's PSS counter (proportional set size, which counts shared pages fairly). Frame and keystroke times are CPU time of the UI thread for one software-rendered 1100x700 frame, not end-to-end input-to-photon latency. Competitor columns stay empty until the same scenario has been measured on the same machine: we would rather show 'measuring' than a number we did not take.",
+  "editors": [
+    { "id": "lumen", "name": "Lumen", "version": "2026.11.10.6", "highlight": true, "note": "CPU-rendered, native Rust" },
+    { "id": "vscode", "name": "VS Code", "version": null, "note": "Electron. Windsurf and Devin are VS Code forks and are expected to land in the same range." },
+    { "id": "zed", "name": "Zed", "version": null, "note": "Native, GPU-rendered" },
+    { "id": "sublime", "name": "Sublime Text", "version": null, "note": "Native, closed source" },
+    { "id": "openidea", "name": "openidea", "version": null, "note": "Local reference build" }
+  ],
+  "metrics": [
+    {
+      "id": "ram-idle",
+      "group": "memory",
+      "label": "Memory at rest",
+      "description": "Editor process, a 100k-line file tokenized in the background, no language server.",
+      "unit": "MB",
+      "lowerIsBetter": true,
+      "scaleMax": 1024,
+      "values": {
+        "lumen": { "value": 16, "source": "measured", "note": "PSS of perf::memory_100k_buffer_and_tokenizer (src/perf.rs)" },
+        "vscode": { "value": null, "source": "pending" },
+        "zed": { "value": null, "source": "pending" },
+        "sublime": { "value": null, "source": "pending" },
+        "openidea": { "value": null, "source": "pending" }
+      }
+    },
+    {
+      "id": "ram-open-100k",
+      "group": "memory",
+      "label": "Memory while opening 100k lines",
+      "description": "Streaming open of an 8 MB, 100,000-line file. Typical level, with the peak in the note.",
+      "unit": "MB",
+      "lowerIsBetter": true,
+      "scaleMax": 1024,
+      "values": {
+        "lumen": { "value": 30, "source": "measured", "note": "Peak 51 MB (PSS)." },
+        "vscode": { "value": null, "source": "pending" },
+        "zed": { "value": null, "source": "pending" },
+        "sublime": { "value": null, "source": "pending" },
+        "openidea": { "value": null, "source": "pending" }
+      }
+    },
+    {
+      "id": "disk",
+      "group": "disk",
+      "label": "Disk space",
+      "description": "Installed program, without user data. The Lumen figure is the release binary built locally.",
+      "unit": "MB",
+      "lowerIsBetter": true,
+      "scaleMax": 512,
+      "values": {
+        "lumen": { "value": 19, "source": "measured", "note": "Release binary; CI fails the build above 30 MB." },
+        "vscode": { "value": null, "source": "pending" },
+        "zed": { "value": null, "source": "pending" },
+        "sublime": { "value": null, "source": "pending" },
+        "openidea": { "value": null, "source": "pending" }
+      }
+    },
+    {
+      "id": "startup",
+      "group": "startup",
+      "label": "Startup to first paint",
+      "description": "Process start to the first frame with a project open. Not covered by a test yet, so Lumen is pending too.",
+      "unit": "ms",
+      "lowerIsBetter": true,
+      "scaleMax": 3000,
+      "values": {
+        "lumen": { "value": null, "source": "pending" },
+        "vscode": { "value": null, "source": "pending" },
+        "zed": { "value": null, "source": "pending" },
+        "sublime": { "value": null, "source": "pending" },
+        "openidea": { "value": null, "source": "pending" }
+      }
+    },
+    {
+      "id": "open-100k",
+      "group": "startup",
+      "label": "Open a 100k-line file",
+      "description": "Buffer ready to scroll and edit.",
+      "unit": "ms",
+      "lowerIsBetter": true,
+      "scaleMax": 2000,
+      "values": {
+        "lumen": { "value": 21, "source": "measured", "note": "Buffer open in perf.rs; the app-level open is measured separately." },
+        "vscode": { "value": null, "source": "pending" },
+        "zed": { "value": null, "source": "pending" },
+        "sublime": { "value": null, "source": "pending" },
+        "openidea": { "value": null, "source": "pending" }
+      }
+    },
+    {
+      "id": "scroll-frame",
+      "group": "latency",
+      "label": "Scroll frame cost",
+      "description": "CPU time to draw one frame while scrolling a tokenized 100k-line file (steady state).",
+      "unit": "ms",
+      "lowerIsBetter": true,
+      "scaleMax": 16.7,
+      "values": {
+        "lumen": { "value": 4.4, "source": "measured", "note": "perf::render_frame_steady_scroll; 60 Hz budget is 16.7 ms." },
+        "vscode": { "value": null, "source": "pending" },
+        "zed": { "value": null, "source": "pending" },
+        "sublime": { "value": null, "source": "pending" },
+        "openidea": { "value": null, "source": "pending" }
+      }
+    },
+    {
+      "id": "keystroke",
+      "group": "latency",
+      "label": "Keystroke to frame",
+      "description": "Handle a key and draw the frame that shows it, in the middle of a 100k-line file.",
+      "unit": "ms",
+      "lowerIsBetter": true,
+      "scaleMax": 16.7,
+      "values": {
+        "lumen": { "value": 12, "source": "measured", "note": "perf::typing_latency_100k_lines (CPU time)." },
+        "vscode": { "value": null, "source": "pending" },
+        "zed": { "value": null, "source": "pending" },
+        "sublime": { "value": null, "source": "pending" },
+        "openidea": { "value": null, "source": "pending" }
+      }
+    },
+    {
+      "id": "lsp-first-diagnostics",
+      "group": "lsp",
+      "label": "TypeScript: first diagnostics",
+      "description": "Open a mid-size TypeScript project and wait for the first diagnostics. Lumen runs tsgo (the native compiler); VS Code uses tsserver by default.",
+      "unit": "ms",
+      "lowerIsBetter": true,
+      "scaleMax": 10000,
+      "values": {
+        "lumen": { "value": null, "source": "pending" },
+        "vscode": { "value": null, "source": "pending" },
+        "zed": { "value": null, "source": "pending" },
+        "sublime": { "value": null, "source": "pending" },
+        "openidea": { "value": null, "source": "pending" }
+      }
+    },
+    {
+      "id": "lsp-memory",
+      "group": "lsp",
+      "label": "TypeScript: language server memory",
+      "description": "Resident memory of the TypeScript server on a real project. Lumen's lean mode loads only open files and their imports (range from the README).",
+      "unit": "MB",
+      "lowerIsBetter": true,
+      "scaleMax": 1024,
+      "values": {
+        "lumen": { "value": null, "source": "pending", "note": "Observed 40-220 MB in lean mode, 780 MB for a full 7k-file tsconfig; a controlled run is pending." },
+        "vscode": { "value": null, "source": "pending" },
+        "zed": { "value": null, "source": "pending" },
+        "sublime": { "value": null, "source": "pending" },
+        "openidea": { "value": null, "source": "pending" }
+      }
+    }
+  ],
+  "groups": [
+    { "id": "memory", "label": "Memory" },
+    { "id": "disk", "label": "Disk space" },
+    { "id": "startup", "label": "Startup and open" },
+    { "id": "latency", "label": "Editing latency" },
+    { "id": "lsp", "label": "TypeScript tooling" }
+  ],
+  "facts": {
+    "testsPassed": { "value": 775, "source": "measured", "note": "cargo test, all green on the last local run" },
+    "themes": { "value": 65, "source": "measured", "note": "assets/themes" },
+    "grammars": { "value": 260, "source": "measured", "note": "assets/grammars (TextMate)" },
+    "budgets": [
+      { "id": "pss", "label": "Memory budget (100k-line test)", "value": 16, "limit": 120, "unit": "MB", "note": "perf.rs fails the test above 120 MB" },
+      { "id": "binary", "label": "Release binary", "value": 19, "limit": 30, "unit": "MB", "note": "CI fails the build above 30 MB" },
+      { "id": "frame", "label": "Steady scroll frame", "value": 4.4, "limit": 12, "unit": "ms", "note": "perf.rs budget: 12 ms" },
+      { "id": "key", "label": "Keystroke plus frame", "value": 12, "limit": 30, "unit": "ms", "note": "perf.rs budget: 30 ms" }
+    ],
+    "memoryScenarios": [
+      { "label": "Window, 1 file", "value": 16 },
+      { "label": "100k lines open", "value": 30 },
+      { "label": "Opening peak", "value": 51 },
+      { "label": "+ tsgo lean (low)", "value": 40 }
+    ]
+  }
+}

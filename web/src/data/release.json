@@ -1,0 +1,55 @@
+{
+  "repo": "castrogusttavo/lumen-text",
+  "tag": "v2026.11.10.6",
+  "version": "2026.11.10.6",
+  "publishedAt": "2026-11-10T12:32:56Z",
+  "htmlUrl": "https://github.com/castrogusttavo/lumen-text/releases/tag/v2026.11.10.6",
+  "notes": "**Full Changelog**: https://github.com/castrogusttavo/lumen-text/compare/v2026.11.10.5...v2026.11.10.6\n",
+  "assets": {
+    "latest": {
+      "name": "latest.json",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.6/latest.json",
+      "size": 2040,
+      "sha256": "499dc4378f2e3b38ad221c8ddc389502c7b4daffa05aa8011a554608a9e79cb2"
+    },
+    "rpm": {
+      "name": "lumen-text-2026.11.10.6-1.x86_64.rpm",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.6/lumen-text-2026.11.10.6-1.x86_64.rpm",
+      "size": 10708745,
+      "sha256": "6c828d5c1318b79164b61390ba73dd978f4872e3fcb6b4f333f370a45bfea60b"
+    },
+    "tarball": {
+      "name": "lumen-text-2026.11.10.6-linux-x86_64.tar.gz",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.6/lumen-text-2026.11.10.6-linux-x86_64.tar.gz",
+      "size": 10723405,
+      "sha256": "423749b24874bb8cc456ac31f435ff881762d84d5032d84abd4af537af0fcf60",
+      "signatureUrl": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.6/lumen-text-2026.11.10.6-linux-x86_64.tar.gz.minisig"
+    },
+    "appimage": {
+      "name": "lumen-text-2026.11.10.6-x86_64.AppImage",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.6/lumen-text-2026.11.10.6-x86_64.AppImage",
+      "size": 10910200,
+      "sha256": "e8612ee0bdece6a1670bb8f5343245dd2744b7f6ee8c8348334dde1b7cc53652",
+      "signatureUrl": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.6/lumen-text-2026.11.10.6-x86_64.AppImage.minisig"
+    },
+    "arch": {
+      "name": "lumen-text-bin-2026.11.10.6-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.6/lumen-text-bin-2026.11.10.6-1-x86_64.pkg.tar.zst",
+      "size": 10301875,
+      "sha256": "8286a9958d5ae0f9d171ed8bcd21537b5f0581a8735e0646ee448f88b861de71"
+    },
+    "deb": {
+      "name": "lumen-text_2026.11.10.6-1_amd64.deb",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.6/lumen-text_2026.11.10.6-1_amd64.deb",
+      "size": 8327844,
+      "sha256": "adab4ff5ce0bee3bf7e1ad751a6b4aa6631f10811d0208dc0330615e344be4db"
+    },
+    "checksums": {
+      "name": "SHA256SUMS",
+      "url": "https://github.com/castrogusttavo/lumen-text/releases/download/v2026.11.10.6/SHA256SUMS",
+      "size": 846,
+      "sha256": "ee7c6eab9a5f60ccfda60dc613dbb8e3eed9c448605b03b65c988b7909042c7c"
+    }
+  },
+  "resolvedAt": "2026-11-10T12:37:38.103Z"
+}

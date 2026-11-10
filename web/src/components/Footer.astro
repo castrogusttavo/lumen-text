@@ -1,0 +1,30 @@
+---
+import Logo from "./Logo.astro";
+import { url, GITHUB } from "../lib/url";
+import release from "../data/release.json";
+const cols = [
+  ["Product", [["Features", "/#features"], ["Compare", "/#compare"], ["Themes", "/#themes"], ["Download", "/download"], ["Changelog", "/changelog"]]],
+  ["Project", [["GitHub", GITHUB], ["Releases", `${GITHUB}/releases`], ["Issues", `${GITHUB}/issues`], ["Contributing", `${GITHUB}/blob/main/CONTRIBUTING.md`], ["License (MIT)", `${GITHUB}/blob/main/LICENSE`]]],
+  ["Docs", [["Install", `${GITHUB}#install`], ["Keyboard shortcuts", `${GITHUB}#keyboard-shortcuts`], ["Headless mode", `${GITHUB}#headless-mode`], ["Roadmap", `${GITHUB}/blob/main/ROADMAP.md`]]],
+] as const;
+---
+<footer class="relative mt-32 border-t border-line">
+  <div class="container-x grid gap-12 py-16 md:grid-cols-[1.4fr_repeat(3,1fr)]">
+    <div>
+      <a href={url("/")} class="flex items-center gap-2.5 font-medium"><span class="grid size-9 place-items-center rounded-[10px] bg-[#111] text-white ring-1 ring-white/10"><Logo size={24} /></span> Lumen</a>
+      <p class="mt-4 max-w-xs text-sm leading-relaxed text-muted">A lean, CPU-rendered code editor for Linux. Written in Rust, open source under the MIT license.</p>
+    </div>
+    {cols.map(([h, items]) => (
+      <div>
+        <h2 class="eyebrow">{h}</h2>
+        <ul class="mt-4 space-y-2.5 text-sm text-muted">
+          {items.map(([l, href]) => <li><a class="transition-colors hover:text-fg" href={href.startsWith("http") ? href : url(href)}>{l}</a></li>)}
+        </ul>
+      </div>
+    ))}
+  </div>
+  <div class="container-x flex flex-wrap items-center justify-between gap-3 border-t border-line py-6 text-xs text-faint">
+    <span>© 2026 Gustavo Leandro and Lumen contributors. MIT licensed.</span>
+    <span class="font-mono">{release.version ? `v${release.version}` : "no release yet"} · no telemetry</span>
+  </div>
+</footer>

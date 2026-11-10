@@ -1,0 +1,42 @@
+---
+import HeroIde from "../islands/HeroIde";
+import DownloadButton from "./DownloadButton.astro";
+import { GITHUB, url } from "../lib/url";
+import release from "../data/release.json";
+const tech = ["tsgo", "Biome", "ESLint", "TextMate", "LSP", "DAP", "Wayland", "X11"];
+---
+<section class="relative isolate overflow-hidden pb-10 pt-14 md:pt-20">
+  <div class="pointer-events-none absolute inset-0 -z-10 dotgrid opacity-60 [mask-image:radial-gradient(70%_60%_at_50%_30%,#000,transparent)]"></div>
+  <img src={url("/img/hero-aurora.webp")} alt="" width="1920" height="1080" fetchpriority="high" decoding="async"
+    class="pointer-events-none absolute inset-x-0 top-0 -z-20 h-[760px] w-full object-cover opacity-70 [mask-image:linear-gradient(#000_30%,transparent)]" />
+  <div class="container-x">
+    <a href={url("/changelog")} class="mx-auto mb-10 flex w-fit items-center gap-2 rounded-full border border-line bg-card py-1.5 pl-1.5 pr-4 text-[13px] text-muted transition-colors hover:text-fg">
+      <span class="rounded-full bg-accent px-2.5 py-0.5 text-[11px] font-semibold text-ink">New</span>
+      {release.version ? `Lumen ${release.version} is out` : "Lumen is open source"} <span aria-hidden="true">→</span>
+    </a>
+    <div class="grid items-end gap-8 md:grid-cols-[1.25fr_0.75fr] md:gap-12">
+      <h1 class="h-xl text-balance">The lean editor for <span class="accent-word">{"{TypeScript}"}</span></h1>
+      <div class="pb-2">
+        <p class="lead max-w-md">A native, CPU-rendered code editor for Linux. tsgo, Biome, ESLint, git, split panes and 65 themes, in about 100 MB.</p>
+        <div class="mt-7 flex flex-wrap items-center gap-3">
+          <DownloadButton />
+          <a href={GITHUB} class="btn btn-lg" rel="noopener">View on GitHub</a>
+        </div>
+        <p class="mt-4 font-mono text-xs text-faint">
+          {release.version ? `v${release.version} · ` : ""}.deb · .rpm · Arch · AppImage · MIT · <a class="underline decoration-line2 underline-offset-4 hover:text-fg" href={url("/download")}>all downloads</a>
+        </p>
+      </div>
+    </div>
+    <div class="relative mt-14">
+      <div class="absolute -inset-x-6 -top-6 bottom-0 -z-10 rounded-[28px] border border-line bg-gradient-to-b from-card to-transparent"></div>
+      <HeroIde client:idle />
+      <div class="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-bg to-transparent"></div>
+    </div>
+    <div class="mt-14 flex flex-col items-start gap-5 border-t border-line pt-8 md:flex-row md:items-center md:justify-between">
+      <p class="max-w-[16rem] text-sm text-muted">Built on open standards and the tools TypeScript developers already trust.</p>
+      <ul class="flex flex-wrap gap-x-8 gap-y-3 font-mono text-[15px] text-faint" aria-label="Technology">
+        {tech.map((t) => <li class="transition-colors hover:text-fg">{t}</li>)}
+      </ul>
+    </div>
+  </div>
+</section>

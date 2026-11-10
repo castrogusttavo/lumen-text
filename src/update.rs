@@ -911,14 +911,22 @@ pub fn install_user(exe: &Path, assets: &Path, version: &str, home: &Path, data:
     std::os::unix::fs::symlink(root.join("current/bin/lumen-text"), &tmp_link).map_err(|e| format!("symlink: {e}"))?;
     fs::rename(&tmp_link, &link).map_err(|e| format!("cannot create {}: {e}", link.display()))?;
 
-    // Launcher entry + icon.
+    let desktop = register_desktop(data, &link)?;
+    let mut keep = vec![version.to_string()];
+    keep.extend(previous);
+    prune_versions(&root, &keep);
+    Ok(Installed { bin_link: link, desktop, version_dir: dir })
+}
+
+/// Write the launcher entry and the icons (SVG + PNGs) under `data` and refresh the desktop caches.
+fn register_desktop(data: &Path, link: &Path) -> Result<PathBuf, String> {
     let apps = data.join("applications");
     let icons = data.join("icons/hicolor/scalable/apps");
     fs::create_dir_all(&apps)
         .and_then(|_| fs::create_dir_all(&icons))
         .map_err(|e| format!("cannot create desktop directories: {e}"))?;
     let desktop = apps.join("lumen-text.desktop");
-    fs::write(&desktop, desktop_entry(&link)).map_err(|e| format!("cannot write {}: {e}", desktop.display()))?;
+    fs::write(&desktop, desktop_entry(link)).map_err(|e| format!("cannot write {}: {e}", desktop.display()))?;
     fs::write(icons.join("lumen-text.svg"), ICON_SVG).map_err(|e| format!("cannot write the icon: {e}"))?;
     for (n, bytes) in ICON_PNGS {
         let dir = data.join(format!("icons/hicolor/{n}x{n}/apps"));
@@ -932,10 +940,29 @@ pub fn install_user(exe: &Path, assets: &Path, version: &str, home: &Path, data:
     ] {
         let _ = Command::new(cmd).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
-    let mut keep = vec![version.to_string()];
-    keep.extend(previous);
-    prune_versions(&root, &keep);
-    Ok(Installed { bin_link: link, desktop, version_dir: dir })
+    Ok(desktop)
+}
+
+/// A user install updated by an older build keeps that build's launcher and icon. Once per version,
+/// the running build rewrites them (no-op for system packages, AppImages and dev builds).
+pub fn refresh_user_integration() {
+    let (Some(data), Ok(exe)) = (data_home(), std::env::current_exe()) else { return };
+    let root = data.join("lumen-text");
+    let Ok(exe) = exe.canonicalize() else { return };
+    let Ok(root_c) = root.canonicalize() else { return };
+    if !exe.starts_with(&root_c) {
+        return;
+    }
+    let marker = root.join(".integration");
+    let version = current_version();
+    if fs::read_to_string(&marker).is_ok_and(|v| v.trim() == version) {
+        return;
+    }
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
+    let link = home.join(".local/bin/lumen-text");
+    if register_desktop(&data, &link).is_ok() {
+        let _ = fs::write(&marker, version);
+    }
 }
 
 // ───────────────────────────── command line ─────────────────────────────
@@ -1391,5 +1418,24 @@ mod tests {
         assert!(install_user(&exe, &d.join("nope"), "2026.11.9", &home, &data).is_err());
         assert!(install_user(&exe, &assets, "dev", &home, &data).is_err());
         let _ = fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    #[test]
+    fn register_desktop_rewrites_stale_icons() {
+        let data = std::env::temp_dir().join(format!("lumen-integ-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        let icon = data.join("icons/hicolor/scalable/apps");
+        fs::create_dir_all(&icon).unwrap();
+        fs::write(icon.join("lumen-text.svg"), "old").unwrap();
+        let d = register_desktop(&data, Path::new("/home/x/.local/bin/lumen-text")).unwrap();
+        assert_eq!(fs::read_to_string(&d).unwrap().matches("Exec=/home/x/.local/bin/lumen-text %F").count(), 1);
+        assert_eq!(fs::read(icon.join("lumen-text.svg")).unwrap(), ICON_SVG.as_bytes());
+        assert!(data.join("icons/hicolor/256x256/apps/lumen-text.png").is_file());
+        let _ = fs::remove_dir_all(&data);
     }
 }

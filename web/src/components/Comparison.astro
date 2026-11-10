@@ -1,0 +1,62 @@
+---
+import SectionHead from "./SectionHead.astro";
+import { bench, fmt, pct } from "../lib/bench";
+const editors = bench.editors;
+const measuredAt = bench.measuredAt;
+---
+<section id="compare" class="container-x scroll-mt-24 py-28">
+  <SectionHead eyebrow="Compare">
+    <Fragment slot="title">Small enough you <span class="accent-word">notice</span></Fragment>
+    Real numbers from the repository's own perf tests, side by side with the editors you use today. Anything we have not measured yet says so.
+  </SectionHead>
+
+  <div class="mt-14 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-muted" aria-label="Editors compared">
+    {editors.map((e) => <span class:list={["inline-flex items-center gap-2", e.highlight && "text-fg"]}><i class:list={["size-2 rounded-full", e.highlight ? "bg-accent" : "bg-line2"]}></i>{e.name}{e.id === "vscode" && <span class="text-faint">(also Windsurf, Devin)</span>}</span>)}
+  </div>
+
+  <div class="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+    {bench.metrics.map((m, idx) => (
+      <article class="plus rounded-card border border-line bg-card p-6" data-bars data-reveal style={`--d:${(idx % 3) * 80}ms`}>
+        <div class="plus-b"></div>
+        <p class="eyebrow">{bench.groups.find((g) => g.id === m.group)?.label}</p>
+        <h3 class="mt-2 text-lg font-medium tracking-tight">{m.label}</h3>
+        <p class="mt-1 min-h-[3.2em] text-[13px] leading-relaxed text-muted">{m.description}</p>
+        <ul class="mt-5 space-y-2.5">
+          {editors.map((e) => {
+            const c = m.values[e.id];
+            const has = c && c.value !== null;
+            return (
+              <li class="grid grid-cols-[88px_1fr_74px] items-center gap-3 text-[13px]" title={c?.note}>
+                <span class:list={["truncate", e.highlight ? "font-medium text-fg" : "text-muted"]}>{e.name}</span>
+                {has ? (
+                  <div class="bar-track" role="img" aria-label={`${e.name}: ${c.value} ${m.unit}`}><div class="bar-fill" style={`--w:${pct(c.value as number, m.scaleMax)}%`}></div></div>
+                ) : (
+                  <div class="bar-track measuring" aria-hidden="true"></div>
+                )}
+                <span class:list={["text-right font-mono text-xs", has ? "text-fg" : "text-faint"]}>
+                  {has ? `${fmt(c.value as number)} ${m.unit}` : "measuring…"}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+        <p class="mt-4 font-mono text-[11px] text-faint">bar scale 0 to {fmt(m.scaleMax)} {m.unit} · lower is better</p>
+      </article>
+    ))}
+  </div>
+
+  <aside class="mt-6 grid gap-6 rounded-card border border-line p-6 text-[13px] leading-relaxed text-muted md:grid-cols-[1.4fr_1fr]" aria-label="Methodology" data-reveal>
+    <div>
+      <h3 class="eyebrow mb-2">Methodology</h3>
+      <p>{bench.methodology}</p>
+    </div>
+    <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 self-start font-mono text-xs">
+      <dt class="text-faint">Machine</dt><dd>{bench.machine.label}</dd>
+      <dt class="text-faint">Memory</dt><dd>{bench.machine.ramGb ? `${bench.machine.ramGb} GB` : "n/a"}</dd>
+      <dt class="text-faint">Measured</dt><dd>{measuredAt ?? "pending"}</dd>
+      <dt class="text-faint">Lumen</dt><dd>{editors[0]?.version}</dd>
+      <dt class="text-faint">Sources</dt>
+      <dd><span class="mr-3 inline-flex items-center gap-1.5"><i class="size-2 rounded-full bg-accent"></i>measured</span><span class="inline-flex items-center gap-1.5"><i class="measuring size-2 rounded-full"></i>pending</span></dd>
+    </dl>
+  </aside>
+</section>
