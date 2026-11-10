@@ -3,6 +3,7 @@
 //! default icon theme (`assets/icons/file_types.json`).
 
 use crate::{
+    icon_pack::Pack,
     theme::Rgba,
     ui::{Canvas, Rect, sc},
 };
@@ -60,8 +61,20 @@ fn ui_alias(base: &str) -> Option<&'static str> {
     })
 }
 
+/// The HugeIcons Pro masks packed into the executable by `build.rs` (official release builds).
+#[cfg(embedded_hugeicons)]
+fn embedded_pack() -> Option<Pack> {
+    Pack::parse(include_bytes!(concat!(env!("OUT_DIR"), "/hugeicons.pack")))
+}
+
+#[cfg(not(embedded_hugeicons))]
+fn embedded_pack() -> Option<Pack> {
+    None
+}
+
 pub struct Icons {
     dir: PathBuf,
+    pack: Option<Pack>,
     cache: HashMap<String, Option<Mask>>,
     types: Option<FileTypes>,
 }
@@ -94,22 +107,34 @@ pub fn sample(m: &Mask, dx: usize, dy: usize, size: usize) -> u8 {
 
 impl Icons {
     pub fn new() -> Self {
-        Self { dir: crate::config::assets_dir().join("icons"), cache: HashMap::new(), types: None }
+        Self {
+            dir: crate::config::assets_dir().join("icons"),
+            pack: embedded_pack(),
+            cache: HashMap::new(),
+            types: None,
+        }
     }
 
     #[cfg(test)]
     pub fn with_dir(dir: PathBuf) -> Self {
-        Self { dir, cache: HashMap::new(), types: None }
+        Self { dir, pack: None, cache: HashMap::new(), types: None }
+    }
+
+    #[cfg(test)]
+    pub fn with_dir_and_pack(dir: PathBuf, pack: Option<Pack>) -> Self {
+        Self { pack, ..Self::with_dir(dir) }
     }
 
     fn mask(&mut self, name: &str) -> Option<&Mask> {
         if !self.cache.contains_key(name) {
-            let load = |n: &str| std::fs::read(self.dir.join(format!("{n}.a8"))).ok().and_then(|b| parse_mask(&b));
-            // HugeIcons Pro masks are not redistributable, so a fresh clone does not have them:
-            // fall back to the same-named icon of the bundled `ui/` set.
-            let m = load(name).or_else(|| {
+            let pack = self.pack.as_ref();
+            let loose = |n: &str| std::fs::read(self.dir.join(format!("{n}.a8"))).ok().and_then(|b| parse_mask(&b));
+            // Lookup order: the masks embedded in the executable (official builds), loose files in
+            // the assets dir (development), then, for HugeIcons names only, the bundled `ui/` set:
+            // the Pro masks are not redistributable, so a fresh clone does not have them.
+            let m = pack.and_then(|p| parse_mask(p.get(name)?)).or_else(|| loose(name)).or_else(|| {
                 let base = name.strip_prefix("hugeicons_bulk/").or_else(|| name.strip_prefix("hugeicons/"))?;
-                load(&format!("ui/{base}")).or_else(|| load(&format!("ui/{}", ui_alias(base)?)))
+                loose(&format!("ui/{base}")).or_else(|| loose(&format!("ui/{}", ui_alias(base)?)))
             });
             self.cache.insert(name.to_string(), m);
         }
@@ -264,5 +289,63 @@ mod tests {
         assert!(ic.mask("hugeicons/check").is_some(), "falls back to ui/check");
         assert!(ic.mask("hugeicons/does_not_exist").is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn tiny_pack() -> Pack {
+        // 2x2 masks: hugeicons/check is fully opaque, hugeicons_bulk/only_here is half covered.
+        let entries = vec![
+            ("hugeicons/check".to_string(), vec![2, 2, 255, 255, 255, 255]),
+            ("hugeicons_bulk/only_here".to_string(), vec![2, 2, 255, 0, 255, 0]),
+        ];
+        let blob = crate::icon_pack::pack(&entries);
+        let p = Pack::parse(&blob).expect("blob parses");
+        assert_eq!(p.len(), 2);
+        assert!(Pack::parse(&blob[..blob.len() / 2]).is_none(), "truncated blob is rejected");
+        p
+    }
+
+    #[test]
+    fn embedded_pack_roundtrip_and_lookup_order() {
+        let dir = std::env::temp_dir().join(format!("lumen-icons-emb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("ui")).unwrap();
+        std::fs::create_dir_all(dir.join("hugeicons")).unwrap();
+        let real = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons/ui/check.a8");
+        std::fs::copy(&real, dir.join("ui/check.a8")).unwrap();
+        std::fs::copy(&real, dir.join("ui/plus.a8")).unwrap();
+        // A loose file for a name that is also embedded: the embedded one must win.
+        std::fs::write(dir.join("hugeicons/check.a8"), [1u8, 1, 7]).unwrap();
+        // A loose file for a name that is not embedded: used (development builds).
+        std::fs::write(dir.join("hugeicons/loose.a8"), [1u8, 1, 9]).unwrap();
+        let mut ic = Icons::with_dir_and_pack(dir.clone(), Some(tiny_pack()));
+        let m = ic.mask("hugeicons/check").unwrap();
+        assert_eq!((m.w, m.h, m.a.as_slice()), (2, 2, &[255u8, 255, 255, 255][..]), "embedded beats loose");
+        assert_eq!(ic.mask("hugeicons_bulk/only_here").unwrap().a, vec![255, 0, 255, 0]);
+        assert_eq!(ic.mask("hugeicons/loose").unwrap().a, vec![9], "loose files come next");
+        let ui = ic.mask("hugeicons/plus").unwrap();
+        assert!(ui.w > 1, "then the bundled ui/ icon");
+        assert!(ic.mask("hugeicons/nope").is_none());
+        // Without a pack the loose file is used again.
+        let mut ic = Icons::with_dir_and_pack(dir.clone(), None);
+        assert_eq!(ic.mask("hugeicons/check").unwrap().a, vec![7]);
+        assert!(ic.mask("hugeicons_bulk/only_here").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The licensed masks must never be tracked by git (CI safe: skipped outside a git checkout).
+    #[test]
+    fn repo_tracks_no_hugeicons_masks() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Ok(out) = std::process::Command::new("git").arg("-C").arg(root).args(["ls-files", "assets/icons"]).output()
+        else {
+            return;
+        };
+        if !out.status.success() {
+            return;
+        }
+        let list = String::from_utf8_lossy(&out.stdout);
+        let bad: Vec<&str> = list.lines().filter(|l| l.contains("/hugeicons")).collect();
+        assert!(bad.is_empty(), "HugeIcons Pro masks must not be committed: {bad:?}");
+        assert!(list.lines().any(|l| l.starts_with("assets/icons/ui/")), "sanity: ui icons are tracked");
     }
 }

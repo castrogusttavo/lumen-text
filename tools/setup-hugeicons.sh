@@ -8,13 +8,21 @@
 #
 #   HUGEICONS_TOKEN=<your npm token> tools/setup-hugeicons.sh
 #
-# Requirements: node + npm, python3, rsvg-convert (librsvg).
+# Requirements: node + npm, python3, rsvg-convert (librsvg). CI runs this with the maintainer's key
+# (GitHub secret HUGEICONS_TOKEN); the masks are then embedded into the release binary by build.rs.
 set -euo pipefail
 
 if [[ -z "${HUGEICONS_TOKEN:-}" ]]; then
   echo "error: set HUGEICONS_TOKEN to your HugeIcons Pro npm token" >&2
   exit 1
 fi
+
+for tool in node npm python3 rsvg-convert; do
+  command -v "$tool" >/dev/null || { echo "error: $tool is required" >&2; exit 1; }
+done
+
+# Never echo the token (GitHub Actions masks it in logs; harmless elsewhere).
+echo "::add-mask::${HUGEICONS_TOKEN}"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$(mktemp -d)"
@@ -26,7 +34,7 @@ cat > .npmrc <<EOF
 //npm.hugeicons.com/:_authToken=${HUGEICONS_TOKEN}
 EOF
 echo '{"name":"hugeicons-fetch","private":true}' > package.json
-npm install --no-audit --no-fund @hugeicons-pro/core-solid-rounded @hugeicons-pro/core-bulk-rounded
+npm install --silent --no-audit --no-fund @hugeicons-pro/core-solid-rounded @hugeicons-pro/core-bulk-rounded
 
 gen() { # <package> <output dir name>
   local pkg="$1" out="$2"

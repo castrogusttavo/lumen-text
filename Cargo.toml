@@ -12,11 +12,15 @@ keywords = ["editor", "text-editor", "typescript", "wayland"]
 categories = ["text-editors"]
 publish = false
 
+[build-dependencies]
+miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
+
 [dependencies]
 cosmic-text = "0.19.0"
 gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image-webp = "0.2.4"
 minisign-verify = "0.3.0"
+miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
 ignore = "0.4.34"
 libc = "0.2.191"
 onig = "6.5.3"

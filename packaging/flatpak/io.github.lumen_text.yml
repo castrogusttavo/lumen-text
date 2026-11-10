@@ -35,6 +35,7 @@ modules:
       # <exe dir>/../share/lumen-text/assets == /app/share/lumen-text/assets
       - mkdir -p /app/share/lumen-text
       - cp -r assets /app/share/lumen-text/assets
+      - rm -rf /app/share/lumen-text/assets/icons/hugeicons /app/share/lumen-text/assets/icons/hugeicons_bulk
       - install -Dm644 lumen-text.desktop /app/share/applications/io.github.lumen_text.desktop
       - install -Dm644 README.md /app/share/doc/lumen-text/README.md
     sources:

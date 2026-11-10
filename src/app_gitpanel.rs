@@ -1605,10 +1605,7 @@ impl App {
         if !p.contains(x, y) {
             return false;
         }
-        let px = match delta {
-            MouseScrollDelta::LineDelta(_, dy) => -(dy as f64) * 3.0 * crate::scroller::speed() * FILE_H as f64,
-            MouseScrollDelta::PixelDelta(d) => -d.y,
-        };
+        let px = crate::scroller::wheel_px(delta, crate::ui::line_h() as f64);
         let k = if gp.tab == Tab::Changes { 0 } else { 1 };
         gp.scroll[k] =
             (gp.scroll[k] + px).clamp(0.0, gp.max_scroll[k].max(if k == 1 && !gp.log_done { f64::MAX } else { 0.0 }));

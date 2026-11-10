@@ -845,6 +845,10 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
         let e = e?;
         let (src, dst) = (e.path(), to.join(e.file_name()));
         if e.file_type()?.is_dir() {
+            // Licensed HugeIcons masks live inside the executable, never as loose files.
+            if matches!(e.file_name().to_str(), Some("hugeicons" | "hugeicons_bulk")) {
+                continue;
+            }
             copy_tree(&src, &dst)?;
         } else {
             fs::copy(&src, &dst)?;

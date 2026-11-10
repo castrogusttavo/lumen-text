@@ -914,6 +914,7 @@ dependencies = [
  "image-webp",
  "libc",
  "minisign-verify",
+ "miniz_oxide 0.8.9",
  "onig",
  "png",
  "pulldown-cmark",

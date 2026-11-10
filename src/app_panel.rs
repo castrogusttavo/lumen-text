@@ -422,10 +422,7 @@ impl App {
             return false;
         }
         if self.panel.tab == PanelTab::Terminal {
-            let lines = match delta {
-                MouseScrollDelta::LineDelta(_, dy) => (dy as f64 * 3.0 * crate::scroller::speed()) as isize,
-                MouseScrollDelta::PixelDelta(p) => (p.y / line_h() as f64) as isize,
-            };
+            let lines = -crate::scroller::wheel_rows_int(delta, line_h() as f64);
             if let Some(t) = self.term.as_mut()
                 && !t.alt_screen()
             {
@@ -595,7 +592,7 @@ impl App {
                 rows as f64,
                 (hist - off.min(hist)) as f64,
                 lh as f64,
-                false,
+                true,
             );
         }
     }

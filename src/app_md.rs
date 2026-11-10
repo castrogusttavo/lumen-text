@@ -442,10 +442,7 @@ impl App {
         let Some(d) = self.docs.get_mut(self.active) else { return false };
         let max_top = d.max_top();
         let Some(st) = d.md.as_mut() else { return false };
-        let px = match delta {
-            MouseScrollDelta::LineDelta(_, dy) => -(dy as f64) * line_h() as f64 * 3.0 * crate::scroller::speed(),
-            MouseScrollDelta::PixelDelta(p) => -p.y,
-        };
+        let px = crate::scroller::wheel_px(delta, line_h() as f64);
         let max_scroll = (st.view.content_height() - r.h).max(0) as f64;
         st.scroll = (st.scroll + px).clamp(0.0, max_scroll);
         let top = scroll_to_top(&st.view, st.scroll, max_top, max_scroll);

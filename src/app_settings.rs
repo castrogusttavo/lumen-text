@@ -121,11 +121,7 @@ impl App {
 
     pub fn settings_wheel(&mut self, delta: MouseScrollDelta) {
         let Overlay::Settings(m) = &mut self.overlay else { return };
-        let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -(y as f64) * 3.0 * crate::scroller::speed() * 34.0,
-            MouseScrollDelta::PixelDelta(p) => -p.y,
-        };
-        m.wheel(dy);
+        m.wheel(crate::scroller::wheel_px(delta, crate::ui::line_h() as f64));
     }
 
     fn apply_settings_event(&mut self, e: Event) {

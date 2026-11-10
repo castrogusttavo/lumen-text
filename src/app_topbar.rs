@@ -631,10 +631,7 @@ impl App {
 
     pub fn topmenu_wheel(&mut self, delta: MouseScrollDelta) {
         let Overlay::TopMenu(m) = &mut self.overlay else { return };
-        let d = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -((y as f64 * 3.0 * crate::scroller::speed()).round() as isize),
-            MouseScrollDelta::PixelDelta(p) => -(p.y / ROW as f64) as isize,
-        };
+        let d = crate::scroller::wheel_rows_int(delta, ROW as f64);
         let max = m.filtered.len().saturating_sub(MAX_ROWS) as isize;
         m.scroll = (m.scroll as isize + d).clamp(0, max) as usize;
     }

@@ -44,6 +44,8 @@ package() {
   # i.e. /usr/share/lumen-text/assets for /usr/bin/lumen-text.
   install -dm755 "$pkgdir/usr/share/$pkgname"
   cp -r assets "$pkgdir/usr/share/$pkgname/assets"
+  # HugeIcons Pro masks (if any were present at build time) are embedded in the binary, not shipped loose.
+  rm -rf "$pkgdir/usr/share/$pkgname/assets/icons/hugeicons" "$pkgdir/usr/share/$pkgname/assets/icons/hugeicons_bulk"
   install -Dm644 "$pkgname.desktop" "$pkgdir/usr/share/applications/$pkgname.desktop"
   install -Dm644 packaging/icons/$pkgname.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$pkgname.svg"
   for n in 16 24 32 48 64 128 256 512; do

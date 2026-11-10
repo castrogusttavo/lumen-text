@@ -358,12 +358,14 @@ structured so other operating systems can add their own `dist-*` artifacts. The 
 
 ## HugeIcons Pro (optional)
 
-The platform UI looks best with the commercial HugeIcons Pro set, whose license does not allow
-redistribution, so the masks are **not** in this repository (`assets/icons/hugeicons*` are git-ignored).
-Without them every icon falls back to the bundled Zed icons. If you own a license:
+Official release binaries use the commercial HugeIcons Pro icon set, embedded in the executable under the
+maintainer's licence (details in [assets/icons/NOTICE.md](assets/icons/NOTICE.md)). The masks are **not** in this
+repository (`assets/icons/hugeicons*` are git-ignored) and are never shipped as loose files. Source builds work
+without any key and use the bundled Zed icons. If you own a HugeIcons Pro licence and want the same look locally:
 
 ```sh
 HUGEICONS_TOKEN=<your npm token> tools/setup-hugeicons.sh   # needs node, npm, python3, rsvg-convert
+cargo build --release                                       # build.rs embeds the masks it finds
 ```
 
 ## Known limitations

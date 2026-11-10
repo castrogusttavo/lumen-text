@@ -33,6 +33,8 @@ if command -v "${STRIP:-strip}" >/dev/null 2>&1; then
   "${STRIP:-strip}" --strip-unneeded "$p/bin/lumen-text" || true
 fi
 cp -r "$root/assets" "$p/share/lumen-text/assets"
+# Licensed HugeIcons Pro masks are embedded in the binary (build.rs); never ship them as loose files.
+rm -rf "$p/share/lumen-text/assets/icons/hugeicons" "$p/share/lumen-text/assets/icons/hugeicons_bulk"
 install -m644 "$root/lumen-text.desktop" "$p/share/applications/lumen-text.desktop"
 install -m644 "$here/icons/lumen-text.svg" "$p/share/icons/hicolor/scalable/apps/lumen-text.svg"
 for png in "$here"/icons/png/lumen-text-*.png; do

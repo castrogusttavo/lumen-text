@@ -1636,6 +1636,11 @@ impl Modal {
         Some((area, content as f64, area.h as f64, scroll))
     }
 
+    /// Scroll position (px) of the current page's list.
+    pub fn scroll(&self) -> f64 {
+        if self.page == Page::Settings { self.settings.scroll } else { self.keybinds.scroll }
+    }
+
     /// Scrollbar drag: move the list of the current page to `v` px.
     pub fn set_scroll(&mut self, v: f64) {
         match self.page {

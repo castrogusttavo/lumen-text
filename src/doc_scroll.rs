@@ -220,14 +220,13 @@ mod tests {
     }
 
     #[test]
-    fn a_notch_scrolls_three_rows_with_a_short_glide() {
+    fn a_notch_scrolls_three_rows_at_once() {
         let mut d = doc(&lines(500));
         d.wheel(WheelIn { dx: 0.0, dy: 1.0, pixels: false }, 0.0);
         assert!((d.target - 3.0).abs() < 1e-9);
-        assert!(d.animating);
+        assert_eq!(d.top, 3.0, "immediate, like the shortcuts modal");
         let frames = settle(&mut d);
-        assert!(frames <= 14, "frames = {frames}");
-        assert_eq!(d.top, 3.0);
+        assert!(frames == 0, "frames = {frames}");
         assert!(!d.animating);
         d.wheel(WheelIn { dx: 0.0, dy: -1.0, pixels: false }, 1.0);
         settle(&mut d);
@@ -235,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn fast_spin_covers_more_than_slow_notches() {
+    fn fast_spin_covers_the_same_as_slow_notches() {
         let mut slow = doc(&lines(2000));
         let mut fast = doc(&lines(2000));
         for i in 0..8 {
@@ -243,7 +242,7 @@ mod tests {
             fast.wheel(WheelIn { dx: 0.0, dy: 1.0, pixels: false }, i as f64 * 0.04);
         }
         assert_eq!(slow.target, 24.0);
-        assert!(fast.target > 40.0, "{}", fast.target);
+        assert_eq!(fast.target, 24.0, "no acceleration");
         settle(&mut fast);
         assert_eq!(fast.top, fast.target);
     }
@@ -344,7 +343,7 @@ mod tests {
     #[test]
     fn reveal_moving_the_view_cancels_a_running_glide() {
         let mut d = doc(&lines(500));
-        d.wheel(WheelIn { dx: 0.0, dy: 10.0, pixels: false }, 0.0);
+        d.glide_by(40.0);
         assert!(d.animating);
         let p = d.buf.pos(100, 0);
         d.ed.click(&mut d.buf, p, false);

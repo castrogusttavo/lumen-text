@@ -10,7 +10,8 @@
 
 use crate::{
     app::App,
-    scroller::{self, Scroller, WHEEL_ROWS},
+    app_overlay::Overlay,
+    scroller::{self, Scroller},
     ui::{Canvas, Rect, VBar, line_h},
 };
 use winit::event::MouseScrollDelta;
@@ -47,8 +48,11 @@ pub struct Region {
     pub pos: f64,
     /// Pixels per unit of `pos` (1.0 when `pos` is in pixels, the row height when in rows).
     pub unit: f64,
-    /// `pos` is a whole number of rows (picker, menus): the wheel moves by at least one row.
+    /// `pos` is a whole number of rows (picker, menus, terminal): the position is floored on write.
     pub int: bool,
+    /// Pixel height of one row of this pane: a wheel notch scrolls 3 of them. Row regions use their
+    /// `unit`, pixel regions the text line height (the Keyboard shortcuts modal's 3 x line_h).
+    pub step: f64,
 }
 
 /// Glide state of one animated region (see [`animated`]).
@@ -99,25 +103,6 @@ impl Regions {
     }
 }
 
-/// Regions whose wheel / touchpad scrolling glides through the shared [`Scroller`]: pickers, menus,
-/// completion, the Git panel, the diff and the Markdown preview. (The editor, sidebar and output
-/// panel have their own `Scroller`s in `doc_scroll` / `app_input`.)
-pub fn animated(id: Reg) -> bool {
-    matches!(id, Reg::Picker | Reg::TopMenu | Reg::Completion | Reg::GitChanges | Reg::GitLog | Reg::Md | Reg::Diff)
-}
-
-/// New position after the wheel: `px` pixels, clamped to `[0, total - visible]`.
-pub fn wheel_pos(r: &Region, px: f64) -> f64 {
-    let mut d = px / r.unit.max(1.0);
-    if r.int && d != 0.0 && d.abs() < 1.0 {
-        d = d.signum();
-    }
-    if r.int {
-        d = d.round();
-    }
-    (r.pos + d).clamp(0.0, (r.total - r.visible).max(0.0))
-}
-
 impl App {
     /// Register a scrollable pane and paint its bar. `total`/`visible`/`pos` share one unit (px or
     /// rows); `unit` is the pixel size of that unit. Returns the bar when the content overflows.
@@ -134,7 +119,8 @@ impl App {
     ) -> Option<VBar> {
         let track = Rect::new(area.right() - TRACK_W, area.y, TRACK_W, area.h);
         let bar = VBar::new(track, total, visible, pos);
-        self.regions.list.push(Region { id, area, bar, total, visible, pos, unit, int });
+        let step = if unit > 1.5 { unit } else { line_h() as f64 };
+        self.regions.list.push(Region { id, area, bar, total, visible, pos, unit, int, step });
         if let Some(b) = bar {
             let (mx, my) = self.mouse;
             let active = self.regions.drag.is_some_and(|(d, _)| d == id);
@@ -148,27 +134,16 @@ impl App {
     }
 
     /// Mouse wheel over a registered pane. False when the pointer is over none (callers fall through).
+    /// Every pane scrolls through the one shared [`Scroller`] (see `scroller.rs`).
     pub fn regions_wheel(&mut self, delta: MouseScrollDelta) -> bool {
         let (x, y) = self.mouse;
         let Some(r) = self.regions.at(self.modal_open(), x, y) else { return false };
-        if animated(r.id) {
-            self.region_glide(r, delta);
-            return true;
-        }
-        let px = match delta {
-            MouseScrollDelta::LineDelta(_, dy) => {
-                -(dy as f64) * 3.0 * crate::scroller::speed() * if r.unit > 1.5 { r.unit } else { line_h() as f64 }
-            }
-            MouseScrollDelta::PixelDelta(p) => -p.y,
-        };
-        let v = wheel_pos(&r, px);
-        self.set_region(r.id, v, (r.total - r.visible).max(0.0));
+        self.region_glide(r, delta);
         true
     }
 
     /// The owner's current scroll position of an animated region (in the region's unit).
     fn region_value(&self, id: Reg) -> Option<f64> {
-        use crate::app_overlay::Overlay;
         match id {
             Reg::Picker => match &self.overlay {
                 Overlay::Picker(p) => Some(p.scroll as f64),
@@ -183,7 +158,18 @@ impl App {
             Reg::GitLog => self.gitpanel.as_ref().map(|g| g.scroll[1]),
             Reg::Md => self.docs.get(self.active)?.md.as_ref().map(|m| m.scroll),
             Reg::Diff => self.diff.as_ref().map(|d| d.scroll),
-            _ => None,
+            Reg::Output => Some(self.panel.scroll),
+            Reg::DebugStack => Some(self.panel.dbg_scroll[0]),
+            Reg::DebugVars => Some(self.panel.dbg_scroll[1]),
+            Reg::DebugOut => Some(self.panel.dbg_scroll[2]),
+            Reg::Terminal => {
+                let t = self.term.as_ref()?;
+                Some((t.grid.history_len() - t.scroll_offset.min(t.grid.history_len())) as f64)
+            }
+            Reg::Modal => match &self.overlay {
+                Overlay::Settings(m) => Some(m.scroll()),
+                _ => None,
+            },
         }
     }
 
@@ -248,9 +234,8 @@ impl App {
         if w.pixels {
             sc.pixels(d / unit, max, now);
         } else {
-            // Region units are rows when `unit` is a row height, pixels otherwise.
-            let step = if r.unit > 1.5 { WHEEL_ROWS } else { WHEEL_ROWS * line_h() as f64 };
-            sc.wheel(d, step, max, now);
+            // One notch = 3 rows of the pane, expressed in the region's unit.
+            sc.wheel(d, scroller::WHEEL_ROWS * r.step / unit, max, now);
         }
         self.anim_apply(i, &r);
     }
@@ -258,7 +243,7 @@ impl App {
     /// Fingers lifted over an animated region: let it coast.
     pub fn regions_fling(&mut self) -> bool {
         let (x, y) = self.mouse;
-        let Some(r) = self.regions.at(self.modal_open(), x, y).filter(|r| animated(r.id)) else { return false };
+        let Some(r) = self.regions.at(self.modal_open(), x, y) else { return false };
         let i = self.anim_sync(&r);
         self.regions.anim[i].sc.fling(scroller::now());
         true
@@ -372,12 +357,12 @@ impl App {
                 }
             }
             Reg::Picker => {
-                if let crate::app_overlay::Overlay::Picker(p) = &mut self.overlay {
+                if let Overlay::Picker(p) = &mut self.overlay {
                     p.scroll = v as usize;
                 }
             }
             Reg::TopMenu => {
-                if let crate::app_overlay::Overlay::TopMenu(m) = &mut self.overlay {
+                if let Overlay::TopMenu(m) = &mut self.overlay {
                     m.scroll = v as usize;
                 }
             }
@@ -405,7 +390,7 @@ impl App {
                 }
             }
             Reg::Modal => {
-                if let crate::app_overlay::Overlay::Settings(m) = &mut self.overlay {
+                if let Overlay::Settings(m) = &mut self.overlay {
                     m.set_scroll(v);
                 }
             }
@@ -428,32 +413,14 @@ mod tests {
             pos,
             unit,
             int,
+            step: unit.max(20.0),
         }
-    }
-
-    #[test]
-    fn wheel_clamps_to_both_ends() {
-        let r = region(100.0, 10.0, 5.0, 34.0, true);
-        assert_eq!(wheel_pos(&r, -34.0 * 50.0), 0.0);
-        assert_eq!(wheel_pos(&r, 34.0 * 500.0), 90.0);
-        let px = region(1000.0, 200.0, 0.0, 1.0, false);
-        assert_eq!(wheel_pos(&px, 50.0), 50.0);
-        assert_eq!(wheel_pos(&px, 5000.0), 800.0);
-    }
-
-    #[test]
-    fn row_regions_always_move_at_least_one_row() {
-        let r = region(100.0, 10.0, 5.0, 34.0, true);
-        assert_eq!(wheel_pos(&r, 3.0), 6.0, "a tiny pixel delta still steps one row down");
-        assert_eq!(wheel_pos(&r, -3.0), 4.0);
-        assert_eq!(wheel_pos(&r, 0.0), 5.0);
     }
 
     #[test]
     fn nothing_scrolls_when_content_fits() {
         let r = region(5.0, 10.0, 0.0, 34.0, true);
         assert!(r.bar.is_none());
-        assert_eq!(wheel_pos(&r, 340.0), 0.0);
     }
 
     #[test]

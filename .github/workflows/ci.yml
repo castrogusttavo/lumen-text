@@ -127,6 +127,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.arch }}
+      - name: HugeIcons Pro masks (only when the maintainer's token is available)
+        shell: bash
+        env:
+          HUGEICONS_TOKEN: ${{ secrets.HUGEICONS_TOKEN }}
+        run: |
+          # Secrets can't be tested in `if:`, so the env var is. Fork PRs have no secret: skip, and
+          # the build uses the bundled Zed icons. The masks are generated into the git-ignored
+          # assets/icons/hugeicons*/, embedded into the binary by build.rs, never uploaded.
+          if [ -z "${HUGEICONS_TOKEN}" ]; then
+            echo "HUGEICONS_TOKEN not set: building with the bundled icons"
+            exit 0
+          fi
+          echo "::add-mask::${HUGEICONS_TOKEN}"
+          sudo apt-get install -y --no-install-recommends librsvg2-bin python3 >/dev/null
+          tools/setup-hugeicons.sh >/dev/null
+          ls assets/icons/hugeicons | wc -l
       - name: Build release binary
         env:
           LUMEN_VERSION: ${{ env.VERSION }}
@@ -156,6 +172,10 @@ jobs:
           ls -l dist
           dpkg-deb --info dist/*.deb
           dpkg-deb --contents dist/*.deb | head -30
+          # Licensed HugeIcons masks live inside the binary only, never as loose package files.
+          ! dpkg-deb --contents dist/*.deb | grep -q hugeicons
+          ! rpm -qpl dist/*.rpm | grep -q hugeicons
+          ! tar tzf dist/*-linux-*.tar.gz | grep -q hugeicons
           rpm -qp --info dist/*.rpm
           rpm -qpl dist/*.rpm | head -30
           rpm -qp --requires dist/*.rpm

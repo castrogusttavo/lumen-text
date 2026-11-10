@@ -36,6 +36,16 @@ cargo test --release name_of_test             # one test: much cheaper while ite
 
 Use `--release`: debug builds of the tokenizer and renderer are far too slow for the tests.
 
+### Icons and HugeIcons Pro
+
+You do **not** need any key to build, test or send a pull request: without HugeIcons Pro the app uses the bundled
+Zed-based icons (`assets/icons/ui`, `file`). Never commit `assets/icons/hugeicons*` (git-ignored; a test fails if any
+such file is tracked). If you own your own HugeIcons Pro licence you can generate the masks locally with
+`HUGEICONS_TOKEN=<your npm token> tools/setup-hugeicons.sh`; `build.rs` then embeds them in the binary you build.
+Official release builds in CI do the same with the maintainer's licence (secret `HUGEICONS_TOKEN`); on pull requests
+from forks the secret is absent and the step is skipped. The masks are embedded in the executable and packages never
+contain them as loose files (see `assets/icons/NOTICE.md`).
+
 ## Headless testing
 
 The headless mode runs the real key-handling and render code without a window and writes PNGs, so UI work can be verified and

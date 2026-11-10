@@ -34,6 +34,7 @@ package() {
   # config::assets_dir() looks at <exe dir>/../share/lumen-text/assets.
   install -dm755 "$pkgdir/usr/share/$_name"
   cp -r "share/$_name/assets" "$pkgdir/usr/share/$_name/assets"
+  rm -rf "$pkgdir/usr/share/$_name/assets/icons/hugeicons" "$pkgdir/usr/share/$_name/assets/icons/hugeicons_bulk"
   install -Dm644 "share/applications/$_name.desktop" "$pkgdir/usr/share/applications/$_name.desktop"
   install -Dm644 "share/icons/hicolor/scalable/apps/$_name.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_name.svg"
   for n in 16 24 32 48 64 128 256 512; do

@@ -1,0 +1,64 @@
+name: Web
+
+# Builds and deploys the landing page + docs in web/ to GitHub Pages.
+# Custom domain later: set the repository variable SITE_URL (for example https://lumen.example.com)
+# and BASE_PATH to / ; nothing else changes.
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", ".github/workflows/web.yml", "src/keymap.rs", "src/app_overlay.rs", "src/settingsui.rs", "src/config.rs"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SITE_URL: ${{ vars.SITE_URL || 'https://castrogusttavo.github.io' }}
+      BASE_PATH: ${{ vars.BASE_PATH || '/lumen-text' }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Docs data must match the Rust sources
+        run: |
+          pnpm run extract
+          git diff --exit-code -- src/data/keymap.json src/data/commands.json src/data/settings.json src/data/themes.json
+      # Fails when src/data/benchmarks.json still has placeholders (see web/README.md).
+      - run: pnpm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

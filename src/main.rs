@@ -39,6 +39,7 @@ mod gitsync;
 mod gitx;
 mod highlight;
 mod hover_md;
+mod icon_pack;
 mod icons;
 mod inlay;
 mod instance;
