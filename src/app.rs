@@ -80,6 +80,8 @@ pub struct Gfx {
 pub struct Layout {
     pub topbar: Rect,
     pub top_btns: Vec<(Rect, crate::app_topbar::MenuKind)>,
+    /// The brand mark in the right corner of the top bar (click: About).
+    pub top_logo: Rect,
     pub status_btns: Vec<(Rect, crate::app_topbar::StatusBtn)>,
     /// Non-clickable bottom bar readouts (memory, position, indentation, language): tooltips only.
     pub status_info: Vec<(Rect, crate::app_topbar::StatusBtn)>,
@@ -234,6 +236,7 @@ impl App {
         let mut tx = TextCtx::new(None);
         crate::minimap::set_style(crate::minimap::Style::from_name(&config.minimap_style));
         crate::editor::set_default_tab_w(config.tab_width);
+        crate::scroller::set_speed(config.scroll_speed);
         if (config.font_size - 14.0).abs() > f32::EPSILON {
             tx.set_zoom(config.font_size);
         }
@@ -1524,7 +1527,7 @@ impl App {
 
     /// Conventional pointer: arrow on chrome, hand on clickable things, I-beam over text,
     /// resize arrows on the split divider.
-    fn cursor_for(&self) -> CursorIcon {
+    pub(crate) fn cursor_for(&self) -> CursorIcon {
         let (x, y) = self.mouse;
         let l = &self.layout;
         if self.dragging_minimap {
@@ -1532,6 +1535,14 @@ impl App {
         }
         if self.dragging {
             return CursorIcon::Text;
+        }
+        // The update / about card floats above everything: arrow on it, hand on its buttons and link.
+        if self.upd.card.is_some() && self.upd.card_rect.contains(x, y) {
+            return if self.upd.rects.iter().any(|(r, _)| r.contains(x, y)) {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            };
         }
         if self.over_region_bar(x, y) {
             return CursorIcon::Default;
@@ -1570,6 +1581,7 @@ impl App {
             return CursorIcon::ColResize;
         }
         if l.top_btns.iter().any(|(r, _)| r.contains(x, y))
+            || l.top_logo.contains(x, y)
             || l.status_btns.iter().any(|(r, _)| r.contains(x, y))
             || l.tabs.iter().any(|(r, _, _)| r.contains(x, y))
             || l.sidebar_tabs.iter().any(|(r, _)| r.contains(x, y))
@@ -2227,14 +2239,30 @@ impl App {
     }
 }
 
+/// The brand mark (256 px, embedded) as the window icon; decoded once at start.
+fn window_icon() -> Option<winit::window::Icon> {
+    static PNG: &[u8] = include_bytes!("../packaging/icons/png/lumen-text-256.png");
+    let pix = crate::mdimg::decode_png(PNG)?;
+    let rgba: Vec<u8> =
+        pix.px.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, (p >> 24) as u8]).collect();
+    winit::window::Icon::from_rgba(rgba, pix.w, pix.h).ok()
+}
+
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.gfx.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
+        let mut attrs = Window::default_attributes()
             .with_title("lumen-text")
+            .with_window_icon(window_icon())
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
+        // Wayland app_id / X11 class must match lumen-text.desktop so the launcher shows our icon.
+        {
+            use winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
+            attrs = WindowAttributesExtWayland::with_name(attrs, "lumen-text", "lumen-text");
+            attrs = WindowAttributesExtX11::with_name(attrs, "lumen-text", "lumen-text");
+        }
         let window = Rc::new(el.create_window(attrs).expect("window"));
         window.set_cursor(Cursor::Icon(CursorIcon::Default));
         window.set_ime_allowed(true);

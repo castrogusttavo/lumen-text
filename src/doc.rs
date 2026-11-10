@@ -251,6 +251,8 @@ pub struct Doc {
     /// Folded-region "..." markers drawn last frame: (rect, header line).
     pub fold_pills: Vec<(Rect, usize)>,
     pub minimap_layout: Option<crate::minimap::Layout>,
+    /// Minimap row infos of rows without token colors (those only depend on the text), valid for the key.
+    mm_cache: (u64, std::collections::HashMap<usize, crate::minimap::LineInfo>),
     pub conflicts: Vec<crate::gitx::Conflict>,
     pub conflicts_due: Option<Instant>,
     pub conflict_hits: Vec<(Rect, usize, crate::gitx::Pick)>,
@@ -366,6 +368,7 @@ impl Doc {
             view: Default::default(),
             fold_pills: Vec::new(),
             minimap_layout: None,
+            mm_cache: (0, Default::default()),
             conflicts: Vec::new(),
             conflicts_due: Some(Instant::now()),
             conflict_hits: Vec::new(),
@@ -1529,8 +1532,36 @@ impl Doc {
             let l = crate::minimap::layout_for(full, mm_w, total);
             let (bg, fgc) = (theme.background, theme.foreground);
             let wrap_view = live && self.view.cols > 0;
+            let key = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (
+                    self.buf.version(),
+                    self.buf.line_count(),
+                    total,
+                    live,
+                    self.view.cols,
+                    tab_w,
+                    (fgc.0, fgc.1, fgc.2),
+                    l.rect.h,
+                )
+                    .hash(&mut h);
+                self.view.folds.hidden_ranges().hash(&mut h);
+                h.finish()
+            };
+            if self.mm_cache.0 != key {
+                self.mm_cache = (key, Default::default());
+            }
+            let cache = &mut self.mm_cache.1;
             let mut infos = |i: usize| {
                 let (line, sub) = if live { self.view.map.line_at_row(i) } else { (i, 0) };
+                // Token colors for this row: continuation rows of a wrapped line use the line's spans too.
+                let sp = vlines.binary_search(&line).ok().and_then(|k| line_spans.get(k)).and_then(|s| s.as_ref());
+                if sp.is_none()
+                    && let Some(info) = cache.get(&i)
+                {
+                    return *info;
+                }
                 let mut text = self.buf.line(line);
                 let mut b0 = 0; // byte offset of the row inside its line
                 if sub > 0 && wrap_view {
@@ -1539,11 +1570,13 @@ impl Doc {
                     b0 = text.char_indices().nth(c0).map_or(text.len(), |(b, _)| b);
                     text = text.chars().skip(c0).take(c1 - c0).collect();
                 }
-                // Token colors for this row: continuation rows of a wrapped line use the line's spans too.
-                let sp = vlines.binary_search(&line).ok().and_then(|k| line_spans.get(k)).and_then(|s| s.as_ref());
                 let sp3: Option<Vec<(usize, usize, Rgba)>> =
                     sp.map(|s| crate::minimap::row_spans(s.iter().map(|&(a, b, c, _)| (a, b, c)), b0, b0 + text.len()));
-                crate::minimap::line_info(&text, sp3.as_deref(), fgc, tab_w)
+                let info = crate::minimap::line_info(&text, sp3.as_deref(), fgc, tab_w);
+                if sp.is_none() {
+                    cache.insert(i, info);
+                }
+                info
             };
             let vis_rows = rect.h as f64 / lh_f as f64;
             crate::minimap::draw_rows(

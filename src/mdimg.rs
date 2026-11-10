@@ -174,7 +174,7 @@ fn from_rgba(w: u32, h: u32, d: &[u8], ch: usize) -> Option<Pix> {
     Some(Pix { w, h, px })
 }
 
-fn decode_png(b: &[u8]) -> Option<Pix> {
+pub fn decode_png(b: &[u8]) -> Option<Pix> {
     let mut dec = png::Decoder::new(Cursor::new(b));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut rd = dec.read_info().ok()?;

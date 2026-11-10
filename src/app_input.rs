@@ -201,7 +201,9 @@ impl App {
         }
         if self.layout.tabbar.contains(x, y) {
             let px = match delta {
-                MouseScrollDelta::LineDelta(dx, dy) => -(if dx.abs() > dy.abs() { dx } else { dy } as f64) * 72.0,
+                MouseScrollDelta::LineDelta(dx, dy) => {
+                    -(if dx.abs() > dy.abs() { dx } else { dy } as f64) * 72.0 * scroller::speed()
+                }
                 MouseScrollDelta::PixelDelta(p) => -(if p.x.abs() > p.y.abs() { p.x } else { p.y }),
             };
             self.tabs_scroll = (self.tabs_scroll + px).clamp(0.0, self.tabs_max);

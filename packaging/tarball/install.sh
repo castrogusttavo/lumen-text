@@ -12,6 +12,14 @@ mkdir -p "$prefix/share/lumen-text"
 cp -r "$here/share/lumen-text/assets" "$prefix/share/lumen-text/assets"
 install -Dm644 "$here/share/icons/hicolor/scalable/apps/lumen-text.svg" \
   "$prefix/share/icons/hicolor/scalable/apps/lumen-text.svg"
+for png in "$here"/share/icons/hicolor/*x*/apps/lumen-text.png; do
+  [ -f "$png" ] || continue
+  sz="$(basename "$(dirname "$(dirname "$png")")")"
+  install -Dm644 "$png" "$prefix/share/icons/hicolor/$sz/apps/lumen-text.png"
+done
+if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f "$prefix/share/icons/hicolor/index.theme" ]; then
+  gtk-update-icon-cache -f -t "$prefix/share/icons/hicolor" >/dev/null 2>&1 || true
+fi
 install -Dm644 "$here/share/applications/lumen-text.desktop" "$prefix/share/applications/lumen-text.desktop"
 # Absolute Exec= so the launcher works even when $prefix/bin is not in the desktop's PATH.
 sed -i "s|^Exec=.*|Exec=$prefix/bin/lumen-text %F|" "$prefix/share/applications/lumen-text.desktop"

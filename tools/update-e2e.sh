@@ -156,6 +156,9 @@ check "~/.local/bin/lumen-text is a working symlink" test -L "$W/home/.local/bin
 check "installed command runs" test "$("$W/home/.local/bin/lumen-text" --version)" = "lumen-text $VER"
 check "desktop entry has an absolute Exec at the symlink" grep -qx "Exec=$W/home/.local/bin/lumen-text %F" "$D/applications/lumen-text.desktop"
 check "icon is installed under hicolor" test -s "$D/icons/hicolor/scalable/apps/lumen-text.svg"
+for n in 16 24 32 48 64 128 256 512; do
+  check "png icon ${n}px is installed" test -s "$D/icons/hicolor/${n}x${n}/apps/lumen-text.png"
+done
 if command -v desktop-file-validate >/dev/null; then check "desktop entry validates" desktop-file-validate "$D/applications/lumen-text.desktop"; fi
 out="$("$W/home/.local/bin/lumen-text" --check-update 2>&1)"
 check "installed copy recognises the user layout" grep -q 'user install' <<<"$out"

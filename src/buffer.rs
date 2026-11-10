@@ -402,6 +402,11 @@ impl Buffer {
         self.line_start(line) + col.min(self.line_len(line))
     }
 
+    /// Changes whenever the text changes (also back and forth with undo/redo).
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.version != self.saved_version
     }

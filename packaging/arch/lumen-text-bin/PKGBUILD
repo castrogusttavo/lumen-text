@@ -36,6 +36,9 @@ package() {
   cp -r "share/$_name/assets" "$pkgdir/usr/share/$_name/assets"
   install -Dm644 "share/applications/$_name.desktop" "$pkgdir/usr/share/applications/$_name.desktop"
   install -Dm644 "share/icons/hicolor/scalable/apps/$_name.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_name.svg"
+  for n in 16 24 32 48 64 128 256 512; do
+    install -Dm644 "share/icons/hicolor/${n}x${n}/apps/$_name.png" "$pkgdir/usr/share/icons/hicolor/${n}x${n}/apps/$_name.png"
+  done
   install -Dm644 README.md "$pkgdir/usr/share/doc/$_name/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_name/LICENSE"
 }

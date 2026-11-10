@@ -46,6 +46,7 @@ rm -f %{buildroot}%{_docdir}/lumen-text/LICENSE
 %{_datadir}/lumen-text
 %{_datadir}/applications/lumen-text.desktop
 %{_datadir}/icons/hicolor/scalable/apps/lumen-text.svg
+%{_datadir}/icons/hicolor/*/apps/lumen-text.png
 %license %{_licensedir}/lumen-text/LICENSE
 %doc %{_docdir}/lumen-text/README.md
 

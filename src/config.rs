@@ -34,6 +34,8 @@ pub struct Config {
     pub indent_guides: bool,
     /// UI scale override for hi-DPI (0 = automatic: the window's scale factor).
     pub ui_scale: f32,
+    /// Mouse-wheel speed multiplier (1 = 3 rows per notch; touchpads are never scaled).
+    pub scroll_speed: f32,
     /// Breadcrumb line above the editor (file path > symbols).
     pub breadcrumbs: bool,
     /// Inline git blame text after the cursor line.
@@ -170,6 +172,7 @@ impl Default for Config {
             sticky_scroll: true,
             indent_guides: true,
             ui_scale: 0.0,
+            scroll_speed: 1.0,
             breadcrumbs: true,
             git_blame: true,
             ram_display: "long".into(),
@@ -391,6 +394,7 @@ impl Config {
             md_split: v["md_split"].as_f64().map_or(0.5, |f| f as f32).clamp(MD_SPLIT_RANGE.0, MD_SPLIT_RANGE.1),
             theme_chrome: if v["theme_chrome"].as_str() == Some("theme") { "theme".into() } else { "derived".into() },
             updates: normalize_updates(v["updates"].as_str()),
+            scroll_speed: v["scroll_speed"].as_f64().map_or(1.0, |f| f as f32).clamp(0.1, 5.0),
             ui_scale: v["ui_scale"].as_f64().map_or(0.0, |f| f as f32).clamp(0.0, 4.0),
             font_size: v["font_size"].as_f64().map_or(14.0, |f| f as f32).clamp(8.0, 40.0),
         }
@@ -404,7 +408,7 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "font_size": self.font_size, "lsp_narrow": self.lsp_narrow, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates});
+        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "font_size": self.font_size, "lsp_narrow": self.lsp_narrow, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates});
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -459,6 +463,7 @@ mod tests {
             theme_dark: "b".into(),
             tsgo_source: "project".into(),
             ui_scale: 1.5,
+            scroll_speed: 2.0,
             breadcrumbs: false,
             git_blame: false,
             ram_display: "short".into(),

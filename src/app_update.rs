@@ -78,8 +78,9 @@ pub struct UpdateUi {
     /// Version already installed by this session and the executable to start on restart.
     installed: Option<(String, PathBuf)>,
     card_until: Option<Instant>,
-    rects: Vec<(Rect, Btn)>,
-    card_rect: Rect,
+    pub(crate) rects: Vec<(Rect, Btn)>,
+    logo: Option<crate::mdimg::Pix>,
+    pub(crate) card_rect: Rect,
     headless: bool,
 }
 
@@ -103,6 +104,7 @@ impl UpdateUi {
             installed: None,
             card_until: None,
             rects: Vec::new(),
+            logo: None,
             card_rect: Rect::default(),
             headless: std::env::var_os("LUMEN_HEADLESS").is_some(),
         }
@@ -447,7 +449,9 @@ impl App {
         let sw = self.size.0 as i32;
         let w = (sw - 24).clamp(240, 420);
         let inner = w - 32;
-        let title_lines = wrap(&mut self.tx, &title, inner - 22, true);
+        let logo = matches!(card, Card::About);
+        let title_dx = if logo { 28 } else { 0 };
+        let title_lines = wrap(&mut self.tx, &title, inner - 22 - title_dx, true);
         let mut lines: Vec<(String, bool)> = Vec::new();
         for p in &body {
             // A paragraph starting with U+0001 is a shell command: shown on a code-like block.
@@ -468,7 +472,18 @@ impl App {
         cv.card(r, 12, c.widget_bg, c.border);
         // Title + close.
         for (i, t) in title_lines.iter().enumerate() {
-            self.tx.draw_ui(cv, r.x + 16, r.y + 14 + i as i32 * 22, t, fg, r, true);
+            self.tx.draw_ui(cv, r.x + 16 + title_dx, r.y + 14 + i as i32 * 22, t, fg, r, true);
+        }
+        if logo {
+            let px = crate::ui::sc(20).max(1) as u32;
+            if self.upd.logo.as_ref().is_none_or(|l| l.w != px) {
+                static PNG: &[u8] = include_bytes!("../packaging/icons/png/lumen-text-256.png");
+                self.upd.logo = crate::mdimg::decode_png(PNG).map(|p| crate::mdimg::scale_to(p, px, px));
+            }
+            if let Some(l) = &self.upd.logo {
+                let full = Rect::new(0, 0, cv.w, cv.h);
+                crate::mdimg::blit(cv, crate::ui::sc(r.x + 16), crate::ui::sc(r.y + 15), l, full);
+            }
         }
         let x_btn = Rect::new(r.right() - 30, r.y + 8, 22, 22);
         let hot = x_btn.contains(self.mouse.0, self.mouse.1);
@@ -635,5 +650,28 @@ fn spawn_detached(exe: &std::path::Path, root: &std::path::Path, appimage: bool)
         std::thread::spawn(move || {
             let _ = child.wait();
         });
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+    use crate::app_unsaved::testkit::{lock, test_app, tmp};
+    use winit::window::CursorIcon;
+
+    #[test]
+    fn card_buttons_get_a_hand_and_the_rest_of_the_card_an_arrow() {
+        let _g = lock();
+        let dir = tmp("upd-cursor");
+        let mut app = test_app(&dir);
+        app.upd.card = Some(Card::UpToDate);
+        // Pretend the card was just drawn: a card with one button.
+        app.upd.card_rect = Rect::new(100, 100, 300, 120);
+        let btn = Rect::new(300, 180, 80, 30);
+        app.upd.rects = vec![(btn, Btn::Close)];
+        app.mouse = (340.0, 195.0);
+        assert!(matches!(app.cursor_for(), CursorIcon::Pointer), "over a button");
+        app.mouse = (150.0, 130.0);
+        assert!(matches!(app.cursor_for(), CursorIcon::Default), "over the card body");
     }
 }

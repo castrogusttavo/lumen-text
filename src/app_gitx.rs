@@ -330,7 +330,7 @@ impl App {
         let area_h = self.diff_area().h;
         let Some(dv) = self.diff.as_mut() else { return false };
         let rows = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -(y as f64) * 3.0,
+            MouseScrollDelta::LineDelta(_, y) => -(y as f64) * 3.0 * crate::scroller::speed(),
             MouseScrollDelta::PixelDelta(p) => -p.y / line_h() as f64,
         };
         let max = (dv.rows.len() as f64 - ((area_h - 28) / line_h() as i32) as f64).max(0.0);

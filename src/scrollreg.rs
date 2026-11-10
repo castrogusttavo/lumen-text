@@ -157,7 +157,7 @@ impl App {
         }
         let px = match delta {
             MouseScrollDelta::LineDelta(_, dy) => {
-                -(dy as f64) * 3.0 * if r.unit > 1.5 { r.unit } else { line_h() as f64 }
+                -(dy as f64) * 3.0 * crate::scroller::speed() * if r.unit > 1.5 { r.unit } else { line_h() as f64 }
             }
             MouseScrollDelta::PixelDelta(p) => -p.y,
         };

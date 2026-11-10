@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/icon.svg" width="96" alt="Lumen logo">
+</p>
+
 # lumen-text
 
 **A lean, CPU-rendered code editor for Linux, written 100% in Rust, with a first-class TypeScript workflow.**

@@ -443,7 +443,7 @@ impl App {
         let max_top = d.max_top();
         let Some(st) = d.md.as_mut() else { return false };
         let px = match delta {
-            MouseScrollDelta::LineDelta(_, dy) => -(dy as f64) * line_h() as f64 * 3.0,
+            MouseScrollDelta::LineDelta(_, dy) => -(dy as f64) * line_h() as f64 * 3.0 * crate::scroller::speed(),
             MouseScrollDelta::PixelDelta(p) => -p.y,
         };
         let max_scroll = (st.view.content_height() - r.h).max(0) as f64;

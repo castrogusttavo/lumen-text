@@ -244,8 +244,71 @@ mod tests {
         }
         let avg = (thread_cpu() - t0) * 1e3 / n as f64;
         eprintln!("[perf] frame while scrolling 100k lines: {avg:.2} ms cpu avg over {n}");
-        // A 60 Hz budget is 16 ms; measured ~40 ms here (a full software frame plus a provisional tokenize on every jump); 200 ms only catches big regressions.
-        assert!(avg < 200.0, "frame too slow: {avg:.1} ms cpu");
+        // Every frame jumps 700 lines into untokenized territory, so each one tokenizes its visible lines
+        // (~160 us/line) on this thread. Measured ~15 ms (was ~43 ms).
+        assert!(avg < 40.0, "frame too slow: {avg:.1} ms cpu");
+    }
+
+    /// Let the background tokenizer get past line `upto` (steady state for a file that has been open a while).
+    fn settle(app: &mut crate::app::App, px: &mut [u32], w: i32, h: i32, upto: usize) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(40);
+        while Instant::now() < deadline {
+            app.pump_background();
+            app.tick();
+            app.render_into(&mut crate::ui::Canvas { px, w, h }, 0.016);
+            let d = &app.docs[app.active];
+            if d.hl.as_ref().is_none_or(|h| h.ready() > upto) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Steady state: the file is fully tokenized, the view scrolls a few lines per frame (wheel).
+    #[test]
+    fn render_frame_steady_scroll() {
+        let (_g, mut app, mut px, (w, h)) = big_app("steady");
+        settle(&mut app, &mut px, w, h, 31_000);
+        let n = 240;
+        let t0 = thread_cpu();
+        for i in 0..n {
+            let d = &mut app.docs[app.active];
+            d.top = 30_000.0 + (i * 3) as f64;
+            d.target = d.top;
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        let avg = (thread_cpu() - t0) * 1e3 / n as f64;
+        eprintln!("[perf] steady scroll (3 lines/frame, tokenized): {avg:.2} ms cpu avg over {n}");
+        // Measured ~4.5 ms (was ~11 ms before the minimap row cache and the lazy provisional window).
+        assert!(avg < 12.0, "frame too slow: {avg:.1} ms cpu");
+    }
+
+    /// Steady state typing: the file is fully tokenized, a key is typed mid-file.
+    #[test]
+    fn typing_steady() {
+        use crate::app::KeyIn;
+        use winit::keyboard::{Key, SmolStr};
+        let (_g, mut app, mut px, (w, h)) = big_app("typingsteady");
+        settle(&mut app, &mut px, w, h, 50_200);
+        {
+            let d = &mut app.docs[app.active];
+            let p = d.buf.line_start(50_000);
+            d.ed.sel = Sel::caret(p);
+            d.top = 49_990.0;
+            d.target = d.top;
+        }
+        app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        let n = 200;
+        let t0 = thread_cpu();
+        for _ in 0..n {
+            let ki = KeyIn { key: Key::Character(SmolStr::new("a")), text: Some("a".into()) };
+            app.handle_key(&ki);
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        let avg = (thread_cpu() - t0) * 1e3 / n as f64;
+        eprintln!("[perf] steady keystroke + frame: {avg:.2} ms cpu avg over {n}");
+        // Measured ~10 ms (was ~47 ms); the rest is tokenizing the visible lines below the edit on this thread.
+        assert!(avg < 25.0, "typing latency too high: {avg:.1} ms cpu per key");
     }
 
     /// Typing latency: handle a key and draw the frame that shows it, in the middle of 100k lines.
@@ -272,7 +335,8 @@ mod tests {
         let avg = (thread_cpu() - t0) * 1e3 / n as f64;
         eprintln!("[perf] keystroke + frame at line 50000 of 100k: {avg:.2} ms cpu avg over {n}");
         assert_eq!(app.docs[app.active].buf.line_count(), 100_001);
-        assert!(avg < 150.0, "typing latency too high: {avg:.1} ms cpu per key");
+        // Measured ~12 ms (was ~51 ms).
+        assert!(avg < 30.0, "typing latency too high: {avg:.1} ms cpu per key");
     }
 
     /// Idle: once everything settles, a frame reports "nothing to animate" (so the window loop

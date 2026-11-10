@@ -10,6 +10,7 @@
 #   <prefix>/share/lumen-text/assets/
 #   <prefix>/share/applications/lumen-text.desktop
 #   <prefix>/share/icons/hicolor/scalable/apps/lumen-text.svg
+#   <prefix>/share/icons/hicolor/<N>x<N>/apps/lumen-text.png   (N = 16..512)
 #   <prefix>/share/doc/lumen-text/{README.md,LICENSE}
 set -euo pipefail
 
@@ -34,6 +35,11 @@ fi
 cp -r "$root/assets" "$p/share/lumen-text/assets"
 install -m644 "$root/lumen-text.desktop" "$p/share/applications/lumen-text.desktop"
 install -m644 "$here/icons/lumen-text.svg" "$p/share/icons/hicolor/scalable/apps/lumen-text.svg"
+for png in "$here"/icons/png/lumen-text-*.png; do
+  n="$(basename "$png" .png)"; n="${n#lumen-text-}"
+  [ "$n" = 1024 ] && continue
+  install -Dm644 "$png" "$p/share/icons/hicolor/${n}x${n}/apps/lumen-text.png"
+done
 install -m644 "$root/README.md" "$root/LICENSE" "$p/share/doc/lumen-text/"
 
 # Normalise modes (the checkout's umask must not leak into packages).

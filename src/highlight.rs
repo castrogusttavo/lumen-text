@@ -275,7 +275,58 @@ pub struct Highlighter {
     /// Provisional start states for a window far beyond the tokenized prefix (assumes the window
     /// starts at top level; replaced by real states as tokenization catches up). Built on the
     /// calling thread: it is the one place the UI tokenizes, only for far jumps.
-    prov: Option<(usize, Vec<Arc<Stack>>)>,
+    prov: Option<Prov>,
+}
+
+/// Provisional tokenizer states (and the spans computed from them) for lines far beyond the
+/// tokenized prefix: `states[k]` / `spans[k]` belong to line `start + k`.
+struct Prov {
+    start: usize,
+    states: Vec<Arc<Stack>>,
+    spans: Vec<Option<Spans>>,
+}
+
+/// A provisional window is rebuilt rather than grown past this many lines.
+const PROV_MAX: usize = 1500;
+
+/// Spans of one line and the state after it.
+fn colorize(
+    tk: &SharedTokenizer,
+    color_cache: &mut HashMap<u64, (Rgba, u8)>,
+    theme: &Theme,
+    mut text: String,
+    start_state: &Arc<Stack>,
+) -> (Vec<(usize, usize, Rgba, u8)>, Arc<Stack>) {
+    let n = text.len();
+    if n > MAX_LINE_BYTES {
+        return (vec![(0, n, theme.foreground, 0)], start_state.clone());
+    }
+    text.push('\n');
+    let mut tk = tk.lock_ui();
+    let (tokens, next) = tk.tokenize_line(&text, start_state);
+    let mut v = Vec::with_capacity(tokens.len());
+    for t in tokens {
+        let (s, e) = (t.start.min(n), t.end.min(n));
+        if s >= e {
+            continue;
+        }
+        let key = t.scopes.as_ref().map_or(0, |x| x.hash);
+        let (color, flags) = match color_cache.get(&key) {
+            Some(c) => *c,
+            None => {
+                let strs = tk.reg.scope_strs(&t.scopes);
+                let st = theme.resolve(&strs);
+                let f = (if st.bold { crate::ui::BOLD } else { 0 })
+                    | (if st.italic { crate::ui::ITALIC } else { 0 })
+                    | (if st.underline { crate::ui::UNDERLINE } else { 0 });
+                let c = (st.fg.unwrap_or(theme.foreground), f);
+                color_cache.insert(key, c);
+                c
+            }
+        };
+        v.push((s, e, color, flags));
+    }
+    (v, next)
 }
 
 impl Highlighter {
@@ -309,6 +360,7 @@ impl Highlighter {
     pub fn theme_changed(&mut self) {
         self.color_cache.clear();
         self.line_cache.clear();
+        self.prov = None;
     }
 
     /// Lines at or after `line` changed: drop their saved states so they are re-tokenized
@@ -325,7 +377,18 @@ impl Highlighter {
             self.shared.ready.store(j.states.len(), Release);
         }
         self.line_cache.clear();
-        self.prov = None;
+        // Provisional states before the edited line stay valid; later ones are recomputed lazily.
+        match self.prov.as_mut() {
+            Some(p) if line >= p.start => {
+                let k = line - p.start;
+                if k < p.states.len() {
+                    p.states.truncate(k + 1);
+                }
+                p.spans.truncate(k);
+            }
+            Some(_) => self.prov = None,
+            None => {}
+        }
     }
 
     /// Number of lines whose start state is known.
@@ -379,27 +442,31 @@ impl Highlighter {
         }
     }
 
-    /// Start state for line `i` in the provisional window, (re)building the window if needed.
-    fn provisional_state(&mut self, buf: &Buffer, i: usize) -> Option<Arc<Stack>> {
-        let covered = self.prov.as_ref().is_some_and(|(s, v)| i >= *s && i < *s + v.len());
-        if !covered {
-            let start = i.saturating_sub(40);
-            let end = (i + 160).min(buf.line_count());
-            let mut tk = self.tk.lock_ui();
-            let mut v = vec![self.first.clone()];
-            for l in start..end {
-                let next = step(&mut tk, buf.line(l), v.last().unwrap());
-                v.push(next);
-            }
-            self.prov = Some((start, v));
+    /// Make the provisional window cover line `i`: its start state is known and extended lazily, one
+    /// line at a time, so only the lines that are actually drawn get tokenized.
+    fn provisional_cover(&mut self, buf: &Buffer, i: usize) {
+        let usable = self
+            .prov
+            .as_ref()
+            .is_some_and(|p| i >= p.start && i < p.start + PROV_MAX && i < p.start + p.states.len() + 200);
+        if !usable {
+            self.prov = Some(Prov { start: i.saturating_sub(40), states: vec![self.first.clone()], spans: Vec::new() });
         }
-        let (s, v) = self.prov.as_ref()?;
-        v.get(i - s).cloned()
+        let Some(p) = self.prov.as_mut() else { return };
+        if p.start + p.states.len() > i {
+            return;
+        }
+        let mut tk = self.tk.lock_ui();
+        while p.start + p.states.len() <= i {
+            let l = p.start + p.states.len() - 1;
+            let next = step(&mut tk, buf.line(l), p.states.last().unwrap());
+            p.states.push(next);
+        }
     }
 
     pub fn spans(&mut self, buf: &Buffer, theme: &Theme, i: usize) -> Option<Spans> {
         let provisional = i >= self.ready();
-        let start_state = if provisional {
+        if provisional {
             {
                 // The worker is on its way and this line is close: stay plain for a frame rather
                 // than tokenize on the UI thread (the next redraw picks the real state up).
@@ -408,55 +475,39 @@ impl Highlighter {
                     return None;
                 }
             }
-            self.provisional_state(buf, i)?
-        } else {
-            self.prov = None;
-            self.shared.lock().states.get(i)?.clone()
-        };
-        if !provisional {
-            if let Some(s) = self.line_cache.get(&i) {
+            self.provisional_cover(buf, i);
+            let p = self.prov.as_mut()?;
+            let k = i - p.start;
+            if let Some(Some(s)) = p.spans.get(k) {
                 return Some(s.clone());
             }
-            if self.line_cache.len() > 600 {
-                self.line_cache.clear();
+            let start_state = p.states.get(k)?.clone();
+            let (spans, next) = colorize(&self.tk, &mut self.color_cache, theme, buf.line(i), &start_state);
+            if p.states.len() == k + 1 {
+                p.states.push(next);
             }
+            if p.spans.len() <= k {
+                p.spans.resize(k + 1, None);
+            }
+            let rc = Rc::new(spans);
+            p.spans[k] = Some(rc.clone());
+            return Some(rc);
         }
-        let mut text = buf.line(i);
-        let n = text.len();
-        let spans: Vec<(usize, usize, Rgba, u8)> = if n > MAX_LINE_BYTES {
-            vec![(0, n, theme.foreground, 0)]
-        } else {
-            text.push('\n');
-            let mut tk = self.tk.lock_ui();
-            let (tokens, _) = tk.tokenize_line(&text, &start_state);
-            let mut v = Vec::with_capacity(tokens.len());
-            for t in tokens {
-                let (s, e) = (t.start.min(n), t.end.min(n));
-                if s >= e {
-                    continue;
-                }
-                let key = t.scopes.as_ref().map_or(0, |x| x.hash);
-                let (color, flags) = match self.color_cache.get(&key) {
-                    Some(c) => *c,
-                    None => {
-                        let strs = tk.reg.scope_strs(&t.scopes);
-                        let st = theme.resolve(&strs);
-                        let f = (if st.bold { crate::ui::BOLD } else { 0 })
-                            | (if st.italic { crate::ui::ITALIC } else { 0 })
-                            | (if st.underline { crate::ui::UNDERLINE } else { 0 });
-                        let c = (st.fg.unwrap_or(theme.foreground), f);
-                        self.color_cache.insert(key, c);
-                        c
-                    }
-                };
-                v.push((s, e, color, flags));
-            }
-            v
-        };
+        // Real states are known up to here: the provisional window is only kept while it reaches past them.
+        let ready = self.ready();
+        if self.prov.as_ref().is_some_and(|p| p.start + p.states.len() <= ready) {
+            self.prov = None;
+        }
+        let start_state = self.shared.lock().states.get(i)?.clone();
+        if let Some(s) = self.line_cache.get(&i) {
+            return Some(s.clone());
+        }
+        if self.line_cache.len() > 600 {
+            self.line_cache.clear();
+        }
+        let (spans, _) = colorize(&self.tk, &mut self.color_cache, theme, buf.line(i), &start_state);
         let rc = Rc::new(spans);
-        if !provisional {
-            self.line_cache.insert(i, rc.clone());
-        }
+        self.line_cache.insert(i, rc.clone());
         Some(rc)
     }
 

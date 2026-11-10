@@ -194,6 +194,13 @@ pub fn default_settings() -> Vec<SettingDef> {
             Number { min: 0.0, max: 4.0, step: 0.25 },
         ),
         d(
+            "scroll_speed",
+            "Appearance",
+            "Scroll speed",
+            "Mouse wheel speed (0.1 to 5). 1 = 3 lines per notch, like Zed. Touchpads always scroll exactly with the fingers.",
+            Number { min: 0.1, max: 5.0, step: 0.1 },
+        ),
+        d(
             "auto_import",
             "TypeScript",
             "Auto import",
@@ -369,7 +376,7 @@ pub fn default_values() -> Value {
         "format_on_save": false, "updates": "auto", "auto_import": false, "font_size": 14, "lsp_narrow": true,
         "code_lens": false, "code_lens_refs": true, "code_lens_impls": true, "inlay_hints": false, "inlay_hints_params": true, "inlay_hints_types": true, "appearance": "fixed", "theme_chrome": "derived", "theme_light": "github-light-default",
         "theme_dark": "github-dark-default", "tsgo_source": "auto",
-        "minimap": true, "minimap_style": "subtle", "word_wrap": false, "sticky_scroll": true, "indent_guides": true, "ui_scale": 0,
+        "minimap": true, "minimap_style": "subtle", "word_wrap": false, "sticky_scroll": true, "indent_guides": true, "ui_scale": 0, "scroll_speed": 1,
         "breadcrumbs": true, "git_blame": true, "ram_display": "long", "tab_width": "4", "git_pull_strategy": "ask",
     });
     // Split in two: one `json!` this long hits the macro recursion limit.

@@ -826,6 +826,17 @@ pub fn apply_user(staged: &Path, version: &str, root: &Path, running: Option<&st
 // ───────────────────────────── --install-user ─────────────────────────────
 
 const ICON_SVG: &str = include_str!("../packaging/icons/lumen-text.svg");
+/// Raster icons installed next to the SVG (`hicolor/<N>x<N>/apps/lumen-text.png`).
+const ICON_PNGS: [(u32, &[u8]); 8] = [
+    (16, include_bytes!("../packaging/icons/png/lumen-text-16.png")),
+    (24, include_bytes!("../packaging/icons/png/lumen-text-24.png")),
+    (32, include_bytes!("../packaging/icons/png/lumen-text-32.png")),
+    (48, include_bytes!("../packaging/icons/png/lumen-text-48.png")),
+    (64, include_bytes!("../packaging/icons/png/lumen-text-64.png")),
+    (128, include_bytes!("../packaging/icons/png/lumen-text-128.png")),
+    (256, include_bytes!("../packaging/icons/png/lumen-text-256.png")),
+    (512, include_bytes!("../packaging/icons/png/lumen-text-512.png")),
+];
 const DESKTOP: &str = include_str!("../lumen-text.desktop");
 
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -909,6 +920,12 @@ pub fn install_user(exe: &Path, assets: &Path, version: &str, home: &Path, data:
     let desktop = apps.join("lumen-text.desktop");
     fs::write(&desktop, desktop_entry(&link)).map_err(|e| format!("cannot write {}: {e}", desktop.display()))?;
     fs::write(icons.join("lumen-text.svg"), ICON_SVG).map_err(|e| format!("cannot write the icon: {e}"))?;
+    for (n, bytes) in ICON_PNGS {
+        let dir = data.join(format!("icons/hicolor/{n}x{n}/apps"));
+        fs::create_dir_all(&dir)
+            .and_then(|_| fs::write(dir.join("lumen-text.png"), bytes))
+            .map_err(|e| format!("cannot write the {n}px icon: {e}"))?;
+    }
     for (cmd, args) in [
         ("update-desktop-database", vec![apps.display().to_string()]),
         ("gtk-update-icon-cache", vec!["-f".into(), "-t".into(), data.join("icons/hicolor").display().to_string()]),
@@ -1365,6 +1382,8 @@ mod tests {
         assert!(desktop.contains(&format!("Exec={} %F", i.bin_link.display())), "{desktop}");
         assert!(desktop.contains("Icon=lumen-text") && desktop.contains("[Desktop Entry]"));
         assert!(data.join("icons/hicolor/scalable/apps/lumen-text.svg").is_file());
+        assert!(data.join("icons/hicolor/256x256/apps/lumen-text.png").is_file());
+        assert!(data.join("icons/hicolor/16x16/apps/lumen-text.png").is_file());
         // The layout is recognised as a user install afterwards, and re-running is fine.
         let resolved = data.join("lumen-text/2026.11.9/bin/lumen-text");
         assert_eq!(detect_kind(&resolved, None, Some(&data)), InstallKind::User(data.join("lumen-text")));

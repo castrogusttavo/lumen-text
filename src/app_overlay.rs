@@ -1368,7 +1368,7 @@ impl App {
         }
         let Overlay::Picker(p) = &mut self.overlay else { return !self.overlay.is_none() };
         let d = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -(y as isize) * 3,
+            MouseScrollDelta::LineDelta(_, y) => -((y as f64 * 3.0 * crate::scroller::speed()).round() as isize),
             MouseScrollDelta::PixelDelta(pp) => -(pp.y / ROW as f64) as isize,
         };
         let max = p.filtered.len().saturating_sub(PICKER_ROWS) as isize;

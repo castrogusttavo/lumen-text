@@ -9,11 +9,17 @@
 //! and write it as before) and the `Scroller` mirrors it. `adopt` notices when somebody else moved
 //! the container (reveal the caret, jump to the top, scrollbar drag) and drops the animation.
 
-use std::{sync::OnceLock, time::Instant};
+use std::{
+    sync::{
+        OnceLock,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Instant,
+};
 
-/// Time constant of the wheel glide (s). ~4 tau (160 ms) to settle; the first frames already move
+/// Time constant of the wheel glide (s). ~4.6 tau (115 ms) to settle; the first frames already move
 /// ~30% of the way, so it feels immediate yet smooth.
-pub const WHEEL_TAU: f64 = 0.04;
+pub const WHEEL_TAU: f64 = 0.025;
 /// Short glide for jumps (page, home/end, tree reveal): an ease-out of this many seconds.
 pub const GLIDE_SECS: f64 = 0.08;
 /// Rows per mouse-wheel notch (Zed: 3).
@@ -27,6 +33,17 @@ pub const SPIN_MAX: f64 = 3.4;
 pub const FLING_TAU: f64 = 0.32;
 pub const FLING_MIN: f64 = 180.0;
 pub const FLING_CAP: f64 = 9000.0;
+
+static SPEED: AtomicU32 = AtomicU32::new(0x3f80_0000); // 1.0f32
+
+/// User wheel-speed multiplier (`scroll_speed` setting; 1.0 = Zed-like 3 rows per notch).
+pub fn speed() -> f64 {
+    f32::from_bits(SPEED.load(Ordering::Relaxed)) as f64
+}
+
+pub fn set_speed(v: f32) {
+    SPEED.store(v.clamp(0.1, 5.0).to_bits(), Ordering::Relaxed);
+}
 
 /// Seconds since the first call (monotonic): the clock the app feeds into `Scroller`.
 pub fn now() -> f64 {
@@ -139,7 +156,7 @@ impl Scroller {
         self.vel = 0.0;
         self.glide = None;
         self.tau = WHEEL_TAU;
-        self.target = (base + notches * step * mult).clamp(0.0, max.max(0.0));
+        self.target = (base + notches * step * mult * speed()).clamp(0.0, max.max(0.0));
     }
 
     /// Touchpad: follow the fingers exactly (the OS already smooths them) and remember the velocity.
@@ -402,5 +419,32 @@ mod tests {
         assert!(s.settled());
         s.adopt_both(10.0, 20.0);
         assert_eq!((s.pos, s.target), (10.0, 20.0));
+    }
+
+    #[test]
+    fn notch_is_three_rows_and_settles_fast() {
+        // One X11/Wayland notch (LineDelta 1) = 3 rows of 20 px, and the glide gets there in ~120 ms.
+        let mut s = Scroller::new(0.15);
+        s.wheel(1.0, WHEEL_ROWS * 20.0, 10_000.0, 0.0);
+        assert_eq!(s.target, 60.0);
+        let mut t = 0.0;
+        while s.step(DT, 10_000.0) {
+            t += DT;
+        }
+        assert!(t <= 0.14, "settled after {t}");
+        // 60% of the way after two frames: it feels immediate.
+        let mut s = Scroller::new(0.15);
+        s.wheel(1.0, 60.0, 10_000.0, 0.0);
+        s.step(DT, 10_000.0);
+        s.step(DT, 10_000.0);
+        assert!(s.pos > 30.0, "{}", s.pos);
+    }
+
+    #[test]
+    fn touchpad_pixels_are_exact() {
+        let mut s = Scroller::new(0.15);
+        s.pixels(7.0, 1000.0, 0.0);
+        assert_eq!(s.pos, 7.0);
+        assert_eq!(speed(), 1.0);
     }
 }

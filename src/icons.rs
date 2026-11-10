@@ -21,6 +21,45 @@ struct FileTypes {
     icons: HashMap<String, String>,
 }
 
+/// Every `hugeicons/<name>` icon the app asks for (including the ones whose name is built at
+/// runtime: settings tabs, section list, number steppers). Each must resolve without the
+/// HugeIcons Pro masks: either `ui/<name>` exists (authored or from the Zed set) or `ui_alias`
+/// maps it to one (checked by the `app_icons_resolve_without_hugeicons` test).
+#[cfg(test)]
+pub const APP_ICONS: &[&str] = &[
+    "branch",
+    "check",
+    "chevron_down",
+    "close",
+    "code",
+    "copy",
+    "cpu",
+    "download",
+    "edit",
+    "keyboard",
+    "layout",
+    "link",
+    "minus",
+    "palette",
+    "plus",
+    "reset",
+    "search",
+    "settings",
+    "terminal",
+    "trash",
+];
+
+/// Bundled `ui/` icon standing in for a HugeIcons name that the Zed set spells differently.
+fn ui_alias(base: &str) -> Option<&'static str> {
+    Some(match base {
+        "search" => "magnifying_glass",
+        "edit" => "pencil",
+        "reset" => "rotate_ccw",
+        "branch" => "git_branch",
+        _ => return None,
+    })
+}
+
 pub struct Icons {
     dir: PathBuf,
     cache: HashMap<String, Option<Mask>>,
@@ -70,7 +109,7 @@ impl Icons {
             // fall back to the same-named icon of the bundled `ui/` set.
             let m = load(name).or_else(|| {
                 let base = name.strip_prefix("hugeicons_bulk/").or_else(|| name.strip_prefix("hugeicons/"))?;
-                load(&format!("ui/{base}"))
+                load(&format!("ui/{base}")).or_else(|| load(&format!("ui/{}", ui_alias(base)?)))
             });
             self.cache.insert(name.to_string(), m);
         }
@@ -139,6 +178,52 @@ impl Icons {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Without the (git-ignored) HugeIcons directories, every icon name the app uses must still
+    /// draw something from the committed `ui/` and `file/` sets.
+    #[test]
+    fn app_icons_resolve_without_hugeicons() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let dir = std::env::temp_dir().join(format!("lumen-icons-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for set in ["ui", "file"] {
+            std::fs::create_dir_all(dir.join(set)).unwrap();
+            for e in std::fs::read_dir(root.join("assets/icons").join(set)).unwrap().flatten() {
+                std::fs::copy(e.path(), dir.join(set).join(e.file_name())).unwrap();
+            }
+        }
+        let mut ic = Icons::with_dir(dir.clone());
+        let mut names: Vec<String> =
+            APP_ICONS.iter().flat_map(|n| [format!("hugeicons/{n}"), format!("hugeicons_bulk/{n}")]).collect();
+        // Literal names in the sources must be listed above (so the list cannot drift).
+        for e in std::fs::read_dir(root.join("src")).unwrap().flatten() {
+            let path = e.path();
+            if path.extension().is_none_or(|x| x != "rs") || path.ends_with("icons.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for pre in ["hugeicons_bulk/", "hugeicons/", "\"ui/", "\"file/"] {
+                for (i, _) in text.match_indices(pre) {
+                    let rest = &text[i + pre.len()..];
+                    let n: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_lowercase() || *c == '_' || c.is_ascii_digit())
+                        .collect();
+                    if n.is_empty() || rest[n.len()..].starts_with('{') {
+                        continue;
+                    }
+                    if pre.starts_with("hugeicons") {
+                        assert!(APP_ICONS.contains(&n.as_str()), "{}: `{pre}{n}` is not in APP_ICONS", path.display());
+                    } else {
+                        names.push(format!("{}{n}", pre.trim_start_matches('"')));
+                    }
+                }
+            }
+        }
+        let missing: Vec<&String> = names.iter().filter(|n| ic.mask(n).is_none()).collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(missing.is_empty(), "icons without a bundled mask: {missing:?}");
+    }
 
     #[test]
     fn mask_parsing_and_sampling() {

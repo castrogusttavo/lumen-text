@@ -19,7 +19,8 @@ rm -rf "$appdir"
 # AppImage wants the .desktop file, the icon and AppRun at the AppDir root.
 cp "$appdir/usr/share/applications/lumen-text.desktop" "$appdir/lumen-text.desktop"
 cp "$appdir/usr/share/icons/hicolor/scalable/apps/lumen-text.svg" "$appdir/lumen-text.svg"
-ln -s lumen-text.svg "$appdir/.DirIcon"
+cp "$appdir/usr/share/icons/hicolor/256x256/apps/lumen-text.png" "$appdir/lumen-text.png"
+cp "$appdir/lumen-text.png" "$appdir/.DirIcon"
 
 # The binary already resolves <exe dir>/../share/lumen-text/assets, which is correct inside the
 # mounted image; LUMEN_ASSETS is set anyway so the lookup never depends on the process name.

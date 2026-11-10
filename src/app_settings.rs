@@ -25,7 +25,7 @@ impl App {
             "theme": c.theme.clone().unwrap_or_else(|| self.theme.name.clone()),
             "theme_light": c.theme_light, "theme_dark": c.theme_dark, "tsgo_source": c.tsgo_source,
             "minimap": c.minimap, "minimap_style": c.minimap_style, "word_wrap": c.word_wrap, "sticky_scroll": c.sticky_scroll, "indent_guides": c.indent_guides,
-            "ui_scale": c.ui_scale,
+            "ui_scale": c.ui_scale, "scroll_speed": c.scroll_speed,
             "breadcrumbs": c.breadcrumbs, "git_blame": c.git_blame, "ram_display": c.ram_display,
             "status_search": c.status_visible("search"), "status_problems": c.status_visible("problems"),
             "status_position": c.status_visible("position"), "status_indent": c.status_visible("indent"),
@@ -122,7 +122,7 @@ impl App {
     pub fn settings_wheel(&mut self, delta: MouseScrollDelta) {
         let Overlay::Settings(m) = &mut self.overlay else { return };
         let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -(y as f64) * 3.0 * 34.0,
+            MouseScrollDelta::LineDelta(_, y) => -(y as f64) * 3.0 * crate::scroller::speed() * 34.0,
             MouseScrollDelta::PixelDelta(p) => -p.y,
         };
         m.wheel(dy);
@@ -272,6 +272,11 @@ impl App {
                     }
                     self.follow_system_theme();
                 }
+            }
+            "scroll_speed" => {
+                let v = v.as_f64().unwrap_or(1.0) as f32;
+                self.config.scroll_speed = v.clamp(0.1, 5.0);
+                crate::scroller::set_speed(self.config.scroll_speed);
             }
             "ui_scale" => {
                 let v = v.as_f64().unwrap_or(0.0) as f32;

@@ -1606,7 +1606,7 @@ impl App {
             return false;
         }
         let px = match delta {
-            MouseScrollDelta::LineDelta(_, dy) => -(dy as f64) * 3.0 * FILE_H as f64,
+            MouseScrollDelta::LineDelta(_, dy) => -(dy as f64) * 3.0 * crate::scroller::speed() * FILE_H as f64,
             MouseScrollDelta::PixelDelta(d) => -d.y,
         };
         let k = if gp.tab == Tab::Changes { 0 } else { 1 };
