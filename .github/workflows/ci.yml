@@ -101,7 +101,7 @@ jobs:
           # the `release` job's `needs`; its artifacts are picked up by the `dist-*` pattern.
           matrix='[{"arch":"x86_64","runner":"ubuntu-22.04","experimental":false}'
           if [ "${ENABLE_ARM_BUILDS}" = "true" ]; then
-            matrix="${matrix},{\"arch\":\"aarch64\",\"runner\":\"ubuntu-22.04-arm\",\"experimental\":true}"
+            matrix="${matrix},{\"arch\":\"aarch64\",\"runner\":\"ubuntu-22.04-arm\",\"experimental\":false}"
           fi
           echo "matrix=${matrix}]" >> "$GITHUB_OUTPUT"
 
