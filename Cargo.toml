@@ -49,7 +49,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 similar = "3.2.1"
 softbuffer = "0.4.8"
-tiny-skia = { version = "0.11.4", default-features = false, features = ["std"] }
+tiny-skia = { version = "0.12.0", default-features = false, features = ["std"] }
 vte = "0.15.0"
 winit = "0.30.13"
 zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
