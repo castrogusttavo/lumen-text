@@ -23,6 +23,9 @@ and no GPU driver:
   (65 themes, 260 grammar files), through a port of the `vscode-textmate` core on top of `onig`.
 - TypeScript is served by [`tsgo`](https://github.com/microsoft/typescript-go) (the native TypeScript
   compiler) started on demand with full project awareness (like VS Code or Zed); an opt-in *lean mode* only loads open files and their imports for low-RAM machines.
+- Any language server works: a built-in table (rust-analyzer, pyright, gopls, clangd, lua-language-server, taplo,
+  the vscode JSON/CSS/HTML servers, yaml, bash, marksman, zls, ruby-lsp, phpactor, svelte, astro, vue, Tailwind, deno...)
+  starts a server **only when a matching file is opened and the program is installed**; add your own in `config.json`.
 - One window, one process per editor, one font in memory, no web view, no Electron.
 
 ## Features
@@ -41,6 +44,11 @@ and no GPU driver:
 - Semantic tokens, optional code lens and inlay hints, optional auto-import
 - Full-project mode (default; also reacts to files changed, created or deleted on disk) versus an opt-in lean mode; uses the project's own `tsgo` or a bundled one
 - Formatting with the project's Biome or Prettier (falls back to `tsgo`); lint through `biome lsp-proxy` and ESLint
+- **Language servers beyond TypeScript** (see the [Language servers](web/src/content/docs/language-servers.md) page): a data-driven
+  registry (`src/lsp_servers.json`) plus `language_servers` in `config.json`; one process per (server, workspace root), started lazily,
+  stopped after an idle grace period, restarted with backoff when it crashes; several servers per file (a primary plus companions such
+  as Tailwind or ruff) with merged diagnostics, hover, completion and code actions; status, switches and a bounded server log
+  (palette: *LSP: Restart language servers*, *LSP: Show server log*)
 - Vitest/Jest runs with pass/fail marks in the gutter, `package.json` and `cargo` tasks with an ANSI output panel
 
 **Git**
@@ -95,7 +103,7 @@ The headless PNG writer stores uncompressed data; recompress the files (for exam
 
 ## Measured numbers
 
-Resident memory is PSS (proportional set size) as reported by the status bar (`RAM <editor> + tsgo <server>`).
+Resident memory is PSS (proportional set size) as reported by the status bar (`RAM <editor> + tsgo <server>`; with three or more servers `+ N servers <sum>`, listed one by one in the tooltip).
 
 | Scenario | Result |
 |---|---|
@@ -269,6 +277,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `auto_import` | `false` | Auto-import in completion (costs RAM and time) |
 | `lsp_narrow` | `false` | opt-in tsgo lean mode (only open files and their imports; less RAM, incomplete cross-file errors/references) |
 | `tsgo_source` | `"auto"` | `"auto"` (project's own, else bundled), `"project"`, `"bundled"` |
+| `language_servers` | `{}` | Add, replace or switch off language servers, e.g. `{"rust": {"command": "my-ra"}, "python": {"enabled": false}, "my-server": {"command": "x", "languages": ["foo"]}}`; fields `command`, `args`, `env`, `languages`, `extensions`, `root_markers`, `initialization_options`, `settings`, `enabled`, `role`, `requires`. Mistakes are reported in the status bar, never fatal |
 | `code_lens` / `inlay_hints` | `false` | Optional LSP extras (cost server CPU) |
 | `inlay_hints_params` / `inlay_hints_types` | `true` | With `inlay_hints` on: show parameter names / inferred types separately. Ctrl+click a type goes to its definition; double click a `: T` hint inserts the annotation |
 | `minimap` / `minimap_style` | `true` / `"subtle"` | `"subtle"` or `"normal"` |
@@ -326,6 +335,8 @@ src/
                            (the biggest ones are directory modules: app/, app_overlay/, app_gitpanel/, app_hover/, settingsui/)
   keymap.rs, config.rs     DEFAULTS table + keybindings.json; config.json and paths
   lsp.rs, inlay.rs, eslint.rs, format.rs  JSON-RPC client (lazy tsgo), inlay hints, lint, formatters
+  lspreg.rs, lsp_servers.json, lspsup.rs, lspmerge.rs, lsplog.rs, app_lspx.rs  language-server registry and config, supervision
+                           (backoff, dynamic registration, progress), merged answers, server log, lifecycle in the app
   dap.rs, tasks.rs, terminal.rs  debug adapters, processes and ANSI output, PTY + VT emulator
   git.rs, gitx.rs, gitsync.rs  status, blame, hunks, diff, history, conflicts, fetch/pull/push
   mdview/, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)

@@ -67,6 +67,9 @@ impl App {
         if let Some(r) = self.format_with_lsp(i, wait) {
             return r;
         }
+        if let Some(r) = self.format_with_companion(i, wait) {
+            return r;
+        }
         if path.extension().is_some_and(|e| e == "json") {
             let d = &self.docs[i];
             let indent = if d.ed.indent.contains('\t') { "\t".to_string() } else { d.ed.indent.clone() };
@@ -206,7 +209,7 @@ impl App {
     }
 }
 
-const TIMEOUT: &str = "timeout";
+pub(crate) const TIMEOUT: &str = "timeout";
 
 fn no_formatter_msg(key: &str) -> String {
     format!("no formatter for {key} — add a biome.json or a prettier config")

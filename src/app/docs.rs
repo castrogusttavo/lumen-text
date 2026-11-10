@@ -124,7 +124,7 @@ impl App {
         // A running language server needs to hear about every source file changing on disk, also in
         // folders that are collapsed in the tree.
         for l in &self.lsps {
-            if l.name == "tsgo" && !self.lsp_watched.contains(&l.root) {
+            if (l.name == "tsgo" || l.is_generic()) && !self.lsp_watched.contains(&l.root) {
                 self.lsp_watched.push(l.root.clone());
                 crate::watcher::watch_tree(w, &l.root, 4000);
             }

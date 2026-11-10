@@ -488,11 +488,7 @@ impl App {
         if self.mem_cache.0.elapsed() > Duration::from_secs(2) {
             let own = mem::snapshot().map_or(0, |m| m.pss_kb) as f64 / 1024.0;
             let mut s = format!("RAM {own:.0} MB");
-            for l in &self.lsps {
-                if let Some(kb) = mem::pss_of(l.pid()) {
-                    s.push_str(&format!(" + {} {:.0} MB", l.name, kb as f64 / 1024.0));
-                }
-            }
+            s.push_str(&self.lspx_ram_suffix());
             self.mem_cache = (Instant::now(), s);
         }
         self.mem_cache.1.clone()

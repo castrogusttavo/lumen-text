@@ -41,6 +41,8 @@ pub struct Diag {
     pub severity: u8, // 1 error, 2 warning, 3 info, 4 hint
     pub message: String,
     pub code: String,
+    /// Which server produced it (registry servers only; empty for tsgo, Biome and ESLint).
+    pub source: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -103,6 +105,8 @@ pub struct Doc {
     diags_ts: Vec<Diag>,
     diags_lint: Vec<Diag>,
     diags_eslint: Vec<Diag>,
+    /// Diagnostics of the registry servers, by server id (merged and deduplicated into `diags`).
+    diags_ext: Vec<(String, Vec<Diag>)>,
     pub eslint_due: Option<Instant>,
     /// Test outcomes from the last run: (0-based line, passed). Drawn in the gutter.
     pub test_marks: Vec<(usize, Option<bool>)>,
@@ -231,6 +235,7 @@ impl Doc {
             diags_ts: Vec::new(),
             diags_lint: Vec::new(),
             diags_eslint: Vec::new(),
+            diags_ext: Vec::new(),
             eslint_due: None,
             test_marks: Vec::new(),
             sel_stack: Vec::new(),
@@ -413,10 +418,28 @@ impl Doc {
         self.rebuild_diags();
     }
 
+    /// Diagnostics of one registry server (empty list: it has none / the document closed there).
+    pub fn set_ext_diags(&mut self, server: &str, v: Vec<Diag>) {
+        match self.diags_ext.iter().position(|(n, _)| n == server) {
+            Some(i) if v.is_empty() => {
+                self.diags_ext.remove(i);
+            }
+            Some(i) => self.diags_ext[i].1 = v,
+            None if v.is_empty() => return,
+            None => self.diags_ext.push((server.to_string(), v)),
+        }
+        self.rebuild_diags();
+    }
+
     fn rebuild_diags(&mut self) {
         let mut all = self.diags_ts.clone();
         all.extend(self.diags_lint.iter().cloned());
         all.extend(self.diags_eslint.iter().cloned());
+        if !self.diags_ext.is_empty() {
+            let mut srcs: Vec<&[Diag]> = vec![&all];
+            srcs.extend(self.diags_ext.iter().map(|(_, v)| v.as_slice()));
+            all = crate::lspmerge::dedupe_diags(&srcs);
+        }
         all.sort_by_key(|d| (d.sl, d.sc));
         self.diags = all;
     }

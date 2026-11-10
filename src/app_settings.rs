@@ -64,8 +64,17 @@ impl App {
     }
 
     pub fn open_settings(&mut self, page: Page) {
-        let mut sp = SettingsPage::new(default_settings(), self.config_values());
-        sp.set_defaults(default_values());
+        let mut defs = default_settings();
+        let (ls_defs, ls_values) = self.lspx_setting_defs();
+        let (mut values, mut defaults) = (self.config_values(), default_values());
+        for (k, v) in ls_values.as_object().into_iter().flatten() {
+            values[k.as_str()] = v.clone();
+            // Servers are on by default: that is what "modified" is measured against.
+            defaults[k.as_str()] = if v.is_boolean() { json!(true) } else { v.clone() };
+        }
+        defs.extend(ls_defs);
+        let mut sp = SettingsPage::new(defs, values);
+        sp.set_defaults(defaults);
         let names = self.theme_names();
         for k in ["theme", "theme_light", "theme_dark"] {
             sp.set_choices(k, names.clone());
@@ -195,6 +204,9 @@ impl App {
     }
 
     pub(crate) fn apply_setting(&mut self, key: &str, v: &Value) {
+        if self.lspx_apply_setting(key, v) {
+            return;
+        }
         let b = v.as_bool();
         let s = v.as_str().map(str::to_string);
         match key {

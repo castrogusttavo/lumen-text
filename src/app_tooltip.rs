@@ -476,7 +476,10 @@ impl App {
                 }
                 StatusBtn::Ram => {
                     self.mem_cache.0 = Instant::now() - Duration::from_secs(10); // fresh numbers
-                    let full = self.memory_text();
+                    let mut full = self.memory_text();
+                    if let Some(per) = self.lspx_ram_detail() {
+                        full = format!("{full} — {per}");
+                    }
                     t("Memory in use", None, Some(full))
                 }
                 StatusBtn::Position => t("Go to line…", self.shortcut_text("GotoLine"), Some("Cursor position".into())),

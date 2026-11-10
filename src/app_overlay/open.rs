@@ -161,6 +161,7 @@ impl App {
                                 severity: if m.severity >= 2 { 1 } else { 2 },
                                 message: format!("{} (eslint)", m.message),
                                 code: m.rule.clone(),
+                                source: String::new(),
                             }
                         })
                         .collect();

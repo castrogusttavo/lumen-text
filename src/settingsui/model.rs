@@ -355,7 +355,7 @@ pub(super) fn section_icon(s: &str) -> &'static str {
         "General" => "settings",
         "Editor" => "edit",
         "Appearance" => "palette",
-        "TypeScript" => "code",
+        "TypeScript" | "Language servers" => "code",
         "Git" => "branch",
         "Terminal" => "terminal",
         "Status bar" => "layout",

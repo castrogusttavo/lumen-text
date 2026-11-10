@@ -137,6 +137,8 @@ pub struct App {
 
     pub lsps: Vec<Lsp>,
     pub lsp_warned: bool,
+    /// Registry language servers (rust-analyzer, pyright, ...): see `app_lspx`.
+    pub lspx: crate::app_lspx::LspX,
     pub lsp_guard: crate::lsp_guard::Guard,
     /// Formatter file types already reported as unsupported (one message per type and session).
     pub fmt_told: std::collections::HashSet<String>,
@@ -276,6 +278,7 @@ impl App {
             focus: Focus::Editor,
             lsps: Vec::new(),
             lsp_warned: false,
+            lspx: Default::default(),
             lsp_guard: crate::lsp_guard::Guard::new(),
             fmt_told: Default::default(),
             config,
