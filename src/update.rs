@@ -1165,6 +1165,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn evaluate_picks_the_file_for_the_install_kind() {
         let m = parse_manifest(MANIFEST).unwrap();
         let eval = |kind: &InstallKind, pkg, cur: &str| evaluate(&m, cur, kind, "x86_64", pkg, true);
@@ -1207,6 +1208,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn http_urls_are_ignored_unless_testing() {
         let m = parse_manifest(&MANIFEST.replace("https://h/", "http://h/")).unwrap();
         let kind = InstallKind::AppImage(PathBuf::from("/x.AppImage"));

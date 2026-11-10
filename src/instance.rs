@@ -113,7 +113,8 @@ mod tests {
         let _ = std::fs::remove_file(&sock);
         let wake: Wake = std::sync::Arc::new(|| {});
         let Role::Primary(rx) = claim_at(&sock, &[], wake.clone()) else { panic!("first claim must be primary") };
-        let args = vec!["/tmp/a.ts:3:4".to_string(), "/tmp/b.ts".to_string()];
+        let root = if cfg!(windows) { "C:\\tmp" } else { "/tmp" };
+        let args = vec![format!("{root}/a.ts:3:4"), format!("{root}/b.ts")];
         assert!(matches!(claim_at(&sock, &args, wake), Role::Secondary));
         let got = rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
         assert_eq!(got, args);

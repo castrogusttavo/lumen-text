@@ -516,6 +516,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn spawn_streams_output_and_kill_group_works() {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let wake: crate::lsp::Wake = std::sync::Arc::new(move || {

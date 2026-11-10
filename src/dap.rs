@@ -985,6 +985,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn gdb_session_breakpoint_and_terminate() {
         let have = |c: &str| {
             Command::new(c)
