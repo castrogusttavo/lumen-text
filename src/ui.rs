@@ -1086,8 +1086,11 @@ mod tests {
         let mut ctx = TextCtx::new(None);
         // draw() must lazily load the fallbacks by itself.
         let (px, _) = canvas_ink(&mut ctx, &[("😀".into(), Rgba(255, 255, 255, 255), 0)]);
-        if !covered_by_loaded(&ctx, '😀') {
-            eprintln!("[ui test] no emoji font loaded; skipped");
+        // Only meaningful with a *color* emoji font (e.g. Noto Color Emoji); CI runners often have
+        // a monochrome font that merely covers the code point.
+        let color_font = ctx.fonts.db().faces().any(|f| f.families.iter().any(|(n, _)| n.to_lowercase().contains("emoji")));
+        if !covered_by_loaded(&ctx, '😀') || !color_font {
+            eprintln!("[ui test] no color emoji font loaded; skipped");
             return;
         }
         let colorful = px.iter().any(|p| {
