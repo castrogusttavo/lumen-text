@@ -1,0 +1,1154 @@
+//! Drawing primitives shared by every part of the UI: rectangles, a pixel canvas
+//! with alpha blending, and a text context that renders colored runs.
+
+use crate::theme::Rgba;
+use cosmic_text::{
+    Attrs, Buffer as TextBuf, Color, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping, SwashCache, UnderlineStyle, Wrap, fontdb,
+};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+/// Style flags for [`TextCtx::draw_styled`] pieces.
+pub const BOLD: u8 = 1;
+pub const ITALIC: u8 = 2;
+pub const UNDERLINE: u8 = 4;
+
+/// Max number of fallback faces (emoji / CJK / symbols) loaded on top of the main fonts.
+const MAX_FALLBACKS: usize = 4;
+/// Fallback font files bigger than this are not loaded.
+const MAX_FALLBACK_BYTES: u64 = 25 * 1024 * 1024;
+
+use std::sync::atomic::{AtomicU32, Ordering};
+
+const DEFAULT_FONT_SIZE: f32 = 14.0;
+static FONT_SIZE_BITS: AtomicU32 = AtomicU32::new(0x41600000); // 14.0
+
+static SCALE_BITS: AtomicU32 = AtomicU32::new(0x3f800000); // 1.0
+
+/// Global UI scale (device pixels per logical pixel): 1.0 = classic, 1.5/2.0 = hi-DPI.
+/// All layout code works in *logical* pixels; `Canvas` and `TextCtx` convert to device pixels
+/// when they draw, so at 1.0 every coordinate is passed through unchanged.
+pub fn scale() -> f32 {
+    f32::from_bits(SCALE_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the scale (clamped to 0.5..=4). Callers go through `TextCtx::set_scale` so that the
+/// font metrics are re-measured too.
+fn store_scale(s: f32) -> f32 {
+    let s = if s.is_finite() { s.clamp(0.5, 4.0) } else { 1.0 };
+    SCALE_BITS.store(s.to_bits(), Ordering::Relaxed);
+    s
+}
+
+/// Logical -> device pixels (rounded). Identity at scale 1.0.
+pub fn sc(v: i32) -> i32 {
+    let s = scale();
+    if s == 1.0 { v } else { (v as f32 * s).round() as i32 }
+}
+
+/// Device pixels -> logical (rounded up, so the logical area always covers the device area).
+pub fn unsc_ceil(v: u32) -> u32 {
+    let s = scale();
+    if s == 1.0 { v } else { (v as f32 / s - 1e-3).ceil().max(1.0) as u32 }
+}
+
+/// Device thickness of a 1-logical-pixel line: whole device pixels, never thinner than 1.
+pub fn hairline() -> i32 {
+    (scale().round() as i32).max(1)
+}
+
+/// Window size in device pixels -> logical size.
+pub fn logical_size(w: u32, h: u32) -> (u32, u32) {
+    (unsc_ceil(w), unsc_ceil(h))
+}
+
+/// Where the UI scale comes from: the window's device scale factor, unless overridden.
+#[derive(Clone, Copy, Debug)]
+pub struct Dpi {
+    /// `window.scale_factor()` (fractional on Wayland with wp-fractional-scale: 1.25, 1.5 ...).
+    pub device: f64,
+    /// `--scale` / `LUMEN_SCALE` (tests, screenshots); beats the config.
+    pub forced: Option<f32>,
+}
+
+impl Dpi {
+    pub fn from_env() -> Self {
+        Self { device: 1.0, forced: std::env::var("LUMEN_SCALE").ok().and_then(|v| parse_scale(&v)) }
+    }
+
+    /// `cfg` is the `ui_scale` setting (0 = automatic).
+    pub fn effective(&self, cfg: f32) -> f32 {
+        self.forced.or((cfg > 0.0).then_some(cfg)).unwrap_or(self.device as f32).clamp(0.5, 4.0)
+    }
+}
+
+pub fn parse_scale(v: &str) -> Option<f32> {
+    v.trim().parse::<f32>().ok().filter(|s| s.is_finite() && *s >= 0.5 && *s <= 4.0)
+}
+
+/// Current font size in px (changed by zoom).
+pub fn font_size() -> f32 {
+    f32::from_bits(FONT_SIZE_BITS.load(Ordering::Relaxed))
+}
+
+/// Line height follows the font size at the default 20/14 ratio.
+pub fn line_h() -> f32 {
+    (font_size() * 22.0 / 14.0).round()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl Rect {
+    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
+        Self { x, y, w, h }
+    }
+    pub fn right(&self) -> i32 {
+        self.x + self.w
+    }
+    pub fn bottom(&self) -> i32 {
+        self.y + self.h
+    }
+    pub fn inset(&self, d: i32) -> Rect {
+        Rect::new(self.x + d, self.y + d, (self.w - 2 * d).max(0), (self.h - 2 * d).max(0))
+    }
+    pub fn contains(&self, px: f64, py: f64) -> bool {
+        px >= self.x as f64 && px < self.right() as f64 && py >= self.y as f64 && py < self.bottom() as f64
+    }
+    pub fn intersect(&self, o: &Rect) -> Rect {
+        let x0 = self.x.max(o.x);
+        let y0 = self.y.max(o.y);
+        let x1 = self.right().min(o.right());
+        let y1 = self.bottom().min(o.bottom());
+        Rect::new(x0, y0, (x1 - x0).max(0), (y1 - y0).max(0))
+    }
+}
+
+pub fn to_color(c: Rgba) -> Color {
+    Color::rgba(c.0, c.1, c.2, c.3)
+}
+
+fn blend_px(dst: u32, c: Rgba) -> u32 {
+    let a = c.3 as u32;
+    if a == 255 {
+        return ((c.0 as u32) << 16) | ((c.1 as u32) << 8) | c.2 as u32;
+    }
+    let mix = |d: u32, s: u8| (d * (255 - a) + s as u32 * a) / 255;
+    (mix((dst >> 16) & 0xff, c.0) << 16) | (mix((dst >> 8) & 0xff, c.1) << 8) | mix(dst & 0xff, c.2)
+}
+
+pub struct Canvas<'a> {
+    pub px: &'a mut [u32],
+    pub w: i32,
+    pub h: i32,
+}
+
+impl Canvas<'_> {
+    /// Logical bounds (`w`/`h` are device pixels).
+    pub fn bounds(&self) -> Rect {
+        Rect::new(0, 0, unsc_ceil(self.w as u32) as i32, unsc_ceil(self.h as u32) as i32)
+    }
+
+    fn dev_bounds(&self) -> Rect {
+        Rect::new(0, 0, self.w, self.h)
+    }
+
+    /// Logical rect -> device rect. Edges are rounded independently so neighbours tile exactly.
+    pub fn to_dev(&self, r: Rect) -> Rect {
+        if scale() == 1.0 {
+            return r;
+        }
+        let (x0, y0, x1, y1) = (sc(r.x), sc(r.y), sc(r.right()), sc(r.bottom()));
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
+    }
+
+    /// Like [`to_dev`](Self::to_dev), but a 1-logical-pixel extent becomes a [`hairline`] so
+    /// borders and separators have the same thickness wherever they fall.
+    fn to_dev_line(&self, r: Rect) -> Rect {
+        let mut d = self.to_dev(r);
+        let hl = hairline();
+        if r.w == 1 {
+            d.w = hl;
+        }
+        if r.h == 1 {
+            d.h = hl;
+        }
+        d
+    }
+
+    pub fn clear(&mut self, c: Rgba) {
+        self.px.fill(blend_px(0, c.with_alpha(255)));
+    }
+
+    pub fn fill(&mut self, r: Rect, c: Rgba) {
+        self.fill_clip(r, c, self.bounds());
+    }
+
+    pub fn fill_clip(&mut self, r: Rect, c: Rgba, clip: Rect) {
+        let (d, dc) = (self.to_dev_line(r), self.to_dev(clip));
+        self.fill_dev(d, c, dc);
+    }
+
+    /// `fill_clip` without the hairline rule: 1-pixel rects scale like any other rect (minimap
+    /// rows, where neighbours must tile).
+    pub fn fill_exact(&mut self, r: Rect, c: Rgba, clip: Rect) {
+        let (d, dc) = (self.to_dev(r), self.to_dev(clip));
+        self.fill_dev(d, c, dc);
+    }
+
+    /// Fill a rect given in device pixels.
+    fn fill_dev(&mut self, r: Rect, c: Rgba, clip: Rect) {
+        let r = r.intersect(&clip).intersect(&self.dev_bounds());
+        for y in r.y..r.bottom() {
+            let row = (y * self.w) as usize;
+            for x in r.x..r.right() {
+                let i = row + x as usize;
+                self.px[i] = blend_px(self.px[i], c);
+            }
+        }
+    }
+
+    /// One logical pixel (a `scale` x `scale` block of device pixels).
+    pub fn dot(&mut self, x: i32, y: i32, c: Rgba) {
+        if scale() == 1.0 {
+            return self.dot_dev(x, y, c);
+        }
+        let d = self.to_dev(Rect::new(x, y, 1, 1));
+        self.fill_dev(d, c, self.dev_bounds());
+    }
+
+    /// One device pixel.
+    pub fn dot_dev(&mut self, x: i32, y: i32, c: Rgba) {
+        if x >= 0 && y >= 0 && x < self.w && y < self.h {
+            let i = (y * self.w + x) as usize;
+            self.px[i] = blend_px(self.px[i], c);
+        }
+    }
+
+    /// Filled rounded rectangle with antialiased corners.
+    pub fn fill_round(&mut self, r: Rect, rad: i32, c: Rgba) {
+        self.fill_round_clip(r, rad, c, self.bounds());
+    }
+
+    /// [`fill_round`](Self::fill_round) clipped to `clip` (a pane smaller than the canvas).
+    pub fn fill_round_clip(&mut self, r: Rect, rad: i32, c: Rgba, clip: Rect) {
+        let (d, dc) = (self.to_dev(r), self.to_dev(clip));
+        self.round_dev(d, sc(rad), c, dc);
+    }
+
+    fn round_dev(&mut self, r: Rect, rad: i32, c: Rgba, clip: Rect) {
+        let rad = rad.min(r.w / 2).min(r.h / 2).max(0);
+        if rad == 0 {
+            return self.fill_dev(r, c, clip);
+        }
+        self.fill_dev(Rect::new(r.x + rad, r.y, r.w - 2 * rad, r.h), c, clip);
+        self.fill_dev(Rect::new(r.x, r.y + rad, rad, r.h - 2 * rad), c, clip);
+        self.fill_dev(Rect::new(r.right() - rad, r.y + rad, rad, r.h - 2 * rad), c, clip);
+        let rf = rad as f32;
+        for (cx, cy, x0, y0) in [
+            (r.x + rad, r.y + rad, r.x, r.y),
+            (r.right() - rad, r.y + rad, r.right() - rad, r.y),
+            (r.x + rad, r.bottom() - rad, r.x, r.bottom() - rad),
+            (r.right() - rad, r.bottom() - rad, r.right() - rad, r.bottom() - rad),
+        ] {
+            for y in y0..y0 + rad {
+                for x in x0..x0 + rad {
+                    if !clip.contains(x as f64, y as f64) {
+                        continue;
+                    }
+                    let (dx, dy) = (x as f32 + 0.5 - cx as f32, y as f32 + 0.5 - cy as f32);
+                    let cov = (rf - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0);
+                    if cov > 0.0 {
+                        self.dot_dev(x, y, Rgba(c.0, c.1, c.2, (c.3 as f32 * cov) as u8));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rounded card: 1px `border` ring around a `fill` interior.
+    pub fn card(&mut self, r: Rect, rad: i32, fill: Rgba, border: Rgba) {
+        let (d, hl) = (self.to_dev(r), hairline());
+        let rad = sc(rad);
+        let all = self.dev_bounds();
+        self.round_dev(d, rad, border, all);
+        self.round_dev(Rect::new(d.x + hl, d.y + hl, d.w - 2 * hl, d.h - 2 * hl), (rad - hl).max(0), fill, all);
+    }
+
+    /// Antialiased 1px outline of a rounded rectangle, drawn over whatever is there.
+    pub fn ring(&mut self, r: Rect, rad: i32, c: Rgba) {
+        let d = self.to_dev(r);
+        let hl = hairline();
+        let rad = sc(rad).min(d.w / 2).min(d.h / 2).max(1);
+        let all = self.dev_bounds();
+        self.fill_dev(Rect::new(d.x + rad, d.y, d.w - 2 * rad, hl), c, all);
+        self.fill_dev(Rect::new(d.x + rad, d.bottom() - hl, d.w - 2 * rad, hl), c, all);
+        self.fill_dev(Rect::new(d.x, d.y + rad, hl, d.h - 2 * rad), c, all);
+        self.fill_dev(Rect::new(d.right() - hl, d.y + rad, hl, d.h - 2 * rad), c, all);
+        let rf = rad as f32;
+        for (cx, cy, x0, y0) in [
+            (d.x + rad, d.y + rad, d.x, d.y),
+            (d.right() - rad, d.y + rad, d.right() - rad, d.y),
+            (d.x + rad, d.bottom() - rad, d.x, d.bottom() - rad),
+            (d.right() - rad, d.bottom() - rad, d.right() - rad, d.bottom() - rad),
+        ] {
+            for y in y0..y0 + rad {
+                for x in x0..x0 + rad {
+                    let (dx, dy) = (x as f32 + 0.5 - cx as f32, y as f32 + 0.5 - cy as f32);
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let outer = (rf - dist + 0.5).clamp(0.0, 1.0);
+                    let inner = (rf - hl as f32 - dist + 0.5).clamp(0.0, 1.0);
+                    let cov = (outer - inner).clamp(0.0, 1.0);
+                    if cov > 0.0 {
+                        self.dot_dev(x, y, Rgba(c.0, c.1, c.2, (c.3 as f32 * cov) as u8));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Soft drop shadow under a rounded rectangle (call before drawing the card).
+    pub fn shadow(&mut self, r: Rect, rad: i32) {
+        // Soft, wide, low-contrast shadow (macOS style): many faint layers, shifted down.
+        for i in 1..=16 {
+            let g = Rect::new(r.x - i, r.y - i + 8, r.w + 2 * i, r.h + 2 * i);
+            self.fill_round(g, rad + i, Rgba(0, 0, 0, 3));
+        }
+    }
+
+    /// 1px border inside `r`.
+    pub fn stroke(&mut self, r: Rect, c: Rgba) {
+        let (d, hl) = (self.to_dev(r), hairline());
+        let all = self.dev_bounds();
+        self.fill_dev(Rect::new(d.x, d.y, d.w, hl), c, all);
+        self.fill_dev(Rect::new(d.x, d.bottom() - hl, d.w, hl), c, all);
+        self.fill_dev(Rect::new(d.x, d.y, hl, d.h), c, all);
+        self.fill_dev(Rect::new(d.right() - hl, d.y, hl, d.h), c, all);
+    }
+}
+
+/// A thin overlay scrollbar: `track` is the (wider) hit area at the right edge, `thumb` the handle.
+#[derive(Clone, Copy, Debug)]
+pub struct VBar {
+    pub track: Rect,
+    pub thumb: Rect,
+}
+
+impl VBar {
+    /// `None` when everything fits. `total`/`visible`/`pos` are in the same unit (rows or px).
+    pub fn new(track: Rect, total: f64, visible: f64, pos: f64) -> Option<VBar> {
+        if total <= visible + 0.5 || track.h < 24 {
+            return None;
+        }
+        let th = (((track.h as f64) * (visible / total).clamp(0.0, 1.0)) as i32).clamp(32, track.h);
+        let max = (total - visible).max(1e-9);
+        let ty = track.y + (((track.h - th) as f64) * (pos / max).clamp(0.0, 1.0)) as i32;
+        Some(VBar { track, thumb: Rect::new(track.x, ty, track.w, th) })
+    }
+
+    /// Scroll position for dragging the thumb with the pointer at `y`, grabbed `grab` px below its top.
+    pub fn pos_for(&self, y: f64, grab: f64, total: f64, visible: f64) -> f64 {
+        let span = (self.track.h - self.thumb.h).max(1) as f64;
+        ((y - grab - self.track.y as f64) / span).clamp(0.0, 1.0) * (total - visible).max(0.0)
+    }
+
+    /// Draw the handle: faint at rest, a bit wider and stronger when the pointer is near or dragging.
+    pub fn draw(&self, cv: &mut Canvas, fg: Rgba, hot: bool, active: bool) {
+        let w = if hot || active { 8 } else { 5 };
+        let a = if active { 0x78 } else if hot { 0x55 } else { 0x2c };
+        let r = Rect::new(self.track.right() - w - 3, self.thumb.y + 2, w, self.thumb.h - 4);
+        cv.fill_round_clip(r, w / 2, fg.with_alpha(a), self.track);
+    }
+}
+
+/// The horizontal twin of `VBar`: a thin overlay bar along the bottom edge. `track` is the hit area,
+/// `thumb` the handle; `total`/`visible`/`pos` are in the same unit (px or columns).
+#[derive(Clone, Copy, Debug)]
+pub struct HBar {
+    pub track: Rect,
+    pub thumb: Rect,
+}
+
+impl HBar {
+    /// `None` when everything fits.
+    pub fn new(track: Rect, total: f64, visible: f64, pos: f64) -> Option<HBar> {
+        if total <= visible + 0.5 || track.w < 24 {
+            return None;
+        }
+        let tw = (((track.w as f64) * (visible / total).clamp(0.0, 1.0)) as i32).clamp(32, track.w);
+        let max = (total - visible).max(1e-9);
+        let tx = track.x + (((track.w - tw) as f64) * (pos / max).clamp(0.0, 1.0)) as i32;
+        Some(HBar { track, thumb: Rect::new(tx, track.y, tw, track.h) })
+    }
+
+    /// Scroll position for dragging the thumb with the pointer at `x`, grabbed `grab` px right of its left edge.
+    pub fn pos_for(&self, x: f64, grab: f64, total: f64, visible: f64) -> f64 {
+        let span = (self.track.w - self.thumb.w).max(1) as f64;
+        ((x - grab - self.track.x as f64) / span).clamp(0.0, 1.0) * (total - visible).max(0.0)
+    }
+
+    /// Draw the handle: faint at rest, a bit thicker and stronger when the pointer is near or dragging.
+    pub fn draw(&self, cv: &mut Canvas, fg: Rgba, hot: bool, active: bool) {
+        let h = if hot || active { 8 } else { 5 };
+        let a = if active { 0x78 } else if hot { 0x55 } else { 0x2c };
+        let r = Rect::new(self.thumb.x + 2, self.track.bottom() - h - 3, self.thumb.w - 4, h);
+        cv.fill_round_clip(r, h / 2, fg.with_alpha(a), self.track);
+    }
+}
+
+#[cfg(test)]
+mod hbar_tests {
+    use super::*;
+
+    #[test]
+    fn hidden_when_everything_fits() {
+        let t = Rect::new(10, 100, 300, 12);
+        assert!(HBar::new(t, 300.0, 300.0, 0.0).is_none());
+        assert!(HBar::new(t, 200.0, 300.0, 0.0).is_none());
+        assert!(HBar::new(Rect::new(0, 0, 10, 12), 900.0, 300.0, 0.0).is_none(), "track too short");
+    }
+
+    #[test]
+    fn thumb_is_proportional_and_follows_the_position() {
+        let t = Rect::new(10, 100, 300, 12);
+        let b = HBar::new(t, 900.0, 300.0, 0.0).unwrap();
+        assert_eq!((b.thumb.x, b.thumb.w, b.thumb.y, b.thumb.h), (10, 100, 100, 12));
+        let b = HBar::new(t, 900.0, 300.0, 600.0).unwrap();
+        assert_eq!(b.thumb.right(), t.right(), "at the end the thumb touches the end of the track");
+        let b = HBar::new(t, 900.0, 300.0, 300.0).unwrap();
+        assert_eq!(b.thumb.x, 10 + 100);
+        // tiny visible fraction: the thumb keeps a grabbable minimum
+        let b = HBar::new(t, 90000.0, 300.0, 0.0).unwrap();
+        assert_eq!(b.thumb.w, 32);
+    }
+
+    #[test]
+    fn dragging_maps_the_pointer_back_to_a_position() {
+        let t = Rect::new(10, 100, 300, 12);
+        let b = HBar::new(t, 900.0, 300.0, 0.0).unwrap();
+        // grabbing the middle of the thumb and moving to the far right gives the maximum
+        assert_eq!(b.pos_for(10.0 + 300.0, 50.0, 900.0, 300.0), 600.0);
+        assert_eq!(b.pos_for(0.0, 50.0, 900.0, 300.0), 0.0);
+        let mid = b.pos_for(10.0 + 50.0 + 100.0, 50.0, 900.0, 300.0);
+        assert!((mid - 300.0).abs() < 1.0, "mid = {mid}");
+        // round trip: the pos placed by the thumb is the pos asked for
+        let moved = HBar::new(t, 900.0, 300.0, mid).unwrap();
+        assert!((moved.thumb.x - (10 + 100)).abs() <= 1);
+    }
+}
+
+pub struct TextCtx {
+    pub fonts: FontSystem,
+    pub swash: SwashCache,
+    buf: TextBuf,
+    ui_buf: TextBuf,
+    family: Option<String>,
+    ui_family: Option<String>,
+    pub cell_w: f32,
+    pub icons: crate::icons::Icons,
+    widths: std::collections::HashMap<(String, bool), f32>,
+    /// Every font file already in the database (main, variants, UI, fallbacks), canonicalized.
+    loaded: Vec<PathBuf>,
+    fallbacks_loaded: bool,
+}
+
+pub const UI_SIZE: f32 = 13.0;
+pub const UI_LINE: f32 = 18.0;
+
+fn find_font(query: &str) -> Option<PathBuf> {
+    let out = Command::new("fc-match").args(["-f", "%{file}", query]).output().ok()?;
+    let p = PathBuf::from(String::from_utf8(out.stdout).ok()?);
+    p.exists().then_some(p)
+}
+
+fn find_mono_font() -> Option<PathBuf> {
+    find_font("monospace")
+}
+
+fn canon(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Files of every installed font that has a glyph for `cp` (fontconfig charset query).
+fn files_covering(cp: u32) -> Vec<PathBuf> {
+    let Ok(out) = Command::new("fc-list").args(["-f", "%{file}\n", &format!(":charset={cp:x}")]).output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.is_empty()).map(|l| canon(Path::new(l))).collect()
+}
+
+fn face_ids(db: &fontdb::Database) -> Vec<fontdb::ID> {
+    db.faces().map(|f| f.id).collect()
+}
+
+/// Load `path` into `db`. Returns the ids of the faces it added (empty on failure).
+fn load_into(db: &mut fontdb::Database, path: &Path) -> Vec<fontdb::ID> {
+    let before = face_ids(db);
+    if db.load_font_file(path).is_err() {
+        return Vec::new();
+    }
+    face_ids(db).into_iter().filter(|id| !before.contains(id)).collect()
+}
+
+/// Bold / italic / bold-italic files of `family` that differ from what is already loaded.
+/// A candidate is kept only if the face it adds really is that variant of that family
+/// (fc-match happily answers with some other font when the variant doesn't exist).
+fn load_variants(db: &mut fontdb::Database, family: &str, loaded: &mut Vec<PathBuf>) {
+    for (suffix, bold, italic) in [(":bold", true, false), (":italic", false, true), (":bold:italic", true, true)] {
+        let Some(p) = find_font(&format!("{family}{suffix}")) else { continue };
+        let p = canon(&p);
+        if loaded.contains(&p) {
+            continue;
+        }
+        let added = load_into(db, &p);
+        let ok = added.iter().any(|id| {
+            db.face(*id).is_some_and(|f| {
+                f.families.iter().any(|(n, _)| n == family)
+                    && (f.weight.0 >= 600) == bold
+                    && (f.style != fontdb::Style::Normal) == italic
+            })
+        });
+        if ok {
+            loaded.push(p);
+        } else {
+            for id in added {
+                db.remove_face(id);
+            }
+        }
+    }
+}
+
+/// A font database with the code font + one proportional UI family: `FontSystem::new_with_fonts`
+/// would also load every system font (~25 MB of mapped files), which we can't afford.
+fn single_font_system(path: Option<&Path>) -> (FontSystem, Option<String>, Option<String>, Vec<PathBuf>) {
+    if let Some(p) = path {
+        let mut db = fontdb::Database::new();
+        if db.load_font_file(p).is_ok() {
+            let fam = db.faces().next().and_then(|f| f.families.first().map(|x| x.0.clone()));
+            if let Some(fam) = fam {
+                db.set_monospace_family(&fam);
+                let mut loaded = vec![canon(p)];
+                // One proportional family for the UI chrome (regular + semibold).
+                let mut ui_family = None;
+                for q in ["sans-serif", "sans-serif:semibold"] {
+                    if let Some(fp) = find_font(q) {
+                        let before = db.len();
+                        if db.load_font_file(&fp).is_ok() && db.len() > before {
+                            loaded.push(canon(&fp));
+                            if ui_family.is_none() {
+                                ui_family = db.faces().last().and_then(|f| f.families.first().map(|x| x.0.clone()));
+                            }
+                        }
+                    }
+                }
+                return (FontSystem::new_with_locale_and_db("en-US".to_string(), db), Some(fam), ui_family, loaded);
+            }
+        }
+    }
+    (FontSystem::new(), None, None, Vec::new())
+}
+
+/// Fallback font files for glyphs the code font lacks, best first: color emoji, CJK, then up to
+/// two symbol fonts (arrows / math / dingbats, box drawing). Each query is verified against
+/// fontconfig's coverage list (fc-match always answers with *something*).
+fn fallback_candidates(loaded: &[PathBuf]) -> Vec<PathBuf> {
+    let queries: [(&[&str], u32); 5] = [
+        (&["emoji"], 0x1F600),
+        (&["sans-serif:lang=zh-cn:charset=65e5", "sans-serif:lang=ja:charset=65e5"], 0x65E5),
+        (&["sans-serif:charset=2190-21ff 2200-22ff 2713"], 0x2192),
+        (&["monospace:charset=2500-257f"], 0x2500),
+        (&["Noto Sans Symbols 2"], 0x2713),
+    ];
+    let mut out: Vec<PathBuf> = Vec::new();
+    for (qs, probe) in queries {
+        if out.len() >= MAX_FALLBACKS {
+            break;
+        }
+        let covering = files_covering(probe);
+        for q in qs {
+            let Some(p) = find_font(q) else { continue };
+            let p = canon(&p);
+            if !covering.contains(&p) {
+                continue;
+            }
+            if !loaded.contains(&p) && !out.contains(&p) && std::fs::metadata(&p).is_ok_and(|m| m.len() <= MAX_FALLBACK_BYTES) {
+                out.push(p);
+            }
+            break; // this class is satisfied (possibly by an already loaded file)
+        }
+    }
+    out
+}
+
+/// True if `s` has a char >= U+2000 (UTF-8 lead byte >= 0xE2): the cheap trigger for loading
+/// fallback fonts. Latin, Latin-1 and Greek/Cyrillic never need them.
+fn needs_fallback(s: &str) -> bool {
+    s.bytes().any(|b| b >= 0xE2)
+}
+
+/// `Shaping::Basic` (what the editor uses: cheap, no ligatures) never consults more than one
+/// fallback font, so text with exotic chars goes through `Shaping::Advanced`, which walks every
+/// face in the database. Ligature features are switched off there so the cell grid and the look
+/// stay the same as in Basic mode.
+fn plain_features() -> FontFeatures {
+    let mut f = FontFeatures::new();
+    for t in [FeatureTag::STANDARD_LIGATURES, FeatureTag::CONTEXTUAL_LIGATURES, FeatureTag::CONTEXTUAL_ALTERNATES] {
+        f.disable(t);
+    }
+    f
+}
+
+/// Cell width in *logical* pixels: measured at the device size (`px * scale`) so that glyph
+/// advances match what is drawn, then divided back (fractional, e.g. 8.4 / 12.6 / 14.7 ...).
+fn measure_cell(fonts: &mut FontSystem, attrs: &Attrs, px: f32) -> f32 {
+    let s = scale();
+    let dev = px * s;
+    let mut b = TextBuf::new(fonts, Metrics::new(dev, (px * 20.0 / 14.0).round() * s));
+    b.set_size(Some(2000.0), Some(200.0));
+    b.set_text("MMMMMMMMMMMMMMMMMMMM", attrs, Shaping::Basic, None);
+    b.shape_until_scroll(fonts, false);
+    b.layout_runs().next().map_or(px * 0.6, |r| r.line_w / 20.0 / s)
+}
+
+impl TextCtx {
+    pub fn new(font: Option<&Path>) -> Self {
+        let mut ctx = Self::new_bare(font);
+        ctx.load_variants();
+        ctx
+    }
+
+    /// Main code font + UI family only: no bold/italic files, no fallbacks.
+    fn new_bare(font: Option<&Path>) -> Self {
+        let found = font.map(Path::to_path_buf).or_else(find_mono_font);
+        let (mut fonts, family, ui_family, loaded) = single_font_system(found.as_deref());
+        let attrs = family_attrs(&family);
+        let cell_w = measure_cell(&mut fonts, &attrs, font_size());
+        let buf = TextBuf::new(&mut fonts, Metrics::new(font_size() * scale(), line_h() * scale()));
+        let ui_buf = TextBuf::new(&mut fonts, Metrics::new(UI_SIZE * scale(), UI_LINE * scale()));
+        Self {
+            fonts,
+            swash: SwashCache::new(),
+            buf,
+            ui_buf,
+            family,
+            ui_family,
+            cell_w,
+            widths: Default::default(),
+            icons: crate::icons::Icons::new(),
+            loaded,
+            fallbacks_loaded: false,
+        }
+    }
+
+    /// Load the bold / italic / bold-italic files of the code family (when the system has them).
+    fn load_variants(&mut self) {
+        if let Some(fam) = self.family.clone() {
+            load_variants(self.fonts.db_mut(), &fam, &mut self.loaded);
+        }
+    }
+
+    /// Load the curated fallback faces (color emoji, CJK, symbols) used for glyphs the code font
+    /// lacks. Cheap no-op after the first call; called by every `draw*` when it first meets a
+    /// char >= U+2000, so ASCII/Latin-only sessions never pay for it. Does nothing when the
+    /// FontSystem already holds every system font.
+    pub fn ensure_fallbacks(&mut self) {
+        if self.fallbacks_loaded {
+            return;
+        }
+        self.fallbacks_loaded = true;
+        if self.family.is_none() {
+            return;
+        }
+        for p in fallback_candidates(&self.loaded) {
+            if !load_into(self.fonts.db_mut(), &p).is_empty() {
+                self.loaded.push(p);
+            }
+        }
+    }
+
+    /// Change the font size (clamped) and re-measure the cell width. Returns the size in use.
+    pub fn set_zoom(&mut self, px: f32) -> f32 {
+        let px = px.clamp(8.0, 40.0);
+        FONT_SIZE_BITS.store(px.to_bits(), Ordering::Relaxed);
+        let family = self.family.clone();
+        let attrs = family_attrs(&family);
+        self.cell_w = measure_cell(&mut self.fonts, &attrs, font_size());
+        px
+    }
+
+    pub fn reset_zoom(&mut self) -> f32 {
+        self.set_zoom(DEFAULT_FONT_SIZE)
+    }
+
+    /// Change the UI scale (hi-DPI). Re-measures the code cell width and drops the width cache,
+    /// which is in logical pixels but was measured at the old device size. Returns the scale in use.
+    pub fn set_scale(&mut self, s: f32) -> f32 {
+        let s = store_scale(s);
+        self.widths.clear();
+        let family = self.family.clone();
+        let attrs = family_attrs(&family);
+        self.cell_w = measure_cell(&mut self.fonts, &attrs, font_size());
+        s
+    }
+
+    /// Draw colored runs with their top-left at (x, y); '\n' inside a run starts a new line.
+    /// Everything is clipped to `clip`.
+    pub fn draw(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(String, Rgba)], clip: Rect) {
+        let spans: Vec<(&str, Rgba, u8)> = pieces.iter().map(|(s, c)| (s.as_str(), *c, 0)).collect();
+        self.draw_spans(cv, x, y, &spans, clip);
+    }
+
+    /// Like [`draw`](Self::draw) with a style per piece: [`BOLD`], [`ITALIC`], [`UNDERLINE`] flags.
+    /// Bold/italic use the real font files when the system has them; without an italic file
+    /// cosmic-text slants the upright glyphs synthetically (`CacheKeyFlags::FAKE_ITALIC`).
+    pub fn draw_styled(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(String, Rgba, u8)], clip: Rect) {
+        let spans: Vec<(&str, Rgba, u8)> = pieces.iter().map(|(s, c, f)| (s.as_str(), *c, *f)).collect();
+        self.draw_spans(cv, x, y, &spans, clip);
+    }
+
+    fn draw_spans(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(&str, Rgba, u8)], clip: Rect) {
+        if pieces.is_empty() || clip.w <= 0 || clip.h <= 0 {
+            return;
+        }
+        if !self.fallbacks_loaded && pieces.iter().any(|(s, ..)| needs_fallback(s)) {
+            self.ensure_fallbacks();
+        }
+        let wide = pieces.iter().any(|(s, ..)| needs_fallback(s));
+        let family = self.family.clone();
+        let mut attrs = family_attrs(&family);
+        if wide {
+            attrs = attrs.font_features(plain_features());
+        }
+        let s = scale();
+        self.buf.set_metrics_and_size(Metrics::new(font_size() * s, line_h() * s), Some(4000.0 * s), Some((clip.h as f32 + 2.0 * line_h()) * s));
+        self.buf.set_wrap(Wrap::None);
+        let spans: Vec<(&str, Attrs)> = pieces.iter().map(|(s, c, f)| (*s, styled(&attrs, *c, *f))).collect();
+        self.buf.set_rich_text(spans, &attrs, if wide { Shaping::Advanced } else { Shaping::Basic }, None);
+        let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
+        let (x, y) = (sc(x), sc(y));
+        let (w, px) = (cv.w, &mut *cv.px);
+        // Glyph pixels arrive as final RGBA: tinted with the piece color for mask glyphs, real
+        // colors for color glyphs (emoji bitmaps); decoration rectangles come through here too.
+        self.buf.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
+            for dy in 0..gh as i32 {
+                let py = gy + dy + y;
+                if py < clip.y || py >= clip.bottom() {
+                    continue;
+                }
+                for dx in 0..gw as i32 {
+                    let pxx = gx + dx + x;
+                    if pxx < clip.x || pxx >= clip.right() {
+                        continue;
+                    }
+                    let i = (py * w + pxx) as usize;
+                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
+                }
+            }
+        });
+    }
+
+    fn ui_attrs(&self, bold: bool) -> Attrs<'_> {
+        let a = match &self.ui_family {
+            Some(f) => Attrs::new().family(Family::Name(f)),
+            None => Attrs::new().family(Family::SansSerif),
+        };
+        if bold { a.weight(cosmic_text::Weight::SEMIBOLD) } else { a }
+    }
+
+    /// Width in px of `text` in the UI font.
+    pub fn ui_width(&mut self, text: &str, bold: bool) -> i32 {
+        if let Some(w) = self.widths.get(&(text.to_string(), bold)) {
+            return w.round() as i32;
+        }
+        if !self.fallbacks_loaded && needs_fallback(text) {
+            self.ensure_fallbacks();
+        }
+        let fam = self.ui_family.clone();
+        let mut a = match &fam {
+            Some(f) => Attrs::new().family(Family::Name(f)),
+            None => Attrs::new().family(Family::SansSerif),
+        };
+        if bold {
+            a = a.weight(cosmic_text::Weight::SEMIBOLD);
+        }
+        let s = scale();
+        let mut b = TextBuf::new(&mut self.fonts, Metrics::new(UI_SIZE * s, UI_LINE * s));
+        b.set_size(Some(8000.0 * s), Some(UI_LINE * 2.0 * s));
+        b.set_wrap(Wrap::None);
+        b.set_text(text, &a, Shaping::Advanced, None);
+        b.shape_until_scroll(&mut self.fonts, false);
+        let w = b.layout_runs().next().map_or(0.0, |r| r.line_w) / s;
+        if self.widths.len() > 4000 {
+            self.widths.clear();
+        }
+        self.widths.insert((text.to_string(), bold), w);
+        w.round() as i32
+    }
+
+    /// Draw UI-font runs on one line at (x, y) (top-left), clipped.
+    pub fn draw_ui_pieces(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(String, Rgba)], clip: Rect, bold: bool) {
+        if pieces.is_empty() || clip.w <= 0 || clip.h <= 0 {
+            return;
+        }
+        if !self.fallbacks_loaded && pieces.iter().any(|(s, _)| needs_fallback(s)) {
+            self.ensure_fallbacks();
+        }
+        let fam = self.ui_family.clone();
+        let mut base = match &fam {
+            Some(f) => Attrs::new().family(Family::Name(f)),
+            None => Attrs::new().family(Family::SansSerif),
+        };
+        if bold {
+            base = base.weight(cosmic_text::Weight::SEMIBOLD);
+        }
+        let s = scale();
+        self.ui_buf.set_metrics_and_size(Metrics::new(UI_SIZE * s, UI_LINE * s), Some(4000.0 * s), Some(UI_LINE * 2.0 * s));
+        self.ui_buf.set_wrap(Wrap::None);
+        let spans: Vec<(&str, Attrs)> = pieces.iter().map(|(s, c)| (s.as_str(), base.clone().color(to_color(*c)))).collect();
+        self.ui_buf.set_rich_text(spans, &base, Shaping::Advanced, None);
+        let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
+        let (x, y) = (sc(x), sc(y));
+        let (w, px) = (cv.w, &mut *cv.px);
+        self.ui_buf.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
+            for dy in 0..gh as i32 {
+                let py = gy + dy + y;
+                if py < clip.y || py >= clip.bottom() {
+                    continue;
+                }
+                for dx in 0..gw as i32 {
+                    let pxx = gx + dx + x;
+                    if pxx < clip.x || pxx >= clip.right() {
+                        continue;
+                    }
+                    let i = (py * w + pxx) as usize;
+                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
+                }
+            }
+        });
+    }
+
+    pub fn draw_ui(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool) {
+        self.draw_ui_pieces(cv, x, y, &[(text.to_string(), color)], clip, bold);
+    }
+
+    /// Draw an icon (see `icons.rs`) tinted with `color`. Size is in pixels and independent of the
+    /// code font size, so zooming the code never changes the interface.
+    pub fn icon(&mut self, cv: &mut Canvas, name: &str, x: i32, y: i32, size: i32, color: Rgba, clip: Rect) {
+        self.icons.draw(cv, name, x, y, size, color, clip);
+    }
+
+    pub fn draw_line(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect) {
+        self.draw(cv, x, y, &[(text.to_string(), color)], clip);
+    }
+
+    /// Width in pixels of `n` monospace cells.
+    pub fn cells(&self, n: usize) -> i32 {
+        (n as f32 * self.cell_w).round() as i32
+    }
+
+    /// Draw `text` in the UI font at an arbitrary `size` (line height `round(size * 1.4)`) with its
+    /// top-left at (x, y), clipped. Same family / weight rules as [`draw_ui`](Self::draw_ui).
+    pub fn draw_ui_sized(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool, size: f32) {
+        if text.is_empty() || clip.w <= 0 || clip.h <= 0 {
+            return;
+        }
+        if !self.fallbacks_loaded && needs_fallback(text) {
+            self.ensure_fallbacks();
+        }
+        let lh = (size * 1.4).round();
+        let fam = self.ui_family.clone();
+        let mut a = match &fam {
+            Some(f) => Attrs::new().family(Family::Name(f)),
+            None => Attrs::new().family(Family::SansSerif),
+        };
+        if bold {
+            a = a.weight(cosmic_text::Weight::SEMIBOLD);
+        }
+        let a = a.color(to_color(color));
+        let s = scale();
+        let mut b = TextBuf::new(&mut self.fonts, Metrics::new(size * s, lh * s));
+        b.set_size(Some(4000.0 * s), Some(lh * 2.0 * s));
+        b.set_wrap(Wrap::None);
+        b.set_text(text, &a, Shaping::Advanced, None);
+        b.shape_until_scroll(&mut self.fonts, false);
+        let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
+        let (x, y) = (sc(x), sc(y));
+        let (w, px) = (cv.w, &mut *cv.px);
+        b.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
+            for dy in 0..gh as i32 {
+                let py = gy + dy + y;
+                if py < clip.y || py >= clip.bottom() {
+                    continue;
+                }
+                for dx in 0..gw as i32 {
+                    let pxx = gx + dx + x;
+                    if pxx < clip.x || pxx >= clip.right() {
+                        continue;
+                    }
+                    let i = (py * w + pxx) as usize;
+                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
+                }
+            }
+        });
+    }
+
+    /// Width in px of `text` in the UI font at `size` (uncached; callers cache).
+    pub fn ui_width_sized(&mut self, text: &str, bold: bool, size: f32) -> i32 {
+        if text.is_empty() {
+            return 0;
+        }
+        if !self.fallbacks_loaded && needs_fallback(text) {
+            self.ensure_fallbacks();
+        }
+        let lh = (size * 1.4).round();
+        let fam = self.ui_family.clone();
+        let mut a = match &fam {
+            Some(f) => Attrs::new().family(Family::Name(f)),
+            None => Attrs::new().family(Family::SansSerif),
+        };
+        if bold {
+            a = a.weight(cosmic_text::Weight::SEMIBOLD);
+        }
+        let s = scale();
+        let mut b = TextBuf::new(&mut self.fonts, Metrics::new(size * s, lh * s));
+        b.set_size(Some(8000.0 * s), Some(lh * 2.0 * s));
+        b.set_wrap(Wrap::None);
+        b.set_text(text, &a, Shaping::Advanced, None);
+        b.shape_until_scroll(&mut self.fonts, false);
+        (b.layout_runs().next().map_or(0.0, |r| r.line_w) / s).round() as i32
+    }
+}
+
+/// `base` with the piece's color and BOLD / ITALIC / UNDERLINE flags applied.
+fn styled<'a>(base: &Attrs<'a>, c: Rgba, flags: u8) -> Attrs<'a> {
+    let mut a = base.clone().color(to_color(c));
+    if flags & BOLD != 0 {
+        a = a.weight(cosmic_text::Weight::BOLD);
+    }
+    if flags & ITALIC != 0 {
+        a = a.style(cosmic_text::Style::Italic);
+    }
+    if flags & UNDERLINE != 0 {
+        a = a.underline(UnderlineStyle::Single);
+    }
+    a
+}
+
+fn family_attrs(family: &Option<String>) -> Attrs<'_> {
+    match family {
+        Some(f) => Attrs::new().family(Family::Name(f)),
+        None => Attrs::new().family(Family::Monospace),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dpi_priority_and_parsing() {
+        let mut d = Dpi { device: 1.5, forced: None };
+        assert_eq!(d.effective(0.0), 1.5, "automatic follows the window");
+        assert_eq!(d.effective(2.0), 2.0, "config overrides the window");
+        d.forced = Some(1.25);
+        assert_eq!(d.effective(2.0), 1.25, "--scale / LUMEN_SCALE beats the config");
+        assert_eq!(parse_scale("1.75"), Some(1.75));
+        assert_eq!(parse_scale("0"), None);
+        assert_eq!(parse_scale("abc"), None);
+    }
+
+    #[test]
+    fn scale_one_is_identity_for_rects() {
+        // (the global scale is 1.0 unless a test changes it; none does)
+        let mut px = vec![0u32; 20 * 20];
+        let cv = Canvas { px: &mut px, w: 20, h: 20 };
+        assert_eq!(cv.to_dev(Rect::new(3, 4, 5, 6)), Rect::new(3, 4, 5, 6));
+        assert_eq!(cv.bounds(), Rect::new(0, 0, 20, 20));
+        assert_eq!(logical_size(1000, 700), (1000, 700));
+    }
+
+    fn has(ctx: &TextCtx, bold: bool, italic: bool) -> bool {
+        let fam = ctx.family.as_deref().unwrap_or("");
+        ctx.fonts.db().faces().any(|f| {
+            f.families.iter().any(|(n, _)| n == fam) && (f.weight.0 >= 600) == bold && (f.style != fontdb::Style::Normal) == italic
+        })
+    }
+
+    /// Shape `text` with the code family under `attrs`; returns (glyph_id, font_id) per glyph.
+    fn shape(ctx: &mut TextCtx, text: &str, flags: u8) -> Vec<(u16, fontdb::ID)> {
+        let fam = ctx.family.clone();
+        let wide = needs_fallback(text);
+        let mut base = family_attrs(&fam);
+        if wide {
+            base = base.font_features(plain_features());
+        }
+        let attrs = styled(&base, Rgba(255, 255, 255, 255), flags);
+        let mut b = TextBuf::new(&mut ctx.fonts, Metrics::new(14.0, 20.0));
+        b.set_size(Some(2000.0), Some(200.0));
+        b.set_wrap(Wrap::None);
+        b.set_rich_text([(text, attrs.clone())], &attrs, if wide { Shaping::Advanced } else { Shaping::Basic }, None);
+        b.shape_until_scroll(&mut ctx.fonts, false);
+        b.layout_runs().flat_map(|r| r.glyphs.iter().map(|g| (g.glyph_id, g.font_id)).collect::<Vec<_>>()).collect()
+    }
+
+    fn canvas_ink(ctx: &mut TextCtx, pieces: &[(String, Rgba, u8)]) -> (Vec<u32>, usize) {
+        let (w, h) = (240, 40);
+        let mut px = vec![0u32; (w * h) as usize];
+        let mut cv = Canvas { px: &mut px, w, h };
+        ctx.draw_styled(&mut cv, 2, 2, pieces, Rect::new(0, 0, w, h));
+        let ink = px.iter().filter(|p| **p != 0).count();
+        (px, ink)
+    }
+
+    #[test]
+    fn variants_have_identical_cell_width() {
+        let mut ctx = TextCtx::new(None);
+        let Some(fam) = ctx.family.clone() else { return };
+        let regular = ctx.cell_w;
+        let mut seen = 0;
+        for (bold, italic, flags) in [(true, false, BOLD), (false, true, ITALIC), (true, true, BOLD | ITALIC)] {
+            if !has(&ctx, bold, italic) {
+                eprintln!("[ui test] no real face for {fam} bold={bold} italic={italic}; skipped");
+                continue;
+            }
+            seen += 1;
+            let fam_opt = Some(fam.clone());
+            let attrs = styled(&family_attrs(&fam_opt), Rgba(0, 0, 0, 255), flags);
+            let w = measure_cell(&mut ctx.fonts, &attrs, font_size());
+            assert!((w - regular).abs() < 0.01, "{fam} flags={flags}: cell {w} != regular {regular}");
+            // And the layout really uses a different face than the regular one.
+            let reg = shape(&mut ctx, "A", 0)[0].1;
+            let var = shape(&mut ctx, "A", flags)[0].1;
+            assert_ne!(reg, var, "{fam} flags={flags} still rendered with the regular face");
+        }
+        eprintln!("[ui test] {fam}: {seen} style variants loaded, cell_w {regular}");
+    }
+
+    #[test]
+    fn styled_drawing_changes_pixels() {
+        let mut ctx = TextCtx::new(None);
+        let white = Rgba(255, 255, 255, 255);
+        let (plain, _) = canvas_ink(&mut ctx, &[("iiHH".into(), white, 0)]);
+        let (bold, _) = canvas_ink(&mut ctx, &[("iiHH".into(), white, BOLD)]);
+        let (ital, _) = canvas_ink(&mut ctx, &[("iiHH".into(), white, ITALIC)]);
+        let (under, ink_u) = canvas_ink(&mut ctx, &[("iiHH".into(), white, UNDERLINE)]);
+        let (_, ink_p) = canvas_ink(&mut ctx, &[("iiHH".into(), white, 0)]);
+        assert!(ink_u > ink_p, "underline must add pixels");
+        assert_ne!(plain, under);
+        // Italic is real or synthetic slant either way: pixels must differ. Bold only if a face exists.
+        assert_ne!(plain, ital, "italic (real or synthetic) must change the rendering");
+        if has(&ctx, true, false) {
+            assert_ne!(plain, bold, "bold face must change the rendering");
+        }
+        // The plain path stays identical to draw().
+        let mut px = vec![0u32; 240 * 40];
+        let mut cv = Canvas { px: &mut px, w: 240, h: 40 };
+        ctx.draw(&mut cv, 2, 2, &[("iiHH".into(), white)], Rect::new(0, 0, 240, 40));
+        assert_eq!(px, plain);
+    }
+
+    fn covered_by_loaded(ctx: &TextCtx, ch: char) -> bool {
+        files_covering(ch as u32).iter().any(|f| ctx.loaded.contains(f))
+    }
+
+    #[test]
+    fn fallbacks_leave_no_tofu() {
+        let mut ctx = TextCtx::new(None);
+        if ctx.family.is_none() {
+            return;
+        }
+        ctx.ensure_fallbacks();
+        eprintln!("[ui test] loaded font files: {:?}", ctx.loaded);
+        let mut checked = 0;
+        for ch in ['✓', '→', '日', '本', '😀', '─', '∀'] {
+            if !covered_by_loaded(&ctx, ch) {
+                eprintln!("[ui test] no loaded font covers {ch:?}; skipped");
+                continue;
+            }
+            let s = format!("a{ch}b");
+            let glyphs = shape(&mut ctx, &s, 0);
+            assert!(glyphs.iter().all(|(id, _)| *id != 0), "tofu for {ch:?}: {glyphs:?}");
+            checked += 1;
+        }
+        eprintln!("[ui test] tofu check passed for {checked} chars");
+        assert!(ctx.loaded.len() <= 1 + 2 + 3 + MAX_FALLBACKS + 2);
+    }
+
+    #[test]
+    fn emoji_keep_their_own_colors() {
+        let mut ctx = TextCtx::new(None);
+        // draw() must lazily load the fallbacks by itself.
+        let (px, _) = canvas_ink(&mut ctx, &[("😀".into(), Rgba(255, 255, 255, 255), 0)]);
+        if !covered_by_loaded(&ctx, '😀') {
+            eprintln!("[ui test] no emoji font loaded; skipped");
+            return;
+        }
+        let colorful = px.iter().any(|p| {
+            let (r, g, b) = ((p >> 16) & 255, (p >> 8) & 255, p & 255);
+            r.max(g).max(b) - r.min(g).min(b) > 60
+        });
+        assert!(colorful, "emoji drawn as a tinted mask instead of color bitmap");
+    }
+
+    #[test]
+    fn lazy_trigger_is_cheap_and_precise() {
+        assert!(!needs_fallback("fn main() { é ü ñ ß }"));
+        assert!(!needs_fallback("привет αβγ"));
+        assert!(needs_fallback("a → b"));
+        assert!(needs_fallback("😀"));
+        assert!(needs_fallback("日本"));
+    }
+
+    /// Prints PSS at each loading stage (run with `--nocapture --test-threads=1` for clean
+    /// numbers: parallel tests allocate too). Asserts the +6 MB budget for variants + fallbacks.
+    #[test]
+    fn memory_budget() {
+        let Some(m0) = crate::mem::snapshot() else { return };
+        let mut ctx = TextCtx::new_bare(None);
+        if ctx.family.is_none() {
+            return;
+        }
+        let white = Rgba(255, 255, 255, 255);
+        canvas_ink(&mut ctx, &[("fn main() { println!(\"hi\"); }".into(), white, 0)]);
+        let m1 = crate::mem::snapshot().unwrap();
+        ctx.load_variants();
+        canvas_ink(&mut ctx, &[("fn".into(), white, BOLD), (" main".into(), white, ITALIC), ("()".into(), white, BOLD | ITALIC)]);
+        let m2 = crate::mem::snapshot().unwrap();
+        ctx.ensure_fallbacks();
+        canvas_ink(&mut ctx, &[("a ✓ → 日本 😀 ─".into(), white, 0)]);
+        let m3 = crate::mem::snapshot().unwrap();
+        let mb = |a: u64, b: u64| (b as f64 - a as f64) / 1024.0;
+        eprintln!(
+            "[ui mem] PSS start {:.1} MB | single font +{:.1} | + variants +{:.1} | + fallbacks (drawn once) +{:.1} | total vs single-font setup +{:.1} MB",
+            m0.pss_kb as f64 / 1024.0,
+            mb(m0.pss_kb, m1.pss_kb),
+            mb(m1.pss_kb, m2.pss_kb),
+            mb(m2.pss_kb, m3.pss_kb),
+            mb(m1.pss_kb, m3.pss_kb),
+        );
+        assert!(mb(m1.pss_kb, m3.pss_kb) < 6.0, "variants + fallbacks exceed the +6 MB budget");
+    }
+
+    #[test]
+    fn vbar_geometry_and_drag_roundtrip() {
+        let track = Rect::new(100, 10, 14, 400);
+        assert!(VBar::new(track, 30.0, 40.0, 0.0).is_none(), "fits: no bar");
+        let b = VBar::new(track, 1000.0, 50.0, 0.0).unwrap();
+        assert_eq!(b.thumb.y, track.y);
+        assert!(b.thumb.h >= 32 && b.thumb.h < track.h);
+        let end = VBar::new(track, 1000.0, 50.0, 950.0).unwrap();
+        assert_eq!(end.thumb.bottom(), track.bottom());
+        // Dragging the thumb to the middle of the track maps to the middle of the scroll range.
+        let mid = b.pos_for(track.y as f64 + track.h as f64 / 2.0, b.thumb.h as f64 / 2.0, 1000.0, 50.0);
+        assert!((mid - 475.0).abs() < 8.0, "{mid}");
+        assert_eq!(b.pos_for(-500.0, 0.0, 1000.0, 50.0), 0.0);
+        assert_eq!(b.pos_for(9999.0, 0.0, 1000.0, 50.0), 950.0);
+    }
+}

@@ -1,0 +1,38 @@
+# Maintainer: castrogusttavo
+pkgname=lumen-text
+pkgver=0.1.2
+pkgrel=1
+pkgdesc='Lightweight code editor in Rust with TextMate highlighting and a TypeScript workflow'
+arch=('x86_64' 'aarch64')
+url='https://github.com/castrogusttavo/lumen-text'
+license=('custom')  # TODO: set to the repository license once one is added
+depends=('fontconfig' 'libxkbcommon' 'wayland' 'gcc-libs' 'glibc')
+makedepends=('cargo' 'clang' 'pkgconf')
+optdepends=('wl-clipboard: clipboard support on Wayland'
+            'xclip: clipboard support on X11')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')  # run updpkgsums once the tag is published
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --release --locked
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  # config::assets_dir() looks at <exe dir>/../share/lumen-text/assets,
+  # i.e. /usr/share/lumen-text/assets for /usr/bin/lumen-text.
+  install -dm755 "$pkgdir/usr/share/$pkgname"
+  cp -r assets "$pkgdir/usr/share/$pkgname/assets"
+  install -Dm644 "$pkgname.desktop" "$pkgdir/usr/share/applications/$pkgname.desktop"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

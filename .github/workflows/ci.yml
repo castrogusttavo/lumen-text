@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
+            libfontconfig1-dev libclang-dev libonig-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Test (the real-tsgo test skips itself when tsgo is absent)
+        run: cargo test --release
+
+  perf:
+    name: Performance regression tests
+    runs-on: ubuntu-latest
+    # Shared runners are noisy: report, but never block a release.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
+            libfontconfig1-dev libclang-dev libonig-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run performance tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --release perf -- --nocapture --test-threads=1 2>&1 | tee perf.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-log
+          path: perf.log
+
+  release:
+    name: Version, build and publish
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # One release at a time so two quick pushes never race for the same version number.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute version (CalVer YYYY.M.D.N)
+        id: version
+        shell: bash
+        run: |
+          git fetch --tags --force
+          prefix="$(date -u +%Y.%-m.%-d)"
+          n=$(git tag -l "v${prefix}.*" | wc -l)
+          version="${prefix}.$((n + 1))"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${version}"
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
+            libfontconfig1-dev libclang-dev libonig-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        env:
+          LUMEN_VERSION: ${{ steps.version.outputs.version }}
+        run: cargo build --release
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          name="lumen-text-${v}-linux-x86_64"
+          mkdir -p "dist/${name}"
+          cp target/release/lumen-text "dist/${name}/"
+          cp -r assets "dist/${name}/assets"
+          cp LICENSE README.md install.sh lumen-text.desktop "dist/${name}/" 2>/dev/null || true
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          echo "archive=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "checksum=dist/${name}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          gh release create "v${v}" \
+            "${{ steps.package.outputs.archive }}" \
+            "${{ steps.package.outputs.checksum }}" \
+            --target "${GITHUB_SHA}" \
+            --title "lumen-text ${v}" \
+            --generate-notes

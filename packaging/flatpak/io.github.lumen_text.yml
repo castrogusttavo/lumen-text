@@ -1,0 +1,43 @@
+# Build from the repository root:
+#   flatpak-builder --user --install --force-clean build-dir packaging/flatpak/io.github.lumen_text.yml
+#
+# Offline cargo sources: Flathub builds have no network. Generate cargo-sources.json with
+#   python3 flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+# (flatpak-builder-tools/cargo), uncomment the cargo-sources.json source below and add
+# --offline to the cargo build command. Without it, add `build-args: [--share=network]`
+# under build-options for local builds only.
+app-id: io.github.lumen_text
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm18
+command: lumen-text
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --filesystem=home
+modules:
+  - name: lumen-text
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm18/bin
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/lumen-text/cargo
+        LIBCLANG_PATH: /usr/lib/sdk/llvm18/lib
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/lumen-text /app/bin/lumen-text
+      # <exe dir>/../share/lumen-text/assets == /app/share/lumen-text/assets
+      - mkdir -p /app/share/lumen-text
+      - cp -r assets /app/share/lumen-text/assets
+      - install -Dm644 lumen-text.desktop /app/share/applications/io.github.lumen_text.desktop
+      - install -Dm644 README.md /app/share/doc/lumen-text/README.md
+    sources:
+      - type: dir
+        path: ../..
+      # - cargo-sources.json
