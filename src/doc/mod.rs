@@ -130,8 +130,11 @@ pub struct Doc {
     /// Folded-region "..." markers drawn last frame: (rect, header line).
     pub fold_pills: Vec<(Rect, usize)>,
     pub minimap_layout: Option<crate::minimap::Layout>,
-    /// Minimap row infos of rows without token colors (those only depend on the text), valid for the key.
-    mm_cache: (u64, std::collections::HashMap<usize, crate::minimap::LineInfo>),
+    /// Minimap row infos of rows without token colors (those only depend on the text): (layout key, buffer
+    /// version described, row -> info).
+    mm_cache: (u64, u64, std::collections::HashMap<usize, crate::minimap::LineInfo>),
+    /// Buffer version at the end of the last `sync_edits` that consumed edits.
+    synced_ver: u64,
     pub conflicts: Vec<crate::gitx::Conflict>,
     pub conflicts_due: Option<Instant>,
     pub conflict_hits: Vec<(Rect, usize, crate::gitx::Pick)>,
@@ -247,7 +250,8 @@ impl Doc {
             view: Default::default(),
             fold_pills: Vec::new(),
             minimap_layout: None,
-            mm_cache: (0, Default::default()),
+            mm_cache: (0, u64::MAX, Default::default()),
+            synced_ver: 0,
             conflicts: Vec::new(),
             conflicts_due: Some(Instant::now()),
             conflict_hits: Vec::new(),
@@ -461,6 +465,20 @@ impl Doc {
         let recs = self.view_on_edit(l);
         let buf = &self.buf;
         self.inlay.on_edits(&recs, l, buf.line_count(), &|p| buf.line_col(p));
+        // Edits that add or remove no line break leave every other line's width and minimap row as they were.
+        if !recs.is_empty() && recs.iter().all(|r| r.rem_lines == 0 && r.ins_lines == 0) {
+            let mut lines: Vec<usize> = recs.iter().map(|r| r.line).collect();
+            lines.sort_unstable();
+            lines.dedup();
+            self.keep_widest_after_edit(&lines, self.version - 1);
+            if !self.vm_live() && self.mm_cache.1 == self.synced_ver {
+                for &ln in &lines {
+                    self.mm_cache.2.remove(&ln);
+                }
+                self.mm_cache.1 = self.buf.version();
+            }
+        }
+        self.synced_ver = self.buf.version();
         self.symbols_due = Some(Instant::now() + std::time::Duration::from_millis(600));
         self.conflicts_due = Some(Instant::now() + std::time::Duration::from_millis(400));
         self.sem_due = Some(Instant::now() + std::time::Duration::from_millis(450));

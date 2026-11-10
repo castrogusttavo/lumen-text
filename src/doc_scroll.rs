@@ -29,8 +29,9 @@ const WIDE_WINDOW: usize = 800;
 pub struct DocScroll {
     pub v: Scroller,
     pub h: Scroller,
-    /// (version, first line, end line, widest visual column, tab width) of the last scan.
-    pub wide: std::cell::Cell<(i32, usize, usize, usize, usize)>,
+    /// (version, first line, end line, widest visual column, tab width, a line that has that width) of the
+    /// last scan; [`Doc::keep_widest_after_edit`] carries it across single-line edits.
+    pub wide: std::cell::Cell<(i32, usize, usize, usize, usize, usize)>,
     /// The next reveal that moves the view glides (80 ms) instead of jumping (Ctrl+Home/End).
     pub glide_next: bool,
 }
@@ -48,28 +49,54 @@ impl Doc {
         let n = self.buf.line_count();
         let (first, _) = self.top_pos();
         let vis = self.visible_lines() as usize + 2;
-        let (ver, lo, hi, cols, tab_seen) = self.scr.wide.get();
+        let (ver, lo, hi, cols, tab_seen, _) = self.scr.wide.get();
         let cached = ver == self.version && tab_seen == self.ed.tab_w && lo <= first && (first + vis <= hi || hi >= n);
         let cols = if cached {
             cols
         } else {
             let lo = first.saturating_sub(WIDE_WINDOW);
             let hi = (first + vis + WIDE_WINDOW).min(n);
-            let tab = self.ed.tab_w;
-            // Giant (minified) lines: the char count stands in for the visual width (no tab scan).
-            let width = |l: usize| {
-                let n = self.buf.line_len(l);
-                if n > 4000 {
-                    n
-                } else {
-                    visual_col(&self.buf.line(l), usize::MAX, tab) + self.inlay.hints.extra_before(l, usize::MAX, true)
-                }
-            };
-            let cols = (lo..hi).map(width).max().unwrap_or(0);
-            self.scr.wide.set((self.version, lo, hi, cols, tab));
+            let (cols, at) = (lo..hi).map(|l| (self.line_cols(l), l)).max().unwrap_or((0, 0));
+            self.scr.wide.set((self.version, lo, hi, cols, self.ed.tab_w, at));
             cols
         };
         cols.max(self.caret_geom(self.ed.head()).1)
+    }
+
+    /// Visual width of `l` in columns (tabs expanded, inlay hints included).
+    fn line_cols(&self, l: usize) -> usize {
+        // Giant (minified) lines: the char count stands in for the visual width (no tab scan).
+        let n = self.buf.line_len(l);
+        if n > 4000 {
+            n
+        } else {
+            visual_col(&self.buf.line(l), usize::MAX, self.ed.tab_w)
+                + self.inlay.hints.extra_before(l, usize::MAX, true)
+        }
+    }
+
+    /// The widest-line cache was valid at `old_version` and the edits since touched only `lines`, none of
+    /// them adding or removing a line break: every other line keeps its width, so the maximum is the old
+    /// one or a touched line's new width. Rescans (leaves the cache stale) when the widest line itself
+    /// became narrower, since another line may now be the widest.
+    pub(crate) fn keep_widest_after_edit(&self, lines: &[usize], old_version: i32) {
+        let (ver, lo, hi, mut cols, tab, mut at) = self.scr.wide.get();
+        if ver != old_version || tab != self.ed.tab_w {
+            return;
+        }
+        for &l in lines {
+            if l < lo || l >= hi {
+                continue;
+            }
+            let w = self.line_cols(l);
+            if l == at && w < cols {
+                return;
+            }
+            if w >= cols {
+                (cols, at) = (w, l);
+            }
+        }
+        self.scr.wide.set((self.version, lo, hi, cols, tab, at));
     }
 
     /// Largest horizontal scroll in px; 0 with word wrap or when every line fits.
@@ -292,6 +319,46 @@ mod tests {
         d.wheel(WheelIn { dx: 123.0, dy: 0.0, pixels: true }, 4.0);
         assert_eq!(d.left, 123.0);
         assert!(!d.animating);
+    }
+
+    /// The cached widest line carried across single-line edits always equals a fresh scan.
+    #[test]
+    fn widest_cache_carried_across_single_line_edits_matches_a_rescan() {
+        let mut text = String::new();
+        for i in 0..400 {
+            text.push_str(&"x".repeat(5 + (i * 37) % 90));
+            text.push('\n');
+        }
+        let mut d = doc(&text);
+        d.cell_w = 8.0;
+        let mut seed = 12345u64;
+        let mut rnd = |n: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as usize) % n
+        };
+        assert!(d.widest_cols() > 0);
+        for step in 0..300 {
+            let line = rnd(400);
+            let col = 1 + rnd(d.buf.line_len(line));
+            let p = d.buf.pos(line, col);
+            d.ed.click(&mut d.buf, p, false);
+            if step % 3 == 2 {
+                d.ed.backspace(&mut d.buf);
+            } else {
+                d.ed.insert_text(&mut d.buf, &"y".repeat(1 + rnd(30)));
+            }
+            assert!(d.sync_edits());
+            let carried = d.scr.wide.get();
+            let fresh = {
+                d.scr.wide.set(Default::default());
+                d.widest_cols()
+            };
+            // `carried` is a stale marker (rescan) or already the right number.
+            if carried.0 == d.version {
+                d.scr.wide.set(carried);
+                assert_eq!(d.widest_cols(), fresh, "step {step}: carried cache differs from a rescan");
+            }
+        }
     }
 
     #[test]

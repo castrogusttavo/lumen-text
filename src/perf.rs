@@ -2,6 +2,50 @@
 //! they only catch large regressions. Each test prints its measured number to stderr.
 #![allow(dead_code)]
 
+/// Frame-profile laps for `perf::tests::frame_breakdown`: each `lap!("name")` charges the wall time since the
+/// previous lap (or [`prof::start`]) to `name`, so the laps of one frame partition it exactly. Test builds only:
+/// release builds contain no `lap!` calls at all.
+#[cfg(test)]
+pub(crate) mod prof {
+    use std::{cell::RefCell, collections::BTreeMap, time::Instant};
+
+    thread_local! {
+        static ACC: RefCell<BTreeMap<&'static str, (f64, u64)>> = const { RefCell::new(BTreeMap::new()) };
+        static LAST: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    }
+
+    /// Begin a lap sequence (also discards time spent outside of the measured frame).
+    pub fn start() {
+        LAST.with(|l| *l.borrow_mut() = Some(Instant::now()));
+    }
+
+    pub fn lap(name: &'static str) {
+        let now = Instant::now();
+        let Some(prev) = LAST.with(|l| l.borrow_mut().replace(now)) else { return };
+        ACC.with(|a| {
+            let mut a = a.borrow_mut();
+            let e = a.entry(name).or_insert((0.0, 0));
+            e.0 += now.duration_since(prev).as_secs_f64();
+            e.1 += 1;
+        });
+    }
+
+    /// Take and clear the accumulated (total seconds, calls) per lap name.
+    pub fn take() -> BTreeMap<&'static str, (f64, u64)> {
+        LAST.with(|l| *l.borrow_mut() = None);
+        ACC.with(|a| std::mem::take(&mut *a.borrow_mut()))
+    }
+}
+
+/// `lap!("name");` charges the time since the previous lap to `name` in test builds and expands to nothing otherwise.
+macro_rules! lap {
+    ($name:expr) => {
+        #[cfg(test)]
+        crate::perf::prof::lap($name);
+    };
+}
+pub(crate) use lap;
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -16,6 +60,16 @@ mod tests {
         path::{Path, PathBuf},
         time::Instant,
     };
+
+    // Startup budgets, ~3x the best of a few runs on the development machine (Intel N305, release build):
+    //   App::new on a small project   60 ms    first frame 7 ms        (in process, wall)
+    //   process start to first frame  94 ms    into a 100k-line file 111 ms   (headless binary, wall)
+    // Fonts dominate: `App::new` is `TextCtx::new` (fontconfig scan, UI and code families); opening and
+    // tokenizing the visible window of a 100k-line file adds only ~17 ms.
+    const STARTUP_NEW_BUDGET: f64 = 0.25;
+    const STARTUP_FRAME_BUDGET: f64 = 0.10;
+    const LAUNCH_SMALL_BUDGET: f64 = 0.30;
+    const LAUNCH_BIG_BUDGET: f64 = 0.35;
 
     struct Rng(u64);
     impl Rng {
@@ -340,6 +394,66 @@ mod tests {
         assert!(avg < 30.0, "typing latency too high: {avg:.1} ms cpu per key");
     }
 
+    /// Where a frame goes: wall time per phase (the `lap!` points in `App::draw_all` and `Doc::draw`) for a
+    /// steady-scroll frame, a keystroke frame and an idle frame in a 100k-line file. Informational: it prints
+    /// the table (run with `--nocapture`) and only checks that the phases add up to the frame.
+    #[test]
+    fn frame_breakdown() {
+        use crate::app::KeyIn;
+        use winit::keyboard::{Key, SmolStr};
+        let (_g, mut app, mut px, (w, h)) = big_app("breakdown");
+        settle(&mut app, &mut px, w, h, 50_200);
+        {
+            let d = &mut app.docs[app.active];
+            let p = d.buf.line_start(50_000);
+            d.ed.sel = Sel::caret(p);
+            d.top = 49_990.0;
+            d.target = d.top;
+        }
+        app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        let report = |what: &str, n: usize| {
+            let acc = super::prof::take();
+            let total: f64 = acc.values().map(|v| v.0).sum();
+            eprintln!("[perf] frame breakdown, {what}: {:.2} ms/frame over {n} frames", total * 1e3 / n as f64);
+            let mut rows: Vec<_> = acc.into_iter().collect();
+            rows.sort_by(|a, b| b.1.0.total_cmp(&a.1.0));
+            for (name, (t, _)) in rows.iter().take(7) {
+                eprintln!("[perf]   {name:<22} {:>6.2} ms  {:>4.1}%", t * 1e3 / n as f64, t / total * 100.0);
+            }
+            total / n as f64
+        };
+        let n = 120;
+        super::prof::take();
+        for i in 0..n {
+            let d = &mut app.docs[app.active];
+            d.top = 49_990.0 + (i * 3) as f64;
+            d.target = d.top;
+            super::prof::start();
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        report("steady scroll", n);
+        for _ in 0..n {
+            let ki = KeyIn { key: Key::Character(SmolStr::new("a")), text: Some("a".into()) };
+            app.handle_key(&ki);
+            super::prof::start();
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        report("keystroke", n);
+        // Idle: let every animation finish, then redraw the unchanged scene.
+        for _ in 0..200 {
+            app.pump_background();
+            app.tick();
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        super::prof::take();
+        for _ in 0..n {
+            super::prof::start();
+            app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        }
+        let idle = report("idle (unchanged scene)", n);
+        assert!(idle < 0.050, "an idle frame takes {:.1} ms", idle * 1e3);
+    }
+
     /// Idle: once everything settles, a frame reports "nothing to animate" (so the window loop
     /// stops redrawing) and ticking costs next to no CPU.
     #[test]
@@ -409,5 +523,103 @@ mod tests {
         let mb = m.pss_kb as f64 / 1024.0;
         eprintln!("[perf] PSS {mb:.1} MB");
         assert!(mb < 120.0, "PSS too high: {mb:.1} MB");
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Startup and open-time budgets
+    // ------------------------------------------------------------------------------------------
+
+    /// The release binary Cargo builds next to the test executables (`target/release/lumen-text`),
+    /// if it exists. `cargo test` alone does not build it for a binary crate, so the tests that need
+    /// it skip themselves when it is absent; CI runs `cargo build --release` first.
+    fn built_binary() -> Option<PathBuf> {
+        let p = std::env::current_exe().ok()?.parent()?.parent()?.join("lumen-text");
+        p.is_file().then_some(p)
+    }
+
+    /// Wall time of one headless launch, from spawning the process to the `[start] first frame` line the
+    /// script runner prints once the first frame is drawn (`LUMEN_PERF_MARK`): process start, config and
+    /// theme load, fonts, `App::new` with `file` open, and that frame. Best of `runs` (the minimum is the
+    /// least noisy estimator on a shared machine).
+    fn headless_launch(bin: &Path, project: &Path, file: &Path, runs: usize) -> f64 {
+        use std::io::BufRead;
+        let state = tempdir::Dir::new("launch-state");
+        let mut best = f64::MAX;
+        for _ in 0..runs {
+            let t0 = Instant::now();
+            let mut child = std::process::Command::new(bin)
+                .args(["--size", "1000x700", "--keys", "wait:0", "--snap"])
+                .arg(state.path.join("snap"))
+                .arg(project)
+                .arg(file)
+                .env("LUMEN_HEADLESS", "1")
+                .env("LUMEN_PERF_MARK", "1")
+                .env("LUMEN_ASSETS", assets())
+                .env("XDG_CONFIG_HOME", state.path.join("cfg"))
+                .env("XDG_STATE_HOME", state.path.join("state"))
+                .env("XDG_DATA_HOME", state.path.join("data"))
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn lumen-text");
+            let mut lines = std::io::BufReader::new(child.stderr.take().unwrap()).lines();
+            let seen = lines.any(|l| l.is_ok_and(|l| l.contains("[start] first frame")));
+            let dt = t0.elapsed().as_secs_f64();
+            let _ = child.kill();
+            let _ = child.wait();
+            assert!(seen, "the process exited without drawing a first frame");
+            best = best.min(dt);
+        }
+        best
+    }
+
+    /// In-process start: `App::new` on a small project plus the first rendered frame (wall clock: font
+    /// loading and the first shaping may not run on this thread).
+    #[test]
+    fn startup_app_new_and_first_frame() {
+        let _g = crate::app_unsaved::testkit::lock();
+        let dir = crate::app_unsaved::testkit::tmp("startup");
+        let t0 = Instant::now();
+        let mut app = crate::app_unsaved::testkit::test_app(&dir);
+        let new = t0.elapsed().as_secs_f64();
+        app.size = (1000, 700);
+        let (w, h) = (1000, 700);
+        let mut px = vec![0u32; (w * h) as usize];
+        let t1 = Instant::now();
+        app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+        let first = t1.elapsed().as_secs_f64();
+        let _ = std::fs::remove_dir_all(&dir);
+        eprintln!("[perf] startup: App::new {:.0} ms, first frame {:.0} ms (wall)", new * 1e3, first * 1e3);
+        assert!(new < STARTUP_NEW_BUDGET, "App::new too slow: {new:.2}s");
+        assert!(first < STARTUP_FRAME_BUDGET, "first frame too slow: {first:.2}s");
+    }
+
+    /// Process start to first frame, headless, on a small project (the real binary, wall clock).
+    #[test]
+    fn startup_binary_to_first_frame() {
+        let Some(bin) = built_binary() else {
+            eprintln!("[perf] startup_binary_to_first_frame skipped: run `cargo build --release` first");
+            return;
+        };
+        let dir = tempdir::Dir::new("launch-small");
+        std::fs::write(dir.path.join("a.ts"), gen_text(200)).unwrap();
+        let t = headless_launch(&bin, &dir.path, &dir.path.join("a.ts"), 3);
+        eprintln!("[perf] launch to first frame, small project: {:.0} ms wall", t * 1e3);
+        assert!(t < LAUNCH_SMALL_BUDGET, "launch too slow: {t:.2}s wall");
+    }
+
+    /// Launching straight into a 100k-line file: the buffer opens, the visible window is tokenized
+    /// and the first frame is written, without waiting for the rest of the file to be highlighted.
+    #[test]
+    fn startup_binary_into_100k_line_file() {
+        let Some(bin) = built_binary() else {
+            eprintln!("[perf] startup_binary_into_100k_line_file skipped: run `cargo build --release` first");
+            return;
+        };
+        let dir = tempdir::Dir::new("launch-big");
+        std::fs::write(dir.path.join("big.ts"), gen_text(100_000)).unwrap();
+        let t = headless_launch(&bin, &dir.path, &dir.path.join("big.ts"), 3);
+        eprintln!("[perf] launch into a 100k-line file: {:.0} ms wall", t * 1e3);
+        assert!(t < LAUNCH_BIG_BUDGET, "launch into a 100k-line file too slow: {t:.2}s wall");
     }
 }

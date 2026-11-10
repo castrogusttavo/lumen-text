@@ -11,7 +11,9 @@ impl Doc {
         let rect = Rect::new(rect.x, rect.y, rect.w - mm_w, rect.h);
         self.rect = rect;
         self.cell_w = tx.cell_w;
+        crate::perf::lap!("doc.pre");
         self.sync_edits();
+        crate::perf::lap!("doc.sync_edits");
         let gutter_w = self.gutter_w();
         let gw0 = gutter_w - FOLD_W; // width of the number/marker part of the gutter
         let cols_avail = (((rect.w - gutter_w - 8) as f32 / self.cell_w).floor() as isize - 1).max(8) as usize;
@@ -20,7 +22,9 @@ impl Doc {
             self.apply_reveal();
             self.reveal = false;
         }
+        crate::perf::lap!("doc.view_prepare");
         self.step_scroll(o.dt);
+        crate::perf::lap!("doc.step_scroll");
         let lh_f = line_h();
         let lh = lh_f as i32;
         let nrows_want = (rect.h as f32 / lh_f).ceil() as usize + 1;
@@ -52,6 +56,7 @@ impl Doc {
         let c = &theme.chrome;
         let inl = &self.inlay.hints;
 
+        crate::perf::lap!("doc.layout");
         // Highlight: tokenize forward under a time budget, then colorize the visible lines.
         let mut pending = false;
         let mut line_spans: Vec<Option<Spans>> = Vec::with_capacity(vlines.len());
@@ -63,6 +68,7 @@ impl Doc {
             }
         }
         let lines: Vec<String> = vlines.iter().map(|&i| self.buf.line(i)).collect();
+        crate::perf::lap!("doc.highlight");
         // Semantic colors over the TextMate ones (only lines the last response still describes).
         if !self.sem.is_empty() {
             let mut cache: std::collections::HashMap<(u8, bool), Option<Rgba>> = std::collections::HashMap::new();
@@ -89,6 +95,7 @@ impl Doc {
         }
         let geo: Vec<(usize, usize)> = vlines.iter().map(|&i| (self.buf.line_start(i), self.buf.line_len(i))).collect();
 
+        crate::perf::lap!("doc.semantic");
         // Visual rows: one per (line, wrap segment). Without wrapping this is one row per line.
         let wrap_cols = if live { self.view.cols } else { 0 };
         let mut rows: Vec<VRow> = Vec::with_capacity(row_lines.len());
@@ -123,6 +130,7 @@ impl Doc {
             }
         }
 
+        crate::perf::lap!("doc.rows");
         // Caret glide, in document pixel space (rows, so wrapped lines and folds are accounted for).
         let (crow, cvcol) = self.caret_geom(self.ed.head());
         let target_c = (cvcol as f64 * cell_w as f64, crow as f64 * lh_f as f64);
@@ -190,6 +198,7 @@ impl Doc {
 
         cv.fill(rect, theme.background);
 
+        crate::perf::lap!("doc.caret_hints");
         // Merge conflicts: tinted regions plus inline actions above each one.
         self.conflict_hits.clear();
         self.fold_pills.clear();
@@ -238,6 +247,7 @@ impl Doc {
             }
         }
 
+        crate::perf::lap!("doc.conflict_debug");
         // Current line highlight (follows the gliding caret), then find matches and selection.
         if sel.is_empty() && o.focused {
             if live {
@@ -330,6 +340,7 @@ impl Doc {
             }
         }
 
+        crate::perf::lap!("doc.decor");
         // Body text: only the visible column window of each row is shaped, so very long
         // lines cost the same as short ones.
         let fg = theme.foreground;
@@ -377,6 +388,7 @@ impl Doc {
             tx.draw_hint(cv, x, y, label, hint_fg, body);
         }
 
+        crate::perf::lap!("doc.text");
         // Folded regions: a "..." marker after the header line (click to unfold).
         if !self.view.folds.is_empty() {
             for (r, row) in rows.iter().enumerate() {
@@ -470,6 +482,7 @@ impl Doc {
             }
         }
 
+        crate::perf::lap!("doc.folds_lens");
         // Diagnostics: wavy underline.
         for d in self.diags.iter().filter(|d| d.severity <= 3) {
             if d.el < first || d.sl >= last {
@@ -508,6 +521,7 @@ impl Doc {
             }
         }
 
+        crate::perf::lap!("doc.diagnostics");
         // Gutter: numbers, fold chevrons, git bars, diagnostic markers.
         cv.fill(Rect::new(rect.x, rect.y, gutter_w, rect.h), theme.background);
         let mut gutter: Vec<(String, Rgba)> = Vec::with_capacity(rows.len());
@@ -582,6 +596,7 @@ impl Doc {
             }
         }
 
+        crate::perf::lap!("doc.gutter");
         // Sticky scroll: headers of the scopes that contain the first visible line but have
         // scrolled off above it (from the symbol tree, else from indentation).
         if self.sticky && first > 0 {
@@ -661,6 +676,7 @@ impl Doc {
             }
         }
 
+        crate::perf::lap!("doc.sticky");
         // Extra carets (static; only the primary one glides).
         for x in &self.ed.extra {
             let (l, col) = self.buf.line_col(x.head);
@@ -681,6 +697,7 @@ impl Doc {
             tx.icon(cv, "ui/chevron_right", rect.x + 11, y + (lh - 14) / 2, 14, c.warning, gclip);
         }
 
+        crate::perf::lap!("doc.carets_bp");
         // Minimap.
         if mm_w > 0 {
             // One minimap row per visual row, so word wrap and folds show as the editor shows them.
@@ -688,27 +705,22 @@ impl Doc {
             let l = crate::minimap::layout_for(full, mm_w, total);
             let (bg, fgc) = (theme.background, theme.foreground);
             let wrap_view = live && self.view.cols > 0;
+            // Row infos are a pure function of the row's text. The cache is stamped with the buffer version
+            // it describes: `sync_edits` re-stamps it across single-line edits (dropping just that row) and
+            // any other change leaves a stale stamp, which empties it.
             let key = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
-                (
-                    self.buf.version(),
-                    self.buf.line_count(),
-                    total,
-                    live,
-                    self.view.cols,
-                    tab_w,
-                    (fgc.0, fgc.1, fgc.2),
-                    l.rect.h,
-                )
+                (self.buf.line_count(), total, live, self.view.cols, tab_w, (fgc.0, fgc.1, fgc.2), l.rect.h)
                     .hash(&mut h);
                 self.view.folds.hidden_ranges().hash(&mut h);
                 h.finish()
             };
-            if self.mm_cache.0 != key {
-                self.mm_cache = (key, Default::default());
+            let stamp = self.buf.version();
+            if self.mm_cache.0 != key || self.mm_cache.1 != stamp {
+                self.mm_cache = (key, stamp, Default::default());
             }
-            let cache = &mut self.mm_cache.1;
+            let cache = &mut self.mm_cache.2;
             let mut infos = |i: usize| {
                 let (line, sub) = if live { self.view.map.line_at_row(i) } else { (i, 0) };
                 // Token colors for this row: continuation rows of a wrapped line use the line's spans too.
@@ -752,6 +764,7 @@ impl Doc {
             self.minimap_layout = None;
         }
 
+        crate::perf::lap!("doc.minimap");
         // Thin overlay scrollbar (right edge of the text area, left of the minimap).
         {
             let track = Rect::new(rect.right() - 14, rect.y, 14, rect.h);
@@ -771,6 +784,7 @@ impl Doc {
             }
         }
 
+        crate::perf::lap!("doc.scrollbars");
         // Caret.
         let caret_color = if o.focused { theme.cursor } else { theme.cursor.with_alpha(0x70) };
         cv.fill_clip(Rect::new(caret_x, caret_y, CURSOR_W, lh), caret_color, body);

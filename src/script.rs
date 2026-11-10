@@ -190,6 +190,12 @@ pub fn run(mut app: App, opts: Opts) {
     let (w, h) = (((lw as f32 * sf).round() as u32).max(1), ((lh as f32 * sf).round() as u32).max(1));
     app.size = (lw, lh);
     std::fs::create_dir_all(&opts.snap_dir).ok();
+    // Startup budget hook (`perf::tests::startup_*`): draw the first frame at once and announce it, so the
+    // parent can time process start to first frame instead of the fixed settle below.
+    if std::env::var_os("LUMEN_PERF_MARK").is_some() {
+        frame(&mut app, w, h);
+        eprintln!("[start] first frame");
+    }
     settle(&mut app, 1500);
 
     for tok in opts.keys.split(';').map(str::trim).filter(|t| !t.is_empty()) {

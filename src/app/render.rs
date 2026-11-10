@@ -80,6 +80,7 @@ impl App {
         let t = &self.theme;
         let c = t.chrome;
         cv.clear(t.background);
+        crate::perf::lap!("clear");
         self.regions.clear();
         let mut busy = self.input_frame(dt);
 
@@ -89,6 +90,7 @@ impl App {
         let find_ranges: Vec<(usize, usize)> = self.find.as_ref().map(|f| f.matches.clone()).unwrap_or_default();
         let find_cur = self.find.as_ref().and_then(|f| f.current);
         busy |= self.draw_split_other(cv, dt);
+        crate::perf::lap!("split_other");
         if let Some(d) = self.docs.get_mut(self.active) {
             d.cell_w = self.tx.cell_w;
             busy |= d.draw(
@@ -115,18 +117,26 @@ impl App {
             }
         }
 
+        crate::perf::lap!("doc.caret_end");
         busy |= self.draw_md(cv);
+        crate::perf::lap!("md");
         self.draw_topbar(cv);
+        crate::perf::lap!("topbar");
         self.draw_tabs(cv);
+        crate::perf::lap!("tabs");
         self.draw_breadcrumbs(cv);
         self.draw_diff(cv);
+        crate::perf::lap!("breadcrumbs_diff");
         if self.sidebar_open {
             self.draw_sidebar(cv);
         }
+        crate::perf::lap!("sidebar");
         self.draw_panel(cv);
         self.draw_gitpanel(cv);
         self.draw_tree_drag(cv);
+        crate::perf::lap!("panels");
         self.draw_status(cv);
+        crate::perf::lap!("status");
         if let Some((r, rad)) = self.hover_rect {
             let f = self.theme.foreground;
             cv.fill_round(r, rad, f.with_alpha(if self.theme.background.luminance() < 0.5 { 0x16 } else { 0x12 }));
@@ -138,6 +148,7 @@ impl App {
         self.draw_overlay(cv);
         self.draw_tooltip(cv);
         self.draw_toast(cv);
+        crate::perf::lap!("overlays");
         busy
     }
 

@@ -59,6 +59,8 @@ jobs:
             libfontconfig1-dev libclang-dev libonig-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Build the binary (the startup tests time the real executable)
+        run: cargo build --release
       - name: Run performance tests
         shell: bash
         run: |
