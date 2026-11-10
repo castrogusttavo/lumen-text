@@ -34,7 +34,7 @@ cat > .npmrc <<EOF
 //npm.hugeicons.com/:_authToken=${HUGEICONS_TOKEN}
 EOF
 echo '{"name":"hugeicons-fetch","private":true}' > package.json
-npm install --silent --no-audit --no-fund @hugeicons-pro/core-solid-rounded @hugeicons-pro/core-bulk-rounded
+npm install --loglevel=error --no-audit --no-fund @hugeicons-pro/core-solid-rounded @hugeicons-pro/core-bulk-rounded
 
 gen() { # <package> <output dir name>
   local pkg="$1" out="$2"
