@@ -24,9 +24,15 @@ mod imp {
     impl Pty {
         pub fn spawn(cwd: &Path, rows: usize, cols: usize) -> io::Result<(Pty, Box<dyn Read + Send>)> {
             let (mut m, mut s) = (0, 0);
-            let ws = winsize(rows, cols);
+            #[allow(unused_mut)]
+            let mut ws = winsize(rows, cols);
+            // macOS declares the termios and winsize arguments as mutable pointers, Linux as const.
+            #[cfg(target_os = "macos")]
+            let (term, wsp) = (std::ptr::null_mut(), &mut ws as *mut libc::winsize);
+            #[cfg(not(target_os = "macos"))]
+            let (term, wsp) = (std::ptr::null(), &ws as *const libc::winsize);
             // SAFETY: plain libc call with valid out-pointers.
-            if unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null(), &ws) } != 0 {
+            if unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), term, wsp) } != 0 {
                 return Err(io::Error::last_os_error());
             }
             let (master, slave) = unsafe { (File::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };

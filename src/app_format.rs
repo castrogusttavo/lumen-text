@@ -212,7 +212,7 @@ fn no_formatter_msg(key: &str) -> String {
     format!("no formatter for {key} — add a biome.json or a prettier config")
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::app_unsaved::testkit::{lock, scratch_base, test_app};

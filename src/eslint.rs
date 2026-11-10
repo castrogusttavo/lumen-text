@@ -124,6 +124,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_reads_stdout_json_even_when_exit_status_is_failure() {
         let dir = std::env::temp_dir().join(format!("lumen-eslint-run-{}", std::process::id()));

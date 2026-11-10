@@ -280,6 +280,7 @@ mod tests {
         assert_eq!(format_json("", "  "), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn formatter_runs_in_the_directory_of_its_config() {
         use std::os::unix::fs::PermissionsExt;

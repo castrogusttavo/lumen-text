@@ -1168,6 +1168,7 @@ mod tests {
         fs::remove_dir_all(&d).ok();
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinks_are_copied_as_links() {
         let d = scratch("link");
@@ -1334,6 +1335,7 @@ mod tests {
         panic!("{what}: nothing arrived");
     }
 
+    #[cfg(unix)]
     #[test]
     fn files_travel_through_the_system_clipboard_in_both_directions() {
         let _g = lock();
