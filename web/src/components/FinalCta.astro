@@ -1,0 +1,13 @@
+---
+import DownloadButton from "./DownloadButton.astro";
+import { GITHUB } from "../lib/url";
+---
+<section class="container-x pb-8 pt-16">
+  <div class="plus relative isolate overflow-hidden rounded-[28px] border border-line px-6 py-20 text-center md:py-28" data-reveal>
+    <div class="plus-b"></div>
+    <div class="dotgrid absolute inset-0 -z-10 opacity-60 [mask-image:radial-gradient(60%_80%_at_50%_50%,#000,transparent)]"></div>
+    <h2 class="h-xl mx-auto max-w-3xl text-balance">Try the editor that <span class="accent-word">{"{stays small}"}</span></h2>
+    <p class="lead mx-auto mt-5 max-w-xl">One download, no account, no telemetry. Linux packages for Debian, Fedora, Arch and an AppImage for everything else.</p>
+    <div class="mt-9 flex flex-wrap justify-center gap-3"><DownloadButton /><a class="btn btn-lg" href={GITHUB} rel="noopener">View on GitHub</a></div>
+  </div>
+</section>

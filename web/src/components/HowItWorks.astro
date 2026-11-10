@@ -1,0 +1,19 @@
+---
+import DemoTabs from "../islands/DemoTabs";
+import { url } from "../lib/url";
+---
+<section id="features" class="container-x scroll-mt-24 py-20">
+  <div class="relative isolate overflow-hidden rounded-[28px] border border-line bg-[#f6f5f1] p-4 text-[#111] sm:p-6 md:p-12" data-reveal>
+    <div class="grid gap-6 md:grid-cols-[1.1fr_0.9fr] md:items-end">
+      <div>
+        <p class="font-mono text-[12px] text-[#6a6a66]"><span>01 / Workflow</span></p>
+        <h2 class="h-lg mt-4 text-balance">See the whole loop <span class="text-[#6f8f00]">{"{in one window}"}</span></h2>
+      </div>
+      <p class="max-w-md text-[#4a4a47] md:justify-self-end">Edit, jump, review and preview without leaving the keyboard. Everything below is a replica of the real interface, scripted.</p>
+    </div>
+    <div class="relative mt-10 overflow-hidden rounded-2xl p-2 sm:p-4 md:p-10">
+      <img src={url("/img/gradient-grain.webp")} alt="" width="1920" height="1080" loading="lazy" decoding="async" class="absolute inset-0 -z-10 h-full w-full object-cover" />
+      <DemoTabs client:visible />
+    </div>
+  </div>
+</section>

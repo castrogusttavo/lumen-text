@@ -1,0 +1,29 @@
+---
+import SectionHead from "./SectionHead.astro";
+import { GITHUB } from "../lib/url";
+const steps = [
+  ["01", "A release is built", "Every push to main that passes CI publishes a CalVer release: YYYY.M.D.N."],
+  ["02", "Signed with minisign", "The AppImage and the tarball carry a .minisig signature made with the release key."],
+  ["03", "Verified before use", "The public key is embedded in the binary. A file that fails, or names another version, is discarded."],
+  ["04", "Installed atomically", "AppImage and user installs swap in place and keep the previous version. System packages are never touched."],
+];
+---
+<section class="container-x py-24">
+  <div class="grid gap-4 lg:grid-cols-2">
+    <article class="plus rounded-card border border-line bg-card p-8 md:p-10" data-reveal>
+      <div class="plus-b"></div>
+      <p class="eyebrow">Open source</p>
+      <h2 class="h-lg mt-3">Yours to read, <span class="accent-word">fork</span> and fix</h2>
+      <p class="lead mt-4">Lumen is MIT licensed Rust, one process per editor, with no web view and no Electron. There is no telemetry: the only request it makes by itself is a small <code class="font-mono text-[0.9em]">latest.json</code> to check for updates, and you can turn that off.</p>
+      <div class="mt-7 flex flex-wrap gap-3"><a class="btn" href={GITHUB} rel="noopener">Star on GitHub</a><a class="btn" href={`${GITHUB}/blob/main/CONTRIBUTING.md`} rel="noopener">Contribute</a></div>
+    </article>
+    <article class="plus rounded-card border border-line bg-card p-8 md:p-10" data-reveal style="--d:90ms">
+      <div class="plus-b"></div>
+      <p class="eyebrow">Updates</p>
+      <h2 class="h-lg mt-3">Signed releases, <span class="accent-word">quiet</span> updates</h2>
+      <ol class="mt-6 space-y-4">
+        {steps.map(([n, t, d]) => <li class="grid grid-cols-[2.2rem_1fr] gap-3"><span class="font-mono text-xs text-faint">{n}</span><div><h3 class="text-[15px] font-medium">{t}</h3><p class="text-sm text-muted">{d}</p></div></li>)}
+      </ol>
+    </article>
+  </div>
+</section>

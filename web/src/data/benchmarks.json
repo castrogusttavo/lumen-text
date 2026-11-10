@@ -2,100 +2,226 @@
   "schemaVersion": 1,
   "measuredAt": "2026-11-10",
   "machine": {
-    "label": "Developer workstation (Linux 6.18, x86_64)",
-    "cpu": null,
-    "ramGb": 8,
-    "storage": null,
-    "os": "Arch Linux, Wayland",
-    "note": "Competitor figures will be measured on this same machine by tools/bench-compare.sh."
+    "label": "Intel Core i3-N305 laptop, 7.4 GB RAM, Linux 6.18.51-1-lts",
+    "cpu": "Intel Core i3-N305 (8 threads)",
+    "ramGb": 7.4,
+    "storage": "SM2P41C3 NVMe ADATA 512GB",
+    "os": "Arch Linux, kernel 6.18.51-1-lts, Wayland (Hyprland 0.56.2), 1920x1080",
+    "note": "The same machine for every editor, shared with other running work; editors were run one at a time."
   },
-  "methodology": "Lumen numbers come from the repository's own regression tests (src/perf.rs, run with cargo test --release perf -- --nocapture) and from the status bar's PSS counter (proportional set size, which counts shared pages fairly). Frame and keystroke times are CPU time of the UI thread for one software-rendered 1100x700 frame, not end-to-end input-to-photon latency. Competitor columns stay empty until the same scenario has been measured on the same machine: we would rather show 'measuring' than a number we did not take.",
+  "methodology": "All figures were taken on one machine (see above), one editor at a time, on a freshly generated TypeScript workspace (302 files plus a 100,000-line file) with an isolated, extension-free profile per editor; each cell is the median of N runs (min and max in the tooltip) after one discarded warm-up launch. Memory is PSS (proportional set size, shared pages counted fairly) summed over the editor's whole process tree: helpers, renderers, GPU and language-server processes. Startup is the time from spawning the editor until its window shows the workspace and the first file and stops changing (screen capture polled every 100 ms), measured the same way for every editor. TypeScript timings are taken at the language-server protocol level (spawn, open a file with a type error, wait for diagnostics) with the server each editor ships. A cell marked unavailable could not be measured fairly and says why. Frame and keystroke times are only available for Lumen (CPU time of its own tests). Reproduce with tools/bench-compare.sh.",
   "editors": [
-    { "id": "lumen", "name": "Lumen", "version": "2026.11.10.6", "highlight": true, "note": "CPU-rendered, native Rust" },
-    { "id": "vscode", "name": "VS Code", "version": null, "note": "Electron. Windsurf and Devin are VS Code forks and are expected to land in the same range." },
-    { "id": "zed", "name": "Zed", "version": null, "note": "Native, GPU-rendered" },
-    { "id": "sublime", "name": "Sublime Text", "version": null, "note": "Native, closed source" },
-    { "id": "openidea", "name": "openidea", "version": null, "note": "Local reference build" }
+    {
+      "id": "lumen",
+      "name": "Lumen",
+      "version": "2026.11.10.9",
+      "highlight": true,
+      "note": "CPU-rendered, native Rust"
+    },
+    {
+      "id": "vscode",
+      "name": "VS Code",
+      "version": "1.145.2",
+      "note": "Electron, fresh profile, no extensions. Windsurf and Devin are VS Code forks and are expected to land in the same range."
+    },
+    {
+      "id": "zed",
+      "name": "Zed",
+      "version": "1.19.2",
+      "note": "Native, GPU-rendered (pacman package)"
+    },
+    {
+      "id": "sublime",
+      "name": "Sublime Text",
+      "version": "Build 4215",
+      "note": "Native, closed source"
+    },
+    {
+      "id": "openidea",
+      "name": "openidea",
+      "version": "0.1.33",
+      "note": "Local build: a Tauri 2 app (Rust + WebKitGTK webview) shipped as an AppImage, bundles its own GTK/WebKit libraries"
+    }
   ],
   "metrics": [
     {
       "id": "ram-idle",
       "group": "memory",
       "label": "Memory at rest",
-      "description": "Editor process, a 100k-line file tokenized in the background, no language server.",
+      "description": "Whole process tree (helpers, renderers, GPU) after opening a generated 302-file TypeScript workspace and README.md and letting it settle for 20 s. README.md starts no language server in any editor.",
       "unit": "MB",
       "lowerIsBetter": true,
       "scaleMax": 1024,
       "values": {
-        "lumen": { "value": 16, "source": "measured", "note": "PSS of perf::memory_100k_buffer_and_tokenizer (src/perf.rs)" },
-        "vscode": { "value": null, "source": "pending" },
-        "zed": { "value": null, "source": "pending" },
-        "sublime": { "value": null, "source": "pending" },
-        "openidea": { "value": null, "source": "pending" }
+        "lumen": {
+          "value": 17.3,
+          "source": "measured",
+          "note": "PSS summed over the whole process tree, 20 s after the window settled: median 17 MB (min 17, max 17, N=5). RSS median 25 MB, 1 process(es). Peak PSS median 17 MB."
+        },
+        "vscode": {
+          "value": 1377.0,
+          "source": "measured",
+          "note": "PSS summed over the whole process tree, 20 s after the window settled: median 1377 MB (min 1234, max 1421, N=5). RSS median 2297 MB, 15 process(es). Peak PSS median 1425 MB."
+        },
+        "zed": {
+          "value": 252.0,
+          "source": "measured",
+          "note": "PSS summed over the whole process tree, 20 s after the window settled: median 252 MB (min 245, max 254, N=5). RSS median 272 MB, 1 process(es). Peak PSS median 252 MB."
+        },
+        "sublime": {
+          "value": 102.0,
+          "source": "measured",
+          "note": "PSS summed over the whole process tree, 20 s after the window settled: median 102 MB (min 99, max 103, N=5). RSS median 136 MB, 6 process(es). Peak PSS median 110 MB."
+        },
+        "openidea": {
+          "value": 399.0,
+          "source": "measured",
+          "note": "PSS summed over the whole process tree, 20 s after the window settled: median 399 MB (min 398, max 402, N=5). RSS median 567 MB, 4 process(es). Peak PSS median 404 MB."
+        }
       }
     },
     {
       "id": "ram-open-100k",
       "group": "memory",
       "label": "Memory while opening 100k lines",
-      "description": "Streaming open of an 8 MB, 100,000-line file. Typical level, with the peak in the note.",
+      "description": "Same workspace, launched straight into a generated 100,000-line TypeScript file (about 5.8 MB), 10 s after the window settled. Includes any language server the editor starts for a .ts file.",
       "unit": "MB",
       "lowerIsBetter": true,
       "scaleMax": 1024,
       "values": {
-        "lumen": { "value": 30, "source": "measured", "note": "Peak 51 MB (PSS)." },
-        "vscode": { "value": null, "source": "pending" },
-        "zed": { "value": null, "source": "pending" },
-        "sublime": { "value": null, "source": "pending" },
-        "openidea": { "value": null, "source": "pending" }
+        "lumen": {
+          "value": 328.0,
+          "source": "measured",
+          "note": "PSS of the whole process tree 10 s after launching with the 100k-line file: median 328 MB (min 325, max 334, N=5); peak median 329 MB; RSS median 336 MB; 2 processes (language servers included if the editor started one). Largest processes (last run, MB PSS): tsgo 296, lumen-text 33."
+        },
+        "vscode": {
+          "value": 2479.0,
+          "source": "measured",
+          "note": "PSS of the whole process tree 10 s after launching with the 100k-line file: median 2479 MB (min 2274, max 2552, N=5); peak median 2479 MB; RSS median 3574 MB; 17 processes (language servers included if the editor started one). Largest processes (last run, MB PSS): code 504, code 380, code 358, code 333."
+        },
+        "zed": {
+          "value": 1770.0,
+          "source": "measured",
+          "note": "PSS of the whole process tree 10 s after launching with the 100k-line file: median 1770 MB (min 1735, max 1778, N=5); peak median 1770 MB; RSS median 2028 MB; 7 processes (language servers included if the editor started one). Largest processes (last run, MB PSS): node-MainThread 542, node-MainThread 515, zed-editor 458, node-MainThread 82."
+        },
+        "sublime": {
+          "value": 132.0,
+          "source": "measured",
+          "note": "PSS of the whole process tree 10 s after launching with the 100k-line file: median 132 MB (min 125, max 133, N=5); peak median 132 MB; RSS median 166 MB; 6 processes (language servers included if the editor started one). Largest processes (last run, MB PSS): sublime_text 95, plugin_host-3.1 32, glycin-image-rs 4, crash_handler 1."
+        },
+        "openidea": {
+          "value": 399.0,
+          "source": "measured",
+          "note": "PSS of the whole process tree 10 s after launching with the 100k-line file: median 399 MB (min 393, max 400, N=5); peak median 402 MB; RSS median 567 MB; 4 processes (language servers included if the editor started one). Largest processes (last run, MB PSS): WebKitWebProces 214, openidea 146, WebKitNetworkPr 22, openidea 18."
+        }
       }
     },
     {
       "id": "disk",
       "group": "disk",
       "label": "Disk space",
-      "description": "Installed program, without user data. The Lumen figure is the release binary built locally.",
+      "description": "Installed program on disk (MB of files, 1 MB = 2^20 bytes), without user data.",
       "unit": "MB",
       "lowerIsBetter": true,
       "scaleMax": 512,
       "values": {
-        "lumen": { "value": 19, "source": "measured", "note": "Release binary; CI fails the build above 30 MB." },
-        "vscode": { "value": null, "source": "pending" },
-        "zed": { "value": null, "source": "pending" },
-        "sublime": { "value": null, "source": "pending" },
-        "openidea": { "value": null, "source": "pending" }
+        "lumen": {
+          "value": 27.9,
+          "source": "measured",
+          "note": "~/.local/share/lumen-text/2026.11.10.9 (binary + assets). Release binary alone 14.7 MB; the optional tsgo download adds 29 MB."
+        },
+        "vscode": {
+          "value": 1051.0,
+          "source": "measured",
+          "note": "official linux-x64 stable tarball, extracted."
+        },
+        "zed": {
+          "value": 331.0,
+          "source": "measured",
+          "note": "files of the pacman package zed."
+        },
+        "sublime": {
+          "value": 67.6,
+          "source": "measured",
+          "note": "/opt/sublime_text."
+        },
+        "openidea": {
+          "value": 374.0,
+          "source": "measured",
+          "note": "~/Applications/openidea-0.1.33 (extracted AppImage, bundles WebKitGTK/GTK libs)."
+        }
       }
     },
     {
       "id": "startup",
       "group": "startup",
       "label": "Startup to first paint",
-      "description": "Process start to the first frame with a project open. Not covered by a test yet, so Lumen is pending too.",
+      "description": "Process spawn until the window shows the workspace and the first file and its pixels stop changing (compositor window-mapped time in the note).",
       "unit": "ms",
       "lowerIsBetter": true,
       "scaleMax": 3000,
       "values": {
-        "lumen": { "value": null, "source": "pending" },
-        "vscode": { "value": null, "source": "pending" },
-        "zed": { "value": null, "source": "pending" },
-        "sublime": { "value": null, "source": "pending" },
-        "openidea": { "value": null, "source": "pending" }
+        "lumen": {
+          "value": 781.0,
+          "source": "measured",
+          "note": "Spawn to window pixels stable with the workspace and README.md shown: median 781 ms (min 754, max 815, N=5). Window mapped at 115 ms (median)."
+        },
+        "vscode": {
+          "value": 5814.0,
+          "source": "measured",
+          "note": "Spawn to window pixels stable with the workspace and README.md shown: median 5814 ms (min 4951, max 11688, N=5). Window mapped at 690 ms (median)."
+        },
+        "zed": {
+          "value": 1734.0,
+          "source": "measured",
+          "note": "Spawn to window pixels stable with the workspace and README.md shown: median 1734 ms (min 1092, max 5389, N=5). Window mapped at 361 ms (median)."
+        },
+        "sublime": {
+          "value": 1263.0,
+          "source": "measured",
+          "note": "Spawn to window pixels stable with the workspace and README.md shown: median 1263 ms (min 972, max 1846, N=5). Window mapped at 306 ms (median)."
+        },
+        "openidea": {
+          "value": 2197.0,
+          "source": "measured",
+          "note": "Spawn to window pixels stable with the workspace and README.md shown: median 2197 ms (min 1904, max 2630, N=5). Window mapped at 917 ms (median)."
+        }
       }
     },
     {
       "id": "open-100k",
       "group": "startup",
       "label": "Open a 100k-line file",
-      "description": "Buffer ready to scroll and edit.",
+      "description": "Launch straight into the 100,000-line TypeScript file until the window's pixels stop changing (startup included).",
       "unit": "ms",
       "lowerIsBetter": true,
       "scaleMax": 2000,
       "values": {
-        "lumen": { "value": 21, "source": "measured", "note": "Buffer open in perf.rs; the app-level open is measured separately." },
-        "vscode": { "value": null, "source": "pending" },
-        "zed": { "value": null, "source": "pending" },
-        "sublime": { "value": null, "source": "pending" },
-        "openidea": { "value": null, "source": "pending" }
+        "lumen": {
+          "value": 2529.0,
+          "source": "measured",
+          "note": "Launch straight into the 100k-line file (startup included): median 2529 ms (min 891, max 2638, N=5); the empty-README launch took 781 ms, so the file itself adds about 1748 ms. Lumen's own in-process buffer open (perf.rs) takes 21 ms."
+        },
+        "vscode": {
+          "value": 5604.0,
+          "source": "measured",
+          "note": "Launch straight into the 100k-line file (startup included): median 5604 ms (min 5397, max 7134, N=5); the empty-README launch took 5814 ms, so the file itself adds about -209 ms."
+        },
+        "zed": {
+          "value": 3425.0,
+          "source": "measured",
+          "note": "Launch straight into the 100k-line file (startup included): median 3425 ms (min 3146, max 3571, N=5); the empty-README launch took 1734 ms, so the file itself adds about 1692 ms."
+        },
+        "sublime": {
+          "value": 2680.0,
+          "source": "measured",
+          "note": "Launch straight into the 100k-line file (startup included): median 2680 ms (min 2612, max 7091, N=5); the empty-README launch took 1263 ms, so the file itself adds about 1417 ms."
+        },
+        "openidea": {
+          "value": 2205.0,
+          "source": "measured",
+          "note": "Launch straight into the 100k-line file (startup included): median 2205 ms (min 1789, max 2352, N=5); the empty-README launch took 2197 ms, so the file itself adds about 7 ms."
+        }
       }
     },
     {
@@ -107,12 +233,33 @@
       "lowerIsBetter": true,
       "scaleMax": 16.7,
       "values": {
-        "lumen": { "value": 4.4, "source": "measured", "note": "perf::render_frame_steady_scroll; 60 Hz budget is 16.7 ms." },
-        "vscode": { "value": null, "source": "pending" },
-        "zed": { "value": null, "source": "pending" },
-        "sublime": { "value": null, "source": "pending" },
-        "openidea": { "value": null, "source": "pending" }
-      }
+        "lumen": {
+          "value": 4.4,
+          "source": "measured",
+          "note": "perf::render_frame_steady_scroll; 60 Hz budget is 16.7 ms."
+        },
+        "vscode": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "not-comparable: Lumen's figure is the CPU time of one software-rendered frame from its own test (perf.rs). The other editors expose no comparable frame-cost counter and input-to-photon latency needs a high-speed camera, so this is not comparable."
+        },
+        "zed": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "not-comparable: Lumen's figure is the CPU time of one software-rendered frame from its own test (perf.rs). The other editors expose no comparable frame-cost counter and input-to-photon latency needs a high-speed camera, so this is not comparable."
+        },
+        "sublime": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "not-comparable: Lumen's figure is the CPU time of one software-rendered frame from its own test (perf.rs). The other editors expose no comparable frame-cost counter and input-to-photon latency needs a high-speed camera, so this is not comparable."
+        },
+        "openidea": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "not-comparable: Lumen's figure is the CPU time of one software-rendered frame from its own test (perf.rs). The other editors expose no comparable frame-cost counter and input-to-photon latency needs a high-speed camera, so this is not comparable."
+        }
+      },
+      "required": false
     },
     {
       "id": "keystroke",
@@ -123,68 +270,230 @@
       "lowerIsBetter": true,
       "scaleMax": 16.7,
       "values": {
-        "lumen": { "value": 12, "source": "measured", "note": "perf::typing_latency_100k_lines (CPU time)." },
-        "vscode": { "value": null, "source": "pending" },
-        "zed": { "value": null, "source": "pending" },
-        "sublime": { "value": null, "source": "pending" },
-        "openidea": { "value": null, "source": "pending" }
-      }
+        "lumen": {
+          "value": 12,
+          "source": "measured",
+          "note": "perf::typing_latency_100k_lines (CPU time)."
+        },
+        "vscode": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "not-comparable: Lumen's figure is the CPU time of one software-rendered frame from its own test (perf.rs). The other editors expose no comparable frame-cost counter and input-to-photon latency needs a high-speed camera, so this is not comparable."
+        },
+        "zed": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "not-comparable: Lumen's figure is the CPU time of one software-rendered frame from its own test (perf.rs). The other editors expose no comparable frame-cost counter and input-to-photon latency needs a high-speed camera, so this is not comparable."
+        },
+        "sublime": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "not-comparable: Lumen's figure is the CPU time of one software-rendered frame from its own test (perf.rs). The other editors expose no comparable frame-cost counter and input-to-photon latency needs a high-speed camera, so this is not comparable."
+        },
+        "openidea": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "not-comparable: Lumen's figure is the CPU time of one software-rendered frame from its own test (perf.rs). The other editors expose no comparable frame-cost counter and input-to-photon latency needs a high-speed camera, so this is not comparable."
+        }
+      },
+      "required": false
     },
     {
       "id": "lsp-first-diagnostics",
       "group": "lsp",
       "label": "TypeScript: first diagnostics",
-      "description": "Open a mid-size TypeScript project and wait for the first diagnostics. Lumen runs tsgo (the native compiler); VS Code uses tsserver by default.",
+      "description": "Open src/broken.ts of a 302-file TypeScript project and wait for the first diagnostics. Measured at the language-server protocol level: Lumen runs tsgo (the native compiler); VS Code uses its bundled tsserver; Zed uses vtsls.",
       "unit": "ms",
       "lowerIsBetter": true,
       "scaleMax": 10000,
       "values": {
-        "lumen": { "value": null, "source": "pending" },
-        "vscode": { "value": null, "source": "pending" },
-        "zed": { "value": null, "source": "pending" },
-        "sublime": { "value": null, "source": "pending" },
-        "openidea": { "value": null, "source": "pending" }
+        "lumen": {
+          "value": 117.0,
+          "source": "measured",
+          "note": "Language-server speed measured over the LSP protocol, not through the GUI: tsgo 7.0.0-dev as Lumen starts it by default (whole project, GOMEMLIMIT=512MiB GOGC=50); spawn to the first diagnostics for src/broken.ts in the 302-file sample project: median 117 ms (min 115, max 121, N=5). With the opt-in narrow mirror (lsp_narrow, loads only the open file and its imports): 66 ms, 45 MB."
+        },
+        "vscode": {
+          "value": 1186.0,
+          "source": "measured",
+          "note": "Language-server speed measured over the LSP protocol, not through the GUI: tsserver of TypeScript 6.0.3 bundled in VS Code 1.145.2, run with VS Code's own Electron as node; spawn to the first diagnostics for src/broken.ts in the 302-file sample project: median 1186 ms (min 1167, max 1221, N=5)."
+        },
+        "zed": {
+          "value": 1763.0,
+          "source": "measured",
+          "note": "Language-server speed measured over the LSP protocol, not through the GUI: vtsls 0.3.0 (TypeScript 5.9.3), the server Zed installs for TypeScript, run with system node; spawn to the first diagnostics for src/broken.ts in the 302-file sample project: median 1763 ms (min 1628, max 1872, N=5)."
+        },
+        "sublime": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "Sublime Text has no built-in TypeScript language server (it needs the separate LSP package plus a server), so the out-of-the-box editor has nothing to measure."
+        },
+        "openidea": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "No standalone TypeScript language server was identified in the install, and openidea gives no protocol endpoint to drive; not measured rather than guessed."
+        }
       }
     },
     {
       "id": "lsp-memory",
       "group": "lsp",
       "label": "TypeScript: language server memory",
-      "description": "Resident memory of the TypeScript server on a real project. Lumen's lean mode loads only open files and their imports (range from the README).",
+      "description": "PSS of the TypeScript server after the first diagnostics on the same project. Lumen's default is the whole project; its opt-in lean mode loads only the open file and its imports.",
       "unit": "MB",
       "lowerIsBetter": true,
       "scaleMax": 1024,
       "values": {
-        "lumen": { "value": null, "source": "pending", "note": "Observed 40-220 MB in lean mode, 780 MB for a full 7k-file tsconfig; a controlled run is pending." },
-        "vscode": { "value": null, "source": "pending" },
-        "zed": { "value": null, "source": "pending" },
-        "sublime": { "value": null, "source": "pending" },
-        "openidea": { "value": null, "source": "pending" }
+        "lumen": {
+          "value": 75.6,
+          "source": "measured",
+          "note": "Language-server speed measured over the LSP protocol, not through the GUI: tsgo 7.0.0-dev as Lumen starts it by default (whole project, GOMEMLIMIT=512MiB GOGC=50); PSS of the server process tree 1.5 s after the diagnostics: median 76 MB (min 75, max 76, N=5), 1 process(es)."
+        },
+        "vscode": {
+          "value": 214.0,
+          "source": "measured",
+          "note": "Language-server speed measured over the LSP protocol, not through the GUI: tsserver of TypeScript 6.0.3 bundled in VS Code 1.145.2, run with VS Code's own Electron as node; PSS of the server process tree 1.5 s after the diagnostics: median 214 MB (min 214, max 215, N=5), 1 process(es)."
+        },
+        "zed": {
+          "value": 409.0,
+          "source": "measured",
+          "note": "Language-server speed measured over the LSP protocol, not through the GUI: vtsls 0.3.0 (TypeScript 5.9.3), the server Zed installs for TypeScript, run with system node; PSS of the server process tree 1.5 s after the diagnostics: median 409 MB (min 406, max 412, N=5), 4 process(es)."
+        },
+        "sublime": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "Sublime Text has no built-in TypeScript language server (it needs the separate LSP package plus a server), so the out-of-the-box editor has nothing to measure."
+        },
+        "openidea": {
+          "value": null,
+          "source": "unavailable",
+          "reason": "No standalone TypeScript language server was identified in the install, and openidea gives no protocol endpoint to drive; not measured rather than guessed."
+        }
       }
     }
   ],
   "groups": [
-    { "id": "memory", "label": "Memory" },
-    { "id": "disk", "label": "Disk space" },
-    { "id": "startup", "label": "Startup and open" },
-    { "id": "latency", "label": "Editing latency" },
-    { "id": "lsp", "label": "TypeScript tooling" }
+    {
+      "id": "memory",
+      "label": "Memory"
+    },
+    {
+      "id": "disk",
+      "label": "Disk space"
+    },
+    {
+      "id": "startup",
+      "label": "Startup and open"
+    },
+    {
+      "id": "latency",
+      "label": "Editing latency"
+    },
+    {
+      "id": "lsp",
+      "label": "TypeScript tooling"
+    }
   ],
   "facts": {
-    "testsPassed": { "value": 775, "source": "measured", "note": "cargo test, all green on the last local run" },
-    "themes": { "value": 65, "source": "measured", "note": "assets/themes" },
-    "grammars": { "value": 260, "source": "measured", "note": "assets/grammars (TextMate)" },
+    "testsPassed": {
+      "value": 808,
+      "source": "measured",
+      "note": "cargo test, all green on the last local run"
+    },
+    "themes": {
+      "value": 65,
+      "source": "measured",
+      "note": "assets/themes"
+    },
+    "grammars": {
+      "value": 260,
+      "source": "measured",
+      "note": "assets/grammars (TextMate)"
+    },
     "budgets": [
-      { "id": "pss", "label": "Memory budget (100k-line test)", "value": 16, "limit": 120, "unit": "MB", "note": "perf.rs fails the test above 120 MB" },
-      { "id": "binary", "label": "Release binary", "value": 19, "limit": 30, "unit": "MB", "note": "CI fails the build above 30 MB" },
-      { "id": "frame", "label": "Steady scroll frame", "value": 4.4, "limit": 12, "unit": "ms", "note": "perf.rs budget: 12 ms" },
-      { "id": "key", "label": "Keystroke plus frame", "value": 12, "limit": 30, "unit": "ms", "note": "perf.rs budget: 30 ms" }
+      {
+        "id": "pss",
+        "label": "Memory budget (100k-line test)",
+        "value": 16,
+        "limit": 120,
+        "unit": "MB",
+        "note": "perf.rs fails the test above 120 MB"
+      },
+      {
+        "id": "binary",
+        "label": "Release binary",
+        "value": 19,
+        "limit": 30,
+        "unit": "MB",
+        "note": "CI fails the build above 30 MB"
+      },
+      {
+        "id": "frame",
+        "label": "Steady scroll frame",
+        "value": 4.4,
+        "limit": 12,
+        "unit": "ms",
+        "note": "perf.rs budget: 12 ms"
+      },
+      {
+        "id": "key",
+        "label": "Keystroke plus frame",
+        "value": 12,
+        "limit": 30,
+        "unit": "ms",
+        "note": "perf.rs budget: 30 ms"
+      }
     ],
     "memoryScenarios": [
-      { "label": "Window, 1 file", "value": 16 },
-      { "label": "100k lines open", "value": 30 },
-      { "label": "Opening peak", "value": 51 },
-      { "label": "+ tsgo lean (low)", "value": 40 }
-    ]
+      {
+        "label": "Window, 1 file",
+        "value": 16
+      },
+      {
+        "label": "100k lines open",
+        "value": 30
+      },
+      {
+        "label": "Opening peak",
+        "value": 51
+      },
+      {
+        "label": "tsgo, lean mode",
+        "value": 40
+      }
+    ],
+    "cliTypecheck": {
+      "label": "Full type-check of the 302-file sample project (tsc --noEmit)",
+      "unit": "ms",
+      "source": "measured",
+      "tools": [
+        {
+          "id": "tsc-6.0.3-js",
+          "version": "Version 6.0.3",
+          "command": "node ~/.cache/lumen-bench/ts6/node_modules/typescript/bin/tsc -p ~/.cache/lumen-bench/sample --noEmit",
+          "median": 2389,
+          "min": 2202,
+          "max": 2650,
+          "runs": 5
+        },
+        {
+          "id": "tsc-7.0.2-native",
+          "version": "Version 7.0.2",
+          "command": "~/.cache/lumen-bench/ts/node_modules/.bin/tsc -p ~/.cache/lumen-bench/sample --noEmit",
+          "median": 258,
+          "min": 236,
+          "max": 286,
+          "runs": 5
+        },
+        {
+          "id": "tsgo-lumen-bundled",
+          "version": "Version 7.0.0-dev.20260707.2",
+          "command": "~/.local/share/lumen-text/tsgo/node_modules/@typescript/native-preview-linux-x64/lib/tsgo -p ~/.cache/lumen-bench/sample --noEmit",
+          "median": 210,
+          "min": 179,
+          "max": 239,
+          "runs": 5
+        }
+      ]
+    }
   }
 }

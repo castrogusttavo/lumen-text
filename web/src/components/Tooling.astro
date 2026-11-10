@@ -1,0 +1,42 @@
+---
+import SectionHead from "./SectionHead.astro";
+const cards = [
+  { name: "tsgo", tag: "Language server", text: "The native TypeScript compiler serves diagnostics, hover, completion, rename, references and quick fixes. What it loads decides its memory, so the status bar shows the editor and tsgo RAM separately (see Metrics for measured figures).",
+    art: `  editor
+    │
+    ├── tsgo ──── project files
+    │
+    └── status bar
+        RAM editor + tsgo` },
+  { name: "Biome and ESLint", tag: "Format and lint", text: "Formats with the project's Biome or Prettier, falling back to tsgo. Lint comes through biome lsp-proxy and ESLint, with fixes in the Ctrl+. menu and organize imports built in.",
+    art: `  save ──▶ format ──▶ lint
+            │          │
+         Biome      ESLint
+         Prettier   Biome
+         tsgo` },
+  { name: "Tests and debugging", tag: "Run and step", text: "Vitest and Jest runs put pass and fail marks in the gutter. Breakpoints, stepping, stack and variables work for TypeScript through js-debug, and for Rust and C through gdb DAP.",
+    art: `  ✓ runs high priority first
+  ✗ retries three times
+  ● breakpoint  queue.ts:22
+  ▶ F10  step over` },
+];
+---
+<section class="container-x py-24">
+  <SectionHead eyebrow="Tooling">
+    <Fragment slot="title">The TypeScript toolchain, <span class="accent-word">built in</span></Fragment>
+    Language servers run on demand and stay out of the way. Nothing to install in a marketplace.
+  </SectionHead>
+  <div class="mt-14 grid gap-4 md:grid-cols-3">
+    {cards.map((c, i) => (
+      <article class="plus flex flex-col rounded-card border border-line bg-card" data-reveal style={`--d:${i * 90}ms`}>
+        <div class="plus-b"></div>
+        <pre class="dotgrid grid min-h-[190px] place-items-center overflow-hidden rounded-t-card border-b border-line p-6 pt-10 font-mono text-[12px] leading-[1.55] text-muted" aria-hidden="true">{c.art}</pre>
+        <div class="p-6">
+          <p class="eyebrow">{c.tag}</p>
+          <h3 class="mt-2 text-xl font-medium tracking-tight">{c.name}</h3>
+          <p class="mt-3 text-sm leading-relaxed text-muted">{c.text}</p>
+        </div>
+      </article>
+    ))}
+  </div>
+</section>

@@ -3,9 +3,9 @@ import Logo from "./Logo.astro";
 import { url, GITHUB } from "../lib/url";
 import release from "../data/release.json";
 const cols = [
-  ["Product", [["Features", "/#features"], ["Compare", "/#compare"], ["Themes", "/#themes"], ["Download", "/download"], ["Changelog", "/changelog"]]],
+  ["Product", [["Features", "/#features"], ["Compare", "/#compare"], ["Docs", "/docs"], ["Download", "/download"], ["Changelog", "/changelog"]]],
   ["Project", [["GitHub", GITHUB], ["Releases", `${GITHUB}/releases`], ["Issues", `${GITHUB}/issues`], ["Contributing", `${GITHUB}/blob/main/CONTRIBUTING.md`], ["License (MIT)", `${GITHUB}/blob/main/LICENSE`]]],
-  ["Docs", [["Install", `${GITHUB}#install`], ["Keyboard shortcuts", `${GITHUB}#keyboard-shortcuts`], ["Headless mode", `${GITHUB}#headless-mode`], ["Roadmap", `${GITHUB}/blob/main/ROADMAP.md`]]],
+  ["Docs", [["Getting started", "/docs/getting-started"], ["Keyboard shortcuts", "/docs/shortcuts"], ["Settings", "/docs/settings"], ["Themes", "/docs/themes"], ["Build from source", "/docs/contributing"]]],
 ] as const;
 ---
 <footer class="relative mt-32 border-t border-line">

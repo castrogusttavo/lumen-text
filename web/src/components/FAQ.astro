@@ -1,0 +1,17 @@
+---
+import SectionHead from "./SectionHead.astro";
+import { faq } from "../data/faq";
+---
+<section id="faq" class="container-x scroll-mt-24 py-24">
+  <SectionHead eyebrow="FAQ"><Fragment slot="title">Questions, <span class="accent-word">answered</span></Fragment>Short answers. The README has the long ones.</SectionHead>
+  <div class="mx-auto mt-12 max-w-3xl divide-y divide-line rounded-card border border-line" data-reveal>
+    {faq.map(([q, a]) => (
+      <details class="group px-6 py-1 [&_summary::-webkit-details-marker]:hidden">
+        <summary class="flex cursor-pointer list-none items-center justify-between gap-6 py-5 text-[15.5px] font-medium">
+          {q}<span class="grid size-6 shrink-0 place-items-center rounded-full border border-line2 text-muted transition-transform group-open:rotate-45" aria-hidden="true">+</span>
+        </summary>
+        <p class="pb-6 pr-10 text-[15px] leading-relaxed text-muted">{a}</p>
+      </details>
+    ))}
+  </div>
+</section>

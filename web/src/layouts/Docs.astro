@@ -1,0 +1,58 @@
+---
+import Base from "./Base.astro";
+import { allDocs, docUrl, SECTIONS } from "../lib/docs";
+import { url, GITHUB } from "../lib/url";
+interface Props { title: string; description: string; id: string; headings?: { depth: number; slug: string; text: string }[] }
+const { title, description, id, headings = [] } = Astro.props;
+const docs = await allDocs();
+const idx = docs.findIndex((d) => d.id === id);
+const prev = idx > 0 ? docs[idx - 1] : undefined, next = idx >= 0 ? docs[idx + 1] : undefined;
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
+---
+<Base title={`${title} - Docs`} description={description} path={`/docs/${id}`}>
+  <div class="container-x grid gap-10 pb-10 pt-8 lg:grid-cols-[250px_minmax(0,1fr)] xl:grid-cols-[250px_minmax(0,1fr)_200px]" data-docs data-search-url={url("/docs/search.json")}>
+    <aside class="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:self-start lg:overflow-y-auto lg:pr-2" aria-label="Documentation">
+      <div class="relative mb-4">
+        <input type="search" data-docs-search placeholder="Search docs   /" aria-label="Search the documentation" autocomplete="off" class="h-10 w-full rounded-xl border border-line bg-card px-3.5 text-sm outline-none placeholder:text-faint focus:border-line2" />
+        <ul data-docs-results hidden class="absolute inset-x-0 top-12 z-30 max-h-[60vh] overflow-y-auto rounded-xl border border-line2 bg-solid p-1.5 shadow-2xl" role="listbox"></ul>
+      </div>
+      <details class="group lg:open" open>
+        <summary class="mb-2 cursor-pointer list-none text-sm font-medium lg:hidden [&::-webkit-details-marker]:hidden">Pages <span class="text-faint">({docs.length})</span></summary>
+        <nav class="space-y-6 pb-6">
+          {SECTIONS.map((s) => (
+            <div>
+              <p class="eyebrow mb-2 px-2.5">{s}</p>
+              <ul class="space-y-0.5">
+                {docs.filter((d) => d.data.section === s).map((d) => (
+                  <li><a href={docUrl(d)} aria-current={d.id === id ? "page" : undefined} class:list={["block rounded-lg px-2.5 py-1.5 text-[14px] transition-colors", d.id === id ? "bg-card font-medium text-fg ring-1 ring-line" : "text-muted hover:text-fg"]}>{d.data.title}</a></li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </nav>
+      </details>
+    </aside>
+
+    <article class="min-w-0">
+      <p class="eyebrow">{docs[idx]?.data.section ?? "Docs"}</p>
+      <h1 class="mt-2 text-[2.1rem] font-semibold leading-tight tracking-tight md:text-5xl">{title}</h1>
+      <p class="lead mt-3 max-w-2xl">{description}</p>
+      <div class="prose-docs mt-8" data-prose><slot /></div>
+      <nav class="mt-14 grid gap-3 border-t border-line pt-8 sm:grid-cols-2" aria-label="Previous and next">
+        {prev ? <a href={docUrl(prev)} class="rounded-card border border-line p-4 transition-colors hover:border-line2"><span class="eyebrow">Previous</span><span class="mt-1 block font-medium">{prev.data.title}</span></a> : <span></span>}
+        {next && <a href={docUrl(next)} class="rounded-card border border-line p-4 text-right transition-colors hover:border-line2"><span class="eyebrow">Next</span><span class="mt-1 block font-medium">{next.data.title}</span></a>}
+      </nav>
+      <p class="mt-8 text-sm text-faint"><a class="underline decoration-line2 underline-offset-4 hover:text-fg" href={`${GITHUB}/tree/main/web/src/content/docs`} rel="noopener">Edit this page on GitHub</a></p>
+    </article>
+
+    {toc.length > 0 && (
+      <aside class="hidden xl:sticky xl:top-24 xl:block xl:self-start" aria-label="On this page">
+        <p class="eyebrow mb-3">On this page</p>
+        <ul class="space-y-1.5 border-l border-line text-[13px]">
+          {toc.map((h) => <li><a href={`#${h.slug}`} class:list={["block py-0.5 text-muted transition-colors hover:text-fg", h.depth === 3 ? "pl-6" : "pl-3"]}>{h.text}</a></li>)}
+        </ul>
+      </aside>
+    )}
+  </div>
+  <script>import "../scripts-docs";</script>
+</Base>

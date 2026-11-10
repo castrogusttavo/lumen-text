@@ -42,6 +42,13 @@ try {
     resolvedAt: new Date().toISOString(),
   };
   await writeFile(OUT, JSON.stringify(data, null, 2) + "\n");
+  try {
+    const all = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=40`, { headers, signal: AbortSignal.timeout(15000) });
+    if (all.ok) {
+      const list = (await all.json()).filter((r) => !r.draft).map((r) => ({ tag: r.tag_name, name: r.name, publishedAt: r.published_at, url: r.html_url, prerelease: r.prerelease, notes: r.body ?? "", assets: (r.assets ?? []).filter((a) => /\.(deb|rpm|AppImage|zst|tar\.gz)$/.test(a.name)).map((a) => ({ name: a.name, url: a.browser_download_url, size: a.size })) }));
+      await writeFile(new URL("../src/data/releases.json", import.meta.url), JSON.stringify(list, null, 2) + "\n");
+    }
+  } catch { /* keep the committed list */ }
   console.log(`[release] ${data.tag} (${Object.keys(assets).join(", ")})`);
 } catch (err) {
   console.warn(`[release] could not refresh (${err.message}); using the committed src/data/release.json`);

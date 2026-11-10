@@ -1,0 +1,8 @@
+---
+interface Props { t: string; d: string; span?: string; i?: number }
+const { t, d, span = "", i = 0 } = Astro.props;
+---
+<figure class:list={["plus group relative flex flex-col overflow-hidden rounded-card border border-line bg-bg", span]} data-reveal style={`--d:${(i % 2) * 90}ms`}>
+  <div class="ide dotgrid min-h-[260px] flex-1 !rounded-none !border-0 !bg-[#0b0b0d] [--grid-dot:rgb(255_255_255/0.07)]"><div class="h-full"><slot /></div></div>
+  <figcaption class="border-t border-line px-6 py-4"><h3 class="font-medium">{t}</h3><p class="mt-0.5 text-sm text-muted">{d}</p></figcaption>
+</figure>

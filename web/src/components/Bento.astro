@@ -1,0 +1,20 @@
+---
+import SectionHead from "./SectionHead.astro";
+import BentoCell from "./BentoCell.astro";
+import facts from "../data/facts.json";
+import { PaletteMini, SplitMini, ThemeMini, GitMini, HoverMini, SettingsMini } from "../islands/Bento";
+---
+<section class="container-x py-24">
+  <SectionHead eyebrow="Details">
+    <Fragment slot="title">Small pieces, <span class="accent-word">carefully</span> made</Fragment>
+    Poke at them. These are interactive replicas of the real UI.
+  </SectionHead>
+  <div class="mt-14 grid gap-4 lg:grid-cols-3">
+    <BentoCell t="Command palette" d="Fuzzy quick open and every command, one shortcut away." span="lg:col-span-2"><PaletteMini client:visible /></BentoCell>
+    <BentoCell t="Git panel" d="Stage files or single hunks, commit, amend, push." i={1}><GitMini client:visible /></BentoCell>
+    <BentoCell t="Split panes" d="Up to six panes in a grid, saved with your session."><SplitMini client:visible /></BentoCell>
+    <BentoCell t="Live themes" d={`${facts.themes} bundled VS Code themes. Arrows preview, Esc restores.`} span="lg:col-span-2" i={1}><ThemeMini client:visible /></BentoCell>
+    <BentoCell t="Hover and inlay hints" d="Rich Markdown hover, types and parameter names inline."><HoverMini client:visible /></BentoCell>
+    <BentoCell t="Settings you can read" d="A settings modal and a plain config.json." span="lg:col-span-2" i={1}><SettingsMini client:visible /></BentoCell>
+  </div>
+</section>

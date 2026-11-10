@@ -4,9 +4,12 @@ import { url, GITHUB } from "../lib/url";
 import Nav from "../components/Nav.astro";
 import Footer from "../components/Footer.astro";
 import release from "../data/release.json";
+import facts from "../data/facts.json";
+import geist from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url";
+import geistMono from "@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2?url";
 
 interface Props { title?: string; description?: string; path?: string; noNav?: boolean }
-const { title, description = "Lumen is a lean, CPU-rendered code editor for Linux with a first-class TypeScript workflow: tsgo, Biome, ESLint, split panes, a git panel and 65 themes in about 100 MB.", path = "/" } = Astro.props;
+const { title, description = `Lumen is a lean, CPU-rendered code editor for Linux with a first-class TypeScript workflow: tsgo, Biome, ESLint, split panes, a git panel and ${facts.themes} themes. The status bar shows editor and language server memory separately.`, path = "/" } = Astro.props;
 const fullTitle = title ? `${title} | Lumen` : "Lumen - the lean code editor for TypeScript";
 const canonical = new URL(url(path), Astro.site).href;
 const og = new URL(url("/og.png"), Astro.site).href;
@@ -47,9 +50,12 @@ const ld = {
     <meta name="twitter:image" content={og} />
     <script is:inline>
       document.documentElement.classList.add("js");
+      document.documentElement.style.setProperty("--vs", String(Math.min(1200, document.documentElement.clientWidth - 32) / 1000));
       try { var t = localStorage.getItem("lumen-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
     </script>
     <script type="application/ld+json" set:html={JSON.stringify(ld)} />
+    <link rel="preload" href={geist} as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href={geistMono} as="font" type="font/woff2" crossorigin />
     <slot name="head" />
   </head>
   <body class="min-h-dvh antialiased">

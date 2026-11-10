@@ -6,7 +6,7 @@ function countUp(el: HTMLElement) {
   const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: dec, maximumFractionDigits: dec });
   if (reduced) { el.textContent = fmt(to); return; }
   const t0 = performance.now();
-  const dur = 1400;
+  const dur = 380;
   const tick = (t: number) => {
     const p = Math.min(1, (t - t0) / dur);
     el.textContent = fmt(to * (1 - Math.pow(1 - p, 3)));

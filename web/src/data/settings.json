@@ -1,0 +1,466 @@
+[
+ {
+  "key": "format_on_save",
+  "section": "General",
+  "label": "Format on save",
+  "help": "Runs the language server's formatter every time a file is saved.",
+  "kind": "bool",
+  "default": false
+ },
+ {
+  "key": "updates",
+  "section": "General",
+  "label": "Updates",
+  "help": "Automatic checks every 4 hours and downloads the new version in the background; Notify only shows a notice; Off never checks (the \"Check for updates\" command still works).",
+  "kind": "choice",
+  "options": [
+   "auto",
+   "notify",
+   "off"
+  ],
+  "default": "auto"
+ },
+ {
+  "key": "font_size",
+  "section": "Editor",
+  "label": "Font size",
+  "help": "Code text size in pixels (8 to 40). Ctrl + mouse wheel adjusts it temporarily.",
+  "kind": "number",
+  "range": [
+   8,
+   40
+  ],
+  "default": 14
+ },
+ {
+  "key": "minimap",
+  "section": "Editor",
+  "label": "Minimap",
+  "help": "Shows a thumbnail of the file at the right edge of the editor.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "minimap_style",
+  "section": "Editor",
+  "label": "Minimap style",
+  "help": "Subtle is narrower and low-contrast; Normal is the original look.",
+  "kind": "choice",
+  "options": [
+   "subtle",
+   "normal"
+  ],
+  "default": "subtle"
+ },
+ {
+  "key": "word_wrap",
+  "section": "Editor",
+  "label": "Word wrap",
+  "help": "Wraps long lines at the window width instead of scrolling horizontally.",
+  "kind": "bool",
+  "default": false
+ },
+ {
+  "key": "sticky_scroll",
+  "section": "Editor",
+  "label": "Sticky scroll",
+  "help": "Keeps the enclosing scopes (function, class) visible at the top while you scroll.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "tab_width",
+  "section": "Editor",
+  "label": "Tab width",
+  "help": "How many columns a tab character takes in the editor (2, 4 or 8). Per-file indentation stays in the bottom bar.",
+  "kind": "choice",
+  "options": [
+   "2",
+   "4",
+   "8"
+  ],
+  "default": 4
+ },
+ {
+  "key": "indent_guides",
+  "section": "Editor",
+  "label": "Indent guides",
+  "help": "Draws thin vertical lines at the indentation levels.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "breadcrumbs",
+  "section": "Editor",
+  "label": "Breadcrumbs",
+  "help": "Shows the file path and symbols above the editor. When off, the editor takes the row's space.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "appearance",
+  "section": "Appearance",
+  "label": "Appearance mode",
+  "help": "Fixed uses the chosen theme; System follows the desktop light/dark setting.",
+  "kind": "choice",
+  "options": [
+   "fixed",
+   "system"
+  ],
+  "default": "fixed"
+ },
+ {
+  "key": "theme",
+  "section": "Appearance",
+  "label": "Theme",
+  "help": "Color theme used in fixed mode.",
+  "kind": "choice",
+  "options": [],
+  "default": null
+ },
+ {
+  "key": "theme_light",
+  "section": "Appearance",
+  "label": "Light theme",
+  "help": "Theme used when the system is in light mode (appearance: system).",
+  "kind": "choice",
+  "options": [],
+  "default": "github-light-default"
+ },
+ {
+  "key": "theme_dark",
+  "section": "Appearance",
+  "label": "Dark theme",
+  "help": "Theme used when the system is in dark mode (appearance: system).",
+  "kind": "choice",
+  "options": [],
+  "default": "github-dark-default"
+ },
+ {
+  "key": "theme_chrome",
+  "section": "Appearance",
+  "label": "Interface colors",
+  "help": "Derived keeps the usual calm, flat look; From theme uses the theme's own sidebar, tabs and bottom bar when the text stays legible (the rest falls back to the derived look).",
+  "kind": "choice",
+  "options": [
+   "derived",
+   "theme"
+  ],
+  "default": "derived"
+ },
+ {
+  "key": "ui_scale",
+  "section": "Appearance",
+  "label": "Interface scale",
+  "help": "Scale for hi-DPI screens (0.5 to 4). 0 = automatic, uses the system scale (LUMEN_SCALE is also accepted).",
+  "kind": "number",
+  "range": [
+   0,
+   4
+  ],
+  "default": 0
+ },
+ {
+  "key": "scroll_speed",
+  "section": "Appearance",
+  "label": "Scroll speed",
+  "help": "Mouse wheel speed (0.1 to 5). 1 = 3 lines per notch, like Zed. Touchpads always scroll exactly with the fingers.",
+  "kind": "number",
+  "range": [
+   0.1,
+   5
+  ],
+  "default": 1
+ },
+ {
+  "key": "auto_import",
+  "section": "TypeScript",
+  "label": "Auto import",
+  "help": "Automatically adds missing imports when you accept a suggestion.",
+  "kind": "bool",
+  "default": false
+ },
+ {
+  "key": "lsp_narrow",
+  "section": "TypeScript",
+  "label": "Lean mode",
+  "help": "Opt-in for low-RAM machines: the TypeScript server only sees open files and their imports (less memory, but references, rename, workspace symbols and errors in other files are incomplete). Off = the whole project, like VS Code.",
+  "kind": "bool",
+  "default": false
+ },
+ {
+  "key": "code_lens",
+  "section": "TypeScript",
+  "label": "Code lens",
+  "help": "Shows reference and implementation counts next to symbols (costs server CPU).",
+  "kind": "bool",
+  "default": false
+ },
+ {
+  "key": "code_lens_refs",
+  "section": "TypeScript",
+  "label": "Code lens: references",
+  "help": "Shows \"N references\" (needs Code lens on).",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "code_lens_impls",
+  "section": "TypeScript",
+  "label": "Code lens: implementations",
+  "help": "Shows \"N implementations\" (needs Code lens on).",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "inlay_hints",
+  "section": "TypeScript",
+  "label": "Inlay hints",
+  "help": "Shows inferred types and parameter names in gray inside the code (visible lines only).",
+  "kind": "bool",
+  "default": false
+ },
+ {
+  "key": "inlay_hints_params",
+  "section": "TypeScript",
+  "label": "Inlay hints: parameters",
+  "help": "Shows the parameter name before each argument (needs Inlay hints on).",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "inlay_hints_types",
+  "section": "TypeScript",
+  "label": "Inlay hints: types",
+  "help": "Shows inferred types of variables, parameters and returns; double-click a type to insert the annotation, Ctrl+click goes to the definition (needs Inlay hints on).",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "tsgo_source",
+  "section": "TypeScript",
+  "label": "tsgo source",
+  "help": "Automatic uses the project's tsgo if installed, otherwise the bundled one.",
+  "kind": "choice",
+  "options": [
+   "auto",
+   "project",
+   "bundled"
+  ],
+  "default": "auto"
+ },
+ {
+  "key": "git_pull_strategy",
+  "section": "Git",
+  "label": "Pull strategy",
+  "help": "How Pull integrates the remote commits when the histories have diverged. \"Ask\" shows the choice on the spot; you can also change it by right-clicking Pull.",
+  "kind": "choice",
+  "options": [
+   "ask",
+   "merge",
+   "rebase",
+   "ff-only"
+  ],
+  "default": null
+ },
+ {
+  "key": "git_blame",
+  "section": "Git",
+  "label": "Git blame on line",
+  "help": "Shows the author and date of the last commit on the cursor line, in gray at the end of the line. Also available as the \"Toggle git blame\" command.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "status_search",
+  "section": "Status bar",
+  "label": "Search in project",
+  "help": "Project search button (left corner).",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "status_problems",
+  "section": "Status bar",
+  "label": "Problems",
+  "help": "Error and warning counts (left corner).",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "status_position",
+  "section": "Status bar",
+  "label": "Line and column",
+  "help": "Cursor position (Ln, Col) and number of cursors.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "status_indent",
+  "section": "Status bar",
+  "label": "Indentation",
+  "help": "The file's spaces or tabs.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "status_language",
+  "section": "Status bar",
+  "label": "Language",
+  "help": "Language of the active file.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "status_terminal",
+  "section": "Status bar",
+  "label": "Terminal",
+  "help": "Button that opens the integrated terminal.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "status_debug",
+  "section": "Status bar",
+  "label": "Debug",
+  "help": "Button that opens the debug panel.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "status_git",
+  "section": "Status bar",
+  "label": "Git",
+  "help": "Git panel button with the changed-file count.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "status_ram",
+  "section": "Status bar",
+  "label": "Memory",
+  "help": "Memory use of the editor and the language servers.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "status_pos_sidebar",
+  "section": "Status bar",
+  "label": "Order: Sidebar",
+  "help": "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   3
+  ],
+  "default": null
+ },
+ {
+  "key": "status_pos_search",
+  "section": "Status bar",
+  "label": "Order: Search in project",
+  "help": "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   3
+  ],
+  "default": null
+ },
+ {
+  "key": "status_pos_problems",
+  "section": "Status bar",
+  "label": "Order: Problems",
+  "help": "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   3
+  ],
+  "default": null
+ },
+ {
+  "key": "status_pos_position",
+  "section": "Status bar",
+  "label": "Order: Line and column",
+  "help": "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   7
+  ],
+  "default": null
+ },
+ {
+  "key": "status_pos_indent",
+  "section": "Status bar",
+  "label": "Order: Indentation",
+  "help": "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   7
+  ],
+  "default": null
+ },
+ {
+  "key": "status_pos_language",
+  "section": "Status bar",
+  "label": "Order: Language",
+  "help": "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   7
+  ],
+  "default": null
+ },
+ {
+  "key": "status_pos_terminal",
+  "section": "Status bar",
+  "label": "Order: Terminal",
+  "help": "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   7
+  ],
+  "default": null
+ },
+ {
+  "key": "status_pos_debug",
+  "section": "Status bar",
+  "label": "Order: Debug",
+  "help": "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   7
+  ],
+  "default": null
+ },
+ {
+  "key": "status_pos_git",
+  "section": "Status bar",
+  "label": "Order: Git",
+  "help": "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   7
+  ],
+  "default": null
+ },
+ {
+  "key": "status_pos_ram",
+  "section": "Status bar",
+  "label": "Order: Memory",
+  "help": "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   7
+  ],
+  "default": null
+ }
+]

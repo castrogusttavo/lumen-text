@@ -1,0 +1,17 @@
+---
+import { url } from "../../lib/url";
+const marks = [
+  { n: 1, x: 8, y: 2.2, t: "Project and branch" }, { n: 2, x: 3, y: 6.8, t: "Files" }, { n: 3, x: 22, y: 6.4, t: "Tabs" },
+  { n: 4, x: 27, y: 10.1, t: "Breadcrumbs" }, { n: 5, x: 55, y: 40, t: "Editor" }, { n: 6, x: 97, y: 16, t: "Minimap" }, { n: 7, x: 50, y: 97.4, t: "Status bar" },
+];
+---
+<figure class="not-prose my-8 overflow-hidden rounded-card border border-line">
+  <div class="relative">
+    <picture>
+      <source srcset={url("/img/shot-editor.avif")} type="image/avif" />
+      <img src={url("/img/shot-editor.webp")} alt="Lumen window with numbered parts: 1 project and branch, 2 files, 3 tabs, 4 breadcrumbs, 5 editor, 6 minimap, 7 status bar" width="1920" height="1200" class="block h-auto w-full" loading="lazy" decoding="async" />
+    </picture>
+    {marks.map((m) => <span class="absolute grid size-6 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-accent font-mono text-[11px] font-bold text-ink shadow-lg" style={`left:${m.x}%;top:${m.y}%`} aria-hidden="true">{m.n}</span>)}
+  </div>
+  <figcaption class="flex flex-wrap gap-x-5 gap-y-1.5 border-t border-line px-5 py-3 text-sm text-muted">{marks.map((m) => <span><b class="font-mono text-fg">{m.n}</b> {m.t}</span>)}</figcaption>
+</figure>

@@ -1,0 +1,171 @@
+---
+import Base from "../layouts/Base.astro";
+import SectionHead from "../components/SectionHead.astro";
+import release from "../data/release.json";
+import releases from "../data/releases.json";
+import { renderNotes } from "../lib/md";
+import { GITHUB, REPO } from "../lib/url";
+
+const A = release.assets as Record<string, { name: string; url: string; size: number; sha256?: string | null } | undefined>;
+const v = release.version ?? "<version>";
+const mb = (n?: number) => (n ? `${(n / 1048576).toFixed(1)} MB` : "");
+const rows = [
+  { key: "deb", title: "Debian, Ubuntu, Mint, Pop!_OS", ext: ".deb", cmd: (f: string) => `sudo apt install ./${f}`, fallback: `lumen-text_${v}-1_amd64.deb` },
+  { key: "rpm", title: "Fedora, RHEL, Rocky, Alma, openSUSE", ext: ".rpm", cmd: (f: string) => `sudo dnf install ./${f}`, fallback: `lumen-text-${v}-1.x86_64.rpm` },
+  { key: "arch", title: "Arch, Manjaro, EndeavourOS", ext: ".pkg.tar.zst", cmd: (f: string) => `sudo pacman -U ${f}`, fallback: `lumen-text-bin-${v}-1-x86_64.pkg.tar.zst` },
+  { key: "appimage", title: "Any distribution", ext: "AppImage", cmd: (f: string) => `chmod +x ${f} && ./${f}`, fallback: `lumen-text-${v}-x86_64.AppImage` },
+  { key: "tarball", title: "Portable", ext: ".tar.gz", cmd: (f: string) => `tar xzf ${f}`, fallback: `lumen-text-${v}-linux-x86_64.tar.gz` },
+];
+const tar = A.tarball?.name ?? `lumen-text-${v}-linux-x86_64.tar.gz`;
+const dir = tar.replace(/\.tar\.gz$/, "");
+const appimage = A.appimage?.name ?? `lumen-text-${v}-x86_64.AppImage`;
+const pubkey = "RWQoQesrU+NXnwocGP2j42WnwJuiGX/qTELkdL0ykq6TA+ASp5mmzyYU";
+const installUser = `curl -fLO ${A.tarball?.url ?? `${GITHUB}/releases/latest/download/${tar}`} && tar xzf ${tar} && ./${dir}/bin/lumen-text --install-user`;
+---
+<Base title="Download" description="Download Lumen for Linux: .deb, .rpm, Arch, AppImage and tar.gz, with checksums and minisign signatures." path="/download">
+  <section class="container-x py-20 md:py-28" id="dl" data-repo={REPO} data-version={release.version ?? ""}>
+    <SectionHead eyebrow="Download">
+      <Fragment slot="title">Get <span class="accent-word">Lumen</span></Fragment>
+      Free, MIT licensed, no account. <span id="dl-version" class="font-mono text-fg">{release.version ? `v${release.version}` : "latest release"}</span>{release.publishedAt && <span class="text-faint"> · {new Date(release.publishedAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" })}</span>}
+    </SectionHead>
+
+    <p id="os-note" hidden class="mx-auto mt-8 max-w-2xl rounded-2xl border border-line bg-card px-5 py-3 text-center text-sm text-muted"></p>
+    <div class="mx-auto mt-14 max-w-4xl">
+      <article class="plus overflow-hidden rounded-[22px] border border-line2 bg-card" data-reveal>
+        <div class="plus-b"></div>
+        <header class="flex items-center gap-4 border-b border-line p-6 md:p-8">
+          <span class="grid size-12 place-items-center rounded-2xl border border-line2 text-2xl" aria-hidden="true">🐧</span>
+          <div><h2 class="text-2xl font-medium tracking-tight">Linux</h2><p class="text-sm text-muted">x86_64 · Wayland and X11 · glibc 2.35 or newer</p></div>
+          <span class="ml-auto rounded-full bg-accent px-3 py-1 text-xs font-semibold text-ink">Stable</span>
+        </header>
+        <ul class="divide-y divide-line">
+          {rows.map((r) => {
+            const a = A[r.key];
+            const file = a?.name ?? r.fallback;
+            return (
+              <li class="grid grid-cols-1 gap-3 p-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto] md:items-center md:px-8" data-asset={r.key}>
+                <div><h3 class="text-[15px] font-medium">{r.title}</h3><p class="break-all font-mono text-xs text-faint"><span data-file>{file}</span> <span data-size>{a ? `· ${mb(a.size)}` : ""}</span></p>{a?.sha256 && <p class="mt-1 break-all font-mono text-[10.5px] text-faint">sha256 <span data-sha>{a.sha256}</span></p>}</div>
+                <div class="group relative"><code class="block overflow-x-auto whitespace-nowrap rounded-xl border border-line bg-bg2 py-2.5 pl-3.5 pr-16 font-mono text-[12.5px]" data-cmd={r.key} tabindex="0">{r.cmd(file)}</code><button type="button" class="copy absolute right-1.5 top-1.5 rounded-lg border border-line bg-bg px-2.5 py-1 text-xs text-muted hover:text-fg" data-copy>Copy</button></div>
+                <a class="btn btn-primary whitespace-nowrap" data-href href={a?.url ?? `${GITHUB}/releases/latest`} rel="noopener">Download {r.ext}</a>
+              </li>
+            );
+          })}
+        </ul>
+      </article>
+
+      <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+        <article class="rounded-card border border-line bg-card p-6" data-reveal>
+          <p class="eyebrow">Recommended</p><h3 class="mt-2 text-lg font-medium">User install, self-updating</h3>
+          <p class="mt-1 text-sm text-muted">Installs into your home folder, adds the launcher and icon, and keeps itself updated. No root.</p>
+          <div class="relative mt-4"><code class="block overflow-x-auto whitespace-pre rounded-xl border border-line bg-bg2 p-3.5 pr-16 font-mono text-[12px] leading-relaxed" tabindex="0" data-install>{installUser}</code><button type="button" class="copy absolute right-1.5 top-1.5 rounded-lg border border-line bg-bg px-2.5 py-1 text-xs text-muted hover:text-fg" data-copy>Copy</button></div>
+          <p class="mt-3 text-xs text-faint">Already running Lumen? <code class="font-mono">lumen-text --install-user</code> does the same from the running binary.</p>
+        </article>
+        <article class="rounded-card border border-line bg-card p-6" data-reveal style="--d:80ms">
+          <p class="eyebrow">TypeScript</p><h3 class="mt-2 text-lg font-medium">Install the language server once</h3>
+          <p class="mt-1 text-sm text-muted">A project that already has @typescript/native-preview is used first.</p>
+          <div class="relative mt-4"><code class="block overflow-x-auto whitespace-pre rounded-xl border border-line bg-bg2 p-3.5 pr-16 font-mono text-[12px] leading-relaxed" tabindex="0">npm i --prefix ~/.local/share/lumen-text/tsgo @typescript/native-preview</code><button type="button" class="copy absolute right-1.5 top-1.5 rounded-lg border border-line bg-bg px-2.5 py-1 text-xs text-muted hover:text-fg" data-copy>Copy</button></div>
+        </article>
+      </div>
+
+      <article class="mt-4 min-w-0 rounded-card border border-line bg-card p-6 md:p-8" id="verify" data-reveal>
+        <p class="eyebrow">Verify</p><h3 class="mt-2 text-xl font-medium tracking-tight">Checksums and minisign</h3>
+        <p class="mt-2 text-sm text-muted">Every release publishes <code class="font-mono">SHA256SUMS</code>. The AppImage and the tarball are also signed with <a class="underline decoration-line2 underline-offset-4" href="https://jedisct1.github.io/minisign/" rel="noopener">minisign</a>; the public key below is the one embedded in the editor, which refuses any update that does not verify against it.</p>
+        <div class="relative mt-4"><pre class="overflow-x-auto rounded-xl border border-line bg-bg2 p-4 pr-16 font-mono text-[12.5px] leading-relaxed" tabindex="0" data-verify><code>{`# in the folder where you downloaded the files
+sha256sum -c SHA256SUMS --ignore-missing
+minisign -Vm ${appimage} -P ${pubkey}`}</code></pre><button type="button" class="copy absolute right-1.5 top-1.5 rounded-lg border border-line bg-bg px-2.5 py-1 text-xs text-muted hover:text-fg" data-copy>Copy</button></div>
+        <dl class="mt-4 grid gap-x-6 gap-y-1 font-mono text-xs sm:grid-cols-[auto_1fr]"><dt class="text-faint">Public key</dt><dd class="break-all">{pubkey}</dd><dt class="text-faint">Key id</dt><dd>9F57E3532BEB4128</dd></dl>
+      </article>
+
+      <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+        {[["Windows", "Planned. The release pipeline is structured so other platforms add their own artifacts."], ["macOS", "Planned. Follow the roadmap on GitHub for progress."]].map(([n, d]) => (
+          <article class="rounded-card border border-dashed border-line2 p-6" data-reveal data-os-card={n!.toLowerCase()}>
+            <div class="flex items-center justify-between"><h3 class="text-lg font-medium">{n}</h3><span class="rounded-full border border-line2 px-3 py-1 text-xs text-muted">Coming soon</span></div>
+            <p class="mt-2 text-sm text-muted">{d}</p>
+            <a class="mt-3 inline-block text-sm underline decoration-line2 underline-offset-4 hover:text-fg" href={GITHUB} rel="noopener">Get notified: Watch the repository on GitHub, choose Custom, then Releases</a>
+          </article>
+        ))}
+      </div>
+
+      <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+        <article class="rounded-card border border-line bg-card p-6" data-reveal>
+          <p class="eyebrow">System requirements</p>
+          <ul class="mt-3 space-y-2 text-sm text-muted">
+            <li><strong class="text-fg">OS:</strong> Linux x86_64 (aarch64 packages exist when the repository enables them)</li>
+            <li><strong class="text-fg">C library:</strong> glibc 2.35 or newer (built on Ubuntu 22.04)</li>
+            <li><strong class="text-fg">Display:</strong> Wayland or X11. No GPU needed: everything is drawn on the CPU</li>
+            <li><strong class="text-fg">Libraries:</strong> libxkbcommon, Wayland and X11 are loaded at run time</li>
+            <li><strong class="text-fg">TypeScript:</strong> Node.js to install the optional <code class="font-mono text-[0.9em]">tsgo</code> language server</li>
+            <li><strong class="text-fg">Clipboard on Wayland:</strong> <code class="font-mono text-[0.9em]">wl-clipboard</code></li>
+          </ul>
+        </article>
+        <article class="min-w-0 rounded-card border border-line bg-card p-6" data-reveal style="--d:80ms">
+          <p class="eyebrow">Release notes</p>
+          <h3 class="mt-2 text-lg font-medium">{release.tag ?? "Latest"}</h3>
+          <div class="notes mt-2 text-sm text-muted" set:html={renderNotes(release.notes) || "<p>No notes for this release.</p>"} />
+          <a class="mt-3 inline-block text-sm underline decoration-line2 underline-offset-4 hover:text-fg" href={`${import.meta.env.BASE_URL.replace(/\/$/, "")}/changelog`}>Full changelog</a>
+        </article>
+      </div>
+
+      <article class="mt-4 rounded-card border border-line bg-card p-6 md:p-8" id="previous" data-reveal>
+        <p class="eyebrow">Previous versions</p>
+        <ul class="mt-4 divide-y divide-line">
+          {releases.slice(0, 12).map((r) => (
+            <li class="flex flex-wrap items-center gap-x-5 gap-y-2 py-3 text-sm">
+              <a class="font-mono font-medium hover:underline" href={r.url} rel="noopener">{r.tag}</a>
+              <time class="text-faint" datetime={r.publishedAt}>{new Date(r.publishedAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" })}</time>
+              <span class="ml-auto flex flex-wrap gap-3">
+                {r.assets.map((a) => <a class="text-muted underline decoration-line2 underline-offset-4 hover:text-fg" href={a.url} rel="noopener">{a.name.endsWith(".deb") ? ".deb" : a.name.endsWith(".rpm") ? ".rpm" : a.name.endsWith(".zst") ? "Arch" : a.name.endsWith("AppImage") ? "AppImage" : ".tar.gz"}</a>)}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <p class="mt-3 text-xs text-faint">Older versions are on <a class="underline" href={`${GITHUB}/releases`} rel="noopener">GitHub Releases</a>.</p>
+      </article>
+      <p class="mt-8 text-center text-sm text-faint">Build from source or browse every version: <a class="underline decoration-line2 underline-offset-4 hover:text-fg" href={`${GITHUB}/releases`} rel="noopener">all releases</a> · <a class="underline decoration-line2 underline-offset-4 hover:text-fg" href={`${GITHUB}#install`} rel="noopener">install docs</a></p>
+    </div>
+  </section>
+</Base>
+<script>
+  // Static HTML is the fallback; refresh from the GitHub API so a new release shows up without a rebuild.
+  const root = document.getElementById("dl");
+  const repo = root?.dataset.repo;
+  const patterns: Record<string, RegExp> = { deb: /_amd64\.deb$/, rpm: /\.x86_64\.rpm$/, arch: /\.pkg\.tar\.zst$/, appimage: /x86_64\.AppImage$/, tarball: /linux-x86_64\.tar\.gz$/ };
+  const cmds: Record<string, (f: string) => string> = {
+    deb: (f) => `sudo apt install ./${f}`, rpm: (f) => `sudo dnf install ./${f}`, arch: (f) => `sudo pacman -U ${f}`,
+    appimage: (f) => `chmod +x ${f} && ./${f}`, tarball: (f) => `tar xzf ${f}`,
+  };
+  if (root && repo) {
+    fetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers: { accept: "application/vnd.github+json" } })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((rel) => {
+        if (!rel?.tag_name || rel.tag_name.replace(/^v/, "") === root.dataset.version) return;
+        const el = document.getElementById("dl-version");
+        if (el) el.textContent = rel.tag_name;
+        for (const [key, re] of Object.entries(patterns)) {
+          const a = rel.assets?.find((x: { name: string }) => re.test(x.name));
+          const li = root.querySelector<HTMLElement>(`[data-asset="${key}"]`);
+          if (!a || !li) continue;
+          li.querySelector<HTMLAnchorElement>("[data-href]")!.href = a.browser_download_url;
+          li.querySelector("[data-file]")!.textContent = a.name;
+          li.querySelector("[data-size]")!.textContent = `· ${(a.size / 1048576).toFixed(1)} MB`;
+          li.querySelector(`[data-cmd="${key}"]`)!.textContent = cmds[key]!(a.name);
+        }
+      })
+      .catch(() => {});
+  }
+  const ua = navigator.userAgent;
+  const os = /Windows/i.test(ua) ? "windows" : /Mac/i.test(ua) && !/iPhone|iPad/i.test(ua) ? "macos" : /Android|iPhone|iPad/i.test(ua) ? "mobile" : "linux";
+  const note = document.getElementById("os-note");
+  if (note && os !== "linux") {
+    note.hidden = false;
+    note.textContent = os === "mobile" ? "Open this page on your Linux desktop to download Lumen." : `We detected ${os === "windows" ? "Windows" : "macOS"}. Lumen for ${os === "windows" ? "Windows" : "macOS"} is coming soon; the Linux packages are below.`;
+    document.querySelector(`[data-os-card="${os}"]`)?.classList.add("ring-1", "ring-[var(--accent)]");
+  }
+  document.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const text = b.parentElement?.querySelector("code")?.textContent ?? "";
+      try { await navigator.clipboard.writeText(text); b.textContent = "Copied"; } catch { b.textContent = "Select and copy"; }
+      setTimeout(() => (b.textContent = "Copy"), 1600);
+    }),
+  );
+</script>

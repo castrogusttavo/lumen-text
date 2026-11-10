@@ -1,0 +1,286 @@
+[
+ {
+  "combo": "ctrl+s",
+  "id": "Save"
+ },
+ {
+  "combo": "ctrl+w",
+  "id": "CloseTab"
+ },
+ {
+  "combo": "ctrl+q",
+  "id": "Quit"
+ },
+ {
+  "combo": "ctrl+p",
+  "id": "QuickOpen"
+ },
+ {
+  "combo": "ctrl+shift+p",
+  "id": "Commands"
+ },
+ {
+  "combo": "ctrl+b",
+  "id": "ToggleSidebar"
+ },
+ {
+  "combo": "ctrl+shift+e",
+  "id": "FocusSidebar"
+ },
+ {
+  "combo": "ctrl+tab",
+  "id": "NextTab"
+ },
+ {
+  "combo": "ctrl+shift+tab",
+  "id": "PrevTab"
+ },
+ {
+  "combo": "ctrl+f",
+  "id": "Find"
+ },
+ {
+  "combo": "ctrl+h",
+  "id": "Replace"
+ },
+ {
+  "combo": "ctrl+shift+f",
+  "id": "ProjectSearch"
+ },
+ {
+  "combo": "ctrl+g",
+  "id": "GotoLine"
+ },
+ {
+  "combo": "ctrl+shift+o",
+  "id": "GotoSymbol"
+ },
+ {
+  "combo": "ctrl+shift+g",
+  "id": "GitPanel"
+ },
+ {
+  "combo": "ctrl+t",
+  "id": "WorkspaceSymbols"
+ },
+ {
+  "combo": "f12",
+  "id": "GotoDefinition"
+ },
+ {
+  "combo": "shift+f12",
+  "id": "FindReferences"
+ },
+ {
+  "combo": "f8",
+  "id": "NextDiagnostic"
+ },
+ {
+  "combo": "shift+f8",
+  "id": "PrevDiagnostic"
+ },
+ {
+  "combo": "f2",
+  "id": "Rename"
+ },
+ {
+  "combo": "shift+alt+f",
+  "id": "Format"
+ },
+ {
+  "combo": "ctrl+.",
+  "id": "CodeActions"
+ },
+ {
+  "combo": "ctrl+/",
+  "id": "ToggleComment"
+ },
+ {
+  "combo": "ctrl+z",
+  "id": "Undo"
+ },
+ {
+  "combo": "ctrl+shift+z",
+  "id": "Redo"
+ },
+ {
+  "combo": "ctrl+j",
+  "id": "ToggleOutput"
+ },
+ {
+  "combo": "ctrl+shift+v",
+  "id": "MarkdownPreview"
+ },
+ {
+  "combo": "ctrl+=",
+  "id": "ZoomIn"
+ },
+ {
+  "combo": "ctrl+-",
+  "id": "ZoomOut"
+ },
+ {
+  "combo": "ctrl+0",
+  "id": "ZoomReset"
+ },
+ {
+  "combo": "alt+left",
+  "id": "NavBack"
+ },
+ {
+  "combo": "alt+right",
+  "id": "NavForward"
+ },
+ {
+  "combo": "ctrl+`",
+  "id": "OpenTerminal"
+ },
+ {
+  "combo": "ctrl+shift+[",
+  "id": "Fold"
+ },
+ {
+  "combo": "ctrl+shift+]",
+  "id": "Unfold"
+ },
+ {
+  "combo": "ctrl+,",
+  "id": "OpenSettings"
+ },
+ {
+  "combo": "ctrl+\\",
+  "id": "SplitRight"
+ },
+ {
+  "combo": "ctrl+1",
+  "id": "FocusLeftPane"
+ },
+ {
+  "combo": "ctrl+2",
+  "id": "FocusRightPane"
+ },
+ {
+  "combo": "ctrl+3",
+  "id": "FocusPane3"
+ },
+ {
+  "combo": "ctrl+4",
+  "id": "FocusPane4"
+ },
+ {
+  "combo": "f5",
+  "id": "DebugStart"
+ },
+ {
+  "combo": "shift+f5",
+  "id": "DebugStop"
+ },
+ {
+  "combo": "f9",
+  "id": "ToggleBreakpoint"
+ },
+ {
+  "combo": "f10",
+  "id": "StepOver"
+ },
+ {
+  "combo": "f11",
+  "id": "StepInto"
+ },
+ {
+  "combo": "shift+f11",
+  "id": "StepOut"
+ },
+ {
+  "combo": "shift+alt+right",
+  "id": "ExpandSelection"
+ },
+ {
+  "combo": "shift+alt+left",
+  "id": "ShrinkSelection"
+ },
+ {
+  "combo": "ctrl+k r",
+  "id": "RepeatTask"
+ },
+ {
+  "combo": "ctrl+k x",
+  "id": "StopTask"
+ },
+ {
+  "combo": "ctrl+k f",
+  "id": "TestFile"
+ },
+ {
+  "combo": "ctrl+k t",
+  "id": "TestAtCursor"
+ },
+ {
+  "combo": "ctrl+k a",
+  "id": "TestAll"
+ },
+ {
+  "combo": "ctrl+k e",
+  "id": "TestFailed"
+ },
+ {
+  "combo": "ctrl+k d",
+  "id": "TestDebug"
+ },
+ {
+  "combo": "ctrl+k i",
+  "id": "ShowHover"
+ },
+ {
+  "combo": "ctrl+k \\",
+  "id": "SplitDown"
+ },
+ {
+  "combo": "ctrl+k right",
+  "id": "FocusOtherPane"
+ },
+ {
+  "combo": "ctrl+k left",
+  "id": "FocusPrevPane"
+ },
+ {
+  "combo": "ctrl+k shift+right",
+  "id": "MoveToNextPane"
+ },
+ {
+  "combo": "ctrl+k shift+left",
+  "id": "MoveToPrevPane"
+ },
+ {
+  "combo": "ctrl+k shift+w",
+  "id": "ClosePane"
+ },
+ {
+  "combo": "ctrl+y",
+  "id": "Redo"
+ },
+ {
+  "combo": "ctrl+k s",
+  "id": "Save"
+ },
+ {
+  "combo": "ctrl+k w",
+  "id": "CloseTab"
+ },
+ {
+  "combo": "explorer:a",
+  "id": "NewFile"
+ },
+ {
+  "combo": "explorer:shift+a",
+  "id": "NewDir"
+ },
+ {
+  "combo": "explorer:f2",
+  "id": "RenamePath"
+ },
+ {
+  "combo": "explorer:delete",
+  "id": "DeletePath"
+ }
+]

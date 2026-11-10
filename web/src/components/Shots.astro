@@ -1,0 +1,21 @@
+---
+import { url } from "../lib/url";
+const shots = [
+  { id: "editor", alt: "Lumen editing TypeScript in the vitesse-black theme", w: 1920, h: 1200 },
+  { id: "light", alt: "Lumen in the GitHub light theme", w: 1920, h: 1200 },
+];
+---
+<section class="container-x py-16">
+  <div class="grid gap-5 lg:grid-cols-2">
+    {shots.map((s) => (
+      <figure class="overflow-hidden rounded-card border border-line bg-solid shadow-[var(--shadow)]" data-reveal>
+        <div class="flex h-9 items-center gap-1.5 border-b border-line px-4" aria-hidden="true"><i class="size-2.5 rounded-full bg-[#ff5f57]"></i><i class="size-2.5 rounded-full bg-[#febc2e]"></i><i class="size-2.5 rounded-full bg-[#28c840]"></i><span class="ml-3 font-mono text-[11px] text-faint">lumen-text</span></div>
+        <picture>
+          <source srcset={url(`/img/shot-${s.id}.avif`)} type="image/avif" />
+          <img src={url(`/img/shot-${s.id}.webp`)} alt={s.alt} width={s.w} height={s.h} loading="lazy" decoding="async" class="block h-auto w-full" />
+        </picture>
+      </figure>
+    ))}
+  </div>
+  <p class="mt-4 text-center font-mono text-xs text-faint">Real screenshots, rendered by the editor's own headless mode.</p>
+</section>

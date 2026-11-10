@@ -1,0 +1,36 @@
+---
+import SectionHead from "./SectionHead.astro";
+import themes from "../data/themes.json";
+const featured = ["vitesse-black","github-dark-default","tokyo-night","catppuccin-mocha","dracula","nord","one-dark-pro","rose-pine","gruvbox-dark-medium","solarized-dark","night-owl","synthwave-84","github-light-default","catppuccin-latte","rose-pine-dawn","solarized-light","one-light","vitesse-light","ayu-light","everforest-light","monokai","kanagawa-wave","material-theme-ocean","poimandres"];
+const first = featured.map((id) => themes.find((t) => t.id === id)!).filter(Boolean);
+const rest = themes.filter((t) => !featured.includes(t.id));
+---
+<section id="themes" class="relative scroll-mt-24 overflow-hidden py-24">
+  <div class="container-x">
+    <SectionHead eyebrow="Themes">
+      <Fragment slot="title"><span class="accent-word">{themes.length}</span> themes, and yours</Fragment>
+      The same VS Code themes Shiki ships, checked against WCAG AA. Import installed Zed themes or write your own from a generated template.
+    </SectionHead>
+    <ul class="mt-14 grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6" data-reveal>
+      {first.map((t) => (
+        <li class="group overflow-hidden rounded-xl border border-line p-3 font-mono text-[10.5px] leading-snug transition-transform hover:-translate-y-0.5" style={`background:${t.bg};color:${t.fg}`}>
+          <div class="flex gap-[3px]" aria-hidden="true">{[t.keyword, t.string, t.fn, t.type, t.number].map((c) => <i class="h-1.5 flex-1 rounded-full" style={`background:${c}`}></i>)}</div>
+          <p class="mt-2.5" aria-hidden="true"><span style={`color:${t.keyword}`}>const</span> <span style={`color:${t.fn}`}>run</span> = <span style={`color:${t.string}`}>"ok"</span></p>
+          <p class="mt-2 truncate font-sans text-[11.5px] font-medium">{t.name}</p>
+        </li>
+      ))}
+    </ul>
+    <details class="mt-4 group" data-reveal>
+      <summary class="btn mx-auto w-fit cursor-pointer list-none [&::-webkit-details-marker]:hidden"><span class="group-open:hidden">Show all {themes.length} themes</span><span class="hidden group-open:inline">Hide</span></summary>
+      <ul class="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+      {rest.map((t) => (
+        <li class="group overflow-hidden rounded-xl border border-line p-3 font-mono text-[10.5px] leading-snug transition-transform hover:-translate-y-0.5" style={`background:${t.bg};color:${t.fg}`}>
+          <div class="flex gap-[3px]" aria-hidden="true">{[t.keyword, t.string, t.fn, t.type, t.number].map((c) => <i class="h-1.5 flex-1 rounded-full" style={`background:${c}`}></i>)}</div>
+          <p class="mt-2.5" aria-hidden="true"><span style={`color:${t.keyword}`}>const</span> <span style={`color:${t.fn}`}>run</span> = <span style={`color:${t.string}`}>"ok"</span></p>
+          <p class="mt-2 truncate font-sans text-[11.5px] font-medium">{t.name}</p>
+        </li>
+      ))}
+      </ul>
+    </details>
+  </div>
+</section>

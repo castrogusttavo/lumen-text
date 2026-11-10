@@ -1,19 +1,28 @@
 ---
 import SectionHead from "./SectionHead.astro";
 import { bench, fmt } from "../lib/bench";
+import facts from "../data/facts.json";
 const f = bench.facts;
 const N = 24;
 const filled = (v: number, max: number) => Math.max(1, Math.round((v / max) * N));
-const colMax = 60, frameMax = 20, ROWS = 14;
+const colMax = 400, frameMax = 20, ROWS = 14;
 const colFill = (v: number, max: number) => Math.max(1, Math.round((v / max) * ROWS));
+const lumen = (id: string) => bench.metrics.find((m) => m.id === id)?.values.lumen?.value ?? null;
+// Memory columns come from the measured comparison cells (same machine, PSS over the process tree).
+const scenarios = [
+  { label: "Window at rest", value: lumen("ram-idle") },
+  { label: "TypeScript server (tsgo)", value: lumen("lsp-memory") },
+  { label: "100k-line file, whole tree", value: lumen("ram-open-100k") },
+].filter((x): x is { label: string; value: number } => x.value !== null).map((x) => ({ ...x, value: Math.round(x.value) }));
+const budgets = f.budgets.filter((b) => b.id !== "binary"); // install size is shown from the measured disk cell instead
 const frames = [
-  { label: "Scroll", value: 4.4 }, { label: "Keystroke", value: 12 }, { label: "60 Hz budget", value: 16.7 },
-];
+  { label: "Scroll", value: lumen("scroll-frame") }, { label: "Keystroke", value: lumen("keystroke") }, { label: "60 Hz budget", value: 16.7 },
+].filter((x): x is { label: string; value: number } => x.value !== null);
 const stats = [
-  { label: "Tests passing", value: f.testsPassed.value, dec: 0, unit: "" },
-  { label: "Bundled themes", value: f.themes.value, dec: 0, unit: "" },
-  { label: "TextMate grammars", value: f.grammars.value, dec: 0, unit: "" },
-  { label: "Release binary", value: 19, dec: 0, unit: " MB" },
+  { label: "Tests passing", value: facts.tests, dec: 0, unit: "" },
+  { label: "Bundled themes", value: facts.themes, dec: 0, unit: "" },
+  { label: "TextMate grammars", value: facts.grammars, dec: 0, unit: "" },
+  { label: "Install size", value: Math.round(lumen("disk") ?? 0), dec: 0, unit: " MB" },
 ];
 ---
 <section id="metrics" class="relative scroll-mt-24 py-28">
@@ -21,7 +30,7 @@ const stats = [
   <div class="container-x">
     <SectionHead eyebrow="Metrics">
       <Fragment slot="title">Metrics <span class="accent-word">active</span></Fragment>
-      Budgets enforced in CI. Every bar below is a number from the test suite, not a marketing figure.
+      Budgets checked by the perf tests and CI, plus what the editor measured on the benchmark machine. Every figure below comes from the repository data.
     </SectionHead>
 
     <div class="mt-14 overflow-hidden rounded-card border border-line">
@@ -30,7 +39,7 @@ const stats = [
           <h3 class="text-xl font-medium tracking-tight">Against the budget</h3>
           <p class="mt-1 text-sm text-muted">Measured value versus the limit CI enforces</p>
           <ul class="mt-8 space-y-5">
-            {f.budgets.map((b) => (
+            {budgets.map((b) => (
               <li>
                 <div class="mb-1.5 flex justify-between font-mono text-[12px]"><span class="text-muted">{b.label}</span><span>{fmt(b.value)}<span class="text-faint"> / {b.limit} {b.unit}</span></span></div>
                 <div class="seg" role="img" aria-label={`${b.value} of ${b.limit} ${b.unit}`}>{Array.from({ length: N }).map((_, i) => <i class:list={[i < filled(b.value, b.limit) && "t"]} style={`--i:${i}`}></i>)}</div>
@@ -40,26 +49,26 @@ const stats = [
         </div>
         <div class="p-7">
           <h3 class="text-xl font-medium tracking-tight">Memory by scenario</h3>
-          <p class="mt-1 text-sm text-muted">PSS in MB, editor process only</p>
+          <p class="mt-1 text-sm text-muted">PSS in MB, whole process tree, language server counted apart from the editor</p>
           <div class="mt-8 flex h-[260px] items-end justify-between gap-3">
-            {f.memoryScenarios.map((s) => (
+            {scenarios.map((s) => (
               <div class="flex h-full flex-1 flex-col justify-end gap-2 text-center">
                 <span class="font-mono text-xs">{s.value}</span>
                 <div class="seg !h-auto flex-col-reverse !gap-[2px]" style="height:200px" role="img" aria-label={`${s.label}: ${s.value} MB`}>{Array.from({ length: ROWS }).map((_, i) => <i class:list={["!flex-none !h-[12px]", i < colFill(s.value, colMax) && "t"]} style={`--i:${i}`}></i>)}</div>
-                <span class="text-[10.5px] leading-tight text-faint">{s.label}</span>
+                <span class="min-h-[2.4em] text-[10.5px] leading-tight text-faint">{s.label}</span>
               </div>
             ))}
           </div>
         </div>
         <div class="p-7">
           <h3 class="text-xl font-medium tracking-tight">Frame cost</h3>
-          <p class="mt-1 text-sm text-muted">CPU ms per software-rendered frame</p>
+          <p class="mt-1 text-sm text-muted">Lumen only, not compared with other editors</p>
           <div class="mt-8 flex h-[260px] items-end justify-around gap-6">
             {frames.map((s, k) => (
               <div class="flex h-full flex-1 flex-col justify-end gap-2 text-center">
                 <span class="font-mono text-xs">{s.value} ms</span>
                 <div class="seg !h-auto flex-col-reverse !gap-[2px]" style="height:200px" role="img" aria-label={`${s.label}: ${s.value} ms`}>{Array.from({ length: ROWS }).map((_, i) => <i class:list={["!flex-none !h-[12px]", i < colFill(s.value, frameMax) && (k === 2 ? "t !opacity-40" : "t")]} style={`--i:${i}`}></i>)}</div>
-                <span class="text-[10.5px] leading-tight text-faint">{s.label}</span>
+                <span class="min-h-[2.4em] text-[10.5px] leading-tight text-faint">{s.label}</span>
               </div>
             ))}
           </div>

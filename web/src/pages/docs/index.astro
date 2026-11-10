@@ -1,0 +1,21 @@
+---
+import Base from "../../layouts/Base.astro";
+import SectionHead from "../../components/SectionHead.astro";
+import { allDocs, docUrl, SECTIONS } from "../../lib/docs";
+const docs = await allDocs();
+---
+<Base title="Docs" description="Documentation for Lumen: install, interface, shortcuts, settings, themes, language tooling and more." path="/docs">
+  <section class="container-x py-20 md:py-28">
+    <SectionHead eyebrow="Docs"><Fragment slot="title">Learn <span class="accent-word">Lumen</span></Fragment>Written from the source. Shortcuts, commands and settings are generated from the editor itself.</SectionHead>
+    <div class="mt-16 space-y-12">
+      {SECTIONS.map((s) => (
+        <div>
+          <h2 class="eyebrow mb-4">{s}</h2>
+          <ul class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {docs.filter((d) => d.data.section === s).map((d) => <li><a href={docUrl(d)} class="block h-full rounded-card border border-line bg-card p-5 transition-colors hover:border-line2"><h3 class="font-medium">{d.data.title}</h3><p class="mt-1 text-sm text-muted">{d.data.description}</p></a></li>)}
+          </ul>
+        </div>
+      ))}
+    </div>
+  </section>
+</Base>

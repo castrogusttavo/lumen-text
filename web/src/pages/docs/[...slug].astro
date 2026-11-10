@@ -1,0 +1,43 @@
+---
+import { render } from "astro:content";
+import Docs from "../../layouts/Docs.astro";
+import Generated from "../../components/docs/Generated.astro";
+import Tour from "../../components/docs/Tour.astro";
+import { allDocs } from "../../lib/docs";
+import { GitMini, SplitMini, ThemeMini, PaletteMini, SettingsMini } from "../../islands/Bento";
+
+export async function getStaticPaths() {
+  return (await allDocs()).map((d) => ({ params: { slug: d.id }, props: { doc: d } }));
+}
+const { doc } = Astro.props;
+const { Content, headings } = await render(doc);
+const v = doc.data.visual;
+import { url } from "../../lib/url";
+const shot = doc.data.shot;
+---
+<Docs title={doc.data.title} description={doc.data.description} id={doc.id} headings={headings}>
+  {v === "tour" && <Tour />}
+  {shot && (
+    <figure class="not-prose my-8 overflow-hidden rounded-card border border-line">
+      <picture>
+        <source srcset={url(`/img/shot-${shot}.avif`)} type="image/avif" />
+        <img src={url(`/img/shot-${shot}.webp`)} alt={`Screenshot of the real editor: ${doc.data.title}`} width="1920" height="1200" class="block h-auto w-full" loading="lazy" decoding="async" />
+      </picture>
+      <figcaption class="border-t border-line px-5 py-3 text-sm text-muted">A real screenshot from the editor's headless mode.</figcaption>
+    </figure>
+  )}
+  {v && v !== "tour" && (
+    <figure class="not-prose my-8 overflow-hidden rounded-card border border-line">
+      <div class="ide dotgrid min-h-[280px] !rounded-none !border-0 !bg-[#0b0b0d] [--grid-dot:rgb(255_255_255/0.07)]">
+        {v === "git" && <div class="mx-auto max-w-[420px]"><GitMini client:visible /></div>}
+        {v === "split" && <div class="mx-auto max-w-[520px]"><SplitMini client:visible /></div>}
+        {v === "themes" && <ThemeMini client:visible />}
+        {v === "palette" && <PaletteMini client:visible />}
+        {v === "settings" && <SettingsMini client:visible />}
+      </div>
+      <figcaption class="border-t border-line px-5 py-3 text-sm text-muted">Interactive replica of the real interface. Click around.</figcaption>
+    </figure>
+  )}
+  <Content />
+  {doc.data.generated && <Generated kind={doc.data.generated} />}
+</Docs>

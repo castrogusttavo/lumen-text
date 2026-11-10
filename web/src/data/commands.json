@@ -1,0 +1,597 @@
+[
+ {
+  "label": "File: Save",
+  "shortcut": "Ctrl+S",
+  "id": "Save"
+ },
+ {
+  "label": "File: Close tab",
+  "shortcut": "Ctrl+W",
+  "id": "CloseTab"
+ },
+ {
+  "label": "File: Reload from disk",
+  "shortcut": "",
+  "id": "ReloadFile"
+ },
+ {
+  "label": "File: Open…",
+  "shortcut": "Ctrl+P",
+  "id": "QuickOpen"
+ },
+ {
+  "label": "Palette: Commands",
+  "shortcut": "Ctrl+Shift+P",
+  "id": "Commands"
+ },
+ {
+  "label": "View: Toggle sidebar",
+  "shortcut": "Ctrl+B",
+  "id": "ToggleSidebar"
+ },
+ {
+  "label": "View: Focus explorer",
+  "shortcut": "Ctrl+Shift+E",
+  "id": "FocusSidebar"
+ },
+ {
+  "label": "View: Next tab",
+  "shortcut": "Ctrl+Tab",
+  "id": "NextTab"
+ },
+ {
+  "label": "View: Previous tab",
+  "shortcut": "Ctrl+Shift+Tab",
+  "id": "PrevTab"
+ },
+ {
+  "label": "Search: In file",
+  "shortcut": "Ctrl+F",
+  "id": "Find"
+ },
+ {
+  "label": "Search: Replace",
+  "shortcut": "Ctrl+H",
+  "id": "Replace"
+ },
+ {
+  "label": "Search: In project",
+  "shortcut": "Ctrl+Shift+F",
+  "id": "ProjectSearch"
+ },
+ {
+  "label": "Go to: Line…",
+  "shortcut": "Ctrl+G",
+  "id": "GotoLine"
+ },
+ {
+  "label": "Go to: Symbol in file",
+  "shortcut": "Ctrl+Shift+O",
+  "id": "GotoSymbol"
+ },
+ {
+  "label": "Go to: Definition",
+  "shortcut": "F12",
+  "id": "GotoDefinition"
+ },
+ {
+  "label": "Go to: Type definition",
+  "shortcut": "",
+  "id": "GotoTypeDefinition"
+ },
+ {
+  "label": "Go to: Implementation",
+  "shortcut": "",
+  "id": "GotoImplementation"
+ },
+ {
+  "label": "Go to: References",
+  "shortcut": "Shift+F12",
+  "id": "FindReferences"
+ },
+ {
+  "label": "Go to: Next problem",
+  "shortcut": "F8",
+  "id": "NextDiagnostic"
+ },
+ {
+  "label": "Go to: Previous problem",
+  "shortcut": "Shift+F8",
+  "id": "PrevDiagnostic"
+ },
+ {
+  "label": "Code: Rename symbol",
+  "shortcut": "F2",
+  "id": "Rename"
+ },
+ {
+  "label": "Code: Show hover info at cursor",
+  "shortcut": "Ctrl+K I",
+  "id": "ShowHover"
+ },
+ {
+  "label": "Code: Format document",
+  "shortcut": "Shift+Alt+F",
+  "id": "Format"
+ },
+ {
+  "label": "Code: Quick actions",
+  "shortcut": "Ctrl+.",
+  "id": "CodeActions"
+ },
+ {
+  "label": "Code: Toggle comment",
+  "shortcut": "Ctrl+/",
+  "id": "ToggleComment"
+ },
+ {
+  "label": "Edit: Undo",
+  "shortcut": "Ctrl+Z",
+  "id": "Undo"
+ },
+ {
+  "label": "Edit: Redo",
+  "shortcut": "Ctrl+Shift+Z",
+  "id": "Redo"
+ },
+ {
+  "label": "LSP: Restart servers",
+  "shortcut": "",
+  "id": "RestartLsp"
+ },
+ {
+  "label": "LSP: Toggle auto-import in completion",
+  "shortcut": "",
+  "id": "ToggleAutoImport"
+ },
+ {
+  "label": "Tasks: Run…",
+  "shortcut": "",
+  "id": "RunTask"
+ },
+ {
+  "label": "Tasks: Repeat last",
+  "shortcut": "Ctrl+K R",
+  "id": "RepeatTask"
+ },
+ {
+  "label": "Tasks: Stop",
+  "shortcut": "Ctrl+K X",
+  "id": "StopTask"
+ },
+ {
+  "label": "Tests: Run current file",
+  "shortcut": "Ctrl+K F",
+  "id": "TestFile"
+ },
+ {
+  "label": "Tests: Run test at cursor",
+  "shortcut": "Ctrl+K T",
+  "id": "TestAtCursor"
+ },
+ {
+  "label": "Tests: Run all",
+  "shortcut": "Ctrl+K A",
+  "id": "TestAll"
+ },
+ {
+  "label": "Tests: Re-run failed",
+  "shortcut": "Ctrl+K E",
+  "id": "TestFailed"
+ },
+ {
+  "label": "Tests: Open panel",
+  "shortcut": "",
+  "id": "TestsPanel"
+ },
+ {
+  "label": "Tests: Debug test at cursor",
+  "shortcut": "Ctrl+K D",
+  "id": "TestDebug"
+ },
+ {
+  "label": "Tests: Toggle watch (re-run on save)",
+  "shortcut": "",
+  "id": "TestWatch"
+ },
+ {
+  "label": "Tests: Choose runner…",
+  "shortcut": "",
+  "id": "TestRunner"
+ },
+ {
+  "label": "View: Toggle output panel",
+  "shortcut": "Ctrl+J",
+  "id": "ToggleOutput"
+ },
+ {
+  "label": "Code: Organize imports",
+  "shortcut": "",
+  "id": "OrganizeImports"
+ },
+ {
+  "label": "Code: Toggle format on save",
+  "shortcut": "",
+  "id": "ToggleFormatOnSave"
+ },
+ {
+  "label": "Appearance: Choose theme…",
+  "shortcut": "",
+  "id": "PickTheme"
+ },
+ {
+  "label": "File: New file…",
+  "shortcut": "A (explorer)",
+  "id": "NewFile"
+ },
+ {
+  "label": "File: New folder…",
+  "shortcut": "Shift+A (explorer)",
+  "id": "NewDir"
+ },
+ {
+  "label": "File: Rename…",
+  "shortcut": "F2 (explorer)",
+  "id": "RenamePath"
+ },
+ {
+  "label": "File: Delete…",
+  "shortcut": "Delete (explorer)",
+  "id": "DeletePath"
+ },
+ {
+  "label": "Git: Changed files",
+  "shortcut": "",
+  "id": "GitChanges"
+ },
+ {
+  "label": "Git: Open panel",
+  "shortcut": "Ctrl+Shift+G",
+  "id": "GitPanel"
+ },
+ {
+  "label": "Git: Stage file",
+  "shortcut": "",
+  "id": "GitStage"
+ },
+ {
+  "label": "Git: Unstage file",
+  "shortcut": "",
+  "id": "GitUnstage"
+ },
+ {
+  "label": "Git: Stage all",
+  "shortcut": "",
+  "id": "GitStageAll"
+ },
+ {
+  "label": "Git: Discard file changes…",
+  "shortcut": "",
+  "id": "GitDiscard"
+ },
+ {
+  "label": "Git: Commit…",
+  "shortcut": "",
+  "id": "GitCommit"
+ },
+ {
+  "label": "Git: Stage hunk",
+  "shortcut": "",
+  "id": "GitStageHunk"
+ },
+ {
+  "label": "Git: Revert hunk",
+  "shortcut": "",
+  "id": "GitRevertHunk"
+ },
+ {
+  "label": "Git: View file diff (side by side)",
+  "shortcut": "",
+  "id": "GitDiffFile"
+ },
+ {
+  "label": "Git: File history",
+  "shortcut": "",
+  "id": "GitFileHistory"
+ },
+ {
+  "label": "Markdown: Open reader beside",
+  "shortcut": "Ctrl+Shift+V",
+  "id": "MarkdownPreview"
+ },
+ {
+  "label": "View: Split editor right",
+  "shortcut": "Ctrl+\\",
+  "id": "SplitRight"
+ },
+ {
+  "label": "View: Split editor down",
+  "shortcut": "Ctrl+K \\",
+  "id": "SplitDown"
+ },
+ {
+  "label": "View: Close split (merge all)",
+  "shortcut": "",
+  "id": "CloseSplit"
+ },
+ {
+  "label": "View: Close focused pane",
+  "shortcut": "Ctrl+K Shift+W",
+  "id": "ClosePane"
+ },
+ {
+  "label": "View: Focus next pane",
+  "shortcut": "Ctrl+K Right",
+  "id": "FocusOtherPane"
+ },
+ {
+  "label": "View: Focus previous pane",
+  "shortcut": "Ctrl+K Left",
+  "id": "FocusPrevPane"
+ },
+ {
+  "label": "View: Focus pane 1",
+  "shortcut": "Ctrl+1",
+  "id": "FocusLeftPane"
+ },
+ {
+  "label": "View: Focus pane 2",
+  "shortcut": "Ctrl+2",
+  "id": "FocusRightPane"
+ },
+ {
+  "label": "View: Focus pane 3",
+  "shortcut": "Ctrl+3",
+  "id": "FocusPane3"
+ },
+ {
+  "label": "View: Focus pane 4",
+  "shortcut": "Ctrl+4",
+  "id": "FocusPane4"
+ },
+ {
+  "label": "View: Move tab to next pane",
+  "shortcut": "Ctrl+K Shift+Right",
+  "id": "MoveToNextPane"
+ },
+ {
+  "label": "View: Move tab to previous pane",
+  "shortcut": "Ctrl+K Shift+Left",
+  "id": "MoveToPrevPane"
+ },
+ {
+  "label": "Git: Conflict — accept current",
+  "shortcut": "",
+  "id": "ConflictOurs"
+ },
+ {
+  "label": "Git: Conflict — accept incoming",
+  "shortcut": "",
+  "id": "ConflictTheirs"
+ },
+ {
+  "label": "Git: Conflict — accept both",
+  "shortcut": "",
+  "id": "ConflictBoth"
+ },
+ {
+  "label": "Go to: Symbol in project",
+  "shortcut": "Ctrl+T",
+  "id": "WorkspaceSymbols"
+ },
+ {
+  "label": "View: Problems in open files",
+  "shortcut": "",
+  "id": "Problems"
+ },
+ {
+  "label": "View: Zoom in",
+  "shortcut": "Ctrl+=",
+  "id": "ZoomIn"
+ },
+ {
+  "label": "View: Zoom out",
+  "shortcut": "Ctrl+-",
+  "id": "ZoomOut"
+ },
+ {
+  "label": "View: Reset zoom",
+  "shortcut": "Ctrl+0",
+  "id": "ZoomReset"
+ },
+ {
+  "label": "LSP: Toggle lean mode (open files only) / full project",
+  "shortcut": "",
+  "id": "ToggleNarrow"
+ },
+ {
+  "label": "Go to: Back",
+  "shortcut": "Alt+←",
+  "id": "NavBack"
+ },
+ {
+  "label": "Go to: Forward",
+  "shortcut": "Alt+→",
+  "id": "NavForward"
+ },
+ {
+  "label": "Terminal: Open / toggle focus",
+  "shortcut": "Ctrl+`",
+  "id": "OpenTerminal"
+ },
+ {
+  "label": "Terminal: Kill",
+  "shortcut": "",
+  "id": "CloseTerminal"
+ },
+ {
+  "label": "Appearance: Follow system light/dark theme",
+  "shortcut": "",
+  "id": "FollowSystemTheme"
+ },
+ {
+  "label": "View: Toggle Files / Outline",
+  "shortcut": "",
+  "id": "ToggleOutline"
+ },
+ {
+  "label": "View: Toggle code lens (reference counts)",
+  "shortcut": "",
+  "id": "ToggleCodeLens"
+ },
+ {
+  "label": "View: Toggle inlay hints (types and parameters)",
+  "shortcut": "",
+  "id": "ToggleInlayHints"
+ },
+ {
+  "label": "Git: Toggle git blame",
+  "shortcut": "",
+  "id": "ToggleGitBlame"
+ },
+ {
+  "label": "View: Toggle minimap",
+  "shortcut": "",
+  "id": "ToggleMinimap"
+ },
+ {
+  "label": "View: Toggle word wrap",
+  "shortcut": "",
+  "id": "ToggleWordWrap"
+ },
+ {
+  "label": "Project: Switch project…",
+  "shortcut": "",
+  "id": "ProjectMenu"
+ },
+ {
+  "label": "Git: Switch branch…",
+  "shortcut": "",
+  "id": "BranchMenu"
+ },
+ {
+  "label": "Fold: Fold region",
+  "shortcut": "Ctrl+Shift+[",
+  "id": "Fold"
+ },
+ {
+  "label": "Fold: Unfold region",
+  "shortcut": "Ctrl+Shift+]",
+  "id": "Unfold"
+ },
+ {
+  "label": "Fold: Fold all",
+  "shortcut": "",
+  "id": "FoldAll"
+ },
+ {
+  "label": "Fold: Unfold all",
+  "shortcut": "",
+  "id": "UnfoldAll"
+ },
+ {
+  "label": "Preferences: Settings",
+  "shortcut": "Ctrl+,",
+  "id": "OpenSettings"
+ },
+ {
+  "label": "Theme: Create custom theme (JSON template)",
+  "shortcut": "",
+  "id": "CreateTheme"
+ },
+ {
+  "label": "Theme: Import Zed themes (min-theme etc.)",
+  "shortcut": "",
+  "id": "ImportZedThemes"
+ },
+ {
+  "label": "Preferences: Keyboard shortcuts",
+  "shortcut": "",
+  "id": "OpenKeybindings"
+ },
+ {
+  "label": "Debug: Start / continue",
+  "shortcut": "F5",
+  "id": "DebugStart"
+ },
+ {
+  "label": "Debug: Stop",
+  "shortcut": "Shift+F5",
+  "id": "DebugStop"
+ },
+ {
+  "label": "Debug: Toggle breakpoint",
+  "shortcut": "F9",
+  "id": "ToggleBreakpoint"
+ },
+ {
+  "label": "Debug: Step over",
+  "shortcut": "F10",
+  "id": "StepOver"
+ },
+ {
+  "label": "Debug: Step into",
+  "shortcut": "F11",
+  "id": "StepInto"
+ },
+ {
+  "label": "Debug: Step out",
+  "shortcut": "Shift+F11",
+  "id": "StepOut"
+ },
+ {
+  "label": "Debug: Remove all breakpoints",
+  "shortcut": "",
+  "id": "ClearBreakpoints"
+ },
+ {
+  "label": "Edit: Expand selection",
+  "shortcut": "Shift+Alt+→",
+  "id": "ExpandSelection"
+ },
+ {
+  "label": "Edit: Shrink selection",
+  "shortcut": "Shift+Alt+←",
+  "id": "ShrinkSelection"
+ },
+ {
+  "label": "Go to: Callers (call hierarchy)",
+  "shortcut": "",
+  "id": "IncomingCalls"
+ },
+ {
+  "label": "Go to: Callees (call hierarchy)",
+  "shortcut": "",
+  "id": "OutgoingCalls"
+ },
+ {
+  "label": "LSP: Cycle tsgo version (auto / project / bundled)",
+  "shortcut": "",
+  "id": "CycleTsgoSource"
+ },
+ {
+  "label": "Edit: View undo branches (undo tree)",
+  "shortcut": "",
+  "id": "UndoBranches"
+ },
+ {
+  "label": "Help: Check for updates",
+  "shortcut": "",
+  "id": "CheckUpdate"
+ },
+ {
+  "label": "Help: Restart to update",
+  "shortcut": "",
+  "id": "RestartUpdate"
+ },
+ {
+  "label": "Help: About Lumen",
+  "shortcut": "",
+  "id": "About"
+ },
+ {
+  "label": "Quit",
+  "shortcut": "Ctrl+Q",
+  "id": "Quit"
+ }
+]

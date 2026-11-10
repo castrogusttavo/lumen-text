@@ -1,0 +1,14 @@
+---
+import Base from "../layouts/Base.astro";
+import { url } from "../lib/url";
+---
+<Base title="Not found" path="/404">
+  <section class="container-x grid min-h-[60vh] place-items-center py-24 text-center">
+    <div>
+      <p class="serif text-8xl text-muted">404</p>
+      <h1 class="h-lg mt-4">This page is <span class="accent-word">missing</span></h1>
+      <p class="lead mt-3">Nothing here, but the editor is one click away.</p>
+      <div class="mt-8 flex justify-center gap-3"><a class="btn btn-primary" href={url("/")}>Back home</a><a class="btn" href={url("/download")}>Download</a></div>
+    </div>
+  </section>
+</Base>

@@ -1,48 +1,108 @@
 ---
 import SectionHead from "./SectionHead.astro";
-import { bench, fmt, pct } from "../lib/bench";
+import { bench, fmt, pct, hasValue, reasonOf, notComparable, standings } from "../lib/bench";
 const editors = bench.editors;
+const lumen = editors[0]!;
+const vs = editors.find((e) => e.id === "vscode");
 const measuredAt = bench.measuredAt;
+
+// Headline claims are derived from the data: a win only when Lumen is strictly best among the cells that have a value.
+const compared = bench.metrics.filter((m) => m.required !== false);
+const phrase: Record<string, string> = {
+  "ram-idle": "lightest idle memory", disk: "smallest install", startup: "fastest start",
+  "lsp-first-diagnostics": "fastest first TypeScript diagnostics", "lsp-memory": "least TypeScript server memory",
+};
+const wins: string[] = [];
+const losses: string[] = [];
+for (const m of compared) {
+  const s = standings(m);
+  const mine = s.findIndex((r) => r.e.id === lumen.id);
+  if (mine < 0 || s.length < 2) continue;
+  const scope = s.length === editors.length ? `of the ${editors.length}` : `of the ${s.length} measured`;
+  if (mine === 0 && s[0]!.c.value !== s[1]!.c.value) wins.push(`${phrase[m.id] ?? m.label.toLowerCase()} (${scope})`);
+  else if (mine > 0) losses.push(`${s[0]!.e.name} is ahead on "${m.label.toLowerCase()}" (${fmt(Math.round(s[0]!.c.value))} vs ${fmt(Math.round(s[mine]!.c.value))} ${m.unit})`);
+}
+// Ratio tiles against VS Code, computed from the same cells.
+const tileIds = ["ram-idle", "lsp-first-diagnostics", "startup", "disk"];
+const tiles = tileIds.flatMap((id) => {
+  const m = bench.metrics.find((x) => x.id === id);
+  const a = m?.values[lumen.id], b = vs && m?.values[vs.id];
+  if (!m || !vs || !hasValue(a) || !hasValue(b) || a.value >= b.value) return [];
+  return [{ label: m.label, lumen: `${fmt(Math.round(a.value))} ${m.unit}`, vs: `${fmt(Math.round(b.value))} ${m.unit}`, ratio: `${b.value / a.value >= 10 ? Math.round(b.value / a.value) : (b.value / a.value).toFixed(1)}x less` + (m.unit === "ms" ? " time" : m.unit === "MB" && id === "disk" ? " disk" : " memory") }];
+});
+const split = (note?: string) => { const m = note?.match(/tsgo (\d+), lumen-text (\d+)/); return m ? `${m[2]} MB editor + ${m[1]} MB tsgo` : null; };
 ---
 <section id="compare" class="container-x scroll-mt-24 py-28">
   <SectionHead eyebrow="Compare">
     <Fragment slot="title">Small enough you <span class="accent-word">notice</span></Fragment>
-    Real numbers from the repository's own perf tests, side by side with the editors you use today. Anything we have not measured yet says so.
+    Measured on one machine, one editor at a time, medians of repeated runs. {wins.length ? <>Lumen has the {wins.join(", ").replace(/, ([^,]*)$/, " and $1")}. </> : null}{losses.length ? <>Not everywhere: {losses.join("; ")}.</> : null}
   </SectionHead>
 
-  <div class="mt-14 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-muted" aria-label="Editors compared">
+  {tiles.length > 0 && (
+    <ul class="mt-12 grid gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-label="Lumen against VS Code">
+      {tiles.map((t) => (
+        <li class="rounded-card border border-line bg-card p-5" data-reveal>
+          <p class="eyebrow">{t.label}</p>
+          <p class="serif mt-2 text-4xl">{t.ratio}</p>
+          <p class="mt-2 font-mono text-[12px] text-muted">Lumen {t.lumen} · {vs!.name} {t.vs}</p>
+        </li>
+      ))}
+    </ul>
+  )}
+
+  <div class="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-muted" aria-label="Editors compared">
     {editors.map((e) => <span class:list={["inline-flex items-center gap-2", e.highlight && "text-fg"]}><i class:list={["size-2 rounded-full", e.highlight ? "bg-accent" : "bg-line2"]}></i>{e.name}{e.id === "vscode" && <span class="text-faint">(also Windsurf, Devin)</span>}</span>)}
   </div>
 
   <div class="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-    {bench.metrics.map((m, idx) => (
-      <article class="plus rounded-card border border-line bg-card p-6" data-bars data-reveal style={`--d:${(idx % 3) * 80}ms`}>
-        <div class="plus-b"></div>
-        <p class="eyebrow">{bench.groups.find((g) => g.id === m.group)?.label}</p>
-        <h3 class="mt-2 text-lg font-medium tracking-tight">{m.label}</h3>
-        <p class="mt-1 min-h-[3.2em] text-[13px] leading-relaxed text-muted">{m.description}</p>
-        <ul class="mt-5 space-y-2.5">
-          {editors.map((e) => {
-            const c = m.values[e.id];
-            const has = c && c.value !== null;
-            return (
-              <li class="grid grid-cols-[88px_1fr_74px] items-center gap-3 text-[13px]" title={c?.note}>
-                <span class:list={["truncate", e.highlight ? "font-medium text-fg" : "text-muted"]}>{e.name}</span>
-                {has ? (
-                  <div class="bar-track" role="img" aria-label={`${e.name}: ${c.value} ${m.unit}`}><div class="bar-fill" style={`--w:${pct(c.value as number, m.scaleMax)}%`}></div></div>
-                ) : (
-                  <div class="bar-track measuring" aria-hidden="true"></div>
-                )}
-                <span class:list={["text-right font-mono text-xs", has ? "text-fg" : "text-faint"]}>
-                  {has ? `${fmt(c.value as number)} ${m.unit}` : "measuring…"}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-        <p class="mt-4 font-mono text-[11px] text-faint">bar scale 0 to {fmt(m.scaleMax)} {m.unit} · lower is better</p>
-      </article>
-    ))}
+    {bench.metrics.map((m, idx) => {
+      const mine = m.values[lumen.id];
+      const solo = m.required === false;
+      const best = standings(m)[0]?.e.id;
+      const gaps = editors.filter((e) => !hasValue(m.values[e.id]) && e.id !== lumen.id);
+      const reasons = [...new Set(gaps.map((e) => reasonOf(m.values[e.id])).filter(Boolean))];
+      return (
+        <article class="plus rounded-card border border-line bg-card p-6 pb-9" data-bars data-reveal style={`--d:${(idx % 3) * 80}ms`}>
+          <div class="plus-b"></div>
+          <p class="eyebrow">{solo ? "Lumen only" : bench.groups.find((g) => g.id === m.group)?.label}</p>
+          <h3 class="mt-2 text-lg font-medium tracking-tight">{m.label}</h3>
+          <p class="mt-1 min-h-[3.2em] text-[13px] leading-relaxed text-muted">{m.description}</p>
+          {solo && hasValue(mine) ? (
+            <div class="mt-5">
+              <p class="serif text-5xl">{fmt(mine.value)}<span class="ml-1 text-xl text-muted">{m.unit}</span></p>
+              <div class="bar-track mt-4" role="img" aria-label={`${fmt(mine.value)} of ${fmt(m.scaleMax)} ${m.unit}`}><div class="bar-fill" style={`--w:${pct(mine.value, m.scaleMax)}%`}></div></div>
+              <p class="mt-2 font-mono text-[11px] text-faint">bar scale 0 to {fmt(m.scaleMax)} {m.unit} (60 Hz frame budget)</p>
+              <p class="mt-3 text-[12px] leading-relaxed text-muted"><b class="font-medium text-fg">Not compared.</b> {reasonOf(m.values[gaps[0]?.id ?? ""]) || "Only Lumen was measured."}</p>
+            </div>
+          ) : (
+            <>
+              <ul class="mt-5 space-y-2.5">
+                {editors.map((e) => {
+                  const c = m.values[e.id];
+                  const has = hasValue(c);
+                  return (
+                    <li class="grid grid-cols-[88px_1fr_74px] items-center gap-3 text-[13px]" title={has ? c.note : c?.reason}>
+                      <span class:list={["truncate", e.highlight ? "font-medium text-fg" : "text-muted"]}>{e.name}</span>
+                      {has ? (
+                        <div class="bar-track" role="img" aria-label={`${e.name}: ${c.value} ${m.unit}`}><div class="bar-fill" style={`--w:${pct(c.value, m.scaleMax)}%;--d:${60 * editors.indexOf(e)}ms`}></div></div>
+                      ) : (
+                        <div class="h-[10px] rounded-[3px] border border-dashed border-line2" aria-hidden="true"></div>
+                      )}
+                      <span class:list={["text-right font-mono text-xs", has ? (e.id === best ? "text-accent" : "text-fg") : "text-faint"]}>
+                        {has ? `${fmt(Math.round(c.value * 10) / 10)} ${m.unit}` : notComparable(c) ? "n/a" : "n/a"}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              {hasValue(mine) && split(mine.note) && <p class="mt-3 font-mono text-[11px] text-muted">Lumen: {split(mine.note)}</p>}
+              {reasons.length > 0 && <p class="mt-3 text-[11.5px] leading-relaxed text-faint"><span class="font-mono">n/a</span> {reasons.map((r) => r.replace(/\.$/, "")).join(". ")}.</p>}
+              <p class="mt-4 font-mono text-[11px] text-faint">bar scale 0 to {fmt(m.scaleMax)} {m.unit} · {m.lowerIsBetter ? "lower" : "higher"} is better{best ? ` · best: ${editors.find((e) => e.id === best)?.name}` : ""}</p>
+            </>
+          )}
+        </article>
+      );
+    })}
   </div>
 
   <aside class="mt-6 grid gap-6 rounded-card border border-line p-6 text-[13px] leading-relaxed text-muted md:grid-cols-[1.4fr_1fr]" aria-label="Methodology" data-reveal>
@@ -52,11 +112,10 @@ const measuredAt = bench.measuredAt;
     </div>
     <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 self-start font-mono text-xs">
       <dt class="text-faint">Machine</dt><dd>{bench.machine.label}</dd>
-      <dt class="text-faint">Memory</dt><dd>{bench.machine.ramGb ? `${bench.machine.ramGb} GB` : "n/a"}</dd>
       <dt class="text-faint">Measured</dt><dd>{measuredAt ?? "pending"}</dd>
-      <dt class="text-faint">Lumen</dt><dd>{editors[0]?.version}</dd>
+      <dt class="text-faint">Lumen</dt><dd>{lumen.version}</dd>
       <dt class="text-faint">Sources</dt>
-      <dd><span class="mr-3 inline-flex items-center gap-1.5"><i class="size-2 rounded-full bg-accent"></i>measured</span><span class="inline-flex items-center gap-1.5"><i class="measuring size-2 rounded-full"></i>pending</span></dd>
+      <dd><span class="mr-3 inline-flex items-center gap-1.5"><i class="size-2 rounded-full bg-accent"></i>measured</span><span class="inline-flex items-center gap-1.5"><i class="size-2 rounded-full border border-dashed border-line2"></i>n/a</span></dd>
     </dl>
   </aside>
 </section>

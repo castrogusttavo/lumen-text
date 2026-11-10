@@ -1,0 +1,49 @@
+---
+import keymap from "../../data/keymap.json";
+import commands from "../../data/commands.json";
+import settings from "../../data/settings.json";
+import { prettyCombo } from "../../lib/docs";
+interface Props { kind: "shortcuts" | "commands" | "settings" }
+const { kind } = Astro.props;
+const byId = new Map(commands.map((c) => [c.id, c]));
+const cat = (label: string) => (label.includes(":") ? label.split(":")[0]! : "Other");
+const groupBy = <T,>(items: T[], key: (t: T) => string) => { const m = new Map<string, T[]>(); for (const i of items) { const k = key(i); m.set(k, [...(m.get(k) ?? []), i]); } return [...m.entries()]; };
+
+// shortcuts: one row per command, every combo
+const rows = [...groupBy(keymap, (k) => k.id)].map(([id, ks]) => ({ id, label: byId.get(id)?.label ?? id, combos: ks.map((k) => k.combo) }));
+const shortcutGroups = groupBy(rows, (r) => cat(r.label));
+const cmdGroups = groupBy(commands, (c) => cat(c.label));
+const sections = groupBy(settings as any[], (s) => s.section);
+const fmtDefault = (d: unknown) => (d === null || d === undefined ? "" : d === "" ? "ask" : String(d));
+---
+{kind === "shortcuts" && shortcutGroups.map(([g, rs]) => (
+  <section>
+    <h3 id={`shortcuts-${g.toLowerCase().replace(/\W+/g, "-")}`}>{g}</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Action</th><th>Shortcut</th></tr></thead>
+      <tbody>{rs.map((r) => <tr><td>{r.label.replace(/^[^:]+:\s*/, "")}</td><td>{r.combos.map((c, i) => <>{i > 0 && <span class="or"> or </span>}<kbd>{prettyCombo(c)}</kbd></>)}</td></tr>)}</tbody>
+    </table></div>
+  </section>
+))}
+{kind === "commands" && cmdGroups.map(([g, cs]) => (
+  <section>
+    <h3 id={`commands-${g.toLowerCase().replace(/\W+/g, "-")}`}>{g}</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Command</th><th>Shortcut</th><th>Id</th></tr></thead>
+      <tbody>{cs.map((c) => <tr><td>{c.label}</td><td>{c.shortcut ? <kbd>{c.shortcut}</kbd> : <span class="none">none</span>}</td><td><code>{c.id}</code></td></tr>)}</tbody>
+    </table></div>
+  </section>
+))}
+{kind === "settings" && sections.map(([g, ss]) => (
+  <section>
+    <h3 id={`settings-${g.toLowerCase().replace(/\W+/g, "-")}`}>{g}</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>{ss.map((s) => (
+        <tr><td><strong>{s.label}</strong><br /><code>{s.key}</code></td>
+        <td>{fmtDefault(s.default) !== "" ? <code>{fmtDefault(s.default)}</code> : <span class="none">auto</span>}</td>
+        <td>{s.help}{s.options && <span class="opts">{s.options.length > 0 && " Values: "}{s.options.map((o: string, i: number) => <>{i > 0 && ", "}<code>{o}</code></>)}{s.options.length > 0 && "."}</span>}{s.range && <span class="opts"> Range {s.range[0]} to {s.range[1]}.</span>}</td></tr>
+      ))}</tbody>
+    </table></div>
+  </section>
+))}
