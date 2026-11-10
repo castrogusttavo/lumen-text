@@ -5,15 +5,9 @@ import facts from "../data/facts.json";
 const f = bench.facts;
 const N = 24;
 const filled = (v: number, max: number) => Math.max(1, Math.round((v / max) * N));
-const colMax = 400, frameMax = 20, ROWS = 14;
+const frameMax = 20, ROWS = 14;
 const colFill = (v: number, max: number) => Math.max(1, Math.round((v / max) * ROWS));
 const lumen = (id: string) => bench.metrics.find((m) => m.id === id)?.values.lumen?.value ?? null;
-// Memory columns come from the measured comparison cells (same machine, PSS over the process tree).
-const scenarios = [
-  { label: "Window at rest", value: lumen("ram-idle") },
-  { label: "TypeScript server (tsgo)", value: lumen("lsp-memory") },
-  { label: "100k-line file, whole tree", value: lumen("ram-open-100k") },
-].filter((x): x is { label: string; value: number } => x.value !== null).map((x) => ({ ...x, value: Math.round(x.value) }));
 const budgets = f.budgets.filter((b) => b.id !== "binary"); // install size is shown from the measured disk cell instead
 const frames = [
   { label: "Scroll", value: lumen("scroll-frame") }, { label: "Keystroke", value: lumen("keystroke") }, { label: "60 Hz budget", value: 16.7 },
@@ -22,7 +16,6 @@ const stats = [
   { label: "Tests passing", value: facts.tests, dec: 0, unit: "" },
   { label: "Bundled themes", value: facts.themes, dec: 0, unit: "" },
   { label: "TextMate grammars", value: facts.grammars, dec: 0, unit: "" },
-  { label: "Install size", value: Math.round(lumen("disk") ?? 0), dec: 0, unit: " MB" },
 ];
 ---
 <section id="metrics" class="relative scroll-mt-24 py-28">
@@ -30,11 +23,11 @@ const stats = [
   <div class="container-x">
     <SectionHead eyebrow="Metrics">
       <Fragment slot="title">Metrics <span class="accent-word">active</span></Fragment>
-      Budgets checked by the perf tests and CI, plus what the editor measured on the benchmark machine. Every figure below comes from the repository data.
+      Budgets checked by the perf tests and CI, and the frame cost that only Lumen reports. Every figure comes from the repository data.
     </SectionHead>
 
     <div class="mt-14 overflow-hidden rounded-card border border-line">
-      <div class="grid divide-y divide-line lg:grid-cols-3 lg:divide-x lg:divide-y-0" data-bars>
+      <div class="grid divide-y divide-line lg:grid-cols-2 lg:divide-x lg:divide-y-0" data-bars>
         <div class="p-7">
           <h3 class="text-xl font-medium tracking-tight">Against the budget</h3>
           <p class="mt-1 text-sm text-muted">Measured value versus the limit CI enforces</p>
@@ -46,19 +39,6 @@ const stats = [
               </li>
             ))}
           </ul>
-        </div>
-        <div class="p-7">
-          <h3 class="text-xl font-medium tracking-tight">Memory by scenario</h3>
-          <p class="mt-1 text-sm text-muted">PSS in MB, whole process tree, language server counted apart from the editor</p>
-          <div class="mt-8 flex h-[260px] items-end justify-between gap-3">
-            {scenarios.map((s) => (
-              <div class="flex h-full flex-1 flex-col justify-end gap-2 text-center">
-                <span class="font-mono text-xs">{s.value}</span>
-                <div class="seg !h-auto flex-col-reverse !gap-[2px]" style="height:200px" role="img" aria-label={`${s.label}: ${s.value} MB`}>{Array.from({ length: ROWS }).map((_, i) => <i class:list={["!flex-none !h-[12px]", i < colFill(s.value, colMax) && "t"]} style={`--i:${i}`}></i>)}</div>
-                <span class="min-h-[2.4em] text-[10.5px] leading-tight text-faint">{s.label}</span>
-              </div>
-            ))}
-          </div>
         </div>
         <div class="p-7">
           <h3 class="text-xl font-medium tracking-tight">Frame cost</h3>
@@ -74,7 +54,7 @@ const stats = [
           </div>
         </div>
       </div>
-      <div class="grid grid-cols-2 divide-x divide-y divide-line border-t border-line md:grid-cols-4 md:divide-y-0">
+      <div class="grid divide-y divide-line border-t border-line sm:grid-cols-3 sm:divide-x sm:divide-y-0">
         {stats.map((s) => (
           <div class="px-6 py-9 text-center" data-reveal>
             <p class="text-sm text-muted">{s.label}</p>
