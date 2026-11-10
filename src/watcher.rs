@@ -1,4 +1,5 @@
-//! File-system watcher on raw Linux inotify (through `libc`, no extra crates).
+//! File-system watcher on raw Linux inotify (through `libc`, no extra crates). On other platforms a
+//! light polling watcher (one scan of every watched directory per second) with the same API is used.
 //!
 //! One reader thread `poll`s the inotify fd plus an eventfd (used for a clean shutdown),
 //! decodes events, coalesces bursts per path (trailing debounce of [`DEBOUNCE_MS`]) and sends
@@ -20,6 +21,7 @@
 use crate::lsp::Wake;
 use std::collections::HashMap;
 use std::io;
+#[cfg(target_os = "linux")]
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -48,12 +50,14 @@ pub struct FsEvent {
     pub kind: FsKind,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 struct State {
     by_wd: HashMap<i32, PathBuf>,
     by_path: HashMap<PathBuf, i32>,
 }
 
+#[cfg(target_os = "linux")]
 pub struct Watcher {
     pub rx: Receiver<FsEvent>,
     ifd: i32,
@@ -62,6 +66,7 @@ pub struct Watcher {
     thread: Option<JoinHandle<()>>,
 }
 
+#[cfg(target_os = "linux")]
 /// `fs.inotify.max_user_watches`, if readable.
 pub fn watch_limit() -> Option<usize> {
     std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches").ok()?.trim().parse().ok()
@@ -71,6 +76,7 @@ fn is_ignored(dir: &Path) -> bool {
     dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| IGNORED.contains(&n))
 }
 
+#[cfg(target_os = "linux")]
 const MASK: u32 = libc::IN_CREATE
     | libc::IN_MODIFY
     | libc::IN_CLOSE_WRITE
@@ -81,6 +87,7 @@ const MASK: u32 = libc::IN_CREATE
     | libc::IN_MOVE_SELF
     | libc::IN_ONLYDIR;
 
+#[cfg(target_os = "linux")]
 impl Watcher {
     pub fn new(wake: Wake) -> io::Result<Watcher> {
         let ifd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
@@ -169,6 +176,7 @@ impl Watcher {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for Watcher {
     fn drop(&mut self) {
         let one: u64 = 1;
@@ -220,6 +228,7 @@ fn deadline(p: &Pending) -> Instant {
     (p.last + Duration::from_millis(DEBOUNCE_MS)).min(p.first + Duration::from_millis(MAX_DELAY_MS))
 }
 
+#[cfg(target_os = "linux")]
 fn run(ifd: i32, efd: i32, state: Arc<Mutex<State>>, tx: Sender<FsEvent>, wake: Wake) {
     let mut pending: HashMap<PathBuf, Pending> = HashMap::new();
     let mut seq = 0u64;
@@ -272,6 +281,7 @@ fn run(ifd: i32, efd: i32, state: Arc<Mutex<State>>, tx: Sender<FsEvent>, wake: 
     }
 }
 
+#[cfg(target_os = "linux")]
 fn drain(ifd: i32, buf: &mut [u8], state: &Mutex<State>, pending: &mut HashMap<PathBuf, Pending>, seq: &mut u64) {
     loop {
         let n = unsafe { libc::read(ifd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
@@ -342,7 +352,7 @@ fn drain(ifd: i32, buf: &mut [u8], state: &Mutex<State>, pending: &mut HashMap<P
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::fs;
@@ -664,6 +674,136 @@ pub fn watch_tree(w: &mut Watcher, root: &Path, max: usize) {
                 && !e.file_name().to_string_lossy().starts_with('.')
             {
                 stack.push(p);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub use poll::{Watcher, watch_limit};
+
+/// Polling watcher for platforms without inotify (Windows, macOS): same API and event semantics,
+/// events arrive at most one poll interval late.
+#[cfg(not(target_os = "linux"))]
+mod poll {
+    use super::*;
+    use std::ffi::OsString;
+    use std::time::SystemTime;
+
+    const POLL_MS: u64 = 1000;
+
+    type Snap = HashMap<OsString, (bool, u64, Option<SystemTime>)>;
+    type Dirs = Arc<Mutex<HashMap<PathBuf, Snap>>>;
+
+    pub struct Watcher {
+        pub rx: Receiver<FsEvent>,
+        dirs: Dirs,
+        stop: Sender<()>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    pub fn watch_limit() -> Option<usize> {
+        None
+    }
+
+    fn scan(dir: &Path) -> io::Result<Snap> {
+        let mut out = Snap::new();
+        for e in std::fs::read_dir(dir)?.flatten() {
+            let Ok(m) = e.metadata() else { continue };
+            out.insert(e.file_name(), (m.is_dir(), m.len(), m.modified().ok()));
+        }
+        Ok(out)
+    }
+
+    fn diff(dir: &Path, old: &Snap, new: &Snap, out: &mut Vec<FsEvent>) {
+        for (name, v) in new {
+            match old.get(name) {
+                None => out.push(FsEvent { path: dir.join(name), kind: FsKind::Created }),
+                Some(o) if o != v && !v.0 => out.push(FsEvent { path: dir.join(name), kind: FsKind::Modified }),
+                _ => {}
+            }
+        }
+        for name in old.keys().filter(|n| !new.contains_key(*n)) {
+            out.push(FsEvent { path: dir.join(name), kind: FsKind::Removed });
+        }
+    }
+
+    fn run(dirs: Dirs, stop: Receiver<()>, tx: Sender<FsEvent>, wake: Wake) {
+        loop {
+            if !matches!(
+                stop.recv_timeout(Duration::from_millis(POLL_MS)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                return;
+            }
+            let list: Vec<PathBuf> = dirs.lock().unwrap().keys().cloned().collect();
+            let mut evs = Vec::new();
+            for d in list {
+                let new = scan(&d);
+                let mut st = dirs.lock().unwrap();
+                let Some(old) = st.get_mut(&d) else { continue };
+                match new {
+                    Ok(new) => {
+                        diff(&d, old, &new, &mut evs);
+                        *old = new;
+                    }
+                    Err(_) => {
+                        st.remove(&d);
+                        evs.push(FsEvent { path: d, kind: FsKind::Removed });
+                    }
+                }
+            }
+            if !evs.is_empty() {
+                for e in evs {
+                    if tx.send(e).is_err() {
+                        return;
+                    }
+                }
+                wake();
+            }
+        }
+    }
+
+    impl Watcher {
+        pub fn new(wake: Wake) -> io::Result<Watcher> {
+            let dirs: Dirs = Arc::new(Mutex::new(HashMap::new()));
+            let (tx, rx) = channel();
+            let (stop, stop_rx) = channel();
+            let d = dirs.clone();
+            let thread =
+                std::thread::Builder::new().name("fs-watcher".into()).spawn(move || run(d, stop_rx, tx, wake))?;
+            Ok(Watcher { rx, dirs, stop, thread: Some(thread) })
+        }
+
+        /// Watch `dir` (non-recursive). Idempotent. Ignored names are skipped silently.
+        pub fn watch_dir(&mut self, dir: &Path) -> io::Result<()> {
+            if is_ignored(dir) || self.dirs.lock().unwrap().contains_key(dir) {
+                return Ok(());
+            }
+            let snap = scan(dir)?;
+            self.dirs.lock().unwrap().insert(dir.to_path_buf(), snap);
+            Ok(())
+        }
+
+        pub fn unwatch_dir(&mut self, dir: &Path) -> io::Result<()> {
+            self.dirs.lock().unwrap().remove(dir);
+            Ok(())
+        }
+
+        pub fn is_watching(&self, dir: &Path) -> bool {
+            self.dirs.lock().unwrap().contains_key(dir)
+        }
+
+        pub fn watched_count(&self) -> usize {
+            self.dirs.lock().unwrap().len()
+        }
+    }
+
+    impl Drop for Watcher {
+        fn drop(&mut self) {
+            let _ = self.stop.send(());
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
             }
         }
     }

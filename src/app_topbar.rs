@@ -149,9 +149,7 @@ pub fn push_recent(list: &mut Vec<PathBuf>, p: &Path, max: usize) {
 }
 
 fn recents_file() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))?;
+    let base = crate::paths::state_home()?;
     Some(base.join("lumen-text").join("recent-projects.json"))
 }
 

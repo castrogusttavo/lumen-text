@@ -3728,7 +3728,10 @@ after it.
         );
         drop((v, rope, src, px));
         // Give the memory back: `perf::memory_100k_buffer_and_tokenizer` measures the whole test process.
-        unsafe { libc::malloc_trim(0) };
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            libc::malloc_trim(0)
+        };
         (median, worst)
     }
 

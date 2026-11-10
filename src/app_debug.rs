@@ -140,8 +140,7 @@ fn js_debug_server() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let home = std::env::var_os("HOME")?;
-    let p = Path::new(&home).join(".local/share/lumen-text/js-debug/js-debug/src/dapDebugServer.js");
+    let p = crate::paths::data_home()?.join("lumen-text/js-debug/js-debug/src/dapDebugServer.js");
     p.exists().then_some(p)
 }
 

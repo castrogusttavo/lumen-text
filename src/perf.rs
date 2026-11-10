@@ -130,11 +130,7 @@ mod tests {
         let n = 3000;
         let lines: Vec<String> = (0..n).map(ts_line).collect();
         // CPU time of this thread, so other tests/agents competing for cores don't fail it.
-        let cpu = || {
-            let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-            unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
-            ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
-        };
+        let cpu = thread_cpu;
         let t0 = cpu();
         for l in &lines {
             let (_, next) = t.tokenize_line(l, &st);
@@ -154,11 +150,7 @@ mod tests {
         assert!(hl.ready() < 100);
         // CPU time of this thread (the provisional window is tokenized on the calling thread), so
         // other tests/agents competing for cores cannot make it flaky.
-        let cpu = || {
-            let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-            unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
-            ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
-        };
+        let cpu = thread_cpu;
         let t0 = cpu();
         let spans = hl.spans(&buf, &theme, 90_000);
         let el = cpu() - t0;
@@ -201,9 +193,18 @@ mod tests {
 
     /// CPU time of this thread, so other tests/agents competing for cores cannot make a test flaky.
     fn thread_cpu() -> f64 {
-        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
-        ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+        #[cfg(unix)]
+        {
+            let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+            unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+            ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+        }
+        #[cfg(not(unix))]
+        {
+            // No per-thread CPU clock here: wall time since the first call (good enough for a budget check).
+            static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+        }
     }
 
     /// A headless `App` (fixture lock held in the returned guard) with a 100k-line file active,

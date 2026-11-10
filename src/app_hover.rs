@@ -2354,18 +2354,7 @@ pub fn sel_text(h: &mut HoverTip, tx: &mut TextCtx) -> Option<String> {
 }
 
 fn open_external(url: &str) {
-    let url = url.to_string();
-    std::thread::spawn(move || {
-        let child = std::process::Command::new("xdg-open")
-            .arg(&url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        if let Ok(mut c) = child {
-            let _ = c.wait();
-        }
-    });
+    crate::paths::open_url(url);
 }
 
 // ───────────────────────────── tests ─────────────────────────────

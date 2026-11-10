@@ -219,13 +219,8 @@ pub fn act_hint(act: Act) -> Option<&'static str> {
 
 /// "2026-11-09 14:03" in local time.
 pub fn local_datetime(ts: i64) -> String {
-    let t = ts as libc::time_t;
-    // SAFETY: `localtime_r` only writes into the zeroed `tm` we own.
-    unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        libc::localtime_r(&t, &mut tm);
-        format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min)
-    }
+    let (y, mo, d, h, mi, _) = crate::paths::local_time(ts);
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}")
 }
 
 /// Greedy word wrap of `text` into lines no wider than `max` px (`width` measures a string); a word

@@ -1,0 +1,71 @@
+name: Platforms
+
+# Builds and tests on every supported OS/arch. Runs on pushes to the `platforms` branch and by hand;
+# the regular CI workflow keeps handling main and pull requests.
+on:
+  push:
+    branches: [platforms]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: platforms-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x86_64, runner: windows-latest }
+          - { name: macos-arm64, runner: macos-latest }
+          - { name: macos-x86_64, runner: macos-15-intel }
+          - { name: linux-aarch64, runner: ubuntu-22.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - name: System dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
+            libfontconfig1-dev libclang-dev libonig-dev rpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: platforms-${{ matrix.name }}
+      - name: Format and clippy (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo fmt --check
+          cargo clippy --release -- -D warnings
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test --release
+      - name: Package (tar.gz, deb, rpm, AppImage) and smoke test (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=2026.1.1.1
+          arch="$(uname -m)"
+          bin=target/release/lumen-text
+          mkdir -p dist
+          packaging/tarball/build-tarball.sh "$bin" "$VERSION" "$arch" dist
+          packaging/deb/build-deb.sh "$bin" "$VERSION" "$arch" dist
+          packaging/rpm/build-rpm.sh "$bin" "$VERSION" "$arch" dist
+          packaging/appimage/build-appimage.sh "$bin" "$VERSION" "$arch" dist
+          ls -l dist
+          sudo apt-get install -y ./dist/lumen-text_*.deb
+          lumen-text --version
+          d="$(mktemp -d)"; echo hello > "$d/f.txt"
+          HOME="$d" XDG_CONFIG_HOME="$d/c" XDG_STATE_HOME="$d/s" \
+            timeout 60 lumen-text --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
+          test -s "$d/snap/a.png"

@@ -282,7 +282,7 @@ impl App {
             return None;
         }
         Some(match t.strip_prefix("~/") {
-            Some(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest),
+            Some(rest) => crate::paths::home()?.join(rest),
             None if t.starts_with('/') => PathBuf::from(t),
             None => self.root.join(t),
         })

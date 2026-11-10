@@ -5,7 +5,6 @@ use crate::theme::Rgba;
 use regex::Regex;
 use std::{
     io::{BufRead, BufReader},
-    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc::{Receiver, channel},
@@ -275,6 +274,12 @@ pub struct Running {
 
 /// The `PATH` of the user's own shell. A launcher starts the editor with a bare `PATH`, so tools
 /// installed through nvm, corepack, cargo or pyenv (pnpm, node, ...) would not be found.
+#[cfg(windows)]
+pub fn login_path() -> Option<&'static str> {
+    None // a Windows GUI app inherits the full user PATH
+}
+
+#[cfg(not(windows))]
 pub fn login_path() -> Option<&'static str> {
     static P: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     P.get_or_init(|| {
@@ -323,24 +328,41 @@ pub fn merge_path(shell_out: &str, current: &str) -> Option<String> {
 }
 
 pub fn spawn(cmd: &str, cwd: &Path, wake: crate::lsp::Wake) -> std::io::Result<Running> {
-    let mut c = Command::new("sh");
+    #[cfg(windows)]
+    let mut c = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new("cmd.exe");
+        c.args(["/d", "/s", "/c"]).raw_arg(format!("\"{cmd}\""));
+        c
+    };
+    #[cfg(not(windows))]
+    let mut c = {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(cmd);
+        c
+    };
     if let Some(p) = login_path() {
         c.env("PATH", p);
     }
-    c.arg("-c")
-        .arg(cmd)
-        .current_dir(cwd)
+    c.current_dir(cwd)
         .env("FORCE_COLOR", "1")
         .env("TERM", "xterm-256color")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // Own process group so Stop kills the whole tree (npm -> node -> vitest ...).
+    #[cfg(unix)]
     unsafe {
+        use std::os::unix::process::CommandExt;
         c.pre_exec(|| {
             libc::setsid();
             Ok(())
         });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let mut child = c.spawn()?;
     let pid = child.id() as i32;
@@ -378,10 +400,18 @@ pub fn spawn(cmd: &str, cwd: &Path, wake: crate::lsp::Wake) -> std::io::Result<R
     Ok(Running { child, rx, pid })
 }
 
+#[cfg(unix)]
 pub fn kill_group(pid: i32) {
     unsafe {
         libc::kill(-pid, libc::SIGTERM);
     }
+}
+
+/// Kill the process and everything it started.
+#[cfg(windows)]
+pub fn kill_group(pid: i32) {
+    use std::os::windows::process::CommandExt;
+    let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(0x0800_0000).status();
 }
 
 pub fn resolve_link_path(root: &Path, p: &str) -> Option<PathBuf> {

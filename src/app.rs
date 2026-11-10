@@ -775,9 +775,7 @@ impl App {
     // ── session ──
 
     fn session_path(&self) -> Option<PathBuf> {
-        let base = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))?;
+        let base = crate::paths::state_home()?;
         let h = self
             .root
             .to_string_lossy()
@@ -2266,6 +2264,11 @@ impl App {
 }
 
 /// The brand mark (256 px, embedded) as the window icon; decoded once at start.
+/// macOS: Cmd drives the editor's Ctrl shortcuts (Cmd+C/V/X/Z/S/P/F...). Elsewhere modifiers pass through.
+fn map_mods(s: ModifiersState) -> ModifiersState {
+    if cfg!(target_os = "macos") && s.super_key() { (s & !ModifiersState::SUPER) | ModifiersState::CONTROL } else { s }
+}
+
 fn window_icon() -> Option<winit::window::Icon> {
     static PNG: &[u8] = include_bytes!("../packaging/icons/png/lumen-text-256.png");
     let pix = crate::mdimg::decode_png(PNG)?;
@@ -2279,11 +2282,13 @@ impl ApplicationHandler<UserEvent> for App {
         if self.gfx.is_some() {
             return;
         }
+        #[allow(unused_mut)]
         let mut attrs = Window::default_attributes()
             .with_title("lumen-text")
             .with_window_icon(window_icon())
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
         // Wayland app_id / X11 class must match lumen-text.desktop so the launcher shows our icon.
+        #[cfg(target_os = "linux")]
         {
             use winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
             attrs = WindowAttributesExtWayland::with_name(attrs, "lumen-text", "lumen-text");
@@ -2354,7 +2359,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.refresh_git_status();
                 self.request_redraw();
             }
-            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            WindowEvent::ModifiersChanged(m) => self.mods = map_mods(m.state()),
             WindowEvent::CursorLeft { .. } => self.tooltip_leave(),
             WindowEvent::CursorMoved { position, .. } => {
                 // winit reports device pixels; everything inside the app is logical.

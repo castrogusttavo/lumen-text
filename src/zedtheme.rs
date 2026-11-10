@@ -402,15 +402,12 @@ pub fn theme_template() -> String {
 // ---------------------------------------------------------------------------
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
+    crate::paths::home()
 }
 
 /// `$XDG_CONFIG_HOME/lumen-text/themes` or `~/.config/lumen-text/themes`.
 pub fn user_theme_dir() -> Option<PathBuf> {
-    let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
-        Some(x) => PathBuf::from(x),
-        None => home_dir()?.join(".config"),
-    };
+    let base = crate::paths::config_home()?;
     Some(base.join("lumen-text").join("themes"))
 }
 

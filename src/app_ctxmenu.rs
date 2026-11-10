@@ -109,7 +109,7 @@ pub fn unique_dest_by(dir: &Path, name: &str, is_taken: impl Fn(&Path) -> bool) 
 pub fn copy_recursive(from: &Path, to: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(from)?;
     if meta.file_type().is_symlink() {
-        std::os::unix::fs::symlink(fs::read_link(from)?, to)
+        crate::paths::symlink(&fs::read_link(from)?, to)
     } else if meta.is_dir() {
         fs::create_dir(to)?;
         for e in fs::read_dir(from)? {
@@ -130,6 +130,7 @@ fn remove_any(p: &Path) -> io::Result<()> {
 /// Rename, falling back to copy + remove across filesystems.
 pub fn move_path(from: &Path, to: &Path) -> io::Result<()> {
     match fs::rename(from, to) {
+        #[cfg(unix)]
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
             copy_recursive(from, to)?;
             remove_any(from)
@@ -172,21 +173,8 @@ fn pct_encode(s: &str) -> String {
 }
 
 fn local_stamp() -> String {
-    // SAFETY: `localtime_r` only writes into the zeroed `tm` we own.
-    unsafe {
-        let t = libc::time(std::ptr::null_mut());
-        let mut tm: libc::tm = std::mem::zeroed();
-        libc::localtime_r(&t, &mut tm);
-        format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-            tm.tm_year + 1900,
-            tm.tm_mon + 1,
-            tm.tm_mday,
-            tm.tm_hour,
-            tm.tm_min,
-            tm.tm_sec
-        )
-    }
+    let (y, mo, d, h, mi, s) = crate::paths::local_time(crate::paths::now_unix());
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}")
 }
 
 /// Freedesktop trash fallback: move `path` into `<trash>/files` and write `<trash>/info/*.trashinfo`.
@@ -220,7 +208,53 @@ fn user_trash() -> Option<PathBuf> {
     Some(base.join("Trash"))
 }
 
+/// Move to the Recycle Bin (`SHFileOperationW` with undo).
+#[cfg(windows)]
+pub fn trash_path(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{
+        FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, SHFILEOPSTRUCTW, SHFileOperationW,
+    };
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_err(|e| e.to_string())?.join(path)
+    };
+    // The list is double-NUL terminated.
+    let wide: Vec<u16> = abs.as_os_str().encode_wide().chain([0, 0]).collect();
+    // SAFETY: `wide` outlives the call and the struct is plain data.
+    let rc = unsafe {
+        let mut op: SHFILEOPSTRUCTW = std::mem::zeroed();
+        op.wFunc = FO_DELETE;
+        op.pFrom = wide.as_ptr();
+        op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as _;
+        SHFileOperationW(&mut op)
+    };
+    if rc == 0 { Ok(()) } else { Err(format!("could not move to the Recycle Bin (error {rc})")) }
+}
+
+/// Move to the Trash through Finder.
+#[cfg(target_os = "macos")]
+pub fn trash_path(path: &Path) -> Result<(), String> {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_err(|e| e.to_string())?.join(path)
+    };
+    let quoted = abs.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!("tell application \"Finder\" to delete POSIX file \"{quoted}\"");
+    let ok = Command::new("osascript")
+        .args(["-e", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if ok { Ok(()) } else { Err("could not move to the Trash".into()) }
+}
+
 /// Move to the trash: `gio trash`, else the freedesktop trash by hand.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn trash_path(path: &Path) -> Result<(), String> {
     let ok = Command::new("gio")
         .arg("trash")

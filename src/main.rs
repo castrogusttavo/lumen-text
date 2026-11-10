@@ -1,4 +1,7 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
+// Release builds on Windows are GUI-subsystem programs (no console window); `winconsole` re-attaches
+// the parent console for command-line use.
+#![cfg_attr(all(windows, not(debug_assertions), not(test)), windows_subsystem = "windows")]
 mod app;
 mod app_ctxmenu;
 mod app_debug;
@@ -52,7 +55,10 @@ mod mdimg;
 mod mdview;
 mod mem;
 mod minimap;
+mod paths;
+#[cfg(target_os = "linux")]
 mod perf;
+mod pty;
 mod rowmap;
 mod script;
 mod scroller;
@@ -69,6 +75,7 @@ mod tree;
 mod ui;
 mod update;
 mod watcher;
+mod winconsole;
 mod zedtheme;
 
 use std::{env, path::PathBuf, process::ExitCode};
@@ -105,14 +112,20 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    winconsole::init(env::args().skip(1).any(|a| a.starts_with('-')));
     // Few malloc arenas: with background threads (tokenizer, LSP readers) glibc otherwise keeps
     // hundreds of MB of freed memory per thread arena.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     unsafe {
         libc::mallopt(libc::M_ARENA_MAX, 2);
         libc::mallopt(libc::M_TRIM_THRESHOLD, 4 * 1024 * 1024);
     }
     let mut args: Vec<String> = Vec::new();
-    let (mut keys, mut snap, mut size) = (None::<String>, PathBuf::from("/tmp/lumen-snap"), (1000u32, 700u32));
+    let (mut keys, mut snap, mut size) = (
+        None::<String>,
+        if cfg!(unix) { PathBuf::from("/tmp/lumen-snap") } else { env::temp_dir().join("lumen-snap") },
+        (1000u32, 700u32),
+    );
     let mut scale_arg = None::<f32>;
     let mut it = env::args().skip(1);
     while let Some(a) = it.next() {
