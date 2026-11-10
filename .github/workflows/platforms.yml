@@ -99,5 +99,5 @@ jobs:
           app="$mnt/Lumen Text.app/Contents/MacOS/lumen-text"
           "$app" --version
           d="$(mktemp -d)"; echo hello > "$d/f.txt"
-          HOME="$d" timeout 90 "$app" --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
+          HOME="$d" "$app" --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"

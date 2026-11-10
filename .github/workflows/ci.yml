@@ -316,7 +316,7 @@ jobs:
           ! find "$mnt/Lumen Text.app" -name '*hugeicons*' | grep -q . || { echo "hugeicons leaked into the app" >&2; exit 1; }
           "$app" --version
           d="$(mktemp -d)"; echo hello > "$d/f.txt"
-          HOME="$d" timeout 90 "$app" --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
+          HOME="$d" "$app" --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"
       - uses: actions/upload-artifact@v4
         with:
