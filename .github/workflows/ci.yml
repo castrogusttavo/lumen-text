@@ -197,9 +197,136 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  build-windows:
+    name: Build and package (windows-x86_64)
+    needs: version
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-windows
+      - name: HugeIcons Pro masks (only when the maintainer's token is available)
+        env:
+          HUGEICONS_TOKEN: ${{ secrets.HUGEICONS_TOKEN }}
+        run: |
+          if [ -z "${HUGEICONS_TOKEN}" ]; then
+            echo "HUGEICONS_TOKEN not set: building with the bundled icons"
+            exit 0
+          fi
+          echo "::add-mask::${HUGEICONS_TOKEN}"
+          # The mask generator needs rsvg-convert; when it can't be set up here, ship the bundled icons.
+          choco install rsvg-convert -y --no-progress >/dev/null 2>&1 || true
+          if tools/setup-hugeicons.sh >/dev/null 2>&1; then
+            ls assets/icons/hugeicons | wc -l
+          else
+            echo "::warning::HugeIcons masks could not be generated on Windows; using the bundled icons"
+            rm -rf assets/icons/hugeicons assets/icons/hugeicons_bulk
+          fi
+      - name: Build release binary
+        env:
+          LUMEN_VERSION: ${{ env.VERSION }}
+        run: |
+          cargo build --release
+          got="$(target/release/lumen-text.exe --version)"
+          echo "$got"
+          [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
+      - name: Package (zip)
+        run: |
+          mkdir -p dist
+          packaging/windows/build-zip.sh target/release/lumen-text.exe "$VERSION" x86_64 dist
+          ls -l dist
+          ! unzip -l dist/*.zip 2>/dev/null | grep -q hugeicons || { echo "hugeicons leaked into the zip" >&2; exit 1; }
+      - name: Smoke test (headless render from the unpacked zip)
+        run: |
+          d="$(mktemp -d)"
+          unzip -q dist/lumen-text-*-windows-x86_64.zip -d "$d/pkg"
+          echo hello > "$d/f.txt"
+          HOME="$d" timeout 90 "$d"/pkg/lumen-text-*/lumen-text.exe --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
+          test -s "$d/snap/a.png"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-x86_64
+          path: dist/
+          if-no-files-found: error
+
+  build-macos:
+    name: Build and package (macos-${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, runner: macos-latest }
+          - { arch: x86_64, runner: macos-15-intel }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos-${{ matrix.arch }}
+      - name: HugeIcons Pro masks (only when the maintainer's token is available)
+        shell: bash
+        env:
+          HUGEICONS_TOKEN: ${{ secrets.HUGEICONS_TOKEN }}
+        run: |
+          if [ -z "${HUGEICONS_TOKEN}" ]; then
+            echo "HUGEICONS_TOKEN not set: building with the bundled icons"
+            exit 0
+          fi
+          echo "::add-mask::${HUGEICONS_TOKEN}"
+          brew install librsvg >/dev/null 2>&1 || true
+          if tools/setup-hugeicons.sh >/dev/null 2>&1; then
+            ls assets/icons/hugeicons | wc -l
+          else
+            echo "::warning::HugeIcons masks could not be generated on macOS; using the bundled icons"
+            rm -rf assets/icons/hugeicons assets/icons/hugeicons_bulk
+          fi
+      - name: Build release binary
+        shell: bash
+        env:
+          LUMEN_VERSION: ${{ env.VERSION }}
+        run: |
+          cargo build --release
+          got="$(target/release/lumen-text --version)"
+          echo "$got"
+          [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
+      - name: Package (.app in a .dmg, ad-hoc signed)
+        shell: bash
+        run: |
+          mkdir -p dist
+          packaging/macos/build-app.sh target/release/lumen-text "$VERSION" "${{ matrix.arch }}" dist
+          ls -l dist
+      - name: Smoke test (mount the dmg, headless render from the bundle)
+        shell: bash
+        run: |
+          mnt="$(mktemp -d)"
+          hdiutil attach dist/*.dmg -mountpoint "$mnt" -nobrowse -quiet
+          trap 'hdiutil detach "$mnt" -quiet || true' EXIT
+          app="$mnt/Lumen Text.app/Contents/MacOS/lumen-text"
+          ! find "$mnt/Lumen Text.app" -name '*hugeicons*' | grep -q . || { echo "hugeicons leaked into the app" >&2; exit 1; }
+          "$app" --version
+          d="$(mktemp -d)"; echo hello > "$d/f.txt"
+          HOME="$d" timeout 90 "$app" --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
+          test -s "$d/snap/a.png"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
   release:
     name: Publish release
-    needs: [version, build-linux]
+    needs: [version, build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -226,10 +353,16 @@ jobs:
             "lumen-text_${VERSION}-1_amd64.deb" \
             "lumen-text-${VERSION}-1.x86_64.rpm" \
             "lumen-text-bin-${VERSION}-1-x86_64.pkg.tar.zst" \
-            "lumen-text-${VERSION}-x86_64.AppImage"; do
+            "lumen-text-${VERSION}-x86_64.AppImage" \
+            "lumen-text-${VERSION}-windows-x86_64.zip" \
+            "lumen-text-${VERSION}-windows-x86_64.zip.sha256" \
+            "lumen-text-${VERSION}-macos-aarch64.dmg" \
+            "lumen-text-${VERSION}-macos-aarch64.dmg.sha256" \
+            "lumen-text-${VERSION}-macos-x86_64.dmg" \
+            "lumen-text-${VERSION}-macos-x86_64.dmg.sha256"; do
             [ -f "dist/$f" ] || { echo "missing release file: $f" >&2; exit 1; }
           done
-      - name: Sign the AppImage and tarball (minisign) and write latest.json
+      - name: Sign the AppImage, tarballs, Windows zip and macOS dmgs (minisign) and write latest.json
         shell: bash
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
@@ -243,7 +376,7 @@ jobs:
           trap 'rm -f "$key"' EXIT
           # The trusted comment ties each signature to one version and one file name, so an old
           # (validly signed) file can't be replayed as a newer release.
-          for f in dist/*.AppImage dist/*.tar.gz; do
+          for f in dist/*.AppImage dist/*.tar.gz dist/*.zip dist/*.dmg; do
             name="$(basename "$f")"
             minisign -S -s "$key" -m "$f" -x "$f.minisig" -t "lumen-text ${VERSION} ${name}"
             minisign -V -p src/update_key.pub -m "$f" -x "$f.minisig" >/dev/null   # must match the key embedded in the app
@@ -281,6 +414,10 @@ jobs:
             add "linux-${arch}-rpm" "lumen-text-${VERSION}-1.${rpm}.rpm"
             add "linux-${arch}-arch" "lumen-text-bin-${VERSION}-1-${arch}.pkg.tar.zst"
           done
+          # Windows and macOS builds are announced by the updater (link to the release) but not applied by it.
+          add "windows-x86_64-zip" "lumen-text-${VERSION}-windows-x86_64.zip"
+          add "macos-aarch64-dmg" "lumen-text-${VERSION}-macos-aarch64.dmg"
+          add "macos-x86_64-dmg" "lumen-text-${VERSION}-macos-x86_64.dmg"
           jq -n --arg v "${VERSION}" --arg n "$(head -n 40 release-notes.md)" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson p "$platforms" '{version: $v, notes: $n, pub_date: $d, platforms: $p}' > dist/latest.json
           jq -e '.platforms["linux-x86_64-appimage"].signature != "" and .platforms["linux-x86_64-tarball"].signature != ""' dist/latest.json >/dev/null

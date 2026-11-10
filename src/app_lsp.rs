@@ -1860,6 +1860,7 @@ impl App {
 
 /// Hand freed heap pages back to the OS (large JSON responses otherwise stay resident).
 pub fn release_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     unsafe {
         libc::malloc_trim(0);
     }

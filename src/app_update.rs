@@ -158,17 +158,7 @@ fn wrap(tx: &mut TextCtx, text: &str, max: i32, bold: bool) -> Vec<String> {
 }
 
 fn open_url(url: &str) {
-    if let Ok(mut child) = std::process::Command::new("xdg-open")
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-    }
+    crate::paths::open_url(url);
 }
 
 /// Texts and buttons of a card: (title, body paragraphs, buttons left to right with the primary
@@ -629,6 +619,13 @@ fn run_job(env: &Env, job: Job, installed: Option<(String, PathBuf)>, progress: 
 
 /// Start `exe <root>` in a new session after a short delay, so it outlives this process and the
 /// single-instance socket is long gone when it asks for it.
+#[cfg(not(unix))]
+fn spawn_detached(exe: &std::path::Path, root: &std::path::Path, _appimage: bool) {
+    // Only reachable for self-updating installs, which exist on Linux only.
+    let _ = std::process::Command::new(exe).arg(root).spawn();
+}
+
+#[cfg(unix)]
 fn spawn_detached(exe: &std::path::Path, root: &std::path::Path, appimage: bool) {
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new("sh");

@@ -4,7 +4,7 @@
 
 # lumen-text
 
-**A lean, CPU-rendered code editor for Linux, written 100% in Rust, with a first-class TypeScript workflow.**
+**A lean, CPU-rendered code editor for Linux, Windows and macOS, written 100% in Rust, with a first-class TypeScript workflow.**
 
 [![CI](https://github.com/castrogusttavo/lumen-text/actions/workflows/ci.yml/badge.svg)](https://github.com/castrogusttavo/lumen-text/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -115,7 +115,7 @@ database holds a single font plus lazily loaded fallbacks.
 
 ## Install
 
-Pre-built packages for x86_64 Linux are attached to every
+Pre-built packages for Linux (x86_64 and aarch64), Windows (portable zip) and macOS (`.dmg`, Apple Silicon and Intel) are attached to every
 [GitHub Release](https://github.com/castrogusttavo/lumen-text/releases). Versions use **CalVer
 `YYYY.M.D.N`** (year, month, day of the release, then a counter for that day), for example
 `2026.11.10.1`; tags are `vYYYY.M.D.N`. Every push to `main` that passes CI publishes a release.
@@ -131,8 +131,13 @@ Replace `<v>` below with the version you downloaded and verify with
 | Portable | `tar xzf lumen-text-<v>-linux-x86_64.tar.gz && ./lumen-text-<v>-linux-x86_64/bin/lumen-text` (or run its `install.sh`) |
 
 Release binaries need glibc 2.35 or newer (built on Ubuntu 22.04). The binary links only glibc;
-libxkbcommon, Wayland and X11 are loaded at run time. aarch64 packages exist when the repository
-enables them. Details: [packaging/README.md](packaging/README.md).
+libxkbcommon, Wayland and X11 are loaded at run time. Details: [packaging/README.md](packaging/README.md).
+
+**Windows:** unzip `lumen-text-<v>-windows-x86_64.zip` and run `lumen-text.exe`. It is not code-signed, so SmartScreen
+asks for confirmation (*More info*, *Run anyway*).
+**macOS:** open `lumen-text-<v>-macos-<aarch64|x86_64>.dmg` and drag the app to Applications. It is ad-hoc signed but
+not notarized: right-click, *Open* the first time, or `xattr -dr com.apple.quarantine "/Applications/Lumen Text.app"`.
+`Cmd` acts as `Ctrl` for every shortcut.
 
 **TypeScript support** is optional; install the language server once:
 
@@ -354,9 +359,11 @@ The full token list is in [CONTRIBUTING.md](CONTRIBUTING.md#headless-testing).
 
 ## Platform status
 
-Linux only for now (Wayland and X11). Windows and macOS are planned; the CI release job is already
-structured so other operating systems can add their own `dist-*` artifacts. The clipboard supports Wayland
-(`wl-clipboard`) and X11.
+Linux (Wayland and X11, x86_64 and aarch64) is the primary platform. Windows (x86_64) and macOS (arm64 and x86_64)
+build and pass the test suite in CI and ship from the release job, but they are young ports: no real-machine
+testing of IME, clipboard corner cases, window behaviour or HiDPI has been done yet, and the updater only announces
+new versions there (no in-place update). The clipboard uses `wl-clipboard`/X11 tools on Linux, `pbcopy`/`pbpaste` on
+macOS and the Win32 API (text only) on Windows; copying files between programs works on Linux only.
 
 ## HugeIcons Pro (optional)
 

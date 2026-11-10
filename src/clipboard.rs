@@ -1,6 +1,7 @@
 //! System clipboard and primary selection through external tools, with an in-process fallback:
 //! `wl-copy`/`wl-paste` on Wayland, `xclip` or `xsel` on X11. Shelling out keeps us free of
-//! windowing-protocol dependencies and works on compositors without data-control.
+//! windowing-protocol dependencies and works on compositors without data-control. macOS uses
+//! `pbcopy`/`pbpaste`; Windows talks to the clipboard API through `arboard` (text only there).
 
 use std::{
     io::Write,
@@ -22,9 +23,14 @@ pub struct FileList {
 
 /// `file://` URI of an absolute path (everything but unreserved characters and `/` is %-encoded).
 pub fn path_to_uri(p: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
+    #[cfg(unix)]
+    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(p.as_os_str());
+    #[cfg(not(unix))]
+    let bytes = p.to_string_lossy().replace('\\', "/").into_bytes();
+    #[cfg(not(unix))]
+    let bytes = [&b"/"[..], &bytes[..]].concat();
     let mut out = String::from("file://");
-    for &b in p.as_os_str().as_bytes() {
+    for &b in bytes.iter() {
         if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
             out.push(b as char);
         } else {
@@ -36,7 +42,6 @@ pub fn path_to_uri(p: &Path) -> String {
 
 /// Local path of a `file://` URI (`file:///x`, `file://localhost/x`); None for any other scheme.
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStringExt;
     let rest = uri.trim().strip_prefix("file://")?;
     let rest = rest.strip_prefix("localhost").unwrap_or(rest);
     if !rest.starts_with('/') {
@@ -59,7 +64,14 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
         out.push(b[i]);
         i += 1;
     }
-    Some(PathBuf::from(std::ffi::OsString::from_vec(out)))
+    #[cfg(unix)]
+    return Some(PathBuf::from(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(out)));
+    #[cfg(not(unix))]
+    {
+        let text = String::from_utf8_lossy(&out).into_owned();
+        let text = text.strip_prefix('/').filter(|t| t.as_bytes().get(1) == Some(&b':')).unwrap_or(&text);
+        Some(PathBuf::from(text.replace('/', "\\")))
+    }
 }
 
 /// Body of a clipboard offer of `mime` for these files.
@@ -117,6 +129,12 @@ enum Backend {
     Wayland,
     Xclip,
     Xsel,
+    /// macOS `pbcopy` / `pbpaste`.
+    #[cfg(target_os = "macos")]
+    Pasteboard,
+    /// Windows clipboard API (through `arboard`).
+    #[cfg(windows)]
+    Native,
     None,
 }
 
@@ -124,6 +142,17 @@ fn has(bin: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
 }
 
+#[cfg(target_os = "macos")]
+fn detect() -> Backend {
+    Backend::Pasteboard
+}
+
+#[cfg(windows)]
+fn detect() -> Backend {
+    Backend::Native
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn detect() -> Backend {
     if std::env::var_os("WAYLAND_DISPLAY").is_some() && has("wl-copy") && has("wl-paste") {
         Backend::Wayland
@@ -163,7 +192,11 @@ fn command(b: Backend, primary: bool, write: bool) -> Option<(&'static str, Vec<
         (Backend::Xclip, false) => ("xclip", vec!["-selection", if primary { "primary" } else { "clipboard" }, "-o"]),
         (Backend::Xsel, true) => ("xsel", vec![if primary { "-ip" } else { "-ib" }]),
         (Backend::Xsel, false) => ("xsel", vec![if primary { "-op" } else { "-ob" }]),
-        (Backend::None, _) => return None,
+        #[cfg(target_os = "macos")]
+        (Backend::Pasteboard, true) if !primary => ("pbcopy", vec![]),
+        #[cfg(target_os = "macos")]
+        (Backend::Pasteboard, false) if !primary => ("pbpaste", vec![]),
+        _ => return None,
     })
 }
 
@@ -174,7 +207,7 @@ fn typed_write(b: Backend, mime: &str) -> Option<(&'static str, Vec<String>)> {
         Backend::Xclip => {
             ("xclip", vec!["-selection".into(), "clipboard".into(), "-t".into(), mime.into(), "-i".into()])
         }
-        Backend::Xsel | Backend::None => return None,
+        _ => return None,
     })
 }
 
@@ -189,7 +222,7 @@ fn typed_read(b: Backend, mime: Option<&str>) -> Option<(&'static str, Vec<Strin
         (Backend::Xclip, None) => {
             ("xclip", vec!["-selection".into(), "clipboard".into(), "-t".into(), "TARGETS".into(), "-o".into()])
         }
-        (Backend::Xsel | Backend::None, _) => return None,
+        _ => return None,
     })
 }
 
@@ -233,6 +266,13 @@ impl Clipboard {
     }
 
     fn write(&self, primary: bool, text: &str) {
+        #[cfg(windows)]
+        if self.backend == Backend::Native {
+            if !primary && let Ok(mut c) = arboard::Clipboard::new() {
+                let _ = c.set_text(text.to_string());
+            }
+            return;
+        }
         let Some((prog, args)) = command(self.backend, primary, true) else { return };
         let Ok(mut child) =
             self.tool(prog).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
@@ -249,6 +289,10 @@ impl Clipboard {
     }
 
     fn read(&self, primary: bool) -> Option<String> {
+        #[cfg(windows)]
+        if self.backend == Backend::Native {
+            return if primary { None } else { arboard::Clipboard::new().ok()?.get_text().ok() };
+        }
         let (prog, args) = command(self.backend, primary, false)?;
         let out = self.tool(prog).args(args).stderr(Stdio::null()).output().ok()?;
         out.status.success().then(|| String::from_utf8(out.stdout).ok()).flatten()
@@ -320,7 +364,7 @@ impl Clipboard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

@@ -3,17 +3,14 @@
 
 use crate::{
     lsp::Wake,
+    pty::Pty,
     tasks::{PALETTE, xterm256},
     theme::Rgba,
 };
 use std::{
     collections::VecDeque,
-    fs::File,
-    io::{Read, Write},
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    os::unix::process::CommandExt,
+    io::Read,
     path::Path,
-    process::{Child, Command, Stdio},
     sync::mpsc::{Receiver, channel},
     thread,
 };
@@ -500,45 +497,16 @@ impl vte::Perform for Grid {
 pub struct Term {
     pub grid: Grid,
     parser: vte::Parser,
-    master: File,
-    child: Child,
+    pty: Pty,
     rx: Receiver<Vec<u8>>,
     pub alive: bool,
     /// Lines the view is scrolled back into history (0 = live).
     pub scroll_offset: usize,
 }
 
-fn winsize(rows: usize, cols: usize) -> libc::winsize {
-    libc::winsize { ws_row: rows as u16, ws_col: cols as u16, ws_xpixel: 0, ws_ypixel: 0 }
-}
-
 impl Term {
     pub fn spawn(cwd: &Path, rows: usize, cols: usize, wake: Wake) -> std::io::Result<Term> {
-        let (mut m, mut s) = (0, 0);
-        let ws = winsize(rows, cols);
-        // SAFETY: plain libc call with valid out-pointers.
-        if unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null(), &ws) } != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let (master, slave) = unsafe { (File::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        let mut cmd = Command::new(shell);
-        cmd.current_dir(cwd)
-            .env("TERM", "xterm-256color")
-            .env("COLORTERM", "truecolor")
-            .stdin(Stdio::from(slave.try_clone()?))
-            .stdout(Stdio::from(slave.try_clone()?))
-            .stderr(Stdio::from(slave));
-        // The shell gets the PTY as its controlling terminal in its own session.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                libc::ioctl(0, libc::TIOCSCTTY as _, 0);
-                Ok(())
-            });
-        }
-        let child = cmd.spawn()?;
-        let mut reader = master.try_clone()?;
+        let (pty, mut reader) = Pty::spawn(cwd, rows, cols)?;
         let (tx, rx) = channel();
         thread::spawn(move || {
             let mut buf = vec![0u8; 16 * 1024];
@@ -558,15 +526,7 @@ impl Term {
                 }
             }
         });
-        Ok(Term {
-            grid: Grid::new(rows, cols),
-            parser: vte::Parser::new(),
-            master,
-            child,
-            rx,
-            alive: true,
-            scroll_offset: 0,
-        })
+        Ok(Term { grid: Grid::new(rows, cols), parser: vte::Parser::new(), pty, rx, alive: true, scroll_offset: 0 })
     }
 
     /// Feed pending output through the emulator; true if anything changed.
@@ -618,8 +578,7 @@ impl Term {
 
     pub fn write(&mut self, bytes: &[u8]) {
         self.scroll_offset = 0;
-        let _ = self.master.write_all(bytes);
-        let _ = self.master.flush();
+        self.pty.write(bytes);
     }
 
     pub fn resize(&mut self, rows: usize, cols: usize) {
@@ -628,18 +587,7 @@ impl Term {
         }
         self.grid.resize(rows, cols);
         self.scroll_offset = self.scroll_offset.min(self.grid.history_len());
-        let ws = winsize(rows.max(1), cols.max(1));
-        // SAFETY: valid fd and winsize pointer.
-        unsafe {
-            libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws);
-        }
-    }
-}
-
-impl Drop for Term {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.pty.resize(rows.max(1), cols.max(1));
     }
 }
 

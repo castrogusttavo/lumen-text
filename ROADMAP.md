@@ -292,7 +292,7 @@ Validated by the user in the real window: mouse cursor, fractional hi-DPI, tab s
 - [ ] Tidy the UI consistency (spacing scale, radii, icon sizes, hover/active states) against one small design-token table.
 
 ## Remaining
-- [ ] Windows and macOS (today: Linux only, Wayland/X11; clipboard, PTY, packaging, updater and CI would all need ports).
+- [x] Windows and macOS ports (CI-built and tested, packaged as zip / dmg). Still open: real-machine verification (IME, clipboard, HiDPI), code signing / notarization, an in-place updater on both, `.ico`/exe icon on Windows, file clipboard and trash polish.
 - [ ] i18n string layer so other languages can be added (optional `language` setting; Portuguese as the first extra locale). The UI is English-only until then; strings are plain literals spread over ~29 files.
 - [ ] HugeIcons user setup: the Pro masks are licensed and gitignored, so each user generates them locally with `tools/setup-hugeicons.sh`; this still needs a smoother, documented first-run flow (builds and CI use the bundled Zed icons without them).
 - [ ] Splitting the big files listed above.

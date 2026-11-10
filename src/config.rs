@@ -215,9 +215,14 @@ pub fn assets_dir() -> PathBuf {
     {
         return p;
     }
-    if let Some(p) =
-        std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share/lumen-text/assets")).filter(|p| ok(p))
-    {
+    // macOS `.app` bundle (Contents/MacOS/lumen-text, Contents/Resources/assets) and the Windows
+    // portable zip (lumen-text.exe next to assets/).
+    for rel in ["../Resources/assets", "assets"] {
+        if let Some(p) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(rel))).filter(|p| ok(p)) {
+            return p;
+        }
+    }
+    if let Some(p) = crate::paths::data_home().map(|d| d.join("lumen-text/assets")).filter(|p| ok(p)) {
         return p;
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("assets")
@@ -338,9 +343,7 @@ impl Config {
 }
 
 pub fn default_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))?;
+    let base = crate::paths::config_home()?;
     Some(base.join("lumen-text").join("config.json"))
 }
 

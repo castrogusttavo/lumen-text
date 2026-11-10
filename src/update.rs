@@ -168,7 +168,12 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
 
 /// Key of a file in `platforms`: `linux-x86_64-appimage`, `linux-aarch64-tarball`, ...
 pub fn platform_key(arch: &str, format: &str) -> String {
-    format!("linux-{arch}-{format}")
+    let os = match std::env::consts::OS {
+        "macos" => "macos",
+        "windows" => "windows",
+        _ => "linux",
+    };
+    format!("{os}-{arch}-{format}")
 }
 
 // ───────────────────────────── install kinds ─────────────────────────────
@@ -212,6 +217,9 @@ impl InstallKind {
         match self {
             InstallKind::AppImage(_) => "appimage",
             InstallKind::System => pkg.format_key().unwrap_or("tarball"),
+            // Windows and macOS builds are portable archives: the update is announced, not applied.
+            _ if cfg!(windows) => "zip",
+            _ if cfg!(target_os = "macos") => "dmg",
             _ => "tarball",
         }
     }
@@ -587,19 +595,12 @@ pub struct Env {
 }
 
 pub fn cache_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache")))
-        .unwrap_or_else(|| PathBuf::from("."));
+    let base = crate::paths::cache_home().unwrap_or_else(|| PathBuf::from("."));
     base.join("lumen-text").join("update")
 }
 
 pub fn data_home() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))
+    crate::paths::data_home()
 }
 
 fn pubkey_from_env(v: &str) -> String {
@@ -711,9 +712,15 @@ pub fn update(env: &Env, rel: &Release, progress: Option<&AtomicU64>) -> Result<
 
 // ───────────────────────────── applying ─────────────────────────────
 
+#[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|e| format!("chmod {}: {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> Result<(), String> {
+    Ok(())
 }
 
 /// Replace the AppImage at `target` with `staged`, keeping the previous one as `<target>.old`.
@@ -754,7 +761,7 @@ fn running_version_dir(exe: &Path, root: &Path) -> Option<String> {
 fn flip_current(root: &Path, version: &str) -> Result<(), String> {
     let tmp = root.join(".current.new");
     let _ = fs::remove_file(&tmp);
-    std::os::unix::fs::symlink(version, &tmp).map_err(|e| format!("symlink: {e}"))?;
+    crate::paths::symlink(Path::new(version), &tmp).map_err(|e| format!("symlink: {e}"))?;
     fs::rename(&tmp, root.join("current")).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("cannot switch the current version: {e}")
@@ -912,7 +919,7 @@ pub fn install_user(exe: &Path, assets: &Path, version: &str, home: &Path, data:
     let link = bin_dir.join("lumen-text");
     let tmp_link = bin_dir.join(".lumen-text.new");
     let _ = fs::remove_file(&tmp_link);
-    std::os::unix::fs::symlink(root.join("current/bin/lumen-text"), &tmp_link).map_err(|e| format!("symlink: {e}"))?;
+    crate::paths::symlink(&root.join("current/bin/lumen-text"), &tmp_link).map_err(|e| format!("symlink: {e}"))?;
     fs::rename(&tmp_link, &link).map_err(|e| format!("cannot create {}: {e}", link.display()))?;
 
     let desktop = register_desktop(data, &link)?;

@@ -7,7 +7,15 @@ order: 2
 
 ## Which platforms are supported?
 
-Linux on Wayland and X11, x86_64 (aarch64 packages exist when the repository enables them). Windows and macOS are planned.
+Linux on Wayland and X11 (x86_64 and aarch64), Windows 10 or newer (x86_64) and macOS 11 or newer (Apple Silicon and Intel). Windows and macOS are recent ports that CI builds and tests but that have seen less real-world use; they do not self-update yet (the update card links to the release page).
+
+## Windows says "Windows protected your PC"
+
+The Windows build is not code-signed, so SmartScreen warns on first launch. Choose *More info*, then *Run anyway*.
+
+## macOS says the app cannot be opened
+
+The app is not notarized. Right-click *Lumen Text* in Applications, choose *Open*, and confirm; or run `xattr -dr com.apple.quarantine "/Applications/Lumen Text.app"` once.
 
 ## TypeScript features are missing
 

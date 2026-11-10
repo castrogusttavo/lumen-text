@@ -1,13 +1,32 @@
 ---
 title: Getting started
-description: Install Lumen on Linux, open a project and learn the first three shortcuts.
+description: Install Lumen on Linux, Windows or macOS, open a project and learn the first three shortcuts.
 section: Start
 order: 1
 ---
 
-Lumen is a lean, CPU-rendered code editor for Linux, written in Rust, with a first-class TypeScript workflow. Pre-built x86_64 packages are attached to every [GitHub release](https://github.com/castrogusttavo/lumen-text/releases). The [download page](/download) always links the newest one.
+Lumen is a lean, CPU-rendered code editor for Linux, Windows and macOS, written in Rust, with a first-class TypeScript workflow. Pre-built packages are attached to every [GitHub release](https://github.com/castrogusttavo/lumen-text/releases). The [download page](/download) always links the newest one.
 
-## Install
+## Platforms
+
+| Platform | Package | Notes |
+|---|---|---|
+| Linux x86_64 and aarch64 | `.deb`, `.rpm`, Arch package, AppImage, tarball | Wayland and X11; self-updating AppImage and user install |
+| Windows x86_64 | `lumen-text-<v>-windows-x86_64.zip` | Portable: unzip and run `lumen-text.exe`; not code-signed |
+| macOS Apple Silicon | `lumen-text-<v>-macos-aarch64.dmg` | Not notarized, see below |
+| macOS Intel | `lumen-text-<v>-macos-x86_64.dmg` | Not notarized, see below |
+
+The Windows and macOS builds are new: they are built and unit-tested by CI, but have had much less real-world use than Linux. On those systems the update check announces new versions with a link to the release page; you install them by hand.
+
+### Windows
+
+Unzip the archive anywhere and run `lumen-text.exe` (keep `assets/` next to it). The executable is not signed, so Windows SmartScreen may show "Windows protected your PC": choose *More info*, then *Run anyway*. The integrated terminal uses PowerShell through ConPTY (set `LUMEN_SHELL` to use another shell).
+
+### macOS
+
+Open the `.dmg` and drag *Lumen Text* to Applications. The app is ad-hoc signed but not notarized (that needs a paid Apple Developer ID), so Gatekeeper blocks the first launch ("cannot be opened because the developer cannot be verified"). To open it once: right-click the app, choose *Open*, then *Open* again; or run `xattr -dr com.apple.quarantine "/Applications/Lumen Text.app"`. On macOS `Cmd` plays the role of `Ctrl` in every shortcut (`Cmd+P`, `Cmd+S`, ...). Settings and session data live in `~/Library/Application Support/lumen-text`.
+
+## Install on Linux
 
 Versions use CalVer `YYYY.M.D.N` (year, month, day of the release, then a counter for that day), for example `2026.11.10.1`. Replace `<v>` with the version you downloaded.
 

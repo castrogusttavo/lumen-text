@@ -1738,7 +1738,15 @@ pub fn from_mirror(p: PathBuf) -> PathBuf {
 
 pub fn path_to_uri(p: &Path) -> String {
     let mut s = String::from("file://");
-    for b in p.to_string_lossy().bytes() {
+    let text = p.to_string_lossy();
+    // Windows: `C:\a b\x.ts` becomes `file:///C:/a%20b/x.ts`.
+    let text = if cfg!(windows) { format!("/{}", text.replace('\\', "/")) } else { text.into_owned() };
+    let drive = cfg!(windows) && text.as_bytes().get(2) == Some(&b':');
+    for (i, b) in text.bytes().enumerate() {
+        if drive && i == 2 {
+            s.push(':');
+            continue;
+        }
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => s.push(b as char),
             _ => s.push_str(&format!("%{b:02X}")),
@@ -1764,7 +1772,14 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
         out.push(bytes[i]);
         i += 1;
     }
-    Some(from_mirror(PathBuf::from(String::from_utf8(out).ok()?)))
+    let text = String::from_utf8(out).ok()?;
+    // Windows: `/C:/a/x.ts` is `C:\a\x.ts`.
+    #[cfg(windows)]
+    let text = {
+        let t = text.strip_prefix('/').filter(|t| t.as_bytes().get(1) == Some(&b':')).unwrap_or(&text);
+        t.replace('/', "\\")
+    };
+    Some(from_mirror(PathBuf::from(text)))
 }
 
 /// Colored text pieces of bytes [b0, b1) of one line (a visual row), restricted to visual
@@ -1837,9 +1852,12 @@ mod tests {
 
     #[test]
     fn uri_roundtrip() {
-        let p = Path::new("/home/a b/ç/x.ts");
+        #[cfg(unix)]
+        let (p, want) = (Path::new("/home/a b/ç/x.ts"), "file:///home/a%20b/%C3%A7/x.ts");
+        #[cfg(windows)]
+        let (p, want) = (Path::new("C:\\home\\a b\\ç\\x.ts"), "file:///C:/home/a%20b/%C3%A7/x.ts");
         let u = path_to_uri(p);
-        assert_eq!(u, "file:///home/a%20b/%C3%A7/x.ts");
+        assert_eq!(u, want);
         assert_eq!(uri_to_path(&u).unwrap(), p);
     }
 

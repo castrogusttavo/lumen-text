@@ -400,15 +400,30 @@ fn bundled_tsgo() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let p = Path::new(&home)
-            .join(".local/share/lumen-text/tsgo/node_modules/@typescript/native-preview-linux-x64/lib/tsgo");
+    if let Some(data) = crate::paths::data_home() {
+        let p = data.join(format!(
+            "lumen-text/tsgo/node_modules/@typescript/native-preview-{}/lib/tsgo{}",
+            tsgo_platform(),
+            std::env::consts::EXE_SUFFIX
+        ));
         if p.exists() {
             return Some(p);
         }
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join("tsgo")).find(|p| p.is_file())
+    let names: &[&str] = if cfg!(windows) { &["tsgo.exe", "tsgo.cmd"] } else { &["tsgo"] };
+    std::env::split_paths(&path).flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.is_file())
+}
+
+/// `<os>-<arch>` as the `@typescript/native-preview-*` packages name their platforms.
+fn tsgo_platform() -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        o => o,
+    };
+    let arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { "x64" };
+    format!("{os}-{arch}")
 }
 
 /// The tsgo a project installed itself (`node_modules/@typescript/native-preview-*`).
@@ -418,7 +433,7 @@ fn project_tsgo(root: &Path) -> Option<PathBuf> {
             .ok()?
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().starts_with("native-preview-"))
-            .map(|e| e.path().join("lib/tsgo"))
+            .map(|e| e.path().join(format!("lib/tsgo{}", std::env::consts::EXE_SUFFIX)))
             .find(|p| p.exists())
     })
 }
@@ -459,10 +474,7 @@ pub fn project_root(file: &Path) -> Option<PathBuf> {
 pub fn mirror_dir(root: &Path) -> PathBuf {
     let h =
         root.to_string_lossy().bytes().fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
+    let base = crate::paths::cache_home().unwrap_or_else(std::env::temp_dir);
     base.join("lumen-text/mirrors").join(format!("{h:016x}"))
 }
 
@@ -484,7 +496,7 @@ pub fn write_mirror(root: &Path, mirror: &Path, includes: &[PathBuf]) -> std::io
         let ok = std::fs::read_link(&link).map(|t| t == target).unwrap_or(false);
         if !ok {
             let _ = std::fs::remove_file(&link);
-            std::os::unix::fs::symlink(&target, &link)?;
+            crate::paths::symlink(&target, &link)?;
         }
         wanted.push(name);
     }
@@ -674,10 +686,7 @@ mod tests {
             eprintln!("tsgo not installed, skipping");
             return;
         };
-        let base = std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache")))
-            .unwrap_or_else(std::env::temp_dir);
+        let base = crate::paths::cache_home().unwrap_or_else(std::env::temp_dir);
         let root = base.join(format!("lumen-bigtest-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
@@ -769,10 +778,7 @@ mod tests {
     }
 
     fn cache_base() -> PathBuf {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache")))
-            .unwrap_or_else(std::env::temp_dir)
+        crate::paths::cache_home().unwrap_or_else(std::env::temp_dir)
     }
 
     /// The bug behind "red imports until the target is opened": with only `a.ts` open, imports of

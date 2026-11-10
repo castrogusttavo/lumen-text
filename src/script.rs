@@ -228,7 +228,10 @@ pub fn run(mut app: App, opts: Opts) {
             }
             eprintln!("[full] {frames} frames in {:?}", t0.elapsed());
         } else if let Some(cmd) = tok.strip_prefix("sh:") {
+            #[cfg(unix)]
             let _ = std::process::Command::new("sh").arg("-c").arg(cmd).status();
+            #[cfg(windows)]
+            let _ = std::process::Command::new("cmd").args(["/C", cmd]).status();
         } else if let Some(text) = tok.strip_prefix("type:") {
             app.mods = ModifiersState::empty();
             for ch in text.chars() {

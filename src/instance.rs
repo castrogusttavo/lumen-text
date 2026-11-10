@@ -1,19 +1,50 @@
-//! Single-instance support: the first process listens on a Unix socket; later invocations
-//! hand their file arguments to it and exit.
+//! Single-instance support: the first process listens on a Unix socket (on Windows: a localhost TCP
+//! port recorded in a file); later invocations hand their file arguments to it and exit.
 
 use crate::lsp::Wake;
 use std::{
     io::{Read, Write},
-    os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, channel},
     thread,
 };
 
+#[cfg(unix)]
 pub fn socket_path() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     let uid = unsafe { libc::getuid() };
     dir.join(format!("lumen-text-{uid}.sock"))
+}
+
+#[cfg(windows)]
+pub fn socket_path() -> PathBuf {
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    std::env::temp_dir().join(format!("lumen-text-{user}.port"))
+}
+
+#[cfg(unix)]
+fn connect(sock: &Path) -> std::io::Result<impl Write> {
+    std::os::unix::net::UnixStream::connect(sock)
+}
+
+/// Bind the listener; yields one stream per incoming connection.
+#[cfg(unix)]
+fn bind(sock: &Path) -> std::io::Result<impl Iterator<Item = std::io::Result<impl Read>> + Send + 'static> {
+    let l = std::os::unix::net::UnixListener::bind(sock)?;
+    Ok(std::iter::from_fn(move || Some(l.accept().map(|c| c.0))))
+}
+
+#[cfg(windows)]
+fn connect(sock: &Path) -> std::io::Result<impl Write> {
+    let port: u16 = std::fs::read_to_string(sock)?.trim().parse().map_err(std::io::Error::other)?;
+    std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+}
+
+#[cfg(windows)]
+fn bind(sock: &Path) -> std::io::Result<impl Iterator<Item = std::io::Result<impl Read>> + Send + 'static> {
+    let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    std::fs::write(sock, l.local_addr()?.port().to_string())?;
+    Ok(std::iter::from_fn(move || Some(l.accept().map(|c| c.0))))
 }
 
 pub enum Role {
@@ -26,7 +57,9 @@ pub enum Role {
 /// Make `file:line:col` arguments absolute so the other process (different cwd) can open them.
 pub fn absolutize(arg: &str) -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
-    let (path, suffix) = match arg.find(':') {
+    // A Windows drive prefix (`C:\`) is not a `:line` suffix.
+    let skip = if cfg!(windows) && arg.as_bytes().get(1) == Some(&b':') { 2 } else { 0 };
+    let (path, suffix) = match arg[skip..].find(':').map(|i| i + skip) {
         Some(i) if !Path::new(arg).exists() => (&arg[..i], &arg[i..]),
         _ => (arg, ""),
     };
@@ -36,7 +69,7 @@ pub fn absolutize(arg: &str) -> String {
 }
 
 pub fn claim_at(sock: &Path, args: &[String], wake: Wake) -> Role {
-    if let Ok(mut s) = UnixStream::connect(sock) {
+    if let Ok(mut s) = connect(sock) {
         let msg = args.iter().map(|a| absolutize(a)).collect::<Vec<_>>().join("\n");
         if s.write_all(msg.as_bytes()).is_ok() {
             return Role::Secondary;
@@ -44,14 +77,14 @@ pub fn claim_at(sock: &Path, args: &[String], wake: Wake) -> Role {
     }
     // Nobody answered: any socket file left behind is stale.
     let _ = std::fs::remove_file(sock);
-    let Ok(listener) = UnixListener::bind(sock) else {
+    let Ok(listener) = bind(sock) else {
         // Could not bind (read-only dir…): just run as an independent instance.
         let (_tx, rx) = channel();
         return Role::Primary(rx);
     };
     let (tx, rx) = channel();
     thread::spawn(move || {
-        for conn in listener.incoming().flatten() {
+        for conn in listener.flatten() {
             let mut conn = conn;
             let mut text = String::new();
             if conn.read_to_string(&mut text).is_ok() {
@@ -99,7 +132,8 @@ mod tests {
     #[test]
     fn relative_paths_become_absolute_and_keep_line_suffix() {
         let a = absolutize("Cargo.toml:12:3");
-        assert!(a.starts_with('/') && a.ends_with("Cargo.toml:12:3"), "{a}");
+        assert!(Path::new(&a).is_absolute() && a.ends_with("Cargo.toml:12:3"), "{a}");
+        #[cfg(unix)]
         assert_eq!(absolutize("/x/y.ts"), "/x/y.ts");
     }
 }

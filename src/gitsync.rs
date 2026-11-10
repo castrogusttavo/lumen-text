@@ -7,7 +7,6 @@
 use crate::app_gitpanel::git_run;
 use std::{
     io::Read,
-    os::unix::process::CommandExt,
     path::Path,
     process::{Command, Stdio},
     sync::mpsc::{Receiver, Sender, channel},
@@ -356,7 +355,7 @@ impl Job {
     pub fn cancel(&mut self) {
         if self.pid != 0 && !self.cancelled {
             self.cancelled = true;
-            unsafe { libc::kill(-(self.pid as i32), libc::SIGTERM) };
+            crate::tasks::kill_group(self.pid as i32);
         }
     }
 
@@ -399,12 +398,16 @@ pub fn spawn(top: &Path, op: Op, wake: crate::lsp::Wake) -> Job {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // SAFETY: setsid is async-signal-safe and runs in the forked child before exec.
+    #[cfg(unix)]
     unsafe {
+        use std::os::unix::process::CommandExt;
         cmd.pre_exec(|| {
             libc::setsid();
             Ok(())
         });
     }
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW
     let mut job =
         Job { op: op.clone(), started: Instant::now(), rx, progress: String::new(), pid: 0, cancelled: false };
     let mut child = match cmd.spawn() {
@@ -464,7 +467,11 @@ pub fn spawn(top: &Path, op: Op, wake: crate::lsp::Wake) -> Job {
             Ok(summarize(&op, &stdout, &keep))
         } else {
             let mut f = classify(&keep);
-            if status.as_ref().is_ok_and(|s| std::os::unix::process::ExitStatusExt::signal(s).is_some()) {
+            #[cfg(unix)]
+            let killed = status.as_ref().is_ok_and(|s| std::os::unix::process::ExitStatusExt::signal(s).is_some());
+            #[cfg(not(unix))]
+            let killed = false;
+            if killed {
                 f = Fail { kind: FailKind::Cancelled, text: "Cancelled".into() };
             }
             Err(f)
