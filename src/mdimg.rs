@@ -1847,7 +1847,7 @@ mod tests {
         s.set_base(Some(&d));
         let ids: Vec<u32> = (0..MAX_PLAYING + 1)
             .map(|i| {
-                std::fs::write(d.join(format!("play{i}.gif")), anim_gif(&[(0, 10), (1, 10), (2, 10)])).unwrap();
+                std::fs::write(d.join(format!("play{i}.gif")), anim_gif(&[(0, 10), (1, 1000), (2, 1000)])).unwrap();
                 s.resolve(&format!("play{i}.gif")).unwrap()
             })
             .collect();
