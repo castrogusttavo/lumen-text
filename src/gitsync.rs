@@ -702,6 +702,8 @@ mod tests {
     }
 
     #[test]
+    // Depends on the user's/system git pull config (Git for Windows ships pull defaults that merge).
+    #[cfg(unix)]
     fn publish_push_fetch_pull_against_a_local_remote() {
         let base = tmp("flow");
         let (remote, a, b) = (base.join("remote.git"), base.join("a"), base.join("b"));

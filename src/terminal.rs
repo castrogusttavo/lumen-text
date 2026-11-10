@@ -72,6 +72,8 @@ pub struct Grid {
     pub cx: usize,
     pub cy: usize,
     pub cursor_visible: bool,
+    /// Answers to terminal queries (cursor position, device status/attributes), sent back to the shell.
+    pub replies: Vec<u8>,
     attr: Cell,
     saved: (usize, usize),
     top: usize,
@@ -98,6 +100,7 @@ impl Grid {
             cx: 0,
             cy: 0,
             cursor_visible: true,
+            replies: Vec::new(),
             attr: Cell::default(),
             saved: (0, 0),
             top: 0,
@@ -388,6 +391,14 @@ impl vte::Perform for Grid {
             return;
         }
         match action {
+            // ConPTY (Windows) waits for the answer to its cursor query before it prints anything.
+            'n' if p.first() == Some(&6) => {
+                self.replies.extend(format!("\x1b[{};{}R", self.cy + 1, self.cx + 1).into_bytes());
+            }
+            'n' if p.first() == Some(&5) => self.replies.extend_from_slice(b"\x1b[0n"),
+            'c' if inter.is_empty() && p.first().is_none_or(|v| *v == 0) => {
+                self.replies.extend_from_slice(b"\x1b[?1;2c")
+            }
             'A' => self.move_to(self.cy.saturating_sub(get(0, 1)), self.cx),
             'B' | 'e' => self.move_to(self.cy + get(0, 1), self.cx),
             'C' | 'a' => self.move_to(self.cy, self.cx + get(0, 1)),
@@ -547,6 +558,10 @@ impl Term {
     fn ingest(&mut self, bytes: &[u8]) {
         let before = self.grid.pushed;
         self.parser.advance(&mut self.grid, bytes);
+        if !self.grid.replies.is_empty() {
+            let replies = std::mem::take(&mut self.grid.replies);
+            self.pty.write(&replies);
+        }
         if self.scroll_offset > 0 {
             self.scroll_offset += self.grid.pushed - before;
         }
