@@ -71,7 +71,6 @@ mod mdview;
 mod mem;
 mod minimap;
 mod paths;
-#[cfg(target_os = "linux")]
 mod perf;
 mod pty;
 mod rowmap;

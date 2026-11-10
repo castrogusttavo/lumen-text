@@ -46,7 +46,7 @@ macro_rules! lap {
 }
 pub(crate) use lap;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use crate::{
         buffer::{Buffer, EditKind, Sel},

@@ -1598,7 +1598,10 @@ mod tests {
 
     /// Prints PSS at each loading stage (run with `--nocapture --test-threads=1` for clean
     /// numbers: parallel tests allocate too). Asserts the +6 MB budget for variants + fallbacks.
+    /// Process-wide PSS is meaningless while ~900 tests run in parallel, so this only runs in the
+    /// single-threaded performance job (`cargo test --release memory_budget -- --ignored --test-threads=1`).
     #[test]
+    #[ignore = "process-wide PSS: run single-threaded (performance job)"]
     fn memory_budget() {
         let Some(m0) = crate::mem::snapshot() else { return };
         let mut ctx = TextCtx::new_bare(None);
