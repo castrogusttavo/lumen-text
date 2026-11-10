@@ -20,7 +20,13 @@ cp -r "$root/assets" "$d/assets"
 rm -rf "$d/assets/icons/hugeicons" "$d/assets/icons/hugeicons_bulk"
 cp "$root/LICENSE" "$root/README.md" "$d/"
 rm -f "$out/$name.zip"
-# Windows 10+ ships bsdtar, which writes zip archives.
-(cd "$work" && tar -a -cf "$out/$name.zip" "$name")
+# Windows 10+ ships bsdtar (System32\tar.exe), which writes zip archives; Git Bash's own GNU tar does not.
+if command -v cygpath >/dev/null 2>&1; then
+  bsdtar="$(cygpath -u "${SYSTEMROOT:-C:\\Windows}")/System32/tar.exe"
+  zip_out="$(cygpath -m "$out/$name.zip")"
+else
+  bsdtar=tar; zip_out="$out/$name.zip"
+fi
+(cd "$work" && "$bsdtar" -a -cf "$zip_out" "$name")
 (cd "$out" && sha256sum "$name.zip" > "$name.zip.sha256")
 echo "Built $out/$name.zip"
