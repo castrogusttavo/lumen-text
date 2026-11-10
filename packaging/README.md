@@ -2,7 +2,7 @@
 
 Every push to `main` that passes the tests produces a GitHub Release (CalVer `YYYY.M.D.N`, tag
 `vYYYY.M.D.N`) with the files below. They are built by `.github/workflows/ci.yml`
-(`version` -> `build-linux` matrix -> one `release` job); the scripts in this directory do the
+(`version` -> `build-linux` / `build-windows` / `build-macos` -> one `release` job); the scripts in this directory do the
 actual work and can be run locally with any release binary.
 
 | File | Format | Script |
@@ -12,15 +12,17 @@ actual work and can be run locally with any release binary.
 | `lumen-text-<v>-1.<x86_64\|aarch64>.rpm` | Fedora, RHEL family, openSUSE | `rpm/build-rpm.sh` + `rpm/lumen-text.spec` |
 | `lumen-text-bin-<v>-1-x86_64.pkg.tar.zst` | Arch Linux, Manjaro, ... | `arch/build-arch.sh` + `arch/lumen-text-bin/PKGBUILD` |
 | `lumen-text-<v>-<arch>.AppImage` | any distribution | `appimage/build-appimage.sh` |
+| `lumen-text-<v>-windows-x86_64.zip` + `.sha256` | portable Windows archive (exe + assets, not code-signed) | `windows/build-zip.sh` |
+| `lumen-text-<v>-macos-<aarch64\|x86_64>.dmg` + `.sha256` | `Lumen Text.app`, ad-hoc signed, not notarized | `macos/build-app.sh` |
 | `SHA256SUMS` | checksums of all of the above | (release job) |
 
-`<v>` is the CalVer version, e.g. `2026.11.10.1`. aarch64 files are only produced when the
+`<v>` is the CalVer version, e.g. `2026.11.10.1`. aarch64 Linux files are only produced when the
 repository variable `ENABLE_ARM_BUILDS` is `true` (GitHub-hosted arm runners are not available to
-private repositories); that leg is `continue-on-error`.
+private repositories). `.github/workflows/platforms.yml` builds and tests every OS on the `platforms` branch.
 
 ## Updates and signing
 
-CI signs the AppImage and the tarball (`<file>.minisig`, minisign) and publishes `latest.json` with
+CI signs the AppImage, the tarballs, the Windows zip and the macOS dmgs (`<file>.minisig`, minisign) and publishes `latest.json` with
 all package URLs; the app's updater reads it. The user layout it maintains (and `lumen-text
 --install-user` creates) is `~/.local/share/lumen-text/<version>/{bin,share}` plus a `current`
 symlink, i.e. exactly the tarball contents, so the layout contract below holds there too. See

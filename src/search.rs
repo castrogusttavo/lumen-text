@@ -129,7 +129,7 @@ mod tests {
         let root = project();
         let files = list_files(&root, 100);
         let names: Vec<String> =
-            files.iter().map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().into_owned()).collect();
+            files.iter().map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/")).collect();
         assert!(names.contains(&"src/a.ts".to_string()), "{names:?}");
         assert!(!names.iter().any(|n| n.contains("node_modules") || n.starts_with("ignored")), "{names:?}");
         std::fs::remove_dir_all(&root).ok();

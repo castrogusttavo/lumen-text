@@ -782,6 +782,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn cancel_stops_a_running_command() {
         let d = tmp("cancel");
         init(&d, false);

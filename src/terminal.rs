@@ -742,9 +742,17 @@ mod tests {
     #[test]
     fn real_shell_through_a_pty() {
         let wake: Wake = std::sync::Arc::new(|| {});
-        let mut t = Term::spawn(std::path::Path::new("/tmp"), 10, 60, wake).unwrap();
+        let mut t = Term::spawn(&std::env::temp_dir(), 10, 60, wake).unwrap();
+        if cfg!(windows) {
+            // PowerShell takes a while to print its first prompt through ConPTY.
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while std::time::Instant::now() < end && (0..t.grid.rows).all(|r| t.grid.row_text(r).is_empty()) {
+                t.pump();
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
         t.write(b"echo lumen-pty-$((20+22))\r");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(if cfg!(windows) { 30 } else { 5 });
         let mut found = false;
         while std::time::Instant::now() < deadline && !found {
             t.pump();
@@ -766,7 +774,7 @@ mod tests {
 
     fn test_term(rows: usize, cols: usize) -> Term {
         let wake: Wake = std::sync::Arc::new(|| {});
-        Term::spawn(std::path::Path::new("/tmp"), rows, cols, wake).unwrap()
+        Term::spawn(&std::env::temp_dir(), rows, cols, wake).unwrap()
     }
 
     #[test]
@@ -939,6 +947,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn real_pty_output_lands_in_scrollback() {
         let mut t = test_term(10, 40);
         t.write(b"for i in $(seq 1 60); do echo L$i; done\r");

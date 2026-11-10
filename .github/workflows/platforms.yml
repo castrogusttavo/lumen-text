@@ -45,6 +45,8 @@ jobs:
         run: |
           cargo fmt --check
           cargo clippy --release -- -D warnings
+      - name: Git defaults for the tests (no CRLF conversion on Windows)
+        run: git config --global core.autocrlf false
       - name: Build
         run: cargo build --release
       - name: Test

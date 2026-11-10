@@ -1180,6 +1180,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn trash_fallback_writes_info_and_keeps_names_unique() {
         let d = scratch("trash");
         let trash = d.join("Trash");

@@ -467,10 +467,66 @@ pub struct TextCtx {
 pub const UI_SIZE: f32 = 13.0;
 pub const UI_LINE: f32 = 18.0;
 
+#[cfg(all(unix, not(target_os = "macos")))]
 fn find_font(query: &str) -> Option<PathBuf> {
     let out = Command::new("fc-match").args(["-f", "%{file}", query]).output().ok()?;
     let p = PathBuf::from(String::from_utf8(out.stdout).ok()?);
     p.exists().then_some(p)
+}
+
+/// Windows and macOS have no fontconfig: the same queries are answered from the fonts the OS ships.
+/// `query` is `<family or generic>[:bold][:italic][:semibold]`; the first existing file wins.
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn find_font(query: &str) -> Option<PathBuf> {
+    let mut parts = query.split(':');
+    let base = parts.next().unwrap_or("").to_ascii_lowercase();
+    let flags: Vec<&str> = parts.collect();
+    let (bold, italic) = (flags.contains(&"bold"), flags.contains(&"italic"));
+    let semibold = flags.contains(&"semibold");
+    let variant = |r: &'static str, b: &'static str, i: &'static str, bi: &'static str| match (bold, italic) {
+        (false, false) => r,
+        (true, false) => b,
+        (false, true) => i,
+        (true, true) => bi,
+    };
+    let names: Vec<&'static str> = if cfg!(windows) {
+        match base.as_str() {
+            "monospace" | "consolas" => vec![variant("consola.ttf", "consolab.ttf", "consolai.ttf", "consolaz.ttf")],
+            "sans-serif" if semibold => vec!["seguisb.ttf", "segoeui.ttf"],
+            "sans-serif" | "segoe ui" => vec![variant("segoeui.ttf", "segoeuib.ttf", "segoeuii.ttf", "segoeuiz.ttf")],
+            "emoji" => vec!["seguiemj.ttf"],
+            "noto sans symbols 2" => vec!["seguisym.ttf"],
+            _ => vec![],
+        }
+    } else {
+        match base.as_str() {
+            "monospace" | "menlo" => vec!["Menlo.ttc"],
+            "sans-serif" => vec!["SFNS.ttf", "Helvetica.ttc"],
+            "emoji" => vec!["Apple Color Emoji.ttc"],
+            "noto sans symbols 2" => vec!["Apple Symbols.ttf"],
+            _ => vec![],
+        }
+    };
+    let dirs: Vec<PathBuf> = if cfg!(windows) {
+        let win = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Windows"));
+        vec![win.join("Fonts")]
+    } else {
+        vec![
+            PathBuf::from("/System/Library/Fonts"),
+            PathBuf::from("/System/Library/Fonts/Supplemental"),
+            PathBuf::from("/Library/Fonts"),
+        ]
+    };
+    // CJK: the lang filter of the fontconfig query selects one of the system's CJK faces.
+    let cjk: &[&str] = if !query.contains("charset=65e5") {
+        &[]
+    } else if cfg!(windows) {
+        &["msyh.ttc", "YuGothR.ttc", "simsun.ttc", "malgun.ttf"]
+    } else {
+        &["Hiragino Sans GB.ttc", "PingFang.ttc", "STHeiti Light.ttc"]
+    };
+    let names: Vec<&'static str> = if cjk.is_empty() { names } else { Vec::new() };
+    names.iter().chain(cjk.iter()).flat_map(|n| dirs.iter().map(move |d| d.join(n))).find(|p| p.exists())
 }
 
 fn find_mono_font() -> Option<PathBuf> {
@@ -482,6 +538,17 @@ fn canon(p: &Path) -> PathBuf {
 }
 
 /// Files of every installed font that has a glyph for `cp` (fontconfig charset query).
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn files_covering(_cp: u32) -> Vec<PathBuf> {
+    // No coverage query without fontconfig: the fallback tables above already pick a font per class.
+    let mut out = Vec::new();
+    for q in ["emoji", "sans-serif:charset=65e5", "sans-serif", "monospace", "Noto Sans Symbols 2"] {
+        out.extend(find_font(q).map(|p| canon(&p)));
+    }
+    out
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
 fn files_covering(cp: u32) -> Vec<PathBuf> {
     let Ok(out) = Command::new("fc-list").args(["-f", "%{file}\n", &format!(":charset={cp:x}")]).output() else {
         return Vec::new();
@@ -1278,6 +1345,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn fallbacks_leave_no_tofu() {
         let mut ctx = TextCtx::new(None);
         if ctx.family.is_none() {
