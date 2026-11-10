@@ -664,7 +664,7 @@ impl App {
         self.eslint_busy.clear();
         self.git_status.clear();
         self.root = path;
-        self.tree = Tree::new(self.root.clone());
+        self.tree = Tree::with_ignore(self.root.clone(), self.config.explorer_hide_gitignored);
         self.active = 0;
         self.refresh_git_status();
         self.watcher = crate::watcher::Watcher::new(self.wake()).ok();

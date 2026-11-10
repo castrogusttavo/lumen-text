@@ -15,6 +15,9 @@ pub struct Row {
     pub depth: usize,
     pub is_dir: bool,
     pub expanded: bool,
+    /// Git ignores it (or it is one of the junk folders): drawn dimmed, shown only when the explorer
+    /// does not hide ignored entries.
+    pub ignored: bool,
 }
 
 /// A mouse press on a row that may turn into a drag-and-drop of the selection.
@@ -51,11 +54,22 @@ pub struct Tree {
     /// Fixed end of a Shift range.
     anchor: Option<PathBuf>,
     pub drag: Option<Drag>,
+    /// What `.gitignore` and friends ignore (cached per folder).
+    filter: crate::ignore_filter::IgnoreFilter,
+    /// Leave ignored entries out of the list (off: show them dimmed).
+    hide_ignored: bool,
 }
 
 impl Tree {
+    #[cfg(test)]
     pub fn new(root: PathBuf) -> Self {
+        Self::with_ignore(root, true)
+    }
+
+    pub fn with_ignore(root: PathBuf, hide_ignored: bool) -> Self {
         let mut t = Self {
+            filter: crate::ignore_filter::IgnoreFilter::new(&root),
+            hide_ignored,
             root: root.clone(),
             expanded: HashSet::new(),
             rows: Vec::new(),
@@ -71,18 +85,40 @@ impl Tree {
         t
     }
 
-    fn entries(dir: &Path) -> Vec<(String, PathBuf, bool)> {
+    /// Hide or show (dimmed) the ignored entries.
+    pub fn set_hide_ignored(&mut self, hide: bool) {
+        if self.hide_ignored != hide {
+            self.hide_ignored = hide;
+            self.rebuild();
+        }
+    }
+
+    /// An ignore file changed: re-read the rules on the next rebuild.
+    pub fn invalidate_ignore(&mut self) {
+        self.filter.invalidate();
+    }
+
+    /// `(name, path, is_dir, ignored)` of the entries to list in `dir`: `.git` never, ignored ones only
+    /// when they are shown.
+    fn entries(&self, dir: &Path, parent_ignored: bool) -> Vec<(String, PathBuf, bool, bool)> {
         let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
-        let mut v: Vec<(String, PathBuf, bool)> = rd
+        let mut v: Vec<(String, PathBuf, bool, bool)> = rd
             .flatten()
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().into_owned();
                 let is_dir =
                     e.file_type().map(|t| t.is_dir() || (t.is_symlink() && e.path().is_dir())).unwrap_or(false);
-                if is_dir && HIDDEN_DIRS.contains(&name.as_str()) {
+                if is_dir && name == ".git" {
                     return None;
                 }
-                Some((name, e.path(), is_dir))
+                let path = e.path();
+                let ignored = parent_ignored
+                    || (is_dir && HIDDEN_DIRS.contains(&name.as_str()))
+                    || self.filter.is_ignored(&path, is_dir);
+                if ignored && self.hide_ignored {
+                    return None;
+                }
+                Some((name, path, is_dir, ignored))
             })
             .collect();
         v.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
@@ -91,17 +127,17 @@ impl Tree {
 
     pub fn rebuild(&mut self) {
         let mut rows = Vec::new();
-        self.walk(&self.root.clone(), 0, &mut rows);
+        self.walk(&self.root.clone(), 0, false, &mut rows);
         self.rows = rows;
         self.sel = self.sel.min(self.rows.len().saturating_sub(1));
     }
 
-    fn walk(&self, dir: &Path, depth: usize, out: &mut Vec<Row>) {
-        for (name, path, is_dir) in Self::entries(dir) {
+    fn walk(&self, dir: &Path, depth: usize, parent_ignored: bool, out: &mut Vec<Row>) {
+        for (name, path, is_dir, ignored) in self.entries(dir, parent_ignored) {
             let expanded = is_dir && self.expanded.contains(&path);
-            out.push(Row { path: path.clone(), name, depth, is_dir, expanded });
+            out.push(Row { path: path.clone(), name, depth, is_dir, expanded, ignored });
             if expanded {
-                self.walk(&path, depth + 1, out);
+                self.walk(&path, depth + 1, ignored, out);
             }
         }
     }
@@ -300,6 +336,65 @@ mod tests {
         assert_eq!(t.rows[t.sel].name, "m.ts");
         t.collapse_or_parent();
         assert_eq!(t.rows[t.sel].name, "src");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn gitignored_entries_are_hidden_or_shown_dimmed_and_ignored_folders_are_not_read() {
+        let root = std::env::temp_dir().join(format!("lumen-treeign-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("build/inner")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(".gitignore"), "build/\n*.log\n").unwrap();
+        for f in ["a.ts", "debug.log", "build/out.js", "src/x.log", "src/y.ts"] {
+            std::fs::write(root.join(f), "").unwrap();
+        }
+        let mut t = Tree::new(root.clone());
+        t.toggle(0); // src
+        let names: Vec<_> = t.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["src", "y.ts", ".gitignore", "a.ts"], "build/, *.log and .git are gone");
+        assert!(t.rows.iter().all(|r| !r.ignored));
+        t.set_hide_ignored(false);
+        let seen: Vec<_> = t.rows.iter().map(|r| (r.name.as_str(), r.ignored)).collect();
+        assert_eq!(
+            seen,
+            [
+                ("build", true),
+                ("src", false),
+                ("x.log", true),
+                ("y.ts", false),
+                (".gitignore", false),
+                ("a.ts", false),
+                ("debug.log", true)
+            ],
+            "shown, flagged, and .git still hidden"
+        );
+        // Opening an ignored folder lists its content as ignored too.
+        let b = t.rows.iter().position(|r| r.name == "build").unwrap();
+        t.toggle(b);
+        assert!(t.rows.iter().filter(|r| r.depth == 1 && r.path.starts_with(root.join("build"))).all(|r| r.ignored));
+        // Editing .gitignore is picked up after an invalidation (the watcher does it).
+        std::fs::write(root.join(".gitignore"), "a.ts\n").unwrap();
+        t.invalidate_ignore();
+        t.set_hide_ignored(true);
+        assert!(t.rows.iter().all(|r| r.name != "a.ts") && t.rows.iter().any(|r| r.name == "debug.log"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn junk_folders_stay_out_of_the_default_list_without_a_gitignore() {
+        let root = std::env::temp_dir().join(format!("lumen-treejunk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let mut t = Tree::new(root.clone());
+        assert_eq!(t.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["src"]);
+        t.set_hide_ignored(false);
+        assert_eq!(
+            t.rows.iter().map(|r| (r.name.as_str(), r.ignored)).collect::<Vec<_>>(),
+            [("node_modules", true), ("src", false)]
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

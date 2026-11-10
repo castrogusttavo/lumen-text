@@ -275,6 +275,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `word_wrap` / `sticky_scroll` / `indent_guides` | `false` / `true` / `true` | Editor view options |
 | `breadcrumbs` / `git_blame` | `true` / `true` | Path bar above the editor; inline blame |
 | `ram_display` | `"long"` | `"long"` (numbers) or `"short"` (a chip icon) |
+| `explorer_hide_gitignored` | `true` | Hide what `.gitignore`, the global ignore file and `.git/info/exclude` ignore; `false` shows those entries dimmed |
 | `status_items` | `{}` | Map of bottom-bar item id to `true`/`false` (`search`, `problems`, `terminal`, `debug`, `git`, `ram`, `position`, `indent`, `language`) |
 | `status_order` | position, indent, language, terminal, debug, git, ram | Order of the right-hand bottom-bar items |
 | `status_left_order` | sidebar, search, problems | Order of the left-hand bottom-bar items |

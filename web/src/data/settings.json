@@ -173,6 +173,14 @@
   "default": 1
  },
  {
+  "key": "explorer_hide_gitignored",
+  "section": "Appearance",
+  "label": "Hide git-ignored files",
+  "help": "Leaves out of the explorer what .gitignore, the global ignore file and .git/info/exclude ignore. Off shows them dimmed.",
+  "kind": "bool",
+  "default": true
+ },
+ {
   "key": "auto_import",
   "section": "TypeScript",
   "label": "Auto import",

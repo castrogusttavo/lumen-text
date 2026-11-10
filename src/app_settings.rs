@@ -33,6 +33,7 @@ impl App {
             "status_debug": c.status_visible("debug"), "status_git": c.status_visible("git"), "status_ram": c.status_visible("ram"),
             "tab_width": c.tab_width.to_string(),
             "git_pull_strategy": if c.git_pull_strategy.is_empty() { "ask" } else { c.git_pull_strategy.as_str() },
+            "explorer_hide_gitignored": c.explorer_hide_gitignored,
         });
         // Split in two: one `json!` this long hits the macro recursion limit.
         let pos = json!({
@@ -356,6 +357,7 @@ impl App {
                 self.config.tab_width = n;
                 self.set_default_tab_width(n);
             }
+            "explorer_hide_gitignored" => self.set_hide_ignored(b.unwrap_or(true)),
             "git_pull_strategy" => {
                 self.config.git_pull_strategy = crate::config::clean_pull_strategy(s.as_deref().unwrap_or(""))
             }

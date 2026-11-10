@@ -212,6 +212,7 @@ impl App {
             Cmd::OrganizeImports => self.organize_imports(),
             Cmd::ToggleFormatOnSave => self.toggle_format_on_save(),
             Cmd::PickTheme => self.open_theme_picker(),
+            Cmd::ToggleHideIgnored => self.toggle_hide_ignored(),
             Cmd::CheckUpdate => self.update_check_manual(),
             Cmd::RestartUpdate => self.update_restart_cmd(),
             Cmd::About => self.update_show_about(),

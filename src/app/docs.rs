@@ -146,6 +146,9 @@ impl App {
         self.last_disk_check = Instant::now() - Duration::from_secs(60);
         if self.last_tree_refresh.elapsed() > Duration::from_millis(400) {
             self.last_tree_refresh = Instant::now();
+            if evs.iter().any(|e| crate::ignore_filter::IgnoreFilter::is_ignore_file(&e.path)) {
+                self.tree.invalidate_ignore();
+            }
             self.tree.rebuild();
             self.file_index = None;
             self.refresh_git_status();

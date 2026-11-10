@@ -315,7 +315,8 @@ impl App {
             // Zed-style: a chevron for folders, a type icon for files (tinted, so it follows the theme).
             let cut = self.file_clip.is_cut(&row.path);
             let icon_color = if is_active { c.tab_active_fg } else { c.tab_inactive_fg };
-            let icon_color = if cut { icon_color.with_alpha(0x60).over(c.sidebar_bg) } else { icon_color };
+            let dim = cut || row.ignored;
+            let icon_color = if dim { icon_color.with_alpha(0x60).over(c.sidebar_bg) } else { icon_color };
             let iy = y + (ROW_H - 16) / 2;
             if row.is_dir {
                 let chev = if row.expanded { "ui/chevron_down" } else { "ui/chevron_right" };
@@ -328,7 +329,7 @@ impl App {
             }
             let badge = self.git_status.get(&row.path).copied();
             let fg = if is_active { c.tab_active_fg } else { c.sidebar_fg };
-            let fg = if cut { fg.with_alpha(0x60).over(c.sidebar_bg) } else { fg };
+            let fg = if dim { fg.with_alpha(0x60).over(c.sidebar_bg) } else { fg };
             self.tx.draw_ui(cv, r.x + hx + indent + 38, y + (ROW_H - 18) / 2, &row.name, fg, body, false);
             if let Some(b) = badge {
                 // A quiet dot instead of a colored letter: modified / new / deleted.

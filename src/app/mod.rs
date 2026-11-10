@@ -252,7 +252,7 @@ impl App {
         mem::report("fonts ready");
         let assets = crate::config::assets_dir();
         let (stx, srx) = mpsc::channel();
-        let tree = Tree::new(root.clone());
+        let tree = Tree::with_ignore(root.clone(), config.explorer_hide_gitignored);
         let mut app = Self {
             wake_fn,
             theme,

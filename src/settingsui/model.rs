@@ -135,6 +135,13 @@ pub fn default_settings() -> Vec<SettingDef> {
             Number { min: 0.1, max: 5.0, step: 0.1 },
         ),
         d(
+            "explorer_hide_gitignored",
+            "Appearance",
+            "Hide git-ignored files",
+            "Leaves out of the explorer what .gitignore, the global ignore file and .git/info/exclude ignore. Off shows them dimmed.",
+            Bool,
+        ),
+        d(
             "auto_import",
             "TypeScript",
             "Auto import",
@@ -312,6 +319,7 @@ pub fn default_values() -> Value {
         "theme_dark": "github-dark-default", "tsgo_source": "auto",
         "minimap": true, "minimap_style": "subtle", "word_wrap": false, "sticky_scroll": true, "indent_guides": true, "ui_scale": 0, "scroll_speed": 1,
         "breadcrumbs": true, "git_blame": true, "ram_display": "long", "tab_width": "4", "git_pull_strategy": "ask",
+        "explorer_hide_gitignored": true,
     });
     // Split in two: one `json!` this long hits the macro recursion limit.
     let bar = json!({

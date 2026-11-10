@@ -24,7 +24,7 @@ fn walker(root: &Path) -> ignore::Walk {
     ignore::WalkBuilder::new(root)
         .hidden(true)
         .git_ignore(true)
-        .git_global(false)
+        .git_global(true)
         .require_git(false)
         .filter_entry(|e| {
             !(e.file_type().is_some_and(|t| t.is_dir())

@@ -220,6 +220,11 @@
   "id": "PickTheme"
  },
  {
+  "label": "Explorer: Toggle hiding git-ignored files",
+  "shortcut": "",
+  "id": "ToggleHideIgnored"
+ },
+ {
   "label": "File: New file…",
   "shortcut": "A (explorer)",
   "id": "NewFile"
