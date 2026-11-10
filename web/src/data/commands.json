@@ -135,9 +135,14 @@
   "id": "Redo"
  },
  {
-  "label": "LSP: Restart servers",
+  "label": "LSP: Restart language servers",
   "shortcut": "",
   "id": "RestartLsp"
+ },
+ {
+  "label": "LSP: Show server log",
+  "shortcut": "",
+  "id": "ShowLspLog"
  },
  {
   "label": "LSP: Toggle auto-import in completion",

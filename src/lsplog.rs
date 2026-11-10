@@ -41,6 +41,7 @@ impl LogRing {
         self.lines.push_back(format!("[{secs:8.2}s] {tag:<6} {}", line.trim_end()));
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.lines.len()
     }

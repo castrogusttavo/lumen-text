@@ -5,6 +5,8 @@ section: Using Lumen
 order: 3
 ---
 
+Servers for other languages (Rust, Python, Go, C/C++...) are described on [Language servers](/docs/language-servers); this page covers the TypeScript toolchain.
+
 ## tsgo
 
 Lumen serves TypeScript with [`tsgo`](https://github.com/microsoft/typescript-go), the native TypeScript compiler, started on demand. You get diagnostics, rich Markdown hover, completion, signature help, definition, references, rename, organize imports, quick fixes (`Ctrl+.`), expand selection, call hierarchy and semantic tokens. Code lens and inlay hints are optional.
