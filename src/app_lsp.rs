@@ -104,7 +104,7 @@ impl App {
         let Some(bin) = lsp::find_tsgo(&root, &self.config.tsgo_source) else {
             if !self.lsp_warned {
                 self.lsp_warned = true;
-                self.say("tsgo não encontrado (npm i @typescript/native-preview em ~/.local/share/lumen-text/tsgo)");
+                self.say("tsgo not found (npm i @typescript/native-preview in ~/.local/share/lumen-text/tsgo)");
             }
             return None;
         };
@@ -126,12 +126,12 @@ impl App {
                 l.includes = includes;
                 self.lsps.push(l);
                 let ver = lsp::tsgo_version(&bin).unwrap_or_default();
-                let mode = if self.lsps.last().is_some_and(|l| l.mirror.is_some()) { " (modo enxuto)" } else { "" };
-                self.say(format!("iniciando tsgo {ver}{mode}…"));
+                let mode = if self.lsps.last().is_some_and(|l| l.mirror.is_some()) { " (lean mode)" } else { "" };
+                self.say(format!("starting tsgo {ver}{mode}…"));
                 Some(self.lsps.len() - 1)
             }
             Err(e) => {
-                self.say(format!("falha ao iniciar tsgo: {e}"));
+                self.say(format!("failed to start tsgo: {e}"));
                 None
             }
         }
@@ -148,7 +148,7 @@ impl App {
         }
         self.completion = None;
         let on = self.auto_import;
-        self.say(if on { "importação automática na completion: ligada (mais lenta, usa mais RAM)" } else { "importação automática na completion: desligada" });
+        self.say(if on { "auto-import in completion: on (slower, uses more RAM)" } else { "auto-import in completion: off" });
     }
 
     /// Real paths of the TS/JS documents belonging to `root`.
@@ -191,7 +191,7 @@ impl App {
         self.config.save();
         let src = self.config.tsgo_source.clone();
         self.restart_lsp();
-        self.say(format!("tsgo: {src} — {}", match src.as_str() { "project" => "só a versão instalada no projeto", "bundled" => "só a versão do editor", _ => "a do projeto se existir, senão a do editor" }));
+        self.say(format!("tsgo: {src} — {}", match src.as_str() { "project" => "only the version installed in the project", "bundled" => "only the editor's version", _ => "the project's if present, otherwise the editor's" }));
     }
 
     pub fn toggle_narrow(&mut self) {
@@ -199,7 +199,7 @@ impl App {
         self.config.save();
         let on = self.config.lsp_narrow;
         self.restart_lsp();
-        self.say(if on { "tsgo em modo enxuto (só arquivos abertos): menos RAM" } else { "tsgo em modo projeto completo: vê o projeto todo, usa mais RAM" });
+        self.say(if on { "tsgo in lean mode (open files only): less RAM" } else { "tsgo in full-project mode: sees the whole project, uses more RAM" });
     }
 
     pub fn restart_lsp(&mut self) {
@@ -215,7 +215,7 @@ impl App {
             d.set_source_diags(true, Vec::new());
         }
         self.biome_disabled = false;
-        self.say("servidores reiniciados");
+        self.say("servers restarted");
     }
 
     fn doc_text_params(d: &Doc) -> Option<Value> {
@@ -622,7 +622,7 @@ impl App {
                         self.biome_disabled = true; // don't respawn a crashing server in a loop
                     }
                 }
-                self.say("servidor de linguagem encerrou");
+                self.say("language server exited");
             }
         }
     }
@@ -737,9 +737,9 @@ impl App {
             match result {
                 Ok(v) => {
                     self.lsps[li].on_initialized(&v);
-                    self.say("tsgo pronto");
+                    self.say("tsgo ready");
                 }
-                Err(e) => self.say(format!("tsgo falhou ao iniciar: {}", e["message"].as_str().unwrap_or("?"))),
+                Err(e) => self.say(format!("tsgo failed to start: {}", e["message"].as_str().unwrap_or("?"))),
             }
             return;
         }
@@ -749,7 +749,7 @@ impl App {
                 if std::env::var_os("LUMEN_DEBUG").is_some() {
                     eprintln!("[lsp] error response for {what:?}: {e}");
                 }
-                let msg = e["message"].as_str().unwrap_or("erro").to_string();
+                let msg = e["message"].as_str().unwrap_or("error").to_string();
                 if matches!(what, Pending::CodeActions { .. }) {
                     return self.actions_response(Vec::new());
                 }
@@ -781,20 +781,20 @@ impl App {
                 let locs = lsp::locations(&v);
                 match locs.len() {
                     0 => self.say(match kind {
-                        DefKind::Definition => "definição não encontrada",
-                        DefKind::TypeDefinition => "definição do tipo não encontrada",
-                        DefKind::Implementation => "implementação não encontrada",
+                        DefKind::Definition => "definition not found",
+                        DefKind::TypeDefinition => "type definition not found",
+                        DefKind::Implementation => "implementation not found",
                     }),
                     1 => self.goto_location(&locs[0]),
-                    _ => self.show_locations("Definições", &locs),
+                    _ => self.show_locations("Definitions", &locs),
                 }
             }
             Pending::References => {
                 let locs = lsp::locations(&v);
                 if locs.is_empty() {
-                    self.say("nenhuma referência");
+                    self.say("no references");
                 } else {
-                    let title = format!("{} referências", locs.len());
+                    let title = format!("{} references", locs.len());
                     self.show_locations(&title, &locs);
                 }
             }
@@ -804,13 +804,13 @@ impl App {
                     if self.docs[i].version == version {
                         let edits = parse_edits(&v);
                         if edits.is_empty() {
-                            self.say("já formatado");
+                            self.say("already formatted");
                         } else {
                             self.docs[i].apply_lsp_edits(&edits);
                             self.docs[i].reveal = true;
                         }
                     } else {
-                        self.say("o texto mudou durante a formatação — tente de novo");
+                        self.say("the text changed during formatting — try again");
                     }
                 }
             }
@@ -831,7 +831,7 @@ impl App {
                 match first {
                     Some(a) if a["edit"].is_object() => self.apply_workspace_edit(&a["edit"]),
                     Some(a) => self.resolve_code_action(&a),
-                    None => self.say("imports já organizados"),
+                    None => self.say("imports already organized"),
                 }
             }
             Pending::Folding { uri } => {
@@ -881,7 +881,7 @@ impl App {
                 if v["edit"].is_object() {
                     self.apply_workspace_edit(&v["edit"]);
                 } else {
-                    self.say("ação sem alterações");
+                    self.say("action made no changes");
                 }
             }
             Pending::ExecuteCommand => {}
@@ -903,7 +903,7 @@ impl App {
             }
         }
         if per_file.is_empty() {
-            self.say("nada a alterar");
+            self.say("nothing to change");
             return;
         }
         let prev = self.active;
@@ -927,7 +927,7 @@ impl App {
         if prev < self.docs.len() {
             self.active = prev;
         }
-        self.say(format!("{n_edits} alterações em {n_files} arquivo(s) — não salvas, Ctrl+Z desfaz"));
+        self.say(format!("{n_edits} changes in {n_files} file(s) — unsaved, Ctrl+Z undoes"));
     }
 
     // ───────────── requests ─────────────
@@ -981,7 +981,7 @@ impl App {
     }
 
     pub fn goto_definition(&mut self, kind: DefKind) {
-        let Some((i, li)) = self.with_server() else { return self.say("sem servidor de linguagem para este arquivo") };
+        let Some((i, li)) = self.with_server() else { return self.say("no language server for this file") };
         let at = self.docs[i].ed.head();
         let params = self.pos_params(i, at);
         let method = match kind {
@@ -993,7 +993,7 @@ impl App {
     }
 
     pub fn find_references(&mut self) {
-        let Some((i, li)) = self.with_server() else { return self.say("sem servidor de linguagem para este arquivo") };
+        let Some((i, li)) = self.with_server() else { return self.say("no language server for this file") };
         let at = self.docs[i].ed.head();
         let mut params = self.pos_params(i, at);
         params["context"] = json!({"includeDeclaration": true});
@@ -1017,9 +1017,9 @@ impl App {
     pub fn start_rename(&mut self) {
         let i = self.active;
         if i >= self.docs.len() || self.doc_lsp(i).is_none() {
-            return self.say("renomear precisa do servidor de linguagem (arquivo TS/JS)");
+            return self.say("rename needs the language server (TS/JS file)");
         }
-        let Some((word, start)) = self.word_at(i) else { return self.say("coloque o cursor sobre um símbolo") };
+        let Some((word, start)) = self.word_at(i) else { return self.say("place the cursor on a symbol") };
         let (l, c) = self.docs[i].lsp_pos(start);
         self.open_prompt_rename(&word, l, c);
     }
@@ -1048,17 +1048,17 @@ impl App {
         match crate::format::run(&f, &self.root, &text) {
             Ok(new) if new == text => {
                 if !quiet {
-                    self.say(format!("já formatado ({})", f.name));
+                    self.say(format!("already formatted ({})", f.name));
                 }
             }
             Ok(new) => {
                 self.docs[i].replace_text(&new);
                 self.docs[i].reveal = true;
                 if !quiet {
-                    self.say(format!("formatado com {}", f.name));
+                    self.say(format!("formatted with {}", f.name));
                 }
             }
-            Err(e) => self.say(format!("falha ao formatar — {e}")),
+            Err(e) => self.say(format!("failed to format — {e}")),
         }
         true
     }
@@ -1068,11 +1068,11 @@ impl App {
         self.config.format_on_save = self.format_on_save;
         self.config.save();
         let on = self.format_on_save;
-        self.say(if on { "formatar ao salvar: ligado" } else { "formatar ao salvar: desligado" });
+        self.say(if on { "format on save: on" } else { "format on save: off" });
     }
 
     pub fn organize_imports(&mut self) {
-        let Some((i, li)) = self.with_server() else { return self.say("organizar imports precisa do servidor de linguagem (arquivo TS/JS)") };
+        let Some((i, li)) = self.with_server() else { return self.say("organize imports needs the language server (TS/JS file)") };
         let d = &self.docs[i];
         let at = d.ed.head();
         let range = lsp_range(d, at, at);
@@ -1085,7 +1085,7 @@ impl App {
         if self.format_external_active(false) {
             return;
         }
-        let Some((i, li)) = self.with_server() else { return self.say("formatar precisa do servidor de linguagem (arquivo TS/JS)") };
+        let Some((i, li)) = self.with_server() else { return self.say("format needs the language server (TS/JS file)") };
         let d = &self.docs[i];
         let uri = d.uri().unwrap_or_default();
         let version = d.version;
@@ -1095,7 +1095,7 @@ impl App {
     }
 
     pub fn open_symbols(&mut self) {
-        let Some((i, li)) = self.with_server() else { return self.say("símbolos precisam do servidor de linguagem (arquivo TS/JS)") };
+        let Some((i, li)) = self.with_server() else { return self.say("symbols need the language server (TS/JS file)") };
         let uri = self.docs[i].uri().unwrap_or_default();
         self.lsps[li].request("textDocument/documentSymbol", json!({"textDocument": {"uri": uri}}), Pending::Symbols { uri });
     }
@@ -1123,12 +1123,12 @@ impl App {
         let mut items: Vec<Item> = Vec::with_capacity(syms.len());
         for s in syms {
             let kind = match s.kind {
-                2 => "módulo", 5 => "classe", 6 => "método", 7 => "propriedade", 8 => "campo", 9 => "construtor", 10 => "enum", 11 => "interface", 12 => "função", 13 => "variável", 14 => "constante", 22 => "membro de enum", 23 => "struct", 26 => "tipo", _ => "",
+                2 => "module", 5 => "class", 6 => "method", 7 => "property", 8 => "field", 9 => "constructor", 10 => "enum", 11 => "interface", 12 => "function", 13 => "variable", 14 => "constant", 22 => "enum member", 23 => "struct", 26 => "type", _ => "",
             };
             items.push(Item { label: format!("{}{}", "  ".repeat(s.depth), s.name), detail: kind.to_string(), action: Action::Goto(d.from_lsp_pos(s.sel_l, s.sel_c)) });
         }
         if items.is_empty() {
-            return self.say("nenhum símbolo");
+            return self.say("no symbols");
         }
         self.open_symbols_with(items);
     }
@@ -1166,7 +1166,7 @@ impl App {
             self.actions_expected += 1;
         }
         if self.actions_expected == 0 {
-            self.say("ações precisam de um servidor de linguagem (arquivo TS/JS ou projeto com Biome)");
+            self.say("actions need a language server (TS/JS file or project with Biome)");
         }
     }
 
@@ -1196,7 +1196,7 @@ impl App {
         }
         let all = std::mem::take(&mut self.actions_items);
         if all.is_empty() {
-            return self.say("nenhuma ação disponível aqui");
+            return self.say("no actions available here");
         }
         self.open_code_actions_with(all);
     }
@@ -1215,7 +1215,7 @@ impl App {
     // ───────────── selection range / call hierarchy ─────────────
 
     pub fn expand_selection(&mut self) {
-        let Some((i, li)) = self.with_server() else { return self.say("expandir seleção precisa do servidor de linguagem") };
+        let Some((i, li)) = self.with_server() else { return self.say("expand selection needs the language server") };
         let at = self.docs[i].ed.head();
         let (l, c) = self.docs[i].lsp_pos(at);
         let uri = self.docs[i].uri().unwrap_or_default();
@@ -1252,14 +1252,14 @@ impl App {
     }
 
     pub fn call_hierarchy(&mut self, incoming: bool) {
-        let Some((i, li)) = self.with_server() else { return self.say("hierarquia de chamadas precisa do servidor de linguagem") };
+        let Some((i, li)) = self.with_server() else { return self.say("call hierarchy needs the language server") };
         let at = self.docs[i].ed.head();
         let params = self.pos_params(i, at);
         self.lsps[li].request("textDocument/prepareCallHierarchy", params, Pending::PrepareCalls { incoming });
     }
 
     fn on_prepare_calls(&mut self, incoming: bool, v: &Value) {
-        let Some(item) = v.as_array().and_then(|a| a.first()).cloned() else { return self.say("nenhuma função/método sob o cursor") };
+        let Some(item) = v.as_array().and_then(|a| a.first()).cloned() else { return self.say("no function/method under the cursor") };
         let Some((_, li)) = self.with_server() else { return };
         let method = if incoming { "callHierarchy/incomingCalls" } else { "callHierarchy/outgoingCalls" };
         self.lsps[li].request(method, json!({"item": item}), Pending::Calls { incoming });
@@ -1276,9 +1276,9 @@ impl App {
             items.push(Item { label: name.to_string(), detail: format!("{}:{}", self.rel(&path), l + 1), action: Action::Open(path, Some((l, col))) });
         }
         if items.is_empty() {
-            return self.say(if incoming { "ninguém chama isto" } else { "não chama nada" });
+            return self.say(if incoming { "nothing calls this" } else { "calls nothing" });
         }
-        self.open_locations(if incoming { "Chamadores" } else { "Chamados" }, items);
+        self.open_locations(if incoming { "Callers" } else { "Callees" }, items);
     }
 
     pub fn request_signature(&mut self) {
@@ -1333,7 +1333,7 @@ impl App {
     pub fn next_diagnostic(&mut self, forward: bool) {
         let Some(d) = self.docs.get_mut(self.active) else { return };
         if d.diags.is_empty() {
-            return self.say("sem problemas neste arquivo");
+            return self.say("no problems in this file");
         }
         let (l, c) = d.buf.line_col(d.ed.head());
         let cur = (l, c);

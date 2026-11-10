@@ -30,7 +30,7 @@ pub struct Panel {
     pub plain: Vec<String>,
     pub scroll: f64, // px from the top of the content
     pub follow: bool,
-    /// Debug tab: scroll (px) of the Pilha / Variáveis / Saída columns; Saída sticks to the newest line.
+    /// Debug tab: scroll (px) of the Stack / Variables / Output columns; Output sticks to the newest line.
     pub dbg_scroll: [f64; 3],
     pub dbg_follow: bool,
     pub running: Option<Running>,
@@ -88,7 +88,7 @@ impl App {
             let (rows, cols) = ((self.panel.height - PANEL_HEADER) / line_h() as i32, (self.size.0 as i32 - 40) / self.tx.cell_w as i32);
             match crate::terminal::Term::spawn(&self.root, rows.max(4) as usize, cols.max(20) as usize, self.wake()) {
                 Ok(t) => self.term = Some(t),
-                Err(e) => return self.say(format!("não consegui abrir o terminal: {e}")),
+                Err(e) => return self.say(format!("could not open the terminal: {e}")),
             }
         }
         self.panel.open = true;
@@ -109,7 +109,7 @@ impl App {
         let changed = t.pump();
         if !t.alive {
             self.close_terminal();
-            self.say("terminal encerrado");
+            self.say("terminal closed");
         }
         if changed {
             self.request_redraw();
@@ -191,7 +191,7 @@ impl App {
                 p.started = Instant::now();
                 self.push_line(&format!("$ {cmd}"));
             }
-            Err(e) => self.say(format!("não consegui executar: {e}")),
+            Err(e) => self.say(format!("could not run: {e}")),
         }
     }
 
@@ -210,7 +210,7 @@ impl App {
                 let t = self.panel.title.clone();
                 self.run_task(&c, &t)
             }
-            None => self.say("nenhuma tarefa executada ainda"),
+            None => self.say("no task has been run yet"),
         }
     }
 
@@ -257,7 +257,7 @@ impl App {
                 let secs = self.panel.started.elapsed().as_secs_f32();
                 self.panel.exit = Some(code);
                 let mark = if code == 0 { "\u{f00c}" } else { "\u{f00d}" };
-                self.push_line(&format!("{mark} terminou com código {code} em {secs:.1}s"));
+                self.push_line(&format!("{mark} exited with code {code} in {secs:.1}s"));
             }
         }
         let actual = if self.layout.panel.h > 0 { self.layout.panel.h } else { self.panel.height };
@@ -300,9 +300,9 @@ impl App {
             .map(|(name, cmd)| Item { label: name, detail: cmd.clone(), action: Action::Run(cmd) })
             .collect();
         if items.is_empty() {
-            return self.say("nenhum package.json/Cargo.toml com tarefas neste projeto");
+            return self.say("no package.json/Cargo.toml with tasks in this project");
         }
-        self.open_locations("Executar tarefa", items);
+        self.open_locations("Run task", items);
     }
 
     /// Run tests for the current file, optionally only the test under the cursor.
@@ -329,7 +329,7 @@ impl App {
                 None => base,
             }
         } else {
-            return self.say("nenhum runner de testes detectado (vitest/jest/cargo)");
+            return self.say("no test runner detected (vitest/jest/cargo)");
         };
         // Ask the runner for a JSON report too, to put ✓/✗ marks in the gutter afterwards.
         let json = std::env::temp_dir().join(format!("lumen-tests-{}.json", std::process::id()));
@@ -340,7 +340,7 @@ impl App {
         } else {
             format!("{cmd} --json --outputFile={}", tasks::shell_quote(&json.to_string_lossy()))
         };
-        let title = if at_cursor { "Teste sob o cursor" } else { "Testes do arquivo" };
+        let title = if at_cursor { "Test at cursor" } else { "File tests" };
         self.run_task(&cmd, title);
         self.test_json = (ext != "rs").then_some((json, path));
     }
@@ -390,7 +390,7 @@ impl App {
                 Some(p) => {
                     self.open_path(&p, Some((l.line, l.col)));
                 }
-                None => self.say(format!("arquivo não encontrado: {}", l.path)),
+                None => self.say(format!("file not found: {}", l.path)),
             }
         }
         true
@@ -439,7 +439,7 @@ impl App {
         let head = Rect::new(r.x, r.y + 1, r.w, PANEL_HEADER - 1);
         let ty = r.y + (PANEL_HEADER - 18) / 2 + 1;
         let mut x = r.x + 14;
-        for (label, tab) in [("Saída", PanelTab::Output), ("Terminal", PanelTab::Terminal), ("Depurar", PanelTab::Debug)] {
+        for (label, tab) in [("Output", PanelTab::Output), ("Terminal", PanelTab::Terminal), ("Debug", PanelTab::Debug)] {
             let w = self.tx.ui_width(label, true);
             let active = self.panel.tab == tab;
             self.tx.draw_ui(cv, x, ty, label, if active { fg } else { dim }, head, active);
@@ -449,7 +449,7 @@ impl App {
             self.layout.panel_tabs.push((Rect::new(x - 8, r.y, w + 16, PANEL_HEADER), tab));
             x += w + 22;
         }
-        let hint = "Ctrl+J fecha";
+        let hint = "Ctrl+J closes";
         let hw = self.tx.ui_width(hint, false);
         self.tx.draw_ui(cv, r.right() - hw - 14, ty, hint, dim, head, false);
 
@@ -461,9 +461,9 @@ impl App {
         }
 
         let state = match (&self.panel.running, self.panel.exit) {
-            (Some(_), _) => ("em execução", c.accent_text),
-            (None, Some(0)) => ("concluído", c.git_added),
-            (None, Some(_)) => ("falhou", c.error),
+            (Some(_), _) => ("running", c.accent_text),
+            (None, Some(0)) => ("done", c.git_added),
+            (None, Some(_)) => ("failed", c.error),
             _ => ("", dim),
         };
         self.tx.draw_ui(cv, x + 4, ty, &self.panel.title, fg, head, false);
@@ -511,7 +511,7 @@ impl App {
         let focused = self.focus == Focus::Terminal;
         let (fg, bg, cursor) = (self.theme.foreground, self.theme.background, self.theme.cursor);
         let Some(term) = self.term.as_mut() else {
-            self.tx.draw_ui(cv, body.x + 14, body.y + 10, "Terminal encerrado — Ctrl+` abre um novo", self.theme.chrome.tab_inactive_fg, body, false);
+            self.tx.draw_ui(cv, body.x + 14, body.y + 10, "Terminal closed — Ctrl+` opens a new one", self.theme.chrome.tab_inactive_fg, body, false);
             return;
         };
         term.resize(rows, cols);

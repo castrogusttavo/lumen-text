@@ -63,7 +63,7 @@ pub fn run(f: &Formatter, cwd: &Path, text: &str) -> Result<String, String> {
         String::from_utf8(out.stdout).map_err(|e| e.to_string())
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
-        let first = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("falhou");
+        let first = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("failed");
         Err(format!("{}: {first}", f.name))
     }
 }

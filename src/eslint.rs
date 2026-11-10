@@ -76,7 +76,7 @@ pub fn run(root: &Path, bin: &Path, file: &Path, text: &str) -> Result<Vec<Msg>,
     let text = String::from_utf8_lossy(&out.stdout);
     if text.trim().is_empty() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return Err(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("sem saída").to_string());
+        return Err(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("no output").to_string());
     }
     Ok(parse(&text))
 }

@@ -186,7 +186,7 @@ pub struct App {
     pub test_json: Option<(PathBuf, PathBuf)>,
     pub dbg: Option<crate::app_debug::Debugger>,
     pub diff: Option<crate::app_gitx::DiffView>,
-    /// Git panel docked on the right (Alterações / Histórico).
+    /// Git panel docked on the right (Changes / History).
     pub gitpanel: Option<Box<crate::app_gitpanel::GitPanel>>,
     pub split: Option<Box<crate::app_split::Split>>,
     pub breakpoints: std::collections::BTreeMap<PathBuf, Vec<usize>>,
@@ -351,7 +351,7 @@ impl App {
             crate::app_topbar::remember_project(&app.root);
         }
         if app.docs.is_empty() {
-            app.say("Ctrl+P abre um arquivo · Ctrl+Shift+P comandos");
+            app.say("Ctrl+P opens a file · Ctrl+Shift+P commands");
         }
         app
     }
@@ -417,7 +417,7 @@ impl App {
             let buf = match Buffer::open(&path) {
                 Ok(b) => b,
                 Err(e) => {
-                    self.say(format!("Não consegui abrir {}: {e}", path.display()));
+                    self.say(format!("Could not open {}: {e}", path.display()));
                     return None;
                 }
             };
@@ -477,7 +477,7 @@ impl App {
 
     pub fn navigate(&mut self, back: bool) {
         let target = if back { self.nav_back.pop() } else { self.nav_fwd.pop() };
-        let Some((path, at)) = target else { return self.say(if back { "sem posição anterior" } else { "sem posição seguinte" }) };
+        let Some((path, at)) = target else { return self.say(if back { "no previous position" } else { "no next position" }) };
         if let Some(h) = self.here() {
             if back { self.nav_fwd.push(h) } else { self.nav_back.push(h) }
         }
@@ -537,7 +537,7 @@ impl App {
         if d.buf.is_dirty() && !force && self.close_armed != Some(idx) {
             self.close_armed = Some(idx);
             let n = d.name.clone();
-            self.say(format!("{n} tem alterações não salvas — feche de novo para descartar"));
+            self.say(format!("{n} has unsaved changes — close again to discard"));
             return;
         }
         self.lsp_did_close(idx);
@@ -572,7 +572,7 @@ impl App {
                 self.refresh_git_status();
                 self.say(format!("{name} salvo"));
             }
-            Err(e) => self.say(format!("Erro ao salvar {name}: {e}")),
+            Err(e) => self.say(format!("Error saving {name}: {e}")),
         }
     }
 
@@ -726,10 +726,10 @@ impl App {
                 d.disk_mtime = Some(cur);
                 if !d.conflict {
                     d.conflict = true;
-                    notes.push(format!("{} mudou no disco e você tem alterações não salvas (Ctrl+S sobrescreve)", d.name));
+                    notes.push(format!("{} changed on disk and you have unsaved changes (Ctrl+S overwrites)", d.name));
                 }
             } else if d.reload_from_disk().is_ok() {
-                notes.push(format!("{} recarregado (alterado no disco)", d.name));
+                notes.push(format!("{} reloaded (changed on disk)", d.name));
             }
         }
         if let Some(n) = notes.pop() {
@@ -900,7 +900,7 @@ impl App {
             busy |= d.draw(cv, &mut self.tx, &self.theme, editor, &DrawOpts { dt, find: &find_ranges, find_cur, focused: true });
         } else {
             cv.fill(editor, self.theme.background);
-            let hint = [("Ctrl+P", "abrir arquivo"), ("Ctrl+Shift+P", "comandos"), ("Ctrl+Shift+F", "buscar no projeto"), ("Ctrl+B", "mostrar/ocultar a barra lateral")];
+            let hint = [("Ctrl+P", "open file"), ("Ctrl+Shift+P", "commands"), ("Ctrl+Shift+F", "search in project"), ("Ctrl+B", "show/hide the sidebar")];
             let x = editor.x + editor.w / 2 - 150;
             let mut y = editor.y + editor.h / 2 - 56;
             for (k, v) in hint {
@@ -1038,7 +1038,7 @@ impl App {
         self.layout.sidebar_tabs.clear();
         self.sidebar_bar = None;
         // One quiet title: the structure outline moved to the command palette.
-        self.tx.draw_ui(cv, r.x + 16, r.y + (TAB_H - 18) / 2 + 2, if self.sidebar_mode == SidebarMode::Outline { "Estrutura" } else { "Arquivos" }, c.tab_inactive_fg, r, true);
+        self.tx.draw_ui(cv, r.x + 16, r.y + (TAB_H - 18) / 2 + 2, if self.sidebar_mode == SidebarMode::Outline { "Outline" } else { "Files" }, c.tab_inactive_fg, r, true);
         if self.sidebar_mode == SidebarMode::Outline {
             self.draw_outline(cv);
             return self.draw_sidebar_bar(cv);
@@ -1114,7 +1114,7 @@ impl App {
         let body = Rect::new(r.x, top, r.w - 1, r.h - TAB_H);
         let Some(d) = self.docs.get(self.active) else { return };
         if d.symbols.is_empty() {
-            self.tx.draw_ui(cv, r.x + 18, top + 10, "Sem estrutura (precisa do servidor TS/JS)", c.tab_inactive_fg, body, false);
+            self.tx.draw_ui(cv, r.x + 18, top + 10, "No outline (needs the TS/JS server)", c.tab_inactive_fg, body, false);
             return;
         }
         let (cur_line, _) = d.buf.line_col(d.ed.head());
@@ -2074,7 +2074,7 @@ impl App {
         if !dirty.is_empty() && !self.quit_armed {
             self.quit_armed = true;
             let list = dirty.join(", ");
-            self.say(format!("Não salvos: {list} — Ctrl+S salva, Ctrl+Q de novo descarta"));
+            self.say(format!("Unsaved: {list} — Ctrl+S saves, Ctrl+Q again discards"));
             self.request_redraw();
             return false;
         }

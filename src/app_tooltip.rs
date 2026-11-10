@@ -49,7 +49,7 @@ pub enum TipKey {
     PanelTab(PanelTab),
     /// A button or row of the Git panel (history rows included).
     Git(Hit),
-    /// A row of the outline sidebar ("Estrutura"): index into the active document's symbols.
+    /// A row of the outline sidebar ("Outline"): index into the active document's symbols.
     Outline(usize),
     /// An item of the open context menu that needs a word of explanation.
     Ctx(Act),
@@ -144,54 +144,54 @@ pub fn sidebar_row_at(scroll: f64, top: i32, y: i32, row_h: i32, rows: usize) ->
     (k < rows).then_some(k)
 }
 
-/// LSP `SymbolKind` in Portuguese, for the outline tooltip.
+/// LSP `SymbolKind` names, for the outline tooltip.
 pub fn symbol_kind_name(kind: u32) -> &'static str {
     match kind {
-        1 => "Arquivo",
-        2 => "Módulo",
+        1 => "File",
+        2 => "Module",
         3 => "Namespace",
-        4 => "Pacote",
-        5 => "Classe",
-        6 => "Método",
-        7 => "Propriedade",
-        8 => "Campo",
-        9 => "Construtor",
+        4 => "Package",
+        5 => "Class",
+        6 => "Method",
+        7 => "Property",
+        8 => "Field",
+        9 => "Constructor",
         10 => "Enum",
         11 => "Interface",
-        12 => "Função",
-        13 => "Variável",
-        14 => "Constante",
+        12 => "Function",
+        13 => "Variable",
+        14 => "Constant",
         15 => "String",
-        16 => "Número",
-        17 => "Booleano",
+        16 => "Number",
+        17 => "Boolean",
         18 => "Array",
-        19 => "Objeto",
-        20 => "Chave",
-        21 => "Nulo",
-        22 => "Membro de enum",
+        19 => "Object",
+        20 => "Key",
+        21 => "Null",
+        22 => "Enum member",
         23 => "Struct",
-        24 => "Evento",
-        25 => "Operador",
-        26 => "Parâmetro de tipo",
-        _ => "Símbolo",
+        24 => "Event",
+        25 => "Operator",
+        26 => "Type parameter",
+        _ => "Symbol",
     }
 }
 
 /// The one-line explanation of a context menu action, for the ones that are not obvious.
 pub fn act_hint(act: Act) -> Option<&'static str> {
     Some(match act {
-        Act::Cut => "Marca para mover: cole em outra pasta (Esc cancela)",
-        Act::Copy => "Copia para colar em outra pasta",
-        Act::Paste => "Cola aqui o que foi copiado ou recortado",
-        Act::Duplicate => "Cria uma cópia ao lado, com “(cópia)” no nome",
-        Act::Trash => "Envia para a lixeira do sistema; dá para restaurar de lá",
-        Act::Delete => "Apaga de vez, sem lixeira. Não pode ser desfeito",
-        Act::CopyPath => "Copia o caminho completo para a área de transferência",
-        Act::OpenSide => "Abre o arquivo em um painel dividido, ao lado",
-        Act::CloseOthers => "Fecha as outras abas; as com alterações não salvas perguntam antes",
-        Act::CloseAll => "Fecha todas as abas, menos as fixadas",
-        Act::TogglePin => "Abas fixadas ficam à esquerda e sobrevivem a “Fechar todas”",
-        Act::Markdown => "Mostra o texto renderizado ao lado do editor",
+        Act::Cut => "Marks for moving: paste into another folder (Esc cancels)",
+        Act::Copy => "Copies so you can paste into another folder",
+        Act::Paste => "Pastes here what was copied or cut",
+        Act::Duplicate => "Creates a copy next to it, with “(copy)” in the name",
+        Act::Trash => "Sends to the system trash; you can restore it from there",
+        Act::Delete => "Deletes permanently, bypassing the trash. Cannot be undone",
+        Act::CopyPath => "Copies the full path to the clipboard",
+        Act::OpenSide => "Opens the file in a split pane beside this one",
+        Act::CloseOthers => "Closes the other tabs; those with unsaved changes ask first",
+        Act::CloseAll => "Closes all tabs except pinned ones",
+        Act::TogglePin => "Pinned tabs stay on the left and survive “Close All”",
+        Act::Markdown => "Shows the rendered text beside the editor",
         Act::NewFile | Act::NewFolder | Act::Rename | Act::CloseTab => return None,
     })
 }
@@ -349,7 +349,7 @@ impl App {
         let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText { title: title.to_string(), keys, detail, more: Vec::new() };
         match key {
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
-                Some(s) => t(&s.name, None, Some(format!("{} · linha {}", symbol_kind_name(s.kind), s.sl + 1))),
+                Some(s) => t(&s.name, None, Some(format!("{} · line {}", symbol_kind_name(s.kind), s.sl + 1))),
                 None => TipText::default(),
             },
             TipKey::Ctx(act) => {
@@ -362,18 +362,18 @@ impl App {
                 };
                 t(&label.unwrap_or_default(), None, act_hint(act).map(str::to_string))
             }
-            TipKey::Top(MenuKind::Branch) => t("Trocar de branch", None, self.branch.clone()),
-            TipKey::Top(_) => t("Trocar de projeto", None, Some(crate::app_topbar::tilde(&self.root))),
+            TipKey::Top(MenuKind::Branch) => t("Switch branch", None, self.branch.clone()),
+            TipKey::Top(_) => t("Switch project", None, Some(crate::app_topbar::tilde(&self.root))),
             TipKey::Tab(i) => match self.docs.get(i) {
                 Some(d) => {
-                    let path = d.path().map_or_else(|| "Arquivo ainda não salvo".to_string(), crate::app_topbar::tilde);
-                    TipText { title: d.name.clone(), keys: d.buf.is_dirty().then(|| "não salvo".to_string()), detail: Some(path), more: Vec::new() }
+                    let path = d.path().map_or_else(|| "File not saved yet".to_string(), crate::app_topbar::tilde);
+                    TipText { title: d.name.clone(), keys: d.buf.is_dirty().then(|| "unsaved".to_string()), detail: Some(path), more: Vec::new() }
                 }
                 None => TipText::default(),
             },
             TipKey::TabClose(i) => {
                 let dirty = self.docs.get(i).is_some_and(|d| d.buf.is_dirty());
-                t("Fechar", self.shortcut_text("CloseTab"), dirty.then(|| "Há alterações não salvas".to_string()))
+                t("Close", self.shortcut_text("CloseTab"), dirty.then(|| "Has unsaved changes".to_string()))
             }
             TipKey::SideRow(k) => match self.tree.rows.get(k) {
                 Some(r) => {
@@ -382,23 +382,23 @@ impl App {
                 }
                 None => TipText::default(),
             },
-            TipKey::PanelTab(PanelTab::Output) => t("Saída", None, Some("Resultado de tarefas e testes".into())),
+            TipKey::PanelTab(PanelTab::Output) => t("Output", None, Some("Results of tasks and tests".into())),
             TipKey::PanelTab(PanelTab::Terminal) => t("Terminal", self.shortcut_text("OpenTerminal"), None),
-            TipKey::PanelTab(PanelTab::Debug) => t("Depurar", None, Some("Pilha, variáveis e saída".into())),
+            TipKey::PanelTab(PanelTab::Debug) => t("Debug", None, Some("Stack, variables and output".into())),
             TipKey::Git(h) => self.git_tip_text(h),
             TipKey::Status(k) => match k {
-                StatusBtn::Sidebar => t("Alternar sidebar", self.shortcut_text("ToggleSidebar"), None),
-                StatusBtn::Search => t("Buscar no projeto", self.shortcut_text("ProjectSearch"), None),
+                StatusBtn::Sidebar => t("Toggle sidebar", self.shortcut_text("ToggleSidebar"), None),
+                StatusBtn::Search => t("Search in project", self.shortcut_text("ProjectSearch"), None),
                 StatusBtn::Problems => {
                     let (e, w) = self.diag_counts();
-                    let detail = if e + w == 0 { "Nenhum problema".to_string() } else { format!("{} · {}", plural(e, "erro", "erros"), plural(w, "aviso", "avisos")) };
-                    t("Problemas", None, Some(detail))
+                    let detail = if e + w == 0 { "No problems".to_string() } else { format!("{} · {}", plural(e, "error", "errors"), plural(w, "warning", "warnings")) };
+                    t("Problems", None, Some(detail))
                 }
                 StatusBtn::Terminal => t("Terminal", self.shortcut_text("OpenTerminal"), None),
-                StatusBtn::Debug => t("Depuração", None, Some("Pilha, variáveis e saída".into())),
+                StatusBtn::Debug => t("Debugger", None, Some("Stack, variables and output".into())),
                 StatusBtn::Git => {
                     let n = self.git_status.len();
-                    let title = if n == 0 { "Sem alterações · Painel Git".to_string() } else { format!("{} · Painel Git", plural(n, "arquivo alterado", "arquivos alterados")) };
+                    let title = if n == 0 { "No changes · Git panel".to_string() } else { format!("{} · Git panel", plural(n, "changed file", "changed files")) };
                     // Ahead / behind of the branch, from the panel or the background refresh.
                     let detail = self.git_counts().filter(|i| i.upstream.is_some()).map(|i| format!("{}: ↑{} ↓{}", i.upstream.unwrap_or_default(), i.ahead, i.behind));
                     TipText { title, keys: self.shortcut_text("GitPanel"), detail, more: Vec::new() }
@@ -406,19 +406,19 @@ impl App {
                 StatusBtn::Ram => {
                     self.mem_cache.0 = Instant::now() - Duration::from_secs(10); // fresh numbers
                     let full = self.memory_text();
-                    t("Memória em uso", None, Some(full))
+                    t("Memory in use", None, Some(full))
                 }
-                StatusBtn::Position => t("Ir para linha…", self.shortcut_text("GotoLine"), Some("Posição do cursor".into())),
+                StatusBtn::Position => t("Go to line…", self.shortcut_text("GotoLine"), Some("Cursor position".into())),
                 StatusBtn::Indent => {
                     let d = self.docs.get(self.active);
-                    let now = d.map(|d| if d.ed.indent.contains('\t') { "Tabulação".to_string() } else { plural(d.ed.indent.len(), "espaço", "espaços") });
-                    t("Mudar indentação…", None, now.map(|n| format!("Atual: {n}")))
+                    let now = d.map(|d| if d.ed.indent.contains('\t') { "Tab".to_string() } else { plural(d.ed.indent.len(), "space", "spaces") });
+                    t("Change indentation…", None, now.map(|n| format!("Current: {n}")))
                 }
                 StatusBtn::Update => {
                     let (title, detail) = self.update_indicator_tip();
                     t(&title, None, detail)
                 }
-                StatusBtn::Language => t("Mudar linguagem…", None, self.docs.get(self.active).map(|d| format!("Atual: {}", d.lang.unwrap_or("texto")))),
+                StatusBtn::Language => t("Change language…", None, self.docs.get(self.active).map(|d| format!("Current: {}", d.lang.unwrap_or("text")))),
             },
         }
     }
@@ -427,17 +427,17 @@ impl App {
         let t = |title: &str, keys: Option<String>, detail: Option<String>| TipText { title: title.to_string(), keys, detail, more: Vec::new() };
         let change = |i: usize| self.gitpanel.as_ref().and_then(|gp| gp.changes.get(i));
         match h {
-            Hit::Refresh => t("Atualizar", None, Some("Relê o status e o histórico do git".into())),
-            Hit::Close => t("Fechar painel Git", self.shortcut_text("GitPanel"), None),
-            Hit::Tab(GitTab::Changes) => t("Alterações", None, Some("Arquivos modificados, novos e no stage".into())),
-            Hit::Tab(GitTab::History) => t("Histórico", None, Some("Commits recentes".into())),
+            Hit::Refresh => t("Refresh", None, Some("Re-reads the git status and history".into())),
+            Hit::Close => t("Close Git panel", self.shortcut_text("GitPanel"), None),
+            Hit::Tab(GitTab::Changes) => t("Changes", None, Some("Modified, new and staged files".into())),
+            Hit::Tab(GitTab::History) => t("History", None, Some("Recent commits".into())),
             Hit::Check(i) => match change(i) {
-                Some(c) if c.group == Group::Staged => t("Tirar do stage", None, Some(c.path.clone())),
-                Some(c) => t("Colocar no stage", None, Some(c.path.clone())),
+                Some(c) if c.group == Group::Staged => t("Unstage", None, Some(c.path.clone())),
+                Some(c) => t("Stage", None, Some(c.path.clone())),
                 None => TipText::default(),
             },
-            Hit::Discard(i) => t("Descartar alterações", None, change(i).map(|c| c.path.clone())),
-            Hit::ConfirmDiscard(i) => t("Clique para descartar de vez", None, change(i).map(|c| c.path.clone())),
+            Hit::Discard(i) => t("Discard changes", None, change(i).map(|c| c.path.clone())),
+            Hit::ConfirmDiscard(i) => t("Click to discard for good", None, change(i).map(|c| c.path.clone())),
             Hit::Row(i) => match change(i) {
                 Some(c) => TipText { title: c.path.rsplit('/').next().unwrap_or(&c.path).to_string(), keys: None, detail: Some(c.path.clone()), more: Vec::new() },
                 None => TipText::default(),
@@ -447,28 +447,28 @@ impl App {
                 None => TipText::default(),
             },
             Hit::Strategy(st) => t(st.label(), None, Some(st.hint().to_string())),
-            Hit::ForceYes => t("Forçar push", None, Some("git push --force-with-lease".into())),
-            Hit::CommitBtn => t("Commit", Some("Ctrl+Enter".into()), Some("Grava o que está no stage".into())),
-            Hit::Opt => t("Incluir tudo se nada no stage", None, Some("Sem nada no stage, o commit leva todas as alterações".into())),
-            Hit::Fetch => t("Buscar (fetch)", None, Some("Baixa as novidades do remoto sem alterar seus arquivos".into())),
+            Hit::ForceYes => t("Force push", None, Some("git push --force-with-lease".into())),
+            Hit::CommitBtn => t("Commit", Some("Ctrl+Enter".into()), Some("Commits what is staged".into())),
+            Hit::Opt => t("Include everything if nothing is staged", None, Some("With nothing staged, the commit takes all changes".into())),
+            Hit::Fetch => t("Fetch", None, Some("Downloads news from the remote without touching your files".into())),
             Hit::Pull => {
                 let n = self.gitpanel.as_ref().map_or(0, |g| g.sync.behind);
                 let how = match crate::gitsync::PullStrategy::from_name(&self.config.git_pull_strategy) {
-                    Some(st) => format!("Estratégia: {} · botão direito para trocar", st.label()),
-                    None => "Botão direito escolhe merge, rebase ou só avanço".to_string(),
+                    Some(st) => format!("Strategy: {} · right-click to change", st.label()),
+                    None => "Right-click to choose merge, rebase or fast-forward only".to_string(),
                 };
-                TipText { title: "Pull".into(), keys: None, detail: Some(if n > 0 { format!("{n} commit(s) novos no remoto") } else { "Traz e integra os commits do remoto".to_string() }), more: vec![how] }
+                TipText { title: "Pull".into(), keys: None, detail: Some(if n > 0 { format!("{n} new commit(s) on the remote") } else { "Fetches and integrates the remote commits".to_string() }), more: vec![how] }
             }
             Hit::Push => {
                 let g = self.gitpanel.as_ref().map(|g| (g.sync.upstream.clone(), g.sync.ahead));
                 t("Push", None, Some(match g {
-                    Some((None, _)) => "Branch sem upstream: pergunta antes de publicar".to_string(),
-                    Some((Some(u), n)) => format!("{n} commit(s) a enviar para {u}"),
+                    Some((None, _)) => "Branch has no upstream: asks before publishing".to_string(),
+                    Some((Some(u), n)) => format!("{n} commit(s) to push to {u}"),
                     None => String::new(),
                 }))
             }
-            Hit::Amend => t("Emendar o último commit", None, Some("Reescreve o commit anterior com a mensagem e o que está no stage".into())),
-            Hit::JobCancel => t("Cancelar a operação", None, None),
+            Hit::Amend => t("Amend the last commit", None, Some("Rewrites the previous commit with the message and what is staged".into())),
+            Hit::JobCancel => t("Cancel the operation", None, None),
             _ => TipText::default(),
         }
     }
@@ -655,8 +655,8 @@ mod tests {
 
     #[test]
     fn plural_forms() {
-        assert_eq!(plural(1, "arquivo alterado", "arquivos alterados"), "1 arquivo alterado");
-        assert_eq!(plural(3, "arquivo alterado", "arquivos alterados"), "3 arquivos alterados");
+        assert_eq!(plural(1, "changed file", "changed files"), "1 changed file");
+        assert_eq!(plural(3, "changed file", "changed files"), "3 changed files");
     }
 
     #[test]
@@ -692,7 +692,7 @@ mod tests {
     fn wrapping_keeps_words_and_cuts_giant_ones() {
         let mut w = |s: &str| s.chars().count() as i32 * 10;
         assert_eq!(wrap_tip("um dois três quatro", 100, 5, &mut w), ["um dois", "três", "quatro"]);
-        assert_eq!(wrap_tip("curto", 100, 5, &mut w), ["curto"]);
+        assert_eq!(wrap_tip("short", 100, 5, &mut w), ["short"]);
         assert_eq!(wrap_tip("abcdefghijklmnop", 50, 5, &mut w), ["abcde", "fghij", "klmno", "p"]);
         let l = wrap_tip("a b c d e f g h i j k l", 30, 2, &mut w);
         assert_eq!(l.len(), 2);
@@ -716,23 +716,23 @@ mod tests {
 
     #[test]
     fn history_rows_describe_subject_author_date_and_hash() {
-        let c = crate::app_gitpanel::LogEntry { hash: "0123456789abcdef0123456789abcdef01234567".into(), short: "0123456".into(), author: "Ana".into(), ts: 1_700_000_000, subject: "Corrige o cálculo de frete para pedidos com kit".into() };
+        let c = crate::app_gitpanel::LogEntry { hash: "0123456789abcdef0123456789abcdef01234567".into(), short: "0123456".into(), author: "Ana".into(), ts: 1_700_000_000, subject: "Fix the shipping calculation for kit orders".into() };
         let tip = commit_tip(&c, 1_700_000_000 + 7200);
         assert_eq!(tip.title, c.subject, "the whole subject, not the cut-off row text");
         let d = tip.detail.unwrap();
-        assert!(d.starts_with("Ana · 2023-11-1") && d.contains("há 2 horas"), "{d}");
+        assert!(d.starts_with("Ana · 2023-11-1") && (d.contains("2 hours ago")), "{d}");
         assert_eq!(tip.more, [c.hash.clone()]);
         assert!(git_tip_wanted(Hit::Commit(3)), "history rows get a tooltip now");
     }
 
     #[test]
     fn outline_kinds_and_context_menu_hints() {
-        assert_eq!(symbol_kind_name(12), "Função");
-        assert_eq!(symbol_kind_name(5), "Classe");
+        assert_eq!(symbol_kind_name(12), "Function");
+        assert_eq!(symbol_kind_name(5), "Class");
         assert_eq!(symbol_kind_name(11), "Interface");
-        assert_eq!(symbol_kind_name(999), "Símbolo");
-        assert!(act_hint(Act::Trash).unwrap().contains("lixeira"));
-        assert!(act_hint(Act::Delete).unwrap().contains("Não pode ser desfeito"));
+        assert_eq!(symbol_kind_name(999), "Symbol");
+        assert!(act_hint(Act::Trash).unwrap().contains("trash"));
+        assert!(act_hint(Act::Delete).unwrap().contains("Cannot be undone"));
         assert_eq!(act_hint(Act::Rename), None, "self-explanatory items get no card");
         // Every action the menus can offer is either explained or deliberately plain.
         for t in [crate::app_ctxmenu::Target::File("/x".into()), crate::app_ctxmenu::Target::Folder("/x".into()), crate::app_ctxmenu::Target::Tab(0)] {

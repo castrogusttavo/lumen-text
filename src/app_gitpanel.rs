@@ -1,8 +1,8 @@
 //! Git panel docked on the right: two tabs.
-//!   * "Alterações": changed files grouped as Staged / Mudanças / Não rastreados (checkbox =
+//!   * "Changes": changed files grouped as Staged / Unstaged / Untracked (checkbox =
 //!     stage/unstage, click = side-by-side diff against HEAD, trash = discard with a second click
 //!     to confirm) and a multi-line commit message box (Ctrl+Enter commits).
-//!   * "Histórico": `git log` loaded a page at a time while scrolling; a click on a commit
+//!   * "History": `git log` loaded a page at a time while scrolling; a click on a commit
 //!     expands its files and shows the first file's diff.
 //!
 //! The first half of the file is plain logic (parsers, git calls, message editing) covered by
@@ -44,14 +44,14 @@ impl Group {
     pub fn title(self) -> &'static str {
         match self {
             Group::Staged => "Staged",
-            Group::Changes => "Mudanças",
-            Group::Untracked => "Não rastreados",
+            Group::Changes => "Unstaged",
+            Group::Untracked => "Untracked",
         }
     }
 }
 
 /// One entry of `git status`. A file that is staged *and* modified again has TWO entries (one under
-/// Staged, one under Mudanças), like in VS Code, so "Adicionar todos" picks up the new edits.
+/// Staged, one under Unstaged), like in VS Code, so "Add all" picks up the new edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
     /// Repository-root-relative path.
@@ -83,7 +83,7 @@ impl Change {
     }
 }
 
-/// Parse `git status --porcelain=v1 -z -uall`; sorted by group (Staged, Mudanças, Não rastreados)
+/// Parse `git status --porcelain=v1 -z -uall`; sorted by group (Staged, Unstaged, Untracked)
 /// then path.
 pub fn parse_status_z(out: &str) -> Vec<Change> {
     let mut v = Vec::new();
@@ -105,7 +105,7 @@ pub fn parse_status_z(out: &str) -> Vec<Change> {
         } else {
             match (x != ' ', y != ' ') {
                 // Staged and modified again: listed under Staged (what the index holds) and under
-                // Mudanças (the edits made since).
+                // Unstaged (the edits made since).
                 (true, true) => {
                     v.push(mk(x, Group::Staged));
                     v.push(mk(y, Group::Changes));
@@ -183,7 +183,7 @@ pub fn git_run(dir: &Path, args: &[&str]) -> Result<String, String> {
         // Hooks print a lot: the first line says what ran, the last one why it failed.
         lines.iter().find(|l| l.starts_with("error:") || l.starts_with("fatal:")).or(lines.last()).map(|l| l.to_string())
     };
-    Err(pick(&out.stderr).or_else(|| pick(&out.stdout)).unwrap_or_else(|| "git falhou".into()))
+    Err(pick(&out.stderr).or_else(|| pick(&out.stdout)).unwrap_or_else(|| "git failed".into()))
 }
 
 fn with_paths(head: &[&str], paths: &[String]) -> Vec<String> {
@@ -217,16 +217,16 @@ pub fn discard(top: &Path, c: &Change) -> Result<(), String> {
         Group::Untracked => std::fs::remove_file(top.join(&c.path)).map_err(|e| e.to_string()),
         // Staged + modified again: restore the working tree from the index (keeps the staged part).
         Group::Changes | Group::Staged if c.discardable() => run_owned(top, &with_paths(&["checkout"], std::slice::from_ref(&c.path))).map(|_| ()),
-        Group::Changes | Group::Staged => Err("tire do stage antes de descartar".into()),
+        Group::Changes | Group::Staged => Err("unstage before discarding".into()),
     }
 }
 
 /// `git commit -m msg`; returns git's first output line (`[main abc1234] subject`).
 pub fn commit(top: &Path, msg: &str) -> Result<String, String> {
     if msg.trim().is_empty() {
-        return Err("escreva uma mensagem de commit".into());
+        return Err("write a commit message".into());
     }
-    git_run(top, &["commit", "-m", msg.trim()]).map(|o| o.lines().next().unwrap_or("commit criado").to_string())
+    git_run(top, &["commit", "-m", msg.trim()]).map(|o| o.lines().next().unwrap_or("commit created").to_string())
 }
 
 /// One page of the log, newest first.
@@ -344,19 +344,19 @@ pub enum Hit {
     Fetch,
     Pull,
     Push,
-    /// "Emendar o último commit" checkbox.
+    /// "Amend last commit" checkbox.
     Amend,
-    /// "Publicar" in the set-upstream prompt.
+    /// "Publish" in the set-upstream prompt.
     PublishYes,
     PublishNo,
     /// Cancel the running fetch / pull / push.
     JobCancel,
     /// The result / error line under the branch row (click dismisses it).
     Note,
-    /// "Forçar push" / "Cancelar" in the force-push card.
+    /// "Force push" / "Cancel" in the force-push card.
     ForceYes,
     ForceNo,
-    /// A pull strategy button of the chooser card, and its "Cancelar".
+    /// A pull strategy button of the chooser card, and its "Cancel".
     Strategy(PullStrategy),
     StrategyNo,
 }
@@ -373,14 +373,14 @@ pub enum ForceWhy {
 impl ForceWhy {
     pub fn text(self) -> &'static str {
         match self {
-            ForceWhy::Rejected => "Forçar o push? O remoto tem uma versão diferente deste branch (você reescreveu commits já publicados). O --force-with-lease só sobrescreve se ninguém mais enviou nada desde o seu último fetch.",
-            ForceWhy::Amended => "O commit emendado já estava publicado. Para enviá-lo é preciso forçar o push. O --force-with-lease só sobrescreve se o remoto ainda estiver como no seu último fetch.",
+            ForceWhy::Rejected => "Force the push? The remote has a different version of this branch (you rewrote commits that were already published). --force-with-lease only overwrites if nobody else has pushed anything since your last fetch.",
+            ForceWhy::Amended => "The amended commit was already published. Sending it requires a force push. --force-with-lease only overwrites if the remote is still as it was at your last fetch.",
         }
     }
 }
 
 /// Text of the pull strategy chooser card.
-pub const STRATEGY_TEXT: &str = "Os branches divergiram. Como integrar os commits do remoto? A escolha fica salva (config git_pull_strategy).";
+pub const STRATEGY_TEXT: &str = "The branches have diverged. How should the remote commits be integrated? Your choice is saved (config git_pull_strategy).";
 
 /// Pack button widths into right-aligned rows no wider than `avail`: returns the number of
 /// buttons on each row, filled from the left, `gap` px apart.
@@ -561,13 +561,13 @@ impl GitPanel {
     /// Buttons of the force-push card (`force`) or the strategy chooser: (label, hit, warning color).
     pub fn gp_card_buttons_for(force: bool) -> Vec<(&'static str, Hit, bool)> {
         if force {
-            return vec![("Forçar push", Hit::ForceYes, true), ("Cancelar", Hit::ForceNo, false)];
+            return vec![("Force push", Hit::ForceYes, true), ("Cancel", Hit::ForceNo, false)];
         }
         let mut v: Vec<(&'static str, Hit, bool)> = [PullStrategy::Merge, PullStrategy::Rebase, PullStrategy::FfOnly]
             .into_iter()
-            .map(|st| (match st { PullStrategy::Merge => "Merge", PullStrategy::Rebase => "Rebase", PullStrategy::FfOnly => "Só ff" }, Hit::Strategy(st), false))
+            .map(|st| (match st { PullStrategy::Merge => "Merge", PullStrategy::Rebase => "Rebase", PullStrategy::FfOnly => "FF only" }, Hit::Strategy(st), false))
             .collect();
-        v.push(("Cancelar", Hit::StrategyNo, false));
+        v.push(("Cancel", Hit::StrategyNo, false));
         v
     }
 
@@ -962,7 +962,7 @@ impl App {
                 gp.say(format!("{} descartado", c.path), true);
                 self.say(format!("{} descartado", c.path));
             }
-            Err(e) => gp.say(format!("descartar: {e}"), false),
+            Err(e) => gp.say(format!("discard: {e}"), false),
         }
         self.diff = None;
         self.gp_after_change(gp);
@@ -983,7 +983,7 @@ impl App {
                     gp.amend = true;
                     gp.msg_focus = true;
                 }
-                None => return gp.say("Nenhum commit para emendar", false),
+                None => return gp.say("No commit to amend", false),
             }
         }
         gp.msg_top = 0;
@@ -997,8 +997,8 @@ impl App {
                 gp.amend = false;
                 gp.msg = TextField::with(&std::mem::take(&mut gp.amend_draft));
                 gp.msg_top = 0;
-                let extra = if published { " (já publicado: o push exige force)" } else { "" };
-                gp.say(format!("Commit emendado{extra}"), true);
+                let extra = if published { " (already published: the push requires force)" } else { "" };
+                gp.say(format!("Commit amended{extra}"), true);
                 if published {
                     gp.force = Some(ForceWhy::Amended);
                 }
@@ -1018,7 +1018,7 @@ impl App {
     fn gp_commit(&mut self, gp: &mut GitPanel) {
         let Some(top) = gp.top.clone() else { return };
         if gp.msg.text.trim().is_empty() {
-            gp.say("Escreva uma mensagem de commit", false);
+            gp.say("Write a commit message", false);
             gp.msg_focus = true;
             return;
         }
@@ -1027,10 +1027,10 @@ impl App {
         }
         if gp.staged() == 0 {
             if gp.changes.is_empty() {
-                return gp.say("Nada para commitar", false);
+                return gp.say("Nothing to commit", false);
             }
             if !gp.include_all {
-                return gp.say("Nada no stage: marque arquivos ou ative \"incluir tudo\"", false);
+                return gp.say("Nothing staged: tick files or enable \"include all\"", false);
             }
             if let Err(e) = git_run(&top, &["add", "-A"]) {
                 return gp.say(format!("git add: {e}"), false);
@@ -1059,7 +1059,7 @@ impl App {
     fn gp_start(&mut self, gp: &mut GitPanel, op: Op) {
         let Some(top) = gp.top.clone() else { return };
         if gp.job.is_some() {
-            return gp.say("Aguarde: já há uma operação em andamento", false);
+            return gp.say("Wait: an operation is already in progress", false);
         }
         gp.sync_note = None;
         gp.publish = None;
@@ -1072,7 +1072,7 @@ impl App {
     fn gp_pull(&mut self, gp: &mut GitPanel) {
         if gp.top.is_some() && gp.sync.upstream.is_none() {
             let b = self.branch.clone().unwrap_or_default();
-            return self.gp_note(gp, format!("O branch “{b}” não tem upstream: use Push para publicá-lo antes"), false);
+            return self.gp_note(gp, format!("Branch “{b}” has no upstream: use Push to publish it first"), false);
         }
         let op = match PullStrategy::from_name(&self.config.git_pull_strategy) {
             Some(st) => Op::PullWith(st),
@@ -1103,14 +1103,14 @@ impl App {
     fn gp_ask_publish(&mut self, gp: &mut GitPanel) {
         let Some(top) = gp.top.clone() else { return };
         let Some(branch) = self.branch.clone().filter(|b| b != "HEAD") else {
-            return self.gp_note(gp, "HEAD solto (sem branch): crie um branch antes de enviar".into(), false);
+            return self.gp_note(gp, "Detached HEAD (no branch): create a branch before pushing".into(), false);
         };
         match gitsync::default_remote(&top, &branch) {
             Some(remote) => {
                 gp.sync_note = None;
                 gp.publish = Some((remote, branch));
             }
-            None => self.gp_note(gp, "Nenhum remote configurado (git remote add origin <url>)".into(), false),
+            None => self.gp_note(gp, "No remote configured (git remote add origin <url>)".into(), false),
         }
     }
 
@@ -1137,7 +1137,7 @@ impl App {
                     gp.force = Some(ForceWhy::Rejected);
                     self.say(format!("{}: {}", op.label(), f.text));
                 } else {
-                    self.gp_note(gp, "Push: rejeitado, o remoto tem commits que você não tem. Faça fetch e pull antes de enviar.".into(), false);
+                    self.gp_note(gp, "Push: rejected, the remote has commits you do not have. Fetch and pull before pushing.".into(), false);
                 }
             }
             Err(f) => self.gp_note(gp, format!("{}: {}", op.label(), f.text), false),
@@ -1183,7 +1183,7 @@ impl App {
         let (Some(top), Some(c)) = (gp.top.clone(), gp.changes.get(i).cloned()) else { return };
         let big = std::fs::metadata(top.join(&c.path)).map_or(false, |m| m.len() > 3_000_000);
         if big {
-            return gp.say("Arquivo grande demais para o diff lado a lado", false);
+            return gp.say("File too large for the side-by-side diff", false);
         }
         let name = split_name(&c.path).0.to_string();
         // The Staged entry opens on the staged side (its hunks can be unstaged), the others on the
@@ -1191,7 +1191,7 @@ impl App {
         let side = if c.group == Group::Staged { Side::Staged } else { Side::Unstaged };
         self.diff = DiffView::staging_auto(&top, &c.path, c.old.as_deref(), side, &name);
         if self.diff.is_none() {
-            gp.say("Sem diferenças de conteúdo para mostrar", false);
+            gp.say("No content differences to show", false);
         }
     }
 
@@ -1625,7 +1625,7 @@ impl App {
 
         // Header: tabs on the left, refresh / close on the right.
         let mut x = p.x + 12;
-        for (tab, label) in [(Tab::Changes, "Alterações"), (Tab::History, "Histórico")] {
+        for (tab, label) in [(Tab::Changes, "Changes"), (Tab::History, "History")] {
             let n = gp.changes.len();
             let text = if tab == Tab::Changes && n > 0 { format!("{label}  {n}") } else { label.to_string() };
             let active = gp.tab == tab;
@@ -1658,7 +1658,7 @@ impl App {
             right -= self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/cloud_download", "", Hit::Fetch, !busy) + 4;
         }
         self.tx.icon(cv, "ui/git_branch", p.x + 16, by + 10, 14, dim, p);
-        let branch = self.branch.clone().unwrap_or_else(|| "sem branch".into());
+        let branch = self.branch.clone().unwrap_or_else(|| "no branch".into());
         let branch = fit(&mut self.tx, &branch, right - (p.x + 36) - 4, false);
         self.tx.draw_ui(cv, p.x + 36, by + 8, &branch, dim, p, false);
 
@@ -1672,7 +1672,7 @@ impl App {
         let commit_h = if gp.tab == Tab::Changes && gp.top.is_some() { COMMIT_AREA_H } else { 0 };
         let body = Rect::new(p.x + 1, by + BRANCH_H + strip_h, p.w - 1, (p.h - HEAD_H - BRANCH_H - strip_h - commit_h).max(0));
         if gp.top.is_none() {
-            let msg = "Esta pasta não é um repositório git";
+            let msg = "This folder is not a git repository";
             let w = self.tx.ui_width(msg, false);
             self.tx.draw_ui(cv, p.x + (p.w - w) / 2, body.y + 40, msg, dim, body, false);
         } else if gp.tab == Tab::Changes {
@@ -1762,14 +1762,14 @@ impl App {
             return;
         }
         if let Some((remote, branch)) = gp.publish.clone() {
-            let q = format!("Publicar “{branch}” em {remote} e passar a acompanhá-lo (upstream)?");
+            let q = format!("Publish “{branch}” to {remote} and start tracking it (upstream)?");
             let lines = wrap_lines(&mut self.tx, &q, area.w - 32, 2);
             for (i, l) in lines.iter().enumerate() {
                 self.tx.draw_ui(cv, area.x + 16, area.y + 6 + i as i32 * STRIP_LINE, l, strong, area, false);
             }
             let y = area.bottom() - 30;
-            let w = self.gp_text_btn(cv, gp, area.right() - 10, y, "Publicar", Hit::PublishYes, c.accent_text);
-            self.gp_text_btn(cv, gp, area.right() - 10 - w - 4, y, "Cancelar", Hit::PublishNo, dim);
+            let w = self.gp_text_btn(cv, gp, area.right() - 10, y, "Publish", Hit::PublishYes, c.accent_text);
+            self.gp_text_btn(cv, gp, area.right() - 10 - w - 4, y, "Cancel", Hit::PublishNo, dim);
             return;
         }
         if let Some(job) = &gp.job {
@@ -1777,11 +1777,11 @@ impl App {
             let head = format!("{}… {secs}s", job.op.busy());
             let hw = self.tx.ui_width(&head, true);
             self.tx.draw_ui(cv, area.x + 16, area.y + 5, &head, strong, area, true);
-            let cancel_w = self.tx.ui_width("Cancelar", false) + 18;
+            let cancel_w = self.tx.ui_width("Cancel", false) + 18;
             let room = area.w - 32 - hw - cancel_w - 16;
             let prog = fit(&mut self.tx, &job.progress.clone(), room, false);
             self.tx.draw_ui(cv, area.x + 16 + hw + 10, area.y + 5, &prog, dim, area, false);
-            self.gp_text_btn(cv, gp, area.right() - 8, area.y + 2, "Cancelar", Hit::JobCancel, c.error);
+            self.gp_text_btn(cv, gp, area.right() - 8, area.y + 2, "Cancel", Hit::JobCancel, c.error);
             return;
         }
         if let Some((text, ok, _)) = gp.sync_note.clone() {
@@ -1813,7 +1813,7 @@ impl App {
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
         let rows = gp.rows();
         if rows.is_empty() {
-            let msg = "Nenhuma alteração";
+            let msg = "No changes";
             let w = self.tx.ui_width(msg, false);
             self.tx.draw_ui(cv, body.x + (body.w - w) / 2, body.y + 40, msg, dim, body, false);
             return;
@@ -1834,7 +1834,7 @@ impl App {
                 Row::Header(g) => {
                     let n = gp.changes.iter().filter(|c| c.group == g).count();
                     self.tx.draw_ui(cv, body.x + 16, y + 9, &format!("{}  {n}", g.title()), dim, clip, true);
-                    let label = if g == Group::Staged { "Remover todos" } else { "Adicionar todos" };
+                    let label = if g == Group::Staged { "Remove all" } else { "Add all" };
                     let before = gp.hits.len();
                     self.gp_text_btn(cv, gp, body.right() - 10, y + 5, label, Hit::Section(g), c.accent_text);
                     if let Some(last) = gp.hits.get_mut(before) {
@@ -1942,7 +1942,7 @@ impl App {
         let room = inner.w - 16;
         gp.msg_hscroll = (cx - room).max(0);
         if gp.msg.text.is_empty() {
-            self.tx.draw_ui(cv, b.x + 12, b.y + 8, "Mensagem do commit (Ctrl+Enter para commitar)", dim, inner, false);
+            self.tx.draw_ui(cv, b.x + 12, b.y + 8, "Commit message (Ctrl+Enter to commit)", dim, inner, false);
         }
         for (k, l) in lines.iter().enumerate().skip(gp.msg_top).take(vis_lines) {
             let ly = b.y + 8 + (k - gp.msg_top) as i32 * LINE;
@@ -1961,7 +1961,7 @@ impl App {
             cv.fill_round(am, 8, strong.with_alpha(0x12));
         }
         self.gp_checkbox(cv, Rect::new(am.x + 6, y + 6, 16, 16), if gp.amend { CheckState::On } else { CheckState::Off }, ah);
-        let txt = fit(&mut self.tx, "Emendar o último commit (amend)", am.w - 36, false);
+        let txt = fit(&mut self.tx, "Amend last commit", am.w - 36, false);
         self.tx.draw_ui(cv, am.x + 30, y + 5, &txt, if ah || gp.amend { strong } else { dim }, am, false);
         gp.hits.push((am, Hit::Amend));
         y += AMEND_H;
@@ -1985,7 +1985,7 @@ impl App {
             cv.fill_round(opt, 8, strong.with_alpha(0x12));
         }
         self.gp_checkbox(cv, Rect::new(opt.x + 6, y + 9, 16, 16), if gp.include_all { CheckState::On } else { CheckState::Off }, oh);
-        let txt = "Incluir tudo se nada no stage".to_string();
+        let txt = "Include everything if nothing is staged".to_string();
         let txt = fit(&mut self.tx, &txt, opt.w - 36, false);
         self.tx.draw_ui(cv, opt.x + 30, y + 8, &txt, if oh { strong } else { dim }, opt, false);
         gp.hits.push((opt, Hit::Opt));
@@ -2001,7 +2001,7 @@ impl App {
             guard += 1;
         }
         if gp.commits.is_empty() {
-            let msg = "Sem commits";
+            let msg = "No commits";
             let w = self.tx.ui_width(msg, false);
             self.tx.draw_ui(cv, body.x + (body.w - w) / 2, body.y + 40, msg, dim, body, false);
             return;
@@ -2032,7 +2032,7 @@ impl App {
                         cv.fill_round_clip(r, 8, strong.with_alpha(if cur { 0x1e } else { 0x12 }), body);
                     }
                     self.tx.icon(cv, if open { "ui/chevron_down" } else { "ui/chevron_right" }, r.x + 8, y + 17, 16, dim, vis);
-                    let subj = if e.subject.is_empty() { "(sem assunto)".to_string() } else { e.subject.clone() };
+                    let subj = if e.subject.is_empty() { "(no subject)".to_string() } else { e.subject.clone() };
                     let subj = fit(&mut self.tx, &subj, r.w - 44, open);
                     self.tx.draw_ui(cv, r.x + 32, y + 7, &subj, strong, vis, open);
                     let meta = format!("{}  ·  {}  ·  {}", e.short, e.author, git::ago((now - e.ts).max(0)));
@@ -2097,7 +2097,7 @@ mod tests {
         assert_eq!(find("staged.ts", Group::Staged).unwrap().code, 'M');
         assert_eq!(find("work.ts", Group::Changes).unwrap().code, 'M');
         assert_eq!(find("both.ts", Group::Staged).unwrap().code, 'M');
-        assert_eq!(find("both.ts", Group::Changes).unwrap().code, 'M', "staged and modified again is listed under Mudanças too");
+        assert_eq!(find("both.ts", Group::Changes).unwrap().code, 'M', "staged and modified again is listed under Unstaged too");
         assert_eq!(find("new.ts", Group::Untracked).unwrap().code, '?');
         let r = find("new name.ts", Group::Staged).unwrap();
         assert_eq!((r.code, r.old.as_deref()), ('R', Some("old name.ts")));
@@ -2322,17 +2322,17 @@ mod tests {
         assert_eq!(gp.changes.len(), 2);
         assert_eq!(gp.rows(), vec![Row::Header(Group::Staged), Row::File(0), Row::Header(Group::Changes), Row::File(1)], "one row under each group");
         assert_eq!((gp.changes[0].group, gp.changes[1].group), (Group::Staged, Group::Changes));
-        // "Adicionar todos" (the Mudanças section) stages the edit made after the first `add`.
+        // "Add all" (the Unstaged section) stages the edit made after the first `add`.
         let paths = gp.group_paths(Group::Changes);
         assert_eq!(paths, vec!["a.ts".to_string()]);
-        // Discard (Mudanças row) throws away the unstaged edit only; the staged version survives.
+        // Discard (Unstaged row) throws away the unstaged edit only; the staged version survives.
         discard(&dir, &gp.changes[1].clone()).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("a.ts")).unwrap(), "2\n");
         gp.refresh();
         assert_eq!(gp.changes.len(), 1);
         assert_eq!(gp.changes[0].check_state(), CheckState::On);
         assert!(discard(&dir, &gp.changes[0].clone()).is_err(), "fully staged: nothing to discard");
-        // Edit again, then stage every path of the Mudanças section: one Staged entry is left.
+        // Edit again, then stage every path of the Unstaged section: one Staged entry is left.
         std::fs::write(dir.join("a.ts"), "4\n").unwrap();
         gp.refresh();
         assert_eq!(gp.changes.len(), 2);
@@ -2501,7 +2501,7 @@ mod tests {
         assert_eq!(gp.strip_h(), PROMPT_H, "never smaller than the one-line prompt");
         gp.strategy_ask = false;
         assert_eq!(gp.strip_h(), 0);
-        assert!(ForceWhy::Rejected.text().contains("--force-with-lease") && ForceWhy::Amended.text().contains("emendado"));
+        assert!(ForceWhy::Rejected.text().contains("--force-with-lease") && ForceWhy::Amended.text().contains("amended"));
         let confirm = GitPanel::gp_card_buttons_for(true);
         assert_eq!(confirm.iter().map(|b| b.1).collect::<Vec<_>>(), [Hit::ForceYes, Hit::ForceNo]);
         let strat = GitPanel::gp_card_buttons_for(false);

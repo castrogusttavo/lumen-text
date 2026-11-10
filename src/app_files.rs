@@ -30,7 +30,7 @@ impl App {
     pub fn prompt_new_file(&mut self, dir: bool) {
         let d = self.target_dir();
         let rel = self.rel(&d);
-        let title = format!("{} em {}", if dir { "Nova pasta" } else { "Novo arquivo" }, if rel.is_empty() { "." } else { &rel });
+        let title = format!("{} in {}", if dir { "New folder" } else { "New file" }, if rel.is_empty() { "." } else { &rel });
         let kind = if dir { PromptKind::NewDir { dir: d } } else { PromptKind::NewFile { dir: d } };
         self.overlay = Overlay::Prompt(Prompt { kind, title, field: TextField::default() });
     }
@@ -38,7 +38,7 @@ impl App {
     pub fn prompt_rename_path(&mut self) {
         let Some(p) = self.target_path() else { return };
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        self.overlay = Overlay::Prompt(Prompt { title: format!("Renomear {name}"), kind: PromptKind::RenamePath { from: p }, field: TextField::with(&name) });
+        self.overlay = Overlay::Prompt(Prompt { title: format!("Rename {name}"), kind: PromptKind::RenamePath { from: p }, field: TextField::with(&name) });
     }
 
     pub fn prompt_delete_path(&mut self) {
@@ -47,8 +47,8 @@ impl App {
         }
         let Some(p) = self.target_path() else { return };
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let what = if p.is_dir() { "a pasta (e tudo dentro)" } else { "o arquivo" };
-        self.overlay = Overlay::Prompt(Prompt { title: format!("Excluir {what} {name}? Digite 'sim' para confirmar"), kind: PromptKind::DeletePath { path: p }, field: TextField::default() });
+        let what = if p.is_dir() { "the folder (and everything in it)" } else { "the file" };
+        self.overlay = Overlay::Prompt(Prompt { title: format!("Delete {what} {name}? Type 'yes' to confirm"), kind: PromptKind::DeletePath { path: p }, field: TextField::default() });
     }
 
     pub fn refresh_tree(&mut self) {
@@ -75,13 +75,13 @@ impl App {
                 self.refresh_tree();
                 if is_dir {
                     self.tree.reveal(&path);
-                    self.say(format!("pasta criada: {name}"));
+                    self.say(format!("folder created: {name}"));
                 } else {
                     self.open_path(&path, None);
                     self.focus = Focus::Editor;
                 }
             }
-            Err(e) => self.say(format!("erro ao criar: {e}")),
+            Err(e) => self.say(format!("error creating: {e}")),
         }
     }
 
@@ -95,18 +95,18 @@ impl App {
             return;
         }
         if to.exists() {
-            return self.say(format!("já existe: {new_name}"));
+            return self.say(format!("already exists: {new_name}"));
         }
         if let Some(parent) = to.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Err(e) = std::fs::rename(from, &to) {
-            return self.say(format!("erro ao renomear: {e}"));
+            return self.say(format!("error renaming: {e}"));
         }
         self.repoint_docs(from, &to);
         self.refresh_tree();
         self.tree.reveal(&to);
-        self.say(format!("renomeado para {new_name}"));
+        self.say(format!("renamed to {new_name}"));
     }
 
     /// Re-point open documents after `from` moved to `to` (the file itself, or anything inside a
@@ -141,9 +141,9 @@ impl App {
                     }
                 }
                 self.refresh_tree();
-                self.say(format!("excluído: {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                self.say(format!("deleted: {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
             }
-            Err(e) => self.say(format!("erro ao excluir: {e}")),
+            Err(e) => self.say(format!("error deleting: {e}")),
         }
     }
 }

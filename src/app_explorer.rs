@@ -2,7 +2,7 @@
 //! selects a range, Shift+arrows extend it), `Ctrl+C` / `Ctrl+X` / `Ctrl+V` with the internal file
 //! clipboard (it holds several paths), actions on the whole selection, and drag-and-drop of files
 //! and folders onto folders of the tree (Ctrl while dropping copies). Moves follow the paste rules:
-//! a taken name becomes "name (cópia)", and open tabs follow the files that moved.
+//! a taken name becomes "name (copy)", and open tabs follow the files that moved.
 
 use crate::{
     app::{App, Focus, ROW_H, SidebarMode, TAB_H},
@@ -171,8 +171,8 @@ impl App {
             self.tree.select_paths(&done);
         }
         match (err, done.len()) {
-            (Some(e), _) => self.say(format!("erro ao {}: {e}", if cut { "mover" } else { "colar" })),
-            (None, 0) => self.say("já está nesta pasta"),
+            (Some(e), _) => self.say(format!("error while {}: {e}", if cut { "moving" } else { "pasting" })),
+            (None, 0) => self.say("already in this folder"),
             (None, n) => self.say(format!("{} {}", if n == 1 { "1 item".to_string() } else { format!("{n} itens") }, if cut { "movido(s)" } else { "copiado(s)" })),
         }
         done
@@ -244,9 +244,9 @@ impl App {
         self.tree.selected.clear();
         self.refresh_tree();
         self.watch_dirs();
-        let verb = if trash { "movido(s) para a lixeira" } else { "excluído(s)" };
+        let verb = if trash { "moved to trash" } else { "deleted" };
         match err {
-            Some(e) => self.say(format!("erro: {e} ({ok} {verb})")),
+            Some(e) => self.say(format!("error: {e} ({ok} {verb})")),
             None if ok == 1 => self.say(format!("{verb}: {}", describe(paths))),
             None => self.say(format!("{ok} itens {verb}")),
         }
@@ -273,10 +273,10 @@ impl App {
                 None => cv.ring(body.inset(2), 8, c.accent.with_alpha(0xc0)),
             }
         }
-        let verb = if d.copy { "Copiar" } else { "Mover" };
+        let verb = if d.copy { "Copy" } else { "Move" };
         let label = match &d.over {
             Some(dir) => {
-                let to = if *dir == self.root { "raiz".to_string() } else { name_of(dir) };
+                let to = if *dir == self.root { "root".to_string() } else { name_of(dir) };
                 format!("{verb} {} → {to}", describe(&d.paths))
             }
             None => describe(&d.paths),

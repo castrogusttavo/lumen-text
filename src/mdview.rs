@@ -2337,7 +2337,7 @@ impl MdView {
                                 let dclip = cv.to_dev(clip);
                                 crate::mdimg::blit(cv, dev.x, dev.y, &p, dclip);
                                 // First frame only: say so instead of looking like a broken animation.
-                                let label = "animado";
+                                let label = "animated";
                                 let lw = tx.ui_width_sized(label, false, SIZES[TINY]);
                                 let pill = Rect::new(sr.x + 6, sr.y + 6, lw + 12, 18).intersect(&sr);
                                 round_clip(cv, pill, 9, pal.bg.with_alpha(0xd0), clip);
@@ -2346,7 +2346,7 @@ impl MdView {
                             Tex::Pending => card_clip(cv, sr, 4, pal.widget, pal.border, clip),
                             Tex::Failed => {
                                 card_clip(cv, sr, 4, pal.widget, pal.border, clip);
-                                tx.draw_ui_sized(cv, sr.x + 8, sr.y + 6, "imagem indisponível", pal.dim, clip.intersect(&sr), false, SIZES[TINY]);
+                                tx.draw_ui_sized(cv, sr.x + 8, sr.y + 6, "image unavailable", pal.dim, clip.intersect(&sr), false, SIZES[TINY]);
                             }
                         }
                     }

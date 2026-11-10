@@ -637,7 +637,7 @@ mod tests {
     #[test]
     #[ignore]
     fn accessibility_report() {
-        println!("| tema | pior par (antes) | antes | depois |\n|---|---|---:|---:|");
+        println!("| theme | worst pair (before) | before | after |\n|---|---|---:|---:|");
         let (before, after) = (bundled_with(false), bundled_with(true));
         for ((name, tb), (_, ta)) in before.iter().zip(after.iter()) {
             let (ab, aa) = (audit(tb), audit(ta));

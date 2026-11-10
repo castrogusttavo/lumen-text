@@ -273,7 +273,7 @@ impl App {
         }
     }
 
-    /// Palette "Verificar atualizações": always ends in a card (up to date / available / error).
+    /// Palette "Check for updates": always ends in a card (up to date / available / error).
     pub fn update_check_manual(&mut self) {
         if let Phase::Ready(r) = self.upd.phase.clone() {
             self.upd.card = Some(Card::Ready(r));
@@ -304,9 +304,9 @@ impl App {
 
     pub fn update_indicator_tip(&self) -> (String, Option<String>) {
         match &self.upd.phase {
-            Phase::Ready(r) => (format!("Lumen {} está pronto", r.version), Some("Clique para reiniciar e atualizar".into())),
-            Phase::Available(r) => (format!("Lumen {} disponível", r.version), Some("Clique para ver como atualizar".into())),
-            Phase::Idle => ("Atualizações".into(), None),
+            Phase::Ready(r) => (format!("Lumen {} is ready", r.version), Some("Click to restart and update".into())),
+            Phase::Available(r) => (format!("Lumen {} available", r.version), Some("Click to see how to update".into())),
+            Phase::Idle => ("Updates".into(), None),
         }
     }
 
@@ -315,7 +315,7 @@ impl App {
         if self.upd.ready() {
             self.update_restart();
         } else {
-            self.say("Nenhuma atualização pronta — use \"Verificar atualizações\"");
+            self.say("No update ready — use \"Check for updates\"");
         }
     }
 
@@ -324,11 +324,11 @@ impl App {
     pub fn update_restart(&mut self) {
         let Some((_, exe)) = self.upd.installed.clone() else { return };
         if self.docs.iter().any(|d| d.buf.is_dirty()) {
-            self.say("Salve os arquivos antes de reiniciar para atualizar");
+            self.say("Save your files before restarting to update");
             return self.request_redraw();
         }
         if !exe.exists() {
-            self.say(format!("Não encontrei {} — abra o Lumen de novo manualmente", exe.display()));
+            self.say(format!("Could not find {} — reopen Lumen manually", exe.display()));
             return self.request_redraw();
         }
         if !self.try_quit() {
@@ -345,49 +345,49 @@ impl App {
         let env = &self.upd.env;
         let notes = |r: &Release| update::notes_summary(&r.notes, 3, 70);
         match card {
-            Card::Checking => ("Verificando atualizações…".into(), vec![], vec![], None),
+            Card::Checking => ("Checking for updates…".into(), vec![], vec![], None),
             Card::Downloading(v) => {
                 let mb = self.upd.progress.load(Ordering::Relaxed) as f64 / 1_048_576.0;
                 (format!("Baixando o Lumen {v}…"), vec![format!("{mb:.1} MB baixados")], vec![], None)
             }
             Card::UpToDate => {
-                let local = if update::is_release_build(&env.current) { "" } else { " (build local)" };
-                ("O Lumen está atualizado".into(), vec![format!("Versão {}{local}", env.current)], vec![(Btn::Close, "Fechar", true)], None)
+                let local = if update::is_release_build(&env.current) { "" } else { " (local build)" };
+                ("Lumen is up to date".into(), vec![format!("Version {}{local}", env.current)], vec![(Btn::Close, "Close", true)], None)
             }
             Card::Ready(r) => {
-                let mut body = vec!["Reinicie para atualizar. Suas abas e sessão são restauradas.".to_string()];
+                let mut body = vec!["Restart to update. Your tabs and session are restored.".to_string()];
                 body.extend(notes(r));
-                (format!("Lumen {} está pronto — Reinicie para atualizar", r.version), body, vec![(Btn::Close, "Depois", false), (Btn::Restart, "Reiniciar agora", true)], Some((Btn::Notes, "Notas da versão")))
+                (format!("Lumen {} is ready — Restart to update", r.version), body, vec![(Btn::Close, "Later", false), (Btn::Restart, "Restart now", true)], Some((Btn::Notes, "Release notes")))
             }
             Card::Available(r) => {
                 let mut body = Vec::new();
-                let mut buttons = vec![(Btn::Close, "Depois", false)];
+                let mut buttons = vec![(Btn::Close, "Later", false)];
                 if env.kind.can_self_update() && r.asset.is_some() {
-                    body.push("A nova versão será baixada, verificada e instalada em segundo plano.".to_string());
-                    buttons.push((Btn::Install, "Atualizar agora", true));
+                    body.push("The new version will be downloaded, verified and installed in the background.".to_string());
+                    buttons.push((Btn::Install, "Update now", true));
                 } else if let Some(cmd) = &r.command {
-                    body.push("Instalado pelo gerenciador de pacotes. Para atualizar, rode:".to_string());
+                    body.push("Installed by the package manager. To update, run:".to_string());
                     body.push(format!("\u{1}{cmd}"));
-                    buttons.push((Btn::CopyCommand, "Copiar comando", true));
+                    buttons.push((Btn::CopyCommand, "Copy command", true));
                 } else if matches!(env.kind, InstallKind::System) {
-                    body.push("Instalado pelo gerenciador de pacotes: baixe o pacote da nova versão na página de releases.".to_string());
-                    buttons.push((Btn::Notes, "Abrir página", true));
+                    body.push("Installed by the package manager: download the new version's package from the releases page.".to_string());
+                    buttons.push((Btn::Notes, "Open page", true));
                 } else {
-                    body.push("Baixe a nova versão na página de releases, ou rode \"lumen-text --install-user\" a partir dela para ter atualizações automáticas.".to_string());
-                    buttons.push((Btn::Notes, "Abrir página", true));
+                    body.push("Download the new version from the releases page, or run \"lumen-text --install-user\" from it to get automatic updates.".to_string());
+                    buttons.push((Btn::Notes, "Open page", true));
                 }
                 body.extend(notes(r));
-                (format!("Lumen {} disponível", r.version), body, buttons, Some((Btn::Notes, "Notas da versão")))
+                (format!("Lumen {} available", r.version), body, buttons, Some((Btn::Notes, "Release notes")))
             }
-            Card::Error(e) => ("Não foi possível verificar atualizações".into(), vec![e.clone()], vec![(Btn::Close, "Fechar", false), (Btn::CheckAgain, "Tentar de novo", true)], None),
+            Card::Error(e) => ("Could not check for updates".into(), vec![e.clone()], vec![(Btn::Close, "Close", false), (Btn::CheckAgain, "Try again", true)], None),
             Card::About => {
                 let mode = match self.config.updates.as_str() {
-                    "off" => "desligadas",
-                    "notify" => "só avisar",
-                    _ => "automáticas",
+                    "off" => "off",
+                    "notify" => "notify only",
+                    _ => "automatic",
                 };
-                let how = if env.kind.can_self_update() { env.kind.label().to_string() } else { format!("{} (sem autoatualização)", env.kind.label()) };
-                (format!("Lumen {}", env.current), vec![format!("Instalação: {how}"), format!("Atualizações: {mode}"), format!("github.com/{}", update::REPO)], vec![(Btn::Close, "Fechar", false), (Btn::CheckAgain, "Verificar atualizações", true)], None)
+                let how = if env.kind.can_self_update() { env.kind.label().to_string() } else { format!("{} (no self-update)", env.kind.label()) };
+                (format!("Lumen {}", env.current), vec![format!("Installation: {how}"), format!("Updates: {mode}"), format!("github.com/{}", update::REPO)], vec![(Btn::Close, "Close", false), (Btn::CheckAgain, "Check for updates", true)], None)
             }
         }
     }
@@ -509,7 +509,7 @@ impl App {
             Btn::CopyCommand => {
                 if let Some(cmd) = rel.and_then(|r| r.command) {
                     self.clip.set(&cmd);
-                    self.say("comando copiado");
+                    self.say("command copied");
                 }
                 self.upd.card = None;
             }

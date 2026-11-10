@@ -338,9 +338,9 @@ mod tests {
         Key::Character(s.into())
     }
 
-    /// Combo a palette hint stands for: "Ctrl+K R" is a chord, "A (explorador)" an explorer key.
+    /// Combo a palette hint stands for: "Ctrl+K R" is a chord, "A (explorer)" an explorer key.
     fn palette_combo(text: &str) -> String {
-        match text.strip_suffix(" (explorador)") {
+        match text.strip_suffix(" (explorer)") {
             Some(t) => format!("{EXPLORER}{}", normalize(t)),
             None => normalize(text),
         }

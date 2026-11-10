@@ -85,58 +85,58 @@ pub fn default_settings() -> Vec<SettingDef> {
     use SettingKind::*;
     let d = |key, section, label, help, kind| SettingDef { key, section, label, help, kind };
     vec![
-        d("format_on_save", "Geral", "Formatar ao salvar", "Roda o formatador do servidor de linguagem sempre que um arquivo é salvo.", Bool),
-        d("updates", "Geral", "Atualizações", "Automático verifica a cada 4 horas e baixa a nova versão em segundo plano; Avisar só mostra um aviso; Desligado nunca verifica (o comando \"Verificar atualizações\" continua funcionando).", Choice(&["auto", "notify", "off"])),
-        d("font_size", "Editor", "Tamanho da fonte", "Tamanho do texto do código em pixels (8 a 40). Ctrl + roda do mouse ajusta temporariamente.", Number { min: 8.0, max: 40.0, step: 1.0 }),
+        d("format_on_save", "General", "Format on save", "Runs the language server's formatter every time a file is saved.", Bool),
+        d("updates", "General", "Updates", "Automatic checks every 4 hours and downloads the new version in the background; Notify only shows a notice; Off never checks (the \"Check for updates\" command still works).", Choice(&["auto", "notify", "off"])),
+        d("font_size", "Editor", "Font size", "Code text size in pixels (8 to 40). Ctrl + mouse wheel adjusts it temporarily.", Number { min: 8.0, max: 40.0, step: 1.0 }),
         // --- not in config.rs yet (see PENDING_KEYS) ---
-        d("minimap", "Editor", "Minimapa", "Mostra a miniatura do arquivo na borda direita do editor.", Bool),
-        d("minimap_style", "Editor", "Estilo do minimapa", "Sutil é mais estreito e de baixo contraste; Normal é a aparência original.", Choice(&["subtle", "normal"])),
-        d("word_wrap", "Editor", "Quebra de linha", "Quebra linhas longas na largura da janela em vez de rolar na horizontal.", Bool),
-        d("sticky_scroll", "Editor", "Rolagem fixa", "Mantém os escopos (função, classe) visíveis no topo enquanto você rola.", Bool),
-        d("tab_width", "Editor", "Largura da tabulação", "Quantas colunas um caractere de tabulação ocupa no editor (2, 4 ou 8). A indentação por arquivo continua na barra inferior.", Choice(&["2", "4", "8"])),
-        d("indent_guides", "Editor", "Guias de indentação", "Desenha linhas verticais finas nos níveis de indentação.", Bool),
-        d("breadcrumbs", "Editor", "Breadcrumbs", "Mostra o caminho do arquivo e dos símbolos acima do editor. Desligado, o editor ocupa o espaço da linha.", Bool),
+        d("minimap", "Editor", "Minimap", "Shows a thumbnail of the file at the right edge of the editor.", Bool),
+        d("minimap_style", "Editor", "Minimap style", "Subtle is narrower and low-contrast; Normal is the original look.", Choice(&["subtle", "normal"])),
+        d("word_wrap", "Editor", "Word wrap", "Wraps long lines at the window width instead of scrolling horizontally.", Bool),
+        d("sticky_scroll", "Editor", "Sticky scroll", "Keeps the enclosing scopes (function, class) visible at the top while you scroll.", Bool),
+        d("tab_width", "Editor", "Tab width", "How many columns a tab character takes in the editor (2, 4 or 8). Per-file indentation stays in the bottom bar.", Choice(&["2", "4", "8"])),
+        d("indent_guides", "Editor", "Indent guides", "Draws thin vertical lines at the indentation levels.", Bool),
+        d("breadcrumbs", "Editor", "Breadcrumbs", "Shows the file path and symbols above the editor. When off, the editor takes the row's space.", Bool),
         // --- end of pending keys ---
-        d("appearance", "Aparência", "Modo de aparência", "Fixo usa o tema escolhido; Sistema segue o claro/escuro da área de trabalho.", Choice(&["fixed", "system"])),
-        d("theme", "Aparência", "Tema", "Tema de cores usado no modo fixo.", Choice(&[])),
-        d("theme_light", "Aparência", "Tema claro", "Tema usado quando o sistema está no modo claro (aparência: sistema).", Choice(&[])),
-        d("theme_dark", "Aparência", "Tema escuro", "Tema usado quando o sistema está no modo escuro (aparência: sistema).", Choice(&[])),
-        d("theme_chrome", "Aparência", "Cores da interface", "Derivadas mantém o visual calmo e plano de sempre; Do tema usa a barra lateral, as abas e a barra inferior do próprio tema quando o texto continua legível (o resto cai no visual derivado).", Choice(&["derived", "theme"])),
-        d("ui_scale", "Aparência", "Escala da interface", "Escala de telas hi-DPI (0,5 a 4). 0 = automático, usa a escala do sistema (também aceita LUMEN_SCALE).", Number { min: 0.0, max: 4.0, step: 0.25 }),
-        d("auto_import", "TypeScript", "Importação automática", "Adiciona imports ausentes automaticamente ao aceitar uma sugestão.", Bool),
-        d("lsp_narrow", "TypeScript", "Modo enxuto", "Limita o servidor de linguagem ao essencial para gastar menos memória e CPU.", Bool),
-        d("code_lens", "TypeScript", "Code lens", "Mostra contagem de referências e implementações ao lado dos símbolos (custa CPU do servidor).", Bool),
-        d("code_lens_refs", "TypeScript", "Code lens: referências", "Mostra \"N referências\" (precisa do Code lens ligado).", Bool),
-        d("code_lens_impls", "TypeScript", "Code lens: implementações", "Mostra \"N implementações\" (precisa do Code lens ligado).", Bool),
-        d("inlay_hints", "TypeScript", "Inlay hints", "Mostra tipos inferidos e nomes de parâmetros em cinza dentro do código (só para as linhas visíveis).", Bool),
-        d("inlay_hints_params", "TypeScript", "Inlay hints: parâmetros", "Mostra o nome do parâmetro antes de cada argumento (precisa dos Inlay hints ligados).", Bool),
-        d("inlay_hints_types", "TypeScript", "Inlay hints: tipos", "Mostra os tipos inferidos de variáveis, parâmetros e retornos; clique duplo no tipo insere a anotação, Ctrl+clique vai à definição (precisa dos Inlay hints ligados).", Bool),
-        d("tsgo_source", "TypeScript", "Origem do tsgo", "Automático usa o tsgo do projeto se instalado, senão o embutido.", Choice(&["auto", "project", "bundled"])),
-        d("git_pull_strategy", "Git", "Estratégia do pull", "Como o Pull integra os commits do remoto quando os históricos divergiram. \"Perguntar\" mostra a escolha na hora; também dá para trocar com o botão direito em Pull.", Choice(&["ask", "merge", "rebase", "ff-only"])),
-        d("git_blame", "Git", "Git blame na linha", "Mostra autor e data do último commit da linha do cursor, em cinza ao fim da linha. Também no comando \"Alternar git blame\".", Bool),
+        d("appearance", "Appearance", "Appearance mode", "Fixed uses the chosen theme; System follows the desktop light/dark setting.", Choice(&["fixed", "system"])),
+        d("theme", "Appearance", "Theme", "Color theme used in fixed mode.", Choice(&[])),
+        d("theme_light", "Appearance", "Light theme", "Theme used when the system is in light mode (appearance: system).", Choice(&[])),
+        d("theme_dark", "Appearance", "Dark theme", "Theme used when the system is in dark mode (appearance: system).", Choice(&[])),
+        d("theme_chrome", "Appearance", "Interface colors", "Derived keeps the usual calm, flat look; From theme uses the theme's own sidebar, tabs and bottom bar when the text stays legible (the rest falls back to the derived look).", Choice(&["derived", "theme"])),
+        d("ui_scale", "Appearance", "Interface scale", "Scale for hi-DPI screens (0.5 to 4). 0 = automatic, uses the system scale (LUMEN_SCALE is also accepted).", Number { min: 0.0, max: 4.0, step: 0.25 }),
+        d("auto_import", "TypeScript", "Auto import", "Automatically adds missing imports when you accept a suggestion.", Bool),
+        d("lsp_narrow", "TypeScript", "Lean mode", "Limits the language server to the essentials to use less memory and CPU.", Bool),
+        d("code_lens", "TypeScript", "Code lens", "Shows reference and implementation counts next to symbols (costs server CPU).", Bool),
+        d("code_lens_refs", "TypeScript", "Code lens: references", "Shows \"N references\" (needs Code lens on).", Bool),
+        d("code_lens_impls", "TypeScript", "Code lens: implementations", "Shows \"N implementations\" (needs Code lens on).", Bool),
+        d("inlay_hints", "TypeScript", "Inlay hints", "Shows inferred types and parameter names in gray inside the code (visible lines only).", Bool),
+        d("inlay_hints_params", "TypeScript", "Inlay hints: parameters", "Shows the parameter name before each argument (needs Inlay hints on).", Bool),
+        d("inlay_hints_types", "TypeScript", "Inlay hints: types", "Shows inferred types of variables, parameters and returns; double-click a type to insert the annotation, Ctrl+click goes to the definition (needs Inlay hints on).", Bool),
+        d("tsgo_source", "TypeScript", "tsgo source", "Automatic uses the project's tsgo if installed, otherwise the bundled one.", Choice(&["auto", "project", "bundled"])),
+        d("git_pull_strategy", "Git", "Pull strategy", "How Pull integrates the remote commits when the histories have diverged. \"Ask\" shows the choice on the spot; you can also change it by right-clicking Pull.", Choice(&["ask", "merge", "rebase", "ff-only"])),
+        d("git_blame", "Git", "Git blame on line", "Shows the author and date of the last commit on the cursor line, in gray at the end of the line. Also available as the \"Toggle git blame\" command.", Bool),
         // Bottom bar: one switch per item. The sidebar toggle (left corner) is mandatory and has none.
-        d("status_search", "Barra inferior", "Buscar no projeto", "Botão de busca no projeto (canto esquerdo).", Bool),
-        d("status_problems", "Barra inferior", "Problemas", "Contagem de erros e avisos (canto esquerdo).", Bool),
-        d("status_position", "Barra inferior", "Linha e coluna", "Posição do cursor (Ln, Col) e quantidade de cursores.", Bool),
-        d("status_indent", "Barra inferior", "Indentação", "Espaços ou tabulação do arquivo.", Bool),
-        d("status_language", "Barra inferior", "Linguagem", "Linguagem do arquivo ativo.", Bool),
-        d("status_terminal", "Barra inferior", "Terminal", "Botão que abre o terminal integrado.", Bool),
-        d("status_debug", "Barra inferior", "Depuração", "Botão que abre o painel de depuração.", Bool),
-        d("status_git", "Barra inferior", "Git", "Botão do painel Git com a contagem de arquivos alterados.", Bool),
-        d("status_ram", "Barra inferior", "Memória", "Uso de memória do editor e dos servidores de linguagem.", Bool),
+        d("status_search", "Status bar", "Search in project", "Project search button (left corner).", Bool),
+        d("status_problems", "Status bar", "Problems", "Error and warning counts (left corner).", Bool),
+        d("status_position", "Status bar", "Line and column", "Cursor position (Ln, Col) and number of cursors.", Bool),
+        d("status_indent", "Status bar", "Indentation", "The file's spaces or tabs.", Bool),
+        d("status_language", "Status bar", "Language", "Language of the active file.", Bool),
+        d("status_terminal", "Status bar", "Terminal", "Button that opens the integrated terminal.", Bool),
+        d("status_debug", "Status bar", "Debug", "Button that opens the debug panel.", Bool),
+        d("status_git", "Status bar", "Git", "Git panel button with the changed-file count.", Bool),
+        d("status_ram", "Status bar", "Memory", "Memory use of the editor and the language servers.", Bool),
         // Order of the items: a stepper per item with its position among the visible ones of its group
         // (1 = leftmost); - moves it left, + moves it right, hopping over hidden items.
-        d("status_pos_sidebar", "Barra inferior", "Ordem: Barra lateral", "Posição no grupo da esquerda (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 3.0, step: 1.0 }),
-        d("status_pos_search", "Barra inferior", "Ordem: Buscar no projeto", "Posição no grupo da esquerda (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 3.0, step: 1.0 }),
-        d("status_pos_problems", "Barra inferior", "Ordem: Problemas", "Posição no grupo da esquerda (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 3.0, step: 1.0 }),
-        d("status_pos_position", "Barra inferior", "Ordem: Linha e coluna", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_indent", "Barra inferior", "Ordem: Indentação", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_language", "Barra inferior", "Ordem: Linguagem", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_terminal", "Barra inferior", "Ordem: Terminal", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_debug", "Barra inferior", "Ordem: Depuração", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_git", "Barra inferior", "Ordem: Git", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("status_pos_ram", "Barra inferior", "Ordem: Memória", "Posição no grupo da direita (1 = mais à esquerda); − e + movem pulando os itens ocultos.", Number { min: 1.0, max: 7.0, step: 1.0 }),
-        d("ram_display", "Barra inferior", "Formato da memória", "Longa mostra os números (\"RAM 13 MB + tsgo 65 MB\"); curta mostra só um ícone de chip, com os valores no tooltip.", Choice(&["long", "short"])),
+        d("status_pos_sidebar", "Status bar", "Order: Sidebar", "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 3.0, step: 1.0 }),
+        d("status_pos_search", "Status bar", "Order: Search in project", "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 3.0, step: 1.0 }),
+        d("status_pos_problems", "Status bar", "Order: Problems", "Position in the left group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 3.0, step: 1.0 }),
+        d("status_pos_position", "Status bar", "Order: Line and column", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_indent", "Status bar", "Order: Indentation", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_language", "Status bar", "Order: Language", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_terminal", "Status bar", "Order: Terminal", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_debug", "Status bar", "Order: Debug", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_git", "Status bar", "Order: Git", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("status_pos_ram", "Status bar", "Order: Memory", "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.", Number { min: 1.0, max: 7.0, step: 1.0 }),
+        d("ram_display", "Status bar", "Memory format", "Long shows the numbers (\"RAM 13 MB + tsgo 65 MB\"); Short shows just a chip icon, with the values in the tooltip.", Choice(&["long", "short"])),
     ]
 }
 
@@ -166,22 +166,22 @@ pub fn default_values() -> Value {
 
 fn choice_label(s: &str) -> String {
     match s {
-        "fixed" => "Fixo".into(),
-        "system" => "Sistema".into(),
-        "auto" => "Automático".into(),
-        "notify" => "Avisar".into(),
-        "off" => "Desligado".into(),
-        "project" => "Projeto".into(),
-        "bundled" => "Embutido".into(),
-        "long" => "Longa".into(),
-        "short" => "Curta".into(),
-        "derived" => "Derivadas".into(),
-        "theme" => "Do tema".into(),
-        "ask" => "Perguntar".into(),
+        "fixed" => "Fixed".into(),
+        "system" => "System".into(),
+        "auto" => "Automatic".into(),
+        "notify" => "Notify".into(),
+        "off" => "Off".into(),
+        "project" => "Project".into(),
+        "bundled" => "Bundled".into(),
+        "long" => "Long".into(),
+        "short" => "Short".into(),
+        "derived" => "Derived".into(),
+        "theme" => "From theme".into(),
+        "ask" => "Ask".into(),
         "merge" => "Merge".into(),
         "rebase" => "Rebase".into(),
-        "ff-only" => "Só avanço".into(),
-        "subtle" => "Sutil".into(),
+        "ff-only" => "Fast-forward only".into(),
+        "subtle" => "Subtle".into(),
         "normal" => "Normal".into(),
         o => o.to_string(),
     }
@@ -189,13 +189,13 @@ fn choice_label(s: &str) -> String {
 
 fn section_icon(s: &str) -> &'static str {
     match s {
-        "Geral" => "settings",
+        "General" => "settings",
         "Editor" => "edit",
-        "Aparência" => "palette",
+        "Appearance" => "palette",
         "TypeScript" => "code",
         "Git" => "branch",
         "Terminal" => "terminal",
-        "Barra inferior" => "layout",
+        "Status bar" => "layout",
         _ => "settings",
     }
 }
@@ -739,7 +739,7 @@ enum Mode {
     Record,
     /// The captured combo belongs to `other` (a command id): waiting for "Substituir".
     Confirm { combo: String, other: String },
-    /// Waiting for confirmation of "Restaurar padrões".
+    /// Waiting for confirmation of "Restore defaults".
     ConfirmReset,
 }
 
@@ -810,7 +810,7 @@ pub fn combo_chips(combo: &str) -> Vec<String> {
                 "ctrl" => "Ctrl".into(),
                 "shift" => "Shift".into(),
                 "alt" => "Alt".into(),
-                "explorer" => "Explorador".into(),
+                "explorer" => "Explorer".into(),
                 "up" => "↑".into(),
                 "down" => "↓".into(),
                 "left" => "←".into(),
@@ -1113,7 +1113,7 @@ impl KeybindsPage {
         self.note = None;
     }
 
-    /// Accept the pending "Substituir" / "Restaurar padrões" question.
+    /// Accept the pending "Replace" / "Restore defaults" question.
     pub fn confirm(&mut self) -> Event {
         match self.mode.clone() {
             Mode::Confirm { combo, .. } => match self.selected_id().map(str::to_string) {
@@ -1152,7 +1152,7 @@ impl KeybindsPage {
             _ => {}
         }
         if !(ctrl || alt || is_fkey(&name)) {
-            self.note = Some("Use Ctrl ou Alt junto com a tecla (ou uma tecla F).".into());
+            self.note = Some("Use Ctrl or Alt together with the key (or an F key).".into());
             self.mode = Mode::Record;
             return Event::None;
         }
@@ -1161,7 +1161,7 @@ impl KeybindsPage {
         match self.owner_of(&combo).map(str::to_string) {
             Some(o) if o == id => {
                 self.mode = Mode::Browse;
-                self.note = Some("Esse atalho já está atribuído a este comando.".into());
+                self.note = Some("That shortcut is already assigned to this command.".into());
                 Event::None
             }
             Some(o) => {
@@ -1524,7 +1524,7 @@ impl Modal {
 
         // Header: page tabs + close button.
         let mut x = r.x + 18;
-        for (page, icon, label) in [(Page::Settings, "settings", "Configurações"), (Page::Keybinds, "keyboard", "Atalhos de teclado")] {
+        for (page, icon, label) in [(Page::Settings, "settings", "Settings"), (Page::Keybinds, "keyboard", "Keyboard shortcuts")] {
             let active = self.page == page;
             let tw = tx.ui_width(label, active);
             let tab = Rect::new(x, r.y + 9, 16 + 8 + tw + 28, 30);
@@ -1539,7 +1539,7 @@ impl Modal {
         let close = Rect::new(r.right() - 18 - 28, r.y + 10, 28, 28);
         tx.icon(cv, "hugeicons/close", close.x + 6, close.y + 6, 16, dim, close);
         self.hits.push((close, Hit::Close));
-        let hint = "Ctrl+Tab alterna";
+        let hint = "Ctrl+Tab switches";
         let hw = tx.ui_width(hint, false);
         if close.x - hw - 20 > x {
             tx.draw_ui(cv, close.x - hw - 12, r.y + 15, hint, dim.with_alpha(160), r, false);
@@ -1711,7 +1711,7 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
     let rx = area.x + SIDE_W + 16;
     let rw = area.w - SIDE_W - 32;
     let sb = Rect::new(rx, area.y + 12, rw, 34);
-    search_box(cv, tx, th, sb, &p.search, "Buscar configurações…", p.edit.is_none());
+    search_box(cv, tx, th, sb, &p.search, "Search settings…", p.edit.is_none());
     hits.push((sb, Hit::Search));
 
     let list = Rect::new(rx - 8, sb.bottom() + 10, rw + 16, (area.bottom() - 30 - (sb.bottom() + 10)).max(0));
@@ -1722,7 +1722,7 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
     }
     let mut drop_anchor: Option<Rect> = None;
     if vis.is_empty() {
-        let msg = "Nenhuma configuração encontrada";
+        let msg = "No settings found";
         let w = tx.ui_width(msg, false);
         tx.draw_ui(cv, list.x + (list.w - w) / 2, list.y + 40, msg, dim, list, false);
     }
@@ -1902,7 +1902,7 @@ fn draw_settings(p: &mut SettingsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
     }
 
     // Footer hint.
-    let hint = fit(tx, "↑↓ navegar   Enter/Espaço alterar   ←→ ajustar   Tab trocar de seção   Esc fechar", rw, false);
+    let hint = fit(tx, "↑↓ navigate   Enter/Space change   ←→ adjust   Tab switch section   Esc close", rw, false);
     tx.draw_ui(cv, rx, area.bottom() - 26, &hint, dim.with_alpha(170), area, false);
     Some(list_info)
 }
@@ -1915,7 +1915,7 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
     let dim = c.tab_inactive_fg;
     let pad = 20;
 
-    let btn_label = "Restaurar padrões";
+    let btn_label = "Restore defaults";
     let bw = tx.ui_width(btn_label, false) + 52;
     let btn = Rect::new(area.right() - pad - bw, area.y + 12, bw, 34);
     cv.card(btn, 8, c.input_bg, c.border);
@@ -1923,7 +1923,7 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
     tx.draw_ui(cv, btn.x + 36, btn.y + 8, btn_label, fg, btn, false);
     hits.push((btn, Hit::KbResetAll));
     let fr = Rect::new(area.x + pad, area.y + 12, btn.x - 10 - (area.x + pad), 34);
-    search_box(cv, tx, th, fr, &p.filter, "Filtrar comandos ou atalhos…", p.mode == Mode::Browse);
+    search_box(cv, tx, th, fr, &p.filter, "Filter commands or shortcuts…", p.mode == Mode::Browse);
     hits.push((fr, Hit::Search));
 
     // Column captions.
@@ -1932,7 +1932,7 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
     let row_x = list.x + 12;
     let tw = list.w - 10 - 24 - 30;
     let (c2, c3) = (row_x + tw * 40 / 100, row_x + tw * 76 / 100);
-    for (x, t) in [(row_x, "Comando"), (c2, "Atalho"), (c3, "Padrão")] {
+    for (x, t) in [(row_x, "Command"), (c2, "Shortcut"), (c3, "Default")] {
         tx.draw_ui(cv, x, hdr_y + 2, t, dim, area, true);
     }
     cv.fill(Rect::new(area.x + pad - 8, hdr_y + 23, list.w, 1), c.border);
@@ -1943,7 +1943,7 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
         p.sel = p.filtered.len().saturating_sub(1);
     }
     if p.filtered.is_empty() {
-        let msg = "Nenhum comando encontrado";
+        let msg = "No commands found";
         let w = tx.ui_width(msg, false);
         tx.draw_ui(cv, list.x + (list.w - w) / 2, list.y + 40, msg, dim, list, false);
     }
@@ -1973,7 +1973,7 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
                 _ => {
                     let cell = Rect::new(c2 - 6, cy - 13, c3 - c2 - 4, 26);
                     card_c(cv, cell, 6, c.input_bg, c.accent, clip);
-                    let t = fit(tx, "Pressione o novo atalho…", cell.w - 16, false);
+                    let t = fit(tx, "Press the new shortcut…", cell.w - 16, false);
                     tx.draw_ui(cv, cell.x + 8, cell.y + 4, &t, c.accent_text, cell.intersect(&clip), false);
                 }
             }
@@ -2009,7 +2009,7 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
         Mode::Browse => {
             let (text, col) = match &p.note {
                 Some(m) => (m.clone(), c.warning),
-                None => ("Enter gravar atalho   Del remover   Ctrl+R restaurar linha   Ctrl+Shift+R restaurar tudo   Esc fechar".to_string(), dim.with_alpha(170)),
+                None => ("Enter record shortcut   Del remove   Ctrl+R restore row   Ctrl+Shift+R restore all   Esc close".to_string(), dim.with_alpha(170)),
             };
             let text = fit(tx, &text, area.w - 2 * pad, false);
             tx.draw_ui(cv, left, ty, &text, col, area, false);
@@ -2018,21 +2018,21 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
             let name = p.selected_id().map(|i| p.label_of(i)).unwrap_or_default();
             let (text, col) = match &p.note {
                 Some(m) => (m.clone(), c.warning),
-                None => (format!("Pressione o novo atalho para «{name}»…   Esc cancela"), c.accent),
+                None => (format!("Press the new shortcut for «{name}»…   Esc cancels"), c.accent),
             };
             let text = fit(tx, &text, area.w - 2 * pad, false);
             tx.draw_ui(cv, left, ty, &text, col, area, false);
         }
         Mode::Confirm { combo, other } => {
             let chips = combo_chips(&combo).join("+");
-            let text = format!("{chips} já é usado por «{}».", p.label_of(&other));
+            let text = format!("{chips} is already used by «{}».", p.label_of(&other));
             let (b1w, b2w) = (96, 90);
             let b2 = Rect::new(area.right() - pad - b2w, btn_y, b2w, btn_h);
             let b1 = Rect::new(b2.x - 8 - b1w, btn_y, b1w, btn_h);
             let text = fit(tx, &text, b1.x - left - 12, false);
             tx.draw_ui(cv, left, ty, &text, c.warning, area, false);
-            button(cv, tx, th, b1, "Substituir", true);
-            button(cv, tx, th, b2, "Cancelar", false);
+            button(cv, tx, th, b1, "Replace", true);
+            button(cv, tx, th, b2, "Cancel", false);
             hits.push((b1, Hit::KbConfirm));
             hits.push((b2, Hit::KbCancel));
         }
@@ -2040,10 +2040,10 @@ fn draw_keybinds(p: &mut KeybindsPage, cv: &mut Canvas, tx: &mut TextCtx, th: &T
             let (b1w, b2w) = (96, 90);
             let b2 = Rect::new(area.right() - pad - b2w, btn_y, b2w, btn_h);
             let b1 = Rect::new(b2.x - 8 - b1w, btn_y, b1w, btn_h);
-            let text = fit(tx, "Restaurar todos os atalhos para o padrão?", b1.x - left - 12, false);
+            let text = fit(tx, "Restore all shortcuts to their defaults?", b1.x - left - 12, false);
             tx.draw_ui(cv, left, ty, &text, c.warning, area, false);
-            button(cv, tx, th, b1, "Restaurar", true);
-            button(cv, tx, th, b2, "Cancelar", false);
+            button(cv, tx, th, b1, "Restore", true);
+            button(cv, tx, th, b2, "Cancel", false);
             hits.push((b1, Hit::KbConfirm));
             hits.push((b2, Hit::KbCancel));
         }
@@ -2070,11 +2070,11 @@ mod tests {
 
     fn commands() -> Vec<CommandRow> {
         vec![
-            CommandRow { id: "QuickOpen".into(), label: "Abrir arquivo".into(), default: Some("ctrl+p".into()) },
-            CommandRow { id: "Palette".into(), label: "Paleta de comandos".into(), default: Some("ctrl+shift+p".into()) },
-            CommandRow { id: "CloseTab".into(), label: "Fechar aba".into(), default: Some("ctrl+w".into()) },
-            CommandRow { id: "TestFile".into(), label: "Testar arquivo".into(), default: None },
-            CommandRow { id: "Sidebar".into(), label: "Alternar barra lateral".into(), default: Some("ctrl+b".into()) },
+            CommandRow { id: "QuickOpen".into(), label: "Open file".into(), default: Some("ctrl+p".into()) },
+            CommandRow { id: "Palette".into(), label: "Command palette".into(), default: Some("ctrl+shift+p".into()) },
+            CommandRow { id: "CloseTab".into(), label: "Close tab".into(), default: Some("ctrl+w".into()) },
+            CommandRow { id: "TestFile".into(), label: "Test file".into(), default: None },
+            CommandRow { id: "Sidebar".into(), label: "Toggle sidebar".into(), default: Some("ctrl+b".into()) },
         ]
     }
 
@@ -2133,8 +2133,8 @@ mod tests {
     #[test]
     fn default_aliases_count_as_defaults() {
         let rows = vec![
-            CommandRow { id: "Redo".into(), label: "Refazer".into(), default: Some("ctrl+shift+z".into()) },
-            CommandRow { id: "Save".into(), label: "Salvar".into(), default: Some("ctrl+s".into()) },
+            CommandRow { id: "Redo".into(), label: "Redo".into(), default: Some("ctrl+shift+z".into()) },
+            CommandRow { id: "Save".into(), label: "Save".into(), default: Some("ctrl+s".into()) },
         ];
         let mut p = KeybindsPage::new(rows, HashMap::new());
         p.add_default_aliases([("ctrl+y".to_string(), "Redo".to_string()), ("Ctrl+K S".to_string(), "Save".to_string())]);
@@ -2182,7 +2182,7 @@ mod tests {
                 assert!(def.is_none(), "{id} is mandatory: no switch");
             } else {
                 let def = def.unwrap_or_else(|| panic!("missing switch {key}"));
-                assert_eq!(def.section, "Barra inferior");
+                assert_eq!(def.section, "Status bar");
                 assert_eq!(def.kind, SettingKind::Bool);
                 assert_eq!(vals[&key], json!(true), "{key} defaults to visible");
             }
@@ -2219,7 +2219,7 @@ mod tests {
     #[test]
     fn sections_in_order_and_visible_by_section() {
         let mut p = page_with(json!({}));
-        assert_eq!(p.sections(), vec!["Geral", "Editor", "Aparência", "TypeScript", "Git", "Barra inferior"]);
+        assert_eq!(p.sections(), vec!["General", "Editor", "Appearance", "TypeScript", "Git", "Status bar"]);
         assert_eq!(p.visible().len(), 2);
         p.set_section(3);
         assert_eq!(keys_of(&p), vec!["auto_import", "lsp_narrow", "code_lens", "code_lens_refs", "code_lens_impls", "inlay_hints", "inlay_hints_params", "inlay_hints_types", "tsgo_source"]);
@@ -2230,16 +2230,16 @@ mod tests {
     #[test]
     fn search_filters_label_and_help_case_insensitive_across_sections() {
         let mut m = modal();
-        typing(&mut m, "MINIMAPA");
+        typing(&mut m, "MINIMAP");
         assert_eq!(keys_of(&m.settings), vec!["minimap", "minimap_style"]);
-        m.settings.search = TextField::with("servidor");
+        m.settings.search = TextField::with("server");
         let keys = keys_of(&m.settings);
         assert!(keys.contains(&"format_on_save") && keys.contains(&"lsp_narrow") && keys.contains(&"code_lens"), "{keys:?}");
         m.settings.search = TextField::with("zzzz");
         assert!(m.settings.visible().is_empty());
         assert_eq!(m.settings.selected_def(), None);
         // multiple terms are ANDed (label or help)
-        m.settings.search = TextField::with("tema escuro");
+        m.settings.search = TextField::with("dark theme");
         let keys = keys_of(&m.settings);
         assert!(keys.contains(&"theme_dark") && !keys.contains(&"font_size"), "{keys:?}");
         m.settings.search = TextField::with("   ");
@@ -2249,13 +2249,13 @@ mod tests {
     #[test]
     fn typing_resets_selection_and_backspace_restores_list() {
         let mut m = modal();
-        typing(&mut m, "tema");
+        typing(&mut m, "theme");
         assert!(m.settings.visible().len() >= 3);
         press(&mut m, named(NamedKey::ArrowDown));
         assert_eq!(m.settings.sel, 1);
         typing(&mut m, "x");
         assert_eq!(m.settings.sel, 0);
-        for _ in 0..5 {
+        for _ in 0..6 {
             press(&mut m, named(NamedKey::Backspace));
         }
         assert!(m.settings.search.text.is_empty());
@@ -2278,8 +2278,8 @@ mod tests {
     #[test]
     fn space_goes_to_search_when_search_is_not_empty() {
         let mut m = modal();
-        typing(&mut m, "formatar ao");
-        assert_eq!(m.settings.search.text, "formatar ao");
+        typing(&mut m, "format on");
+        assert_eq!(m.settings.search.text, "format on");
         assert_eq!(m.settings.values().get("format_on_save"), None, "nothing toggled");
     }
 
@@ -2359,7 +2359,7 @@ mod tests {
     #[test]
     fn number_out_of_range_value_is_pulled_in_and_fractions_survive() {
         let mut p = SettingsPage::new(
-            vec![SettingDef { key: "scale", section: "Geral", label: "Escala", help: "", kind: SettingKind::Number { min: 0.5, max: 2.0, step: 0.25 } }],
+            vec![SettingDef { key: "scale", section: "General", label: "Scale", help: "", kind: SettingKind::Number { min: 0.5, max: 2.0, step: 0.25 } }],
             json!({"scale": 9}),
         );
         assert_eq!(p.step(0, -1), Event::Setting { key: "scale".into(), value: json!(2) });
@@ -2381,7 +2381,7 @@ mod tests {
 
     #[test]
     fn text_setting_edit_commit_and_cancel() {
-        let defs = vec![SettingDef { key: "shell", section: "Geral", label: "Shell", help: "Programa do terminal", kind: SettingKind::Text }];
+        let defs = vec![SettingDef { key: "shell", section: "General", label: "Shell", help: "Terminal program", kind: SettingKind::Text }];
         let mut m = Modal::new(SettingsPage::new(defs, json!({"shell": "bash"})), KeybindsPage::new(vec![], HashMap::new()), Page::Settings);
         press(&mut m, named(NamedKey::Enter));
         assert!(m.settings.is_editing());
@@ -2440,7 +2440,7 @@ mod tests {
     #[test]
     fn selection_keeps_row_in_view_and_wheel_clamps() {
         let defs: Vec<SettingDef> = (0..30)
-            .map(|i| SettingDef { key: Box::leak(format!("k{i}").into_boxed_str()), section: "Geral", label: "Item", help: "", kind: SettingKind::Bool })
+            .map(|i| SettingDef { key: Box::leak(format!("k{i}").into_boxed_str()), section: "General", label: "Item", help: "", kind: SettingKind::Bool })
             .collect();
         let mut p = SettingsPage::new(defs, json!({}));
         p.view_h = 240;
@@ -2466,15 +2466,15 @@ mod tests {
         assert_eq!(combo_chips("ctrl+pageup"), vec!["Ctrl", "PgUp"]);
         assert_eq!(combo_parts("ctrl+shift+alt+x"), vec!["ctrl", "shift", "alt", "x"]);
         assert_eq!(combo_chips("ctrl+k r"), vec!["Ctrl", "K", "›", "R"]);
-        assert_eq!(combo_chips("explorer:shift+a"), vec!["Explorador", "Shift", "A"]);
-        assert_eq!(combo_chips("explorer:delete"), vec!["Explorador", "Del"]);
+        assert_eq!(combo_chips("explorer:shift+a"), vec!["Explorer", "Shift", "A"]);
+        assert_eq!(combo_chips("explorer:delete"), vec!["Explorer", "Del"]);
     }
 
     #[test]
     fn keybinds_filter_by_label_id_and_combo() {
         let mut p = kb();
         assert_eq!(p.rows().len(), 5);
-        p.filter = TextField::with("ABRIR");
+        p.filter = TextField::with("OPEN");
         p.refilter();
         assert_eq!(p.row_ids(), vec!["QuickOpen"]);
         p.filter = TextField::with("closetab");
@@ -2863,7 +2863,7 @@ mod tests {
             m.draw(&mut cv, &mut tx, &theme, window);
         };
         redraw(&mut m);
-        // Geral: toggle format_on_save
+        // General: toggle format_on_save
         let d = def_idx(&m.settings, "format_on_save");
         let (x, y) = center(hit_rect(&m, Hit::Toggle(d)));
         assert_eq!(m.mouse_down(x, y), Event::Setting { key: "format_on_save".into(), value: json!(true) });
@@ -2874,7 +2874,7 @@ mod tests {
         let d = def_idx(&m.settings, "font_size");
         let (x, y) = center(hit_rect(&m, Hit::Step(d, 1)));
         assert_eq!(m.mouse_down(x, y), Event::Setting { key: "font_size".into(), value: json!(15) });
-        // Aparência: segmented option click, then dropdown open + pick
+        // Appearance: segmented option click, then dropdown open + pick
         m.settings.set_choices("theme", vec!["x".into(), "y".into(), "z".into(), "w".into(), "v".into()]);
         let (x, y) = center(hit_rect(&m, Hit::Section(2)));
         m.mouse_down(x, y);

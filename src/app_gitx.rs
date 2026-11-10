@@ -79,8 +79,8 @@ impl DiffView {
         let blocks = gitx::blocks(&rows);
         let editable = editable && hunks.len() == blocks.len();
         let (left, right, what) = match side {
-            Side::Unstaged => ("Índice", "Atual", "alterações"),
-            Side::Staged => ("HEAD", "Índice", "no stage"),
+            Side::Unstaged => ("Index", "Current", "changes"),
+            Side::Staged => ("HEAD", "Index", "staged"),
         };
         let src = DiffSrc { top: top.to_path_buf(), rel: rel.to_string(), old_rel: old_rel.map(str::to_string), side, hunks, old, new, editable, can_flip: false, name: name.to_string() };
         let mut dv = DiffView::plain(format!("{name} — {what}"), left.into(), right.into(), rows);
@@ -115,7 +115,7 @@ impl App {
     fn hunk_context(&mut self, staging: bool) -> Option<(String, String, gitx::Hunk, PathBuf, String)> {
         let d = self.docs.get(self.active)?;
         let Some(head) = d.git_base.clone() else {
-            self.say("arquivo sem versão no HEAD (não rastreado)");
+            self.say("file has no version in HEAD (untracked)");
             return None;
         };
         let cur = d.buf.to_string();
@@ -126,7 +126,7 @@ impl App {
         let base = if staging { gitx::side_texts(&top, &rel, None, Side::Unstaged).0.unwrap_or(head) } else { head };
         let hs = gitx::hunks(&base, &cur);
         let Some(h) = gitx::hunk_at_line(&hs, line).cloned() else {
-            self.say("nenhuma alteração sob o cursor");
+            self.say("no change under the cursor");
             return None;
         };
         Some((base, cur, h, top, rel))
@@ -137,7 +137,7 @@ impl App {
         match gitx::stage_hunk(&top, &rel, &base, &cur, &h) {
             Ok(()) => {
                 self.refresh_git_status();
-                self.say("trecho adicionado ao stage");
+                self.say("hunk added to stage");
             }
             Err(e) => self.say(format!("git: {e}")),
         }
@@ -150,7 +150,7 @@ impl App {
             d.replace_text(&text);
             d.reveal = true;
         }
-        self.say("trecho revertido (Ctrl+Z desfaz)");
+        self.say("hunk reverted (Ctrl+Z undoes)");
     }
 
     // ───────────── diff view ─────────────
@@ -161,9 +161,9 @@ impl App {
         let cur = d.buf.to_string();
         let rows = gitx::side_by_side(&base, &cur);
         if rows.iter().all(|r| r.kind == RowKind::Same) {
-            return self.say("sem diferenças em relação ao HEAD");
+            return self.say("no differences from HEAD");
         }
-        self.diff = Some(DiffView::plain(format!("{} — HEAD vs. arquivo atual", d.name), "HEAD".into(), "Atual".into(), rows));
+        self.diff = Some(DiffView::plain(format!("{} — HEAD vs. current file", d.name), "HEAD".into(), "Current".into(), rows));
     }
 
     pub fn open_diff_commit(&mut self, path: &Path, commit: &str, subject: &str) {
@@ -178,13 +178,13 @@ impl App {
         let Some(path) = self.docs.get(self.active).and_then(|d| d.path().map(Path::to_path_buf)) else { return };
         let log = gitx::file_log(&path, 200);
         if log.is_empty() {
-            return self.say("sem histórico git para este arquivo");
+            return self.say("no git history for this file");
         }
         let items: Vec<Item> = log
             .into_iter()
             .map(|c| Item { label: c.subject.clone(), detail: format!("{} · {} · {}", c.short, c.author, c.when), action: Action::GitShow(path.clone(), c.hash, c.subject) })
             .collect();
-        self.open_locations("Histórico do arquivo", items);
+        self.open_locations("File history", items);
     }
 
     /// Keys while a diff is shown. Returns true when consumed.
@@ -240,7 +240,7 @@ impl App {
     pub fn diff_toggle_block(&mut self, i: usize) {
         let Some(src) = self.diff.as_ref().and_then(|d| d.src.as_ref()) else { return };
         if !src.editable {
-            return self.say("trecho a trecho só vale para arquivos que já existem no HEAD e no índice; use a caixa de seleção");
+            return self.say("hunk-by-hunk only works for files that already exist in HEAD and the index; use the checkbox");
         }
         let Some(h) = src.hunks.get(i).copied() else { return };
         let staging = src.side == Side::Unstaged;
@@ -249,7 +249,7 @@ impl App {
         }
         self.diff_reload(i);
         self.refresh_git_status();
-        self.say(if staging { "trecho adicionado ao stage" } else { "trecho removido do stage" });
+        self.say(if staging { "hunk added to stage" } else { "hunk removed from stage" });
     }
 
     /// Re-read the open staging diff after the index changed; `keep` is the block to stay near.
@@ -269,7 +269,7 @@ impl App {
                 let max = (nd.rows.len() as f64 - ((area_h - 28) / line_h() as i32) as f64).max(0.0);
                 nd.scroll = nd.scroll.min(max);
             }
-            None => self.say("nenhum trecho restante neste arquivo"),
+            None => self.say("no hunks left in this file"),
         }
     }
 
@@ -331,7 +331,7 @@ impl App {
         // Header, right half: the hint, and (when the file has both) the button to flip sides.
         let mut hint_right = editor.right() - 10;
         if let Some((side, _, true)) = staging {
-            let label = if side == Side::Unstaged { "Ver o que está no stage" } else { "Ver o que não está no stage" };
+            let label = if side == Side::Unstaged { "View what is staged" } else { "View what is not staged" };
             let w = self.tx.ui_width(label, false) + 20;
             let r = Rect::new(editor.right() - 10 - w, editor.y + 3, w, head_h - 6);
             let hov = r.contains(self.mouse.0, self.mouse.1);
@@ -343,9 +343,9 @@ impl App {
         self.tx.draw_ui(cv, editor.x + 14, editor.y + 5, &format!("{}   ·   {}", dv.left_name, dv.title), fg, Rect::new(editor.x, editor.y, half, head_h), true);
         let narrow = hint_right - editor.x - half < 330;
         let hint = match (staging.is_some(), narrow) {
-            (true, false) => format!("{}   ·   Esc fecha · n/p bloco · s stage", dv.right_name),
+            (true, false) => format!("{}   ·   Esc closes · n/p block · s stage", dv.right_name),
             (true, true) => format!("{}  ·  n/p · s", dv.right_name),
-            (false, _) => format!("{}   ·   Esc fecha · n próximo bloco", dv.right_name),
+            (false, _) => format!("{}   ·   Esc closes · n next block", dv.right_name),
         };
         self.tx.draw_ui(cv, editor.x + half + 14, editor.y + 5, &hint, dim, Rect::new(editor.x + half, editor.y, (hint_right - editor.x - half).max(0), head_h), false);
 
@@ -413,8 +413,8 @@ impl App {
             // Short labels when the pane is narrow (the Git panel takes a good part of the window).
             let wide = rr.w >= 420;
             let label = match (side == Side::Unstaged, wide) {
-                (true, true) => "Colocar no stage",
-                (false, true) => "Tirar do stage",
+                (true, true) => "Add to stage",
+                (false, true) => "Unstage",
                 (true, false) => "Stage",
                 (false, false) => "Unstage",
             };
@@ -445,7 +445,7 @@ impl App {
         let Some(d) = self.docs.get_mut(self.active) else { return };
         let (line, _) = d.buf.line_col(d.ed.head());
         let Some(c) = gitx::conflict_at_line(&d.conflicts, line).cloned() else {
-            return self.say("o cursor não está dentro de um conflito de merge");
+            return self.say("the cursor is not inside a merge conflict");
         };
         let text = gitx::resolve(&d.buf.to_string(), &c, pick);
         d.replace_text(&text);
@@ -492,7 +492,7 @@ mod tests {
         let src = dv.src.as_ref().unwrap();
         assert!(src.editable && !src.can_flip, "nothing staged: one side only");
         assert_eq!((dv.blocks.len(), src.hunks.len()), (2, 2));
-        assert_eq!((dv.left_name.as_str(), dv.right_name.as_str()), ("Índice", "Atual"));
+        assert_eq!((dv.left_name.as_str(), dv.right_name.as_str()), ("Index", "Current"));
 
         // Stage the first hunk: the file now has changes on both sides.
         gitx::toggle_hunk(&d, "f.txt", Side::Unstaged, &src.old, &src.new, &src.hunks[0]).unwrap();
@@ -501,7 +501,7 @@ mod tests {
         assert!(src.can_flip, "staged + modified offers the other side");
         assert_eq!(dv.blocks.len(), 1, "only the unstaged hunk is left on this side");
         let staged = DiffView::staging_auto(&d, "f.txt", None, Side::Staged, "f.txt").unwrap();
-        assert_eq!((staged.left_name.as_str(), staged.right_name.as_str()), ("HEAD", "Índice"));
+        assert_eq!((staged.left_name.as_str(), staged.right_name.as_str()), ("HEAD", "Index"));
         assert_eq!(staged.blocks.len(), 1);
 
         // Stage the last one too: the unstaged side is empty, so the view falls back to the staged side.

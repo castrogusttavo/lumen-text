@@ -49,7 +49,7 @@ pub enum Blk {
     List(Vec<ListItem>),
     Quote(Vec<Span>),
     Rule,
-    /// Small caps section title ("Parâmetros", "Retorna", ...).
+    /// Small caps section title ("Parameters", "Returns", ...).
     Label(String),
     /// `head` is TypeScript shown highlighted (`name: type`), `body` the prose, `extra` more blocks.
     Item { head: Option<String>, body: Vec<Span>, extra: Vec<Blk> },
@@ -59,7 +59,7 @@ pub enum Blk {
     Note { sev: u8, title: String, body: Vec<Span> },
     /// Dim one-liner ("... mais 12 linhas").
     Dim(Vec<Span>),
-    /// "Módulo   ./types"
+    /// "Module   ./types"
     Kv { key: String, val: Vec<Span> },
 }
 
@@ -446,20 +446,20 @@ impl Kind {
     pub fn label(self) -> &'static str {
         match self {
             Kind::Interface => "interface",
-            Kind::Class => "classe",
+            Kind::Class => "class",
             Kind::Enum => "enum",
-            Kind::TypeAlias => "tipo",
-            Kind::Function => "função",
-            Kind::Method => "método",
-            Kind::Constructor => "construtor",
-            Kind::Variable => "variável",
-            Kind::Property => "propriedade",
-            Kind::Param => "parâmetro",
-            Kind::EnumMember => "membro de enum",
-            Kind::Accessor => "acessor",
+            Kind::TypeAlias => "type",
+            Kind::Function => "function",
+            Kind::Method => "method",
+            Kind::Constructor => "constructor",
+            Kind::Variable => "variable",
+            Kind::Property => "property",
+            Kind::Param => "parameter",
+            Kind::EnumMember => "enum member",
+            Kind::Accessor => "accessor",
             Kind::Namespace => "namespace",
-            Kind::Module => "módulo",
-            Kind::TypeParam => "parâmetro de tipo",
+            Kind::Module => "module",
+            Kind::TypeParam => "type parameter",
             Kind::Other => "",
         }
     }
@@ -1318,7 +1318,7 @@ pub fn render_decl(text: &str, name_off: usize, kind: Kind, max_lines: usize) ->
                 s.push('\n');
             }
             if hidden > 0 {
-                s.push_str(&format!("  // + {hidden} {} privado{}\n", if hidden == 1 { "membro" } else { "membros" }, if hidden == 1 { "" } else { "s" }));
+                s.push_str(&format!("  // + {hidden} private {}\n", if hidden == 1 { "member" } else { "members" }));
             }
             s.push('}');
             s
@@ -1709,7 +1709,7 @@ const obj = {
         assert!(t.contains("  add(item: T): void;"));
         assert!(t.contains("  get size(): number;"));
         assert!(!t.contains("items.push") && !t.contains("#secret") && !t.contains("private items"));
-        assert!(t.contains("// + 2 membros privados"), "{t}");
+        assert!(t.contains("// + 2 private members"), "{t}");
     }
 
     #[test]
@@ -1898,7 +1898,7 @@ const obj = {
         assert!(t.contains("  onResize(e: Event);"), "{t}");
         assert!(t.contains("  deco: number;"), "{t}");
         assert!(t.contains("  paren: string;"), "{t}");
-        assert!(t.contains("// + 1 membro privado"), "{t}");
+        assert!(t.contains("// + 1 private member"), "{t}");
         assert!(!t.contains("Injectable") && !t.contains("@"), "{t}");
     }
 
@@ -1924,7 +1924,7 @@ const obj = {
         assert!(c.contains("  static re = /}/;"), "{c}");
         assert!(c.contains("  inc(by = { step: 1 });"), "{c}");
         assert!(c.contains("  get value();"), "{c}");
-        assert!(c.contains("// + 1 membro privado"), "{c}");
+        assert!(c.contains("// + 1 private member"), "{c}");
         assert_eq!(decl(src, "add(", Kind::Function), "export function add(a, b = {x: 1})");
         assert_eq!(short_value(src, src.find("re = /[").unwrap()).as_deref(), Some("/[}]/g"));
     }

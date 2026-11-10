@@ -192,8 +192,8 @@ impl InstallKind {
     pub fn label(&self) -> &'static str {
         match self {
             InstallKind::AppImage(_) => "AppImage",
-            InstallKind::User(_) => "instalação do usuário",
-            InstallKind::System => "pacote do sistema",
+            InstallKind::User(_) => "user install",
+            InstallKind::System => "system package",
             InstallKind::Other => "manual",
         }
     }

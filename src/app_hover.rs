@@ -67,11 +67,11 @@ pub enum Act {
 impl Act {
     fn label(self) -> &'static str {
         match self {
-            Act::Definition => "Ir para definição",
-            Act::TypeDefinition => "Ir para definição do tipo",
-            Act::References => "Referências",
-            Act::CopyType => "Copiar tipo",
-            Act::QuickFix => "Ações rápidas (Ctrl+.)",
+            Act::Definition => "Go to definition",
+            Act::TypeDefinition => "Go to type definition",
+            Act::References => "References",
+            Act::CopyType => "Copy type",
+            Act::QuickFix => "Quick actions (Ctrl+.)",
         }
     }
 }
@@ -119,7 +119,7 @@ pub struct ModInfo {
 pub struct Extra {
     pub diags: Vec<DiagInfo>,
     pub decl: Option<Decl>,
-    /// `(label, declaration)`: "Tipo User", "Classe Repo".
+    /// `(label, declaration)`: "Type User", "Class Repo".
     pub type_decl: Option<(String, Decl)>,
     pub overloads: Vec<String>,
     pub value: Option<String>,
@@ -196,7 +196,7 @@ pub struct HoverTip {
     pub ver: i32,
     pub kind: Kind,
     pub name: String,
-    /// The first code block of the language server's answer ("Copiar tipo").
+    /// The first code block of the language server's answer ("Copy type").
     pub sig: String,
     head: Vec<Blk>,
     doc: md::JsDoc,
@@ -310,7 +310,7 @@ impl HoverTip {
         self.blocks.is_empty()
     }
 
-    /// Plain text for "Copiar tipo".
+    /// Plain text for "Copy type".
     pub fn type_text(&self) -> String {
         if let Some(d) = &self.extra.decl {
             if matches!(d.kind, Kind::Interface | Kind::Class | Kind::Enum | Kind::TypeAlias) {
@@ -328,7 +328,7 @@ impl HoverTip {
         }
         let dep = self.doc.tags.iter().find(|t| t.tag == "deprecated");
         if let Some(t) = dep {
-            out.push(Blk::Note { sev: 2, title: "Obsoleto".into(), body: t.body.clone() });
+            out.push(Blk::Note { sev: 2, title: "Deprecated".into(), body: t.body.clone() });
         }
         // The literal under the pointer, with the type of the property it belongs to.
         let key = x.key_md.as_deref().map(md::parse_markdown).unwrap_or_default();
@@ -338,7 +338,7 @@ impl HoverTip {
         }
         out.extend(key_doc.desc);
         if let Some((lit, what)) = &x.literal {
-            out.push(Blk::Kv { key: "Valor".into(), val: vec![Span::code(lit.clone()), Span::plain(format!("  {what}"))] });
+            out.push(Blk::Kv { key: "Value".into(), val: vec![Span::code(lit.clone()), Span::plain(format!("  {what}"))] });
         }
 
         // Signature: the full declaration when we have it.
@@ -346,7 +346,7 @@ impl HoverTip {
         if let Some(d) = full {
             out.push(Blk::Code { text: d.text.clone(), lang: "ts".into() });
             if d.more > 0 {
-                out.push(Blk::Dim(vec![Span { text: format!("… mais {} linhas — ", d.more), ..Default::default() }, Span { text: "ver definição".into(), link: Some("lumen:more".into()), ..Default::default() }]));
+                out.push(Blk::Dim(vec![Span { text: format!("… {} more lines — ", d.more), ..Default::default() }, Span { text: "view definition".into(), link: Some("lumen:more".into()), ..Default::default() }]));
             }
         } else {
             for b in &self.head {
@@ -354,39 +354,39 @@ impl HoverTip {
                     Blk::Code { text, lang } if text.lines().count() > 30 => {
                         let (t, more) = md::truncate_lines(text, 30);
                         out.push(Blk::Code { text: t, lang: lang.clone() });
-                        out.push(Blk::Dim(vec![Span::plain(format!("… mais {more} linhas"))]));
+                        out.push(Blk::Dim(vec![Span::plain(format!("… {more} more lines"))]));
                     }
                     b => out.push(b.clone()),
                 }
             }
         }
         if !x.overloads.is_empty() {
-            out.push(Blk::Label(format!("Sobrecargas ({})", x.overloads.len())));
+            out.push(Blk::Label(format!("Overloads ({})", x.overloads.len())));
             let shown: Vec<&str> = x.overloads.iter().take(8).map(String::as_str).collect();
             out.push(Blk::Code { text: shown.join("\n"), lang: "ts".into() });
             if x.overloads.len() > 8 {
-                out.push(Blk::Dim(vec![Span::plain(format!("… e mais {}", x.overloads.len() - 8))]));
+                out.push(Blk::Dim(vec![Span::plain(format!("… and {} more", x.overloads.len() - 8))]));
             }
         }
         if let Some(v) = &x.value {
             if !self.sig.trim_end().ends_with(v.as_str()) {
-                out.push(Blk::Kv { key: "Valor".into(), val: vec![Span::code(v.clone())] });
+                out.push(Blk::Kv { key: "Value".into(), val: vec![Span::code(v.clone())] });
             }
         }
         if let Some((code, more)) = &x.snippet {
-            out.push(Blk::Label("Declaração".into()));
+            out.push(Blk::Label("Declaration".into()));
             out.push(Blk::Code { text: code.clone(), lang: "ts".into() });
             if *more > 0 {
-                out.push(Blk::Dim(vec![Span::plain(format!("… mais {more} linhas"))]));
+                out.push(Blk::Dim(vec![Span::plain(format!("… {more} more lines"))]));
             }
         }
         if let Some(m) = &x.module {
-            out.push(Blk::Kv { key: "Módulo".into(), val: vec![Span::code(m.spec.clone())] });
+            out.push(Blk::Kv { key: "Module".into(), val: vec![Span::code(m.spec.clone())] });
             if let Some(f) = &m.file {
-                out.push(Blk::Kv { key: "Arquivo".into(), val: vec![Span { text: f.clone(), link: x.origin.as_ref().map(origin_link), ..Default::default() }] });
+                out.push(Blk::Kv { key: "File".into(), val: vec![Span { text: f.clone(), link: x.origin.as_ref().map(origin_link), ..Default::default() }] });
             }
             if let Some(p) = &m.pkg {
-                out.push(Blk::Kv { key: "Pacote".into(), val: vec![Span::plain(p.clone())] });
+                out.push(Blk::Kv { key: "Package".into(), val: vec![Span::plain(p.clone())] });
             }
         }
 
@@ -430,12 +430,12 @@ impl HoverTip {
             }
         }
         if !items.is_empty() {
-            out.push(Blk::Label("Parâmetros".into()));
+            out.push(Blk::Label("Parameters".into()));
             out.extend(items);
         }
         let tmpl: Vec<&JsTag> = self.doc.tags.iter().filter(|t| matches!(t.tag.as_str(), "template" | "typeParam" | "typeparam")).collect();
         if !tmpl.is_empty() {
-            out.push(Blk::Label("Parâmetros de tipo".into()));
+            out.push(Blk::Label("Type parameters".into()));
             for t in tmpl {
                 out.push(Blk::Item { head: t.name.clone(), body: t.body.clone(), extra: t.extra.clone() });
             }
@@ -443,7 +443,7 @@ impl HoverTip {
         let rets: Vec<&JsTag> = self.doc.tags.iter().filter(|t| matches!(t.tag.as_str(), "returns" | "return")).collect();
         let ret_ty = sig.as_ref().and_then(|s| s.ret.clone()).filter(|r| (r != "void" || !rets.is_empty()) && self.kind != Kind::Constructor);
         if !rets.is_empty() || ret_ty.is_some() {
-            out.push(Blk::Label("Retorna".into()));
+            out.push(Blk::Label("Returns".into()));
             if rets.is_empty() {
                 out.push(Blk::Item { head: ret_ty.clone(), body: vec![], extra: vec![] });
             }
@@ -452,12 +452,12 @@ impl HoverTip {
             }
         }
         for t in self.doc.tags.iter().filter(|t| matches!(t.tag.as_str(), "throws" | "exception")) {
-            out.push(Blk::Label("Lança".into()));
+            out.push(Blk::Label("Throws".into()));
             out.push(Blk::Item { head: t.name.clone(), body: t.body.clone(), extra: t.extra.clone() });
         }
         let ex: Vec<&JsTag> = self.doc.tags.iter().filter(|t| t.tag == "example").collect();
         if !ex.is_empty() {
-            out.push(Blk::Label(if ex.len() > 1 { "Exemplos".into() } else { "Exemplo".to_string() }));
+            out.push(Blk::Label(if ex.len() > 1 { "Examples".into() } else { "Example".to_string() }));
             for t in ex {
                 if !t.body.is_empty() {
                     // The title of an example (`@example Basic usage`) reads as a caption: italic.
@@ -471,7 +471,7 @@ impl HoverTip {
         }
         let see: Vec<&JsTag> = self.doc.tags.iter().filter(|t| matches!(t.tag.as_str(), "see" | "link")).collect();
         if !see.is_empty() {
-            out.push(Blk::Label("Veja também".into()));
+            out.push(Blk::Label("See also".into()));
             for t in see {
                 out.push(Blk::Para(t.body.clone()));
             }
@@ -490,12 +490,12 @@ impl HoverTip {
             out.push(Blk::Label(name.clone()));
             out.push(Blk::Code { text: d.text.clone(), lang: "ts".into() });
             if d.more > 0 {
-                out.push(Blk::Dim(vec![Span { text: format!("… mais {} linhas — ", d.more), ..Default::default() }, Span { text: "ver definição do tipo".into(), link: Some("lumen:more-type".into()), ..Default::default() }]));
+                out.push(Blk::Dim(vec![Span { text: format!("… {} more lines — ", d.more), ..Default::default() }, Span { text: "view type definition".into(), link: Some("lumen:more-type".into()), ..Default::default() }]));
             }
         }
         if let Some(o) = &x.origin {
             if x.module.is_none() {
-                out.push(Blk::Kv { key: "Definido em".into(), val: vec![Span { text: format!("{}:{}", o.label, o.line + 1), link: Some(origin_link(o)), ..Default::default() }] });
+                out.push(Blk::Kv { key: "Defined in".into(), val: vec![Span { text: format!("{}:{}", o.label, o.line + 1), link: Some(origin_link(o)), ..Default::default() }] });
             }
         }
         self.blocks = out;
@@ -878,9 +878,9 @@ fn code_block(env: &mut Env, b: &mut Builder, text: &str, lang: &str, x0: i32, w
 }
 
 fn label(env: &mut Env, b: &mut Builder, text: &str, x0: i32) {
-    // "TIPO ButtonProps" keeps the identifier as written; the fixed titles are all caps
+    // "TYPE ButtonProps" keeps the identifier as written; the fixed titles are all caps
     let up = match text.split_once(' ') {
-        Some((first, rest)) if matches!(first, "Tipo" | "Classe") => format!("{} {rest}", first.to_uppercase()),
+        Some((first, rest)) if matches!(first, "Type" | "Class") => format!("{} {rest}", first.to_uppercase()),
         _ => text.to_uppercase(),
     };
     let wd = env.tx.ui_width_sized(&up, true, 10.5);
@@ -1469,7 +1469,7 @@ impl App {
                     }
                     if let Some((o, k)) = find_type_decl(&text, base) {
                         if let Some((body, more)) = md::render_decl(&text, o, k, DECL_LINES) {
-                            class_decl = Some((format!("Tipo {base}"), Decl { text: body, more, kind: k }));
+                            class_decl = Some((format!("Type {base}"), Decl { text: body, more, kind: k }));
                             break;
                         }
                     }
@@ -1478,7 +1478,7 @@ impl App {
             Kind::Constructor if at_kind == Some(Kind::Class) => {
                 let cname: String = text[off..].chars().take_while(|c| is_ident(*c)).collect();
                 if let Some((body, more)) = md::render_decl(&text, off, Kind::Class, DECL_LINES) {
-                    class_decl = Some((format!("Classe {cname}"), Decl { text: body, more, kind: Kind::Class }));
+                    class_decl = Some((format!("Class {cname}"), Decl { text: body, more, kind: Kind::Class }));
                 }
             }
             Kind::Variable if at_kind == Some(Kind::Variable) => {
@@ -1518,7 +1518,7 @@ impl App {
         }
         let Some((body, more)) = md::render_decl(&text, off, k, DECL_LINES) else { return false };
         let Some(t) = &mut self.hover else { return false };
-        t.extra.type_decl = Some((format!("Tipo {name}"), Decl { text: body, more, kind: k }));
+        t.extra.type_decl = Some((format!("Type {name}"), Decl { text: body, more, kind: k }));
         true
     }
 
@@ -1774,7 +1774,7 @@ impl App {
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("c") => {
                 let Some(text) = sel_text(h, &mut self.tx) else { return false };
                 self.clip.set(&text);
-                self.say("copiado");
+                self.say("copied");
                 true
             }
             _ => false,
@@ -1796,7 +1796,7 @@ impl App {
         if act == Act::CopyType {
             let text = h.type_text();
             self.clip.set(&text);
-            self.say("tipo copiado");
+            self.say("type copied");
             return;
         }
         if let Some(d) = self.docs.get_mut(self.active) {
@@ -2283,7 +2283,7 @@ mod tests {
 
     #[test]
     fn diagnostics_come_first_with_quick_fix() {
-        let mut t = HoverTip::diag_only(vec![DiagInfo { sev: 1, msg: "Tipo errado".into(), code: "2322".into(), url: Some("https://typescript.tv/errors/#TS2322".into()), line: 0, col: 0 }], (0, 1), (0, 0));
+        let mut t = HoverTip::diag_only(vec![DiagInfo { sev: 1, msg: "Wrong type".into(), code: "2322".into(), url: Some("https://typescript.tv/errors/#TS2322".into()), line: 0, col: 0 }], (0, 1), (0, 0));
         assert!(matches!(&t.blocks[0], Blk::Diag { code, .. } if code == "2322"));
         assert_eq!(t.actions(), [Act::QuickFix]);
         t.extra.diags.clear();

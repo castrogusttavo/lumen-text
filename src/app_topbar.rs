@@ -1,9 +1,9 @@
 //! Top bar: the project name and the current git branch, each opening a dropdown.
 //!
-//! * project menu: search field, the 3 most recent projects, "Abrir pasta…" (an in-app folder
+//! * project menu: search field, the 3 most recent projects, "Open folder…" (an in-app folder
 //!   browser). Typing searches every known project (recents plus the folders next to the current one).
 //! * branch menu: search field and every local and remote branch as
-//!   `name | author, há 3 dias, last commit subject…`; Enter checks the branch out.
+//!   `name | author, 3 days ago, last commit subject…`; Enter checks the branch out.
 //!
 //! The menus are an [`Overlay::TopMenu`]; input, drawing and hit-testing live here.
 
@@ -38,7 +38,7 @@ const RECENT_KEPT: usize = 20;
 pub enum MenuKind {
     Project,
     Branch,
-    /// Folder browser behind "Abrir pasta…".
+    /// Folder browser behind "Open folder…".
     Browse,
 }
 
@@ -119,7 +119,7 @@ pub fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let e = String::from_utf8_lossy(&out.stderr);
-        Err(e.lines().find(|l| !l.trim().is_empty()).unwrap_or("falhou").to_string())
+        Err(e.lines().find(|l| !l.trim().is_empty()).unwrap_or("failed").to_string())
     }
 }
 
@@ -368,7 +368,7 @@ impl App {
             MenuKind::Branch => {
                 let branches = list_branches(&self.root);
                 if branches.is_empty() {
-                    return self.say("sem branches (a pasta não é um repositório git?)");
+                    return self.say("no branches (is the folder a git repository?)");
                 }
                 let entries = branches.into_iter().map(Entry::Branch).collect();
                 self.overlay = Overlay::TopMenu(Box::new(TopMenu::new(kind, anchor, entries, self.root.clone())));
@@ -407,9 +407,9 @@ impl App {
         // Search field.
         self.tx.icon(cv, "hugeicons/search", r.x + 16, r.y + (INPUT - 16) / 2, 16, c.accent, r);
         let hint = match m.kind {
-            MenuKind::Project => "Buscar projeto…",
-            MenuKind::Branch => "Buscar branch…",
-            MenuKind::Browse => "Buscar pasta…",
+            MenuKind::Project => "Search projects…",
+            MenuKind::Branch => "Search branches…",
+            MenuKind::Browse => "Search folders…",
         };
         let (txt, col) = if m.field.text.is_empty() { (hint, dim) } else { (m.field.text.as_str(), fg) };
         if m.field.sel_all {
@@ -453,11 +453,11 @@ impl App {
                 }
                 Entry::OpenProject => {
                     self.tx.icon(cv, "ui/folder_open", rr.x + 12, iy, 16, c.accent, rr);
-                    self.tx.draw_ui(cv, rr.x + 38, ly, "Abrir pasta…", c.accent_text, rr, false);
+                    self.tx.draw_ui(cv, rr.x + 38, ly, "Open folder…", c.accent_text, rr, false);
                 }
                 Entry::UseDir(p) => {
                     self.tx.icon(cv, "ui/check", rr.x + 12, iy, 16, c.accent, rr);
-                    let label = format!("Abrir “{}” como projeto", project_name(p));
+                    let label = format!("Open “{}” as a project", project_name(p));
                     let label = fit(&mut self.tx, &label, rr.w - 60);
                     self.tx.draw_ui(cv, rr.x + 38, ly, &label, c.accent_text, rr, false);
                 }
@@ -490,7 +490,7 @@ impl App {
             rows.push((rr, k));
         }
         if m.filtered.is_empty() {
-            self.tx.draw_ui(cv, r.x + 16, top + 10, "Sem resultados", dim, r, false);
+            self.tx.draw_ui(cv, r.x + 16, top + 10, "No results", dim, r, false);
         }
         m.rows = rows;
         let (total, pos) = (m.filtered.len() as f64, m.scroll as f64);
@@ -604,10 +604,10 @@ impl App {
     pub fn switch_project(&mut self, path: PathBuf) {
         let path = path.canonicalize().unwrap_or(path);
         if !path.is_dir() {
-            return self.say(format!("{} não é uma pasta", path.display()));
+            return self.say(format!("{} is not a folder", path.display()));
         }
         if path == self.root {
-            return self.say("esse já é o projeto aberto");
+            return self.say("that project is already open");
         }
         let names: Vec<String> = self.docs.iter().filter(|d| d.buf.is_dirty()).map(|d| d.name.clone()).collect();
         if !names.is_empty() || self.dbg.is_some() {
@@ -645,13 +645,13 @@ impl App {
         remember_project(&self.root);
         self.restore_session();
         let name = project_name(&self.root);
-        self.say(format!("projeto: {name}"));
+        self.say(format!("project: {name}"));
         self.request_redraw();
     }
 
     fn checkout_branch(&mut self, b: Branch, all: &[Entry]) {
         if b.current {
-            return self.say(format!("já está em {}", b.name));
+            return self.say(format!("already on {}", b.name));
         }
         // A remote branch whose local twin exists just switches to the twin.
         let twin = if b.remote { b.name.split_once('/').map(|x| x.1.to_string()) } else { None };
@@ -810,7 +810,7 @@ impl App {
             let pill = Rect::new(x + 2, r.y + 4, lw + 18, r.h - 8);
             cv.fill_round(pill, (pill.h / 2).min(10), c.accent.with_alpha(0x38));
             self.tx.draw_ui(cv, pill.x + 9, y, &label, c.accent_text, pill, true);
-            let hint = "Esc cancela";
+            let hint = "Esc cancels";
             let hw = self.tx.ui_width(hint, false);
             self.tx.draw_ui(cv, pill.right() + 8, y, hint, dim, Rect::new(pill.right(), r.y, hw + 16, r.h), false);
             x = pill.right() + 8 + hw + 14;
@@ -830,7 +830,7 @@ impl App {
             let (l, col) = d.buf.line_col(d.ed.head());
             let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
             let sel = if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
-            (format!("{sel}Ln {}, Col {}", l + 1, vc), if d.ed.indent.contains('\t') { "Tab".to_string() } else { format!("Espaços: {}", d.ed.indent.len()) }, d.lang.unwrap_or("texto").to_string())
+            (format!("{sel}Ln {}, Col {}", l + 1, vc), if d.ed.indent.contains('\t') { "Tab".to_string() } else { format!("Spaces: {}", d.ed.indent.len()) }, d.lang.unwrap_or("text").to_string())
         });
         let mut items: Vec<(StatusBtn, i32)> = Vec::new();
         for id in self.config.status_order.clone() {
@@ -972,7 +972,7 @@ impl App {
 // ───────────── indentation / language of the current document ─────────────
 
 /// Entries of the indentation picker: (label, spec).
-pub const INDENT_CHOICES: &[(&str, &str)] = &[("Espaços: 2", "2"), ("Espaços: 4", "4"), ("Espaços: 8", "8"), ("Tabulação", "tab")];
+pub const INDENT_CHOICES: &[(&str, &str)] = &[("Spaces: 2", "2"), ("Spaces: 4", "4"), ("Spaces: 8", "8"), ("Tab", "tab")];
 
 /// "2" / "4" / "8" -> that many spaces, "tab" -> a tab; anything else -> `None`.
 pub fn indent_from_spec(spec: &str) -> Option<String> {
@@ -1195,7 +1195,7 @@ impl App {
         self.request_redraw();
     }
 
-    /// Bottom bar "Espaços: 4": choose how the current document indents, convert the file to a
+    /// Bottom bar "Spaces: 4": choose how the current document indents, convert the file to a
     /// setting, or set the width of a tab character.
     pub fn open_indent_picker(&mut self) {
         use crate::app_overlay::{Action, Item};
@@ -1203,20 +1203,20 @@ impl App {
         let cur = indent_spec(&d.ed.indent);
         let mut items: Vec<Item> = INDENT_CHOICES
             .iter()
-            .map(|(label, spec)| Item { label: label.to_string(), detail: if *spec == cur { "atual".into() } else { "só muda a configuração".into() }, action: Action::SetIndent(spec.to_string()) })
+            .map(|(label, spec)| Item { label: label.to_string(), detail: if *spec == cur { "current".into() } else { "only changes the setting".into() }, action: Action::SetIndent(spec.to_string()) })
             .collect();
         items.extend(INDENT_CHOICES.iter().map(|(label, spec)| Item {
-            label: format!("Re-indentar o arquivo para: {label}"),
-            detail: "converte a indentação das linhas".into(),
+            label: format!("Re-indent file to: {label}"),
+            detail: "converts the indentation of every line".into(),
             action: Action::SetIndent(format!("reindent:{spec}")),
         }));
         items.extend(crate::config::TAB_WIDTHS.iter().map(|w| Item {
-            label: format!("Largura da tabulação: {w}"),
-            detail: if d.ed.tab_w == *w { "atual".into() } else { "colunas por tab".into() },
+            label: format!("Tab width: {w}"),
+            detail: if d.ed.tab_w == *w { "current".into() } else { "columns per tab".into() },
             action: Action::SetIndent(format!("tabw:{w}")),
         }));
         let sel = INDENT_CHOICES.iter().position(|(_, s)| *s == cur).unwrap_or(0);
-        self.overlay = Overlay::Picker(crate::app_overlay::choice_picker("Indentação do arquivo", items, sel));
+        self.overlay = Overlay::Picker(crate::app_overlay::choice_picker("File indentation", items, sel));
     }
 
     /// Bottom bar language name: choose the language (and so the highlighting) of the document.
@@ -1224,7 +1224,7 @@ impl App {
         use crate::app_overlay::{Action, Item};
         let Some(d) = self.docs.get(self.active) else { return };
         let cur = d.lang;
-        let mut items = vec![Item { label: "Texto simples".into(), detail: if cur.is_none() { "atual".into() } else { String::new() }, action: Action::SetLang(None) }];
+        let mut items = vec![Item { label: "Plain text".into(), detail: if cur.is_none() { "current".into() } else { String::new() }, action: Action::SetLang(None) }];
         let mut sel = 0;
         for (id, name) in language_choices(&self.assets) {
             if Some(id.as_str()) == cur {
@@ -1233,7 +1233,7 @@ impl App {
             let detail = if Some(id.as_str()) == cur { format!("{id} · atual") } else { id.clone() };
             items.push(Item { label: name, detail, action: Action::SetLang(Some(id)) });
         }
-        self.overlay = Overlay::Picker(crate::app_overlay::choice_picker("Linguagem do arquivo (digite para filtrar)", items, sel));
+        self.overlay = Overlay::Picker(crate::app_overlay::choice_picker("File language (type to filter)", items, sel));
     }
 
     /// Apply a choice of the indentation picker to the active document.
@@ -1250,7 +1250,7 @@ impl App {
                 if let Some(p) = self.pick_entry(i) {
                     p.indent = Some(s.clone());
                 }
-                self.say(format!("indentação: {}", if s == "tab" { "tabulação".to_string() } else { format!("{s} espaços") }));
+                self.say(format!("indentation: {}", if s == "tab" { "tabs".to_string() } else { format!("{s} spaces") }));
             }
             IndentAction::Reindent(s) => {
                 let Some(to) = indent_from_spec(&s) else { return };
@@ -1265,15 +1265,15 @@ impl App {
                 if let Some(p) = self.pick_entry(i) {
                     p.indent = Some(s.clone());
                 }
-                let what = if s == "tab" { "tabulação".to_string() } else { format!("{s} espaços") };
-                self.say(if lines == 0 { format!("indentação: {what} (o arquivo já estava assim)") } else { format!("re-indentado para {what}: {lines} linhas") });
+                let what = if s == "tab" { "tabs".to_string() } else { format!("{s} spaces") };
+                self.say(if lines == 0 { format!("indentation: {what} (the file already used it)") } else { format!("re-indented to {what}: {lines} lines") });
             }
             IndentAction::TabWidth(w) => {
                 self.docs[i].ed.tab_w = w;
                 if let Some(p) = self.pick_entry(i) {
                     p.tab_w = Some(w);
                 }
-                self.say(format!("largura da tabulação: {w}"));
+                self.say(format!("tab width: {w}"));
             }
         }
     }
@@ -1303,7 +1303,7 @@ impl App {
                 Some(t)
             });
             if tk.is_none() {
-                note = Some(format!("sem gramática para {l}"));
+                note = Some(format!("no grammar for {l}"));
             }
             tk.map(crate::highlight::Highlighter::new)
         });
@@ -1319,7 +1319,7 @@ impl App {
             if let Some(p) = self.pick_entry(i) {
                 p.lang = Some(id.clone());
             }
-            self.say(note.unwrap_or_else(|| format!("linguagem: {}", lang.unwrap_or("texto simples"))));
+            self.say(note.unwrap_or_else(|| format!("language: {}", lang.unwrap_or("plain text"))));
         }
     }
 }
@@ -1376,7 +1376,7 @@ mod tests {
         e.push(proj("sibling", false));
         e.push(Entry::OpenProject);
         let m = TopMenu::new(MenuKind::Project, Rect::new(0, 0, 10, 10), e, "/work".into());
-        assert_eq!(m.filtered, [0, 1, 2, 6], "3 recents, then Abrir pasta…");
+        assert_eq!(m.filtered, [0, 1, 2, 6], "3 recents, then Open folder…");
     }
 
     #[test]
@@ -1454,13 +1454,13 @@ mod tests {
         g(&["config", "user.name", "Tester"]);
         std::fs::write(base.join("a.txt"), "1").unwrap();
         g(&["add", "."]);
-        g(&["commit", "-q", "-m", "primeiro commit"]);
+        g(&["commit", "-q", "-m", "first commit"]);
         g(&["branch", "feature/x"]);
         let b = list_branches(&base);
         let names: Vec<&str> = b.iter().map(|b| b.name.as_str()).collect();
         assert!(names.contains(&"main") && names.contains(&"feature/x"), "{names:?}");
         let main = b.iter().find(|b| b.name == "main").unwrap();
-        assert!(main.current && main.author == "Tester" && main.subject == "primeiro commit");
+        assert!(main.current && main.author == "Tester" && main.subject == "first commit");
         let _ = std::fs::remove_dir_all(&base);
     }
 

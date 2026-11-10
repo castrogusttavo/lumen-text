@@ -80,16 +80,16 @@ pub const MD_SPLIT_RANGE: (f32, f32) = (0.2, 0.8);
 /// toggle in the left corner); every other item can be hidden through `status_items` or the
 /// settings (`status_<id>` keys).
 pub const STATUS_ITEMS: &[(&str, &str, bool)] = &[
-    ("sidebar", "Alternar barra lateral", true),
-    ("search", "Buscar no projeto", false),
-    ("problems", "Problemas", false),
+    ("sidebar", "Toggle sidebar", true),
+    ("search", "Search in project", false),
+    ("problems", "Problems", false),
     ("terminal", "Terminal", false),
-    ("debug", "Depuração", false),
+    ("debug", "Debug", false),
     ("git", "Git", false),
-    ("ram", "Memória", false),
-    ("position", "Linha e coluna", false),
-    ("indent", "Indentação", false),
-    ("language", "Linguagem", false),
+    ("ram", "Memory", false),
+    ("position", "Line and column", false),
+    ("indent", "Indentation", false),
+    ("language", "Language", false),
 ];
 
 /// The bottom bar items of the right-hand group in their default order, left to right. They can

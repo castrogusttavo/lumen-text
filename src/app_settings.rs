@@ -164,11 +164,11 @@ impl App {
         self.keymap = keymap::Keymap::from_json(&text);
     }
 
-    /// Palette command "Alternar git blame": same effect as the switch in the settings.
+    /// Palette command "Toggle git blame": same effect as the switch in the settings.
     pub fn toggle_git_blame(&mut self) {
         let on = !self.config.git_blame;
         self.apply_setting("git_blame", &json!(on));
-        self.say(if on { "git blame: ligado" } else { "git blame: desligado" });
+        self.say(if on { "git blame: on" } else { "git blame: off" });
     }
 
     /// Load the current theme again (same file, same name) so a change of `theme_chrome` shows
@@ -187,7 +187,7 @@ impl App {
                     }
                 }
             }
-            Err(e) => self.say(format!("tema inválido: {e}")),
+            Err(e) => self.say(format!("invalid theme: {e}")),
         }
     }
 

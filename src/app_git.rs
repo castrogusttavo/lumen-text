@@ -36,7 +36,7 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let e = String::from_utf8_lossy(&out.stderr);
-        Err(e.lines().find(|l| !l.trim().is_empty()).unwrap_or("falhou").to_string())
+        Err(e.lines().find(|l| !l.trim().is_empty()).unwrap_or("failed").to_string())
     }
 }
 
@@ -64,11 +64,11 @@ impl App {
             .map(|(p, b)| Item {
                 label: self.rel(p),
                 detail: match b {
-                    'M' => "modificado",
-                    'A' => "adicionado",
-                    'D' => "removido",
-                    'R' => "renomeado",
-                    _ => "novo",
+                    'M' => "modified",
+                    'A' => "added",
+                    'D' => "removed",
+                    'R' => "renamed",
+                    _ => "new",
                 }
                 .to_string(),
                 action: Action::Open(p.clone(), None),
@@ -76,9 +76,9 @@ impl App {
             .collect();
         items.sort_by(|a, b| a.label.cmp(&b.label));
         if items.is_empty() {
-            return self.say("sem alterações no repositório");
+            return self.say("no changes in the repository");
         }
-        let title = format!("{} arquivo(s) alterado(s)", items.len());
+        let title = format!("{} changed file(s)", items.len());
         self.open_locations(&title, items);
     }
 
@@ -89,7 +89,7 @@ impl App {
         match run_git(&self.root, &args) {
             Ok(_) => {
                 self.refresh_git_status();
-                self.say(if stage { "adicionado ao stage" } else { "removido do stage" });
+                self.say(if stage { "added to stage" } else { "removed from stage" });
             }
             Err(e) => self.say(format!("git: {e}")),
         }
@@ -99,7 +99,7 @@ impl App {
         let Some(f) = self.current_file() else { return };
         let name = self.rel(&f);
         self.overlay = Overlay::Prompt(Prompt {
-            title: format!("Descartar alterações de {name}? Digite 'sim' para confirmar"),
+            title: format!("Discard changes to {name}? Type 'yes' to confirm"),
             kind: PromptKind::GitDiscard { path: f },
             field: TextField::default(),
         });
@@ -113,14 +113,14 @@ impl App {
                     let _ = self.docs[i].reload_from_disk();
                 }
                 self.refresh_git_status();
-                self.say("alterações descartadas");
+                self.say("changes discarded");
             }
             Err(e) => self.say(format!("git: {e}")),
         }
     }
 
     pub fn prompt_git_commit(&mut self) {
-        self.overlay = Overlay::Prompt(Prompt { title: "Mensagem do commit (do que está no stage)".into(), kind: PromptKind::GitCommit, field: TextField::default() });
+        self.overlay = Overlay::Prompt(Prompt { title: "Commit message (for what is staged)".into(), kind: PromptKind::GitCommit, field: TextField::default() });
     }
 
     pub fn git_commit(&mut self, msg: &str) {
@@ -146,7 +146,7 @@ impl App {
         match run_git(&self.root, &["add", "-A"]) {
             Ok(_) => {
                 self.refresh_git_status();
-                self.say("tudo adicionado ao stage");
+                self.say("everything added to stage");
             }
             Err(e) => self.say(format!("git: {e}")),
         }

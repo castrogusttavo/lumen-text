@@ -29,7 +29,7 @@ const MAX_PIXELS: u64 = 40_000_000;
 /// Decoder threads running at once.
 const WORKERS: usize = 2;
 /// An animation keeps all its frames scaled to the drawn size; past this many bytes (or frames)
-/// the image shows its first frame with an "animado" badge instead of playing.
+/// the image shows its first frame with an "animated" badge instead of playing.
 pub const ANIM_BYTES: usize = 16 << 20;
 pub const ANIM_FRAMES: usize = 300;
 /// Animations that play at once; the other visible ones stay on their first frame (and get the badge).
@@ -447,7 +447,7 @@ pub enum Tex {
     /// Pixels to draw (a still image, or the current frame of a playing animation).
     Ready(Rc<Pix>),
     /// An animation that does not play (too big, or too many are on screen): its first frame,
-    /// drawn with an "animado" badge.
+    /// drawn with an "animated" badge.
     Badged(Rc<Pix>),
     Pending,
     Failed,

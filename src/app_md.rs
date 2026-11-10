@@ -285,11 +285,11 @@ impl App {
         if d.md.is_some() {
             d.md = None;
             self.layout.md = Rect::default();
-            self.say("Leitor de Markdown fechado");
+            self.say("Markdown reader closed");
         } else if d.md_is_markdown() {
             d.md = Some(Box::new(MdState::new()));
         } else {
-            self.say("O leitor de Markdown só abre em arquivos .md");
+            self.say("The Markdown reader only opens .md files");
         }
         self.request_redraw();
     }
@@ -487,13 +487,13 @@ impl App {
                     if find_anchor(&st.view, &a).is_some() {
                         st.anchor = Some(a);
                     } else {
-                        self.say(format!("Seção #{a} não encontrada"));
+                        self.say(format!("Section #{a} not found"));
                     }
                 }
             }
             LinkAction::File(p, frag) => {
                 if !p.is_file() {
-                    return self.say(format!("Arquivo não encontrado: {}", p.display()));
+                    return self.say(format!("File not found: {}", p.display()));
                 }
                 self.push_nav();
                 let Some(i) = self.open_path(&p, None) else { return };

@@ -1,4 +1,4 @@
-//! Debugging UI glue: breakpoints, F5/F9/F10/F11, and the "Depurar" panel. Node/TypeScript runs
+//! Debugging UI glue: breakpoints, F5/F9/F10/F11, and the "Debug" panel. Node/TypeScript runs
 //! through js-debug (`dap::MultiSession`), Rust/C through gdb's DAP mode (`dap::Session`).
 
 use crate::{
@@ -14,9 +14,9 @@ use std::path::{Path, PathBuf};
 /// Height of the column titles in the debug body (rows start right below).
 const DEBUG_TITLE_H: i32 = 28;
 
-/// The Pilha (column 0) / Variáveis (column 1) row under (x, y): `(column, index, row rect)`.
+/// The Stack (column 0) / Variables (column 1) row under (x, y): `(column, index, row rect)`.
 /// `body` is the debug body, `scroll` the per-column scroll in px and `counts` the number of
-/// rows of those two columns. The Saída column has no interactive rows.
+/// rows of those two columns. The Output column has no interactive rows.
 fn debug_row_at(body: Rect, scroll: [f64; 3], counts: [usize; 2], lh: i32, x: f64, y: f64) -> Option<(usize, usize, Rect)> {
     let top = body.y + DEBUG_TITLE_H;
     let area = Rect::new(body.x, top, body.w, (body.bottom() - top).max(0));
@@ -208,13 +208,13 @@ impl App {
         match ext.as_str() {
             "ts" | "js" | "mjs" | "cjs" | "mts" | "cts" => self.start_node_debug(&path),
             "rs" => self.start_rust_debug(&path),
-            _ => self.say("sem depurador para este tipo de arquivo (suporte: TS/JS via js-debug, Rust via gdb)"),
+            _ => self.say("no debugger for this file type (supported: TS/JS via js-debug, Rust via gdb)"),
         }
     }
 
     fn start_node_debug(&mut self, path: &Path) {
         let Some(server) = js_debug_server() else {
-            return self.say("js-debug não instalado: baixe js-debug-dap-*.tar.gz do GitHub (microsoft/vscode-js-debug) em ~/.local/share/lumen-text/js-debug");
+            return self.say("js-debug not installed: download js-debug-dap-*.tar.gz from GitHub (microsoft/vscode-js-debug) into ~/.local/share/lumen-text/js-debug");
         };
         match MultiSession::start_node("node", &server, path, self.wake()) {
             Ok(mut ms) => {
@@ -229,29 +229,29 @@ impl App {
                 self.panel.dbg_follow = true;
                 self.say("depurando…");
             }
-            Err(e) => self.say(format!("não consegui iniciar o js-debug: {e}")),
+            Err(e) => self.say(format!("could not start js-debug: {e}")),
         }
     }
 
     fn start_rust_debug(&mut self, path: &Path) {
         let Some(root) = path.ancestors().find(|d| d.join("Cargo.toml").exists()).map(Path::to_path_buf) else {
-            return self.say("não achei Cargo.toml para este arquivo");
+            return self.say("no Cargo.toml found for this file");
         };
         let name = std::fs::read_to_string(root.join("Cargo.toml")).ok().and_then(|t| cargo_package_name(&t));
-        let Some(name) = name else { return self.say("Cargo.toml sem [package] name") };
+        let Some(name) = name else { return self.say("Cargo.toml has no [package] name") };
         self.pending_native = Some(root.join("target/debug").join(name));
-        self.run_task("cargo build", "Compilar para depurar");
+        self.run_task("cargo build", "Build for debugging");
     }
 
     /// Called when `cargo build` finished successfully.
     pub fn start_native_debug(&mut self, program: PathBuf) {
         if !program.exists() {
-            return self.say(format!("binário não encontrado: {}", program.display()));
+            return self.say(format!("binary not found: {}", program.display()));
         }
         let cwd = program.parent().and_then(Path::parent).and_then(Path::parent).map(Path::to_path_buf).unwrap_or_else(|| self.root.clone());
         let mut dap = match Dap::spawn("gdb", &["--interpreter=dap"], &cwd, self.wake()) {
             Ok(d) => d,
-            Err(e) => return self.say(format!("gdb indisponível: {e}")),
+            Err(e) => return self.say(format!("gdb unavailable: {e}")),
         };
         let mut session = Session::new(&program.to_string_lossy(), &[], &cwd, false);
         for (p, lines) in self.breakpoint_pairs() {
@@ -263,7 +263,7 @@ impl App {
         self.panel.tab = PanelTab::Debug;
         self.panel.dbg_scroll = [0.0; 3];
         self.panel.dbg_follow = true;
-        self.say("depurando com o gdb…");
+        self.say("debugging with gdb…");
     }
 
     pub fn debug_stop(&mut self) {
@@ -273,7 +273,7 @@ impl App {
         for doc in &mut self.docs {
             doc.debug_line = None;
         }
-        self.say("depuração encerrada");
+        self.say("debug session ended");
     }
 
     pub fn debug_step(&mut self, kind: char) {
@@ -322,7 +322,7 @@ impl App {
                     doc.debug_line = None;
                 }
                 self.dbg_last_stop = None;
-                self.say("a execução terminou");
+                self.say("execution finished");
             }
             _ => {
                 for doc in &mut self.docs {
@@ -341,7 +341,7 @@ impl App {
         let c = self.theme.chrome;
         let (fg, dim) = (self.theme.foreground, c.tab_inactive_fg);
         let Some(d) = &self.dbg else {
-            self.tx.draw_ui(cv, body.x + 16, body.y + 12, "F5 inicia a depuração do arquivo atual · F9 marca um ponto de parada", dim, body, false);
+            self.tx.draw_ui(cv, body.x + 16, body.y + 12, "F5 starts debugging the current file · F9 toggles a breakpoint", dim, body, false);
             return;
         };
         let state = match d.state() {
@@ -352,7 +352,7 @@ impl App {
         };
         let w3 = body.w / 3;
         let cols = [Rect::new(body.x, body.y, w3, body.h), Rect::new(body.x + w3, body.y, w3, body.h), Rect::new(body.x + 2 * w3, body.y, body.w - 2 * w3, body.h)];
-        for (k, title) in ["Pilha", "Variáveis", "Saída"].iter().enumerate() {
+        for (k, title) in ["Stack", "Variables", "Output"].iter().enumerate() {
             let col = cols[k];
             if k > 0 {
                 cv.fill(Rect::new(col.x, col.y, 1, col.h), c.border);

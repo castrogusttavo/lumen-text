@@ -641,10 +641,10 @@ impl Buffer {
                 let rem: String = e.map(|e| e.removed.chars().take(40).collect()).unwrap_or_default();
                 let desc = match (ins.is_empty(), rem.is_empty()) {
                     (false, true) => format!("inserir \"{}\"", ins.replace('\n', "↵")),
-                    (true, false) => format!("apagar \"{}\"", rem.replace('\n', "↵")),
+                    (true, false) => format!("delete \"{}\"", rem.replace('\n', "↵")),
                     _ => format!("trocar \"{}\" por \"{}\"", rem.replace('\n', "↵"), ins.replace('\n', "↵")),
                 };
-                (i, format!("{desc} ({} edição(ões))", g.edits.len()))
+                (i, format!("{desc} ({} edit(s))", g.edits.len()))
             })
             .collect()
     }

@@ -156,11 +156,11 @@ published with every release. Nothing else is sent; there is no telemetry.
 
 | Setting `updates` | Behaviour |
 |---|---|
-| `"auto"` (default) | Checks, downloads and installs the new version in the background, then shows a small card: **Lumen X is ready - Restart to update** (*Reiniciar agora* / *Depois* / *Notas da versão*). A subtle download icon stays in the bottom bar until you restart. Each version is announced once. |
+| `"auto"` (default) | Checks, downloads and installs the new version in the background, then shows a small card: **Lumen X is ready - Restart to update** (*Restart now* / *Later* / *Release notes*). A subtle download icon stays in the bottom bar until you restart. Each version is announced once. |
 | `"notify"` | Only announces that a new version exists (card + bottom bar icon). The card's *Atualizar agora* button installs it on demand. |
 | `"off"` | Never checks by itself. The command palette entries below still work. |
 
-Command palette: **Ajuda: Verificar atualizações** (always ends in a card: up to date, available or the error), **Ajuda: Reiniciar para atualizar**, **Ajuda: Sobre o Lumen** (version, install kind). Restart starts the new executable with your project and restores the session; with unsaved files it asks you to save first.
+Command palette: **Help: Check for updates** (always ends in a card: up to date, available or the error), **Help: Restart to update**, **Help: About Lumen** (version, install kind). Restart starts the new executable with your project and restores the session; with unsaved files it asks you to save first.
 
 What "install" means depends on how you installed Lumen:
 

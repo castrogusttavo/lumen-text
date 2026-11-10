@@ -79,7 +79,7 @@ pub fn report_text(op: &Op, res: &Result<String, Fail>) -> (String, bool) {
         Ok(m) => (m.clone(), true),
         Err(f) => {
             let hint = match f.kind {
-                FailKind::Rejected | FailKind::Diverged if !matches!(op, Op::Fetch) => " · abra o painel Git (Ctrl+Shift+G)",
+                FailKind::Rejected | FailKind::Diverged if !matches!(op, Op::Fetch) => " · open the Git panel (Ctrl+Shift+G)",
                 _ => "",
             };
             (format!("{}: {}{hint}", op.label(), f.text), false)
@@ -281,13 +281,13 @@ mod tests {
 
     #[test]
     fn results_are_reported_with_the_command_name() {
-        let ok = report_text(&Op::Push, &Ok("Push concluído".into()));
-        assert_eq!(ok, ("Push concluído".to_string(), true));
-        let e = Fail { kind: FailKind::Rejected, text: "Rejeitado".into() };
+        let ok = report_text(&Op::Push, &Ok("Push complete".into()));
+        assert_eq!(ok, ("Push complete".to_string(), true));
+        let e = Fail { kind: FailKind::Rejected, text: "Rejected".into() };
         let (t, ok) = report_text(&Op::Push, &Err(e.clone()));
-        assert!(!ok && t.starts_with("Push: Rejeitado") && t.contains("painel Git"), "{t}");
-        let (t, _) = report_text(&Op::Fetch, &Err(Fail { kind: FailKind::Network, text: "Sem acesso".into() }));
-        assert_eq!(t, "Fetch: Sem acesso");
+        assert!(!ok && t.starts_with("Push: Rejected") && t.contains("Git panel"), "{t}");
+        let (t, _) = report_text(&Op::Fetch, &Err(Fail { kind: FailKind::Network, text: "No access".into() }));
+        assert_eq!(t, "Fetch: No access");
         let (t, _) = report_text(&Op::PullWith(gitsync::PullStrategy::Rebase), &Err(Fail { kind: FailKind::Conflict, text: "Conflitos".into() }));
         assert!(t.starts_with("Pull: "), "{t}");
     }

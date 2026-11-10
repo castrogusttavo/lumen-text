@@ -680,7 +680,7 @@ impl App {
     /// Open a new pane (right of the focused one, or below it) on the focused document and focus it.
     fn split_add(&mut self, below: bool) {
         if self.docs.is_empty() {
-            return self.say("Abra um arquivo para dividir o editor");
+            return self.say("Open a file to split the editor");
         }
         let fresh = self.split.is_none();
         if fresh {
@@ -694,11 +694,11 @@ impl App {
         }
         let mut grid = sp.grid.clone();
         let msg = if sp.panes.len() >= MAX_PANES {
-            Some("Máximo de 6 painéis")
+            Some("Maximum of 6 panes")
         } else if below && !grid.can_split_below(sp.focus) {
-            Some(if grid.cols.len() > MAX_GRID_COLS { "Dividir abaixo só com até 3 colunas (grade de no máximo 3x2)" } else { "Este painel já está dividido abaixo" })
+            Some(if grid.cols.len() > MAX_GRID_COLS { "Splitting down only works with up to 3 columns (grid of at most 3x2)" } else { "This pane is already split below" })
         } else if !below && !grid.can_split_right() {
-            Some(if grid.stacked() { "Com painéis empilhados, dividir à direita só até 3 colunas (grade de no máximo 3x2)" } else { "Máximo de 4 colunas" })
+            Some(if grid.stacked() { "With stacked panes, splitting right only works up to 3 columns (grid of at most 3x2)" } else { "Maximum of 4 columns" })
         } else {
             None
         };
@@ -709,7 +709,7 @@ impl App {
         };
         let fits = new.is_some() && grid.layout(card).is_some();
         let (Some(new), true) = (new, fits) else {
-            self.say(msg.unwrap_or("Sem espaço para dividir aqui — alargue a janela"));
+            self.say(msg.unwrap_or("No room to split here — widen the window"));
             self.split = if fresh { None } else { Some(sp) };
             return;
         };
@@ -729,7 +729,7 @@ impl App {
         self.completion = None;
         self.focus = Focus::Editor;
         self.split_layout();
-        self.say(format!("Editor dividido em {n} painéis — clique numa aba para escolher o documento do painel focado"));
+        self.say(format!("Editor split into {n} panes — click a tab to choose the focused pane's document"));
         self.request_redraw();
     }
 
@@ -747,7 +747,7 @@ impl App {
     /// "Fechar painel dividido": back to a single editor on the focused pane's document.
     pub fn split_close(&mut self) {
         if self.split.take().is_none() {
-            return self.say("O editor não está dividido");
+            return self.say("The editor is not split");
         }
         self.hover = None;
         self.completion = None;
@@ -757,7 +757,7 @@ impl App {
 
     /// "Fechar painel focado": the others stay; the focus goes to the previous pane (or the next).
     pub fn close_focused_pane(&mut self) {
-        let Some(mut sp) = self.split.take() else { return self.say("O editor não está dividido") };
+        let Some(mut sp) = self.split.take() else { return self.say("The editor is not split") };
         let old = sp.focus;
         let to = if old > 0 { old - 1 } else { 1 };
         self.split_focus_in(&mut sp, to);
@@ -792,23 +792,23 @@ impl App {
 
     /// Ctrl+1..4: focus pane number `n` (0-based).
     pub fn focus_pane_n(&mut self, n: usize) {
-        let Some(count) = self.split.as_ref().map(|s| s.panes.len()) else { return self.say("O editor não está dividido (Ctrl+\\ divide)") };
+        let Some(count) = self.split.as_ref().map(|s| s.panes.len()) else { return self.say("The editor is not split (Ctrl+\\ splits)") };
         if n >= count {
-            return self.say(format!("Não há painel {} (o editor tem {count})", n + 1));
+            return self.say(format!("There is no pane {} (the editor has {count})", n + 1));
         }
         self.split_focus_idx(n);
     }
 
     /// Focus the next (`delta` 1) or previous (-1) pane, wrapping around.
     pub fn focus_next_pane(&mut self, delta: isize) {
-        let Some((f, n)) = self.split.as_ref().map(|s| (s.focus, s.panes.len())) else { return self.say("O editor não está dividido (Ctrl+\\ divide)") };
+        let Some((f, n)) = self.split.as_ref().map(|s| (s.focus, s.panes.len())) else { return self.say("The editor is not split (Ctrl+\\ splits)") };
         self.split_focus_idx((f as isize + delta).rem_euclid(n as isize) as usize);
     }
 
     /// Move the focused tab's document into the next/previous pane (and follow it there). The pane
     /// it leaves shows a neighboring tab, or closes when there is none.
     pub fn move_to_pane(&mut self, delta: isize) {
-        let Some(mut sp) = self.split.take() else { return self.say("O editor não está dividido (Ctrl+\\ divide)") };
+        let Some(mut sp) = self.split.take() else { return self.say("The editor is not split (Ctrl+\\ splits)") };
         let n = sp.panes.len() as isize;
         let (src, d) = (sp.focus, self.active);
         let target = (src as isize + delta).rem_euclid(n) as usize;
@@ -833,7 +833,7 @@ impl App {
         }
         self.split = (sp.panes.len() > 1).then_some(sp);
         self.after_focus_change();
-        self.say("Aba movida para o outro painel");
+        self.say("Tab moved to the other pane");
     }
 
     /// "Abrir ao lado" and friends: put document `idx` in the pane after the focused one.
@@ -851,7 +851,7 @@ impl App {
         let Some(d) = self.docs.get_mut(self.active) else { return };
         let on = !d.view.wrap;
         d.set_word_wrap(on);
-        self.say(if on { "quebra de linha deste painel: ligada" } else { "quebra de linha deste painel: desligada" });
+        self.say(if on { "word wrap for this pane: on" } else { "word wrap for this pane: off" });
     }
 
     /// The global word wrap setting changed: every pane follows it (stashed panes included).

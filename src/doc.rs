@@ -313,7 +313,7 @@ impl Doc {
             .path
             .as_ref()
             .and_then(|p| p.file_name())
-            .map_or_else(|| "sem nome".to_string(), |n| n.to_string_lossy().into_owned());
+            .map_or_else(|| "untitled".to_string(), |n| n.to_string_lossy().into_owned());
         let mut ed = Editor::new(&buf, comment);
         ed.jsx = matches!(lang, Some("tsx" | "jsx" | "html" | "vue" | "svelte"));
         let disk_mtime = buf.path.as_ref().and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());

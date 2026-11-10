@@ -1,7 +1,7 @@
-//! "Unsaved changes" question: Salvar tudo / Descartar / Cancelar.
+//! "Unsaved changes" question: Save all / Discard / Cancel.
 //!
-//! Asked before an action that would throw unsaved tabs away ("Fechar outras" / "Fechar todas",
-//! switching project; "Fechar todas" also lists unsaved *pinned* tabs, which stay open but can be saved) and, for a project switch, also when a debug session is running (it is
+//! Asked before an action that would throw unsaved tabs away ("Close others" / "Close all",
+//! switching project; "Close all" also lists unsaved *pinned* tabs, which stay open but can be saved) and, for a project switch, also when a debug session is running (it is
 //! stopped as part of the action). The card rides on [`Overlay::Ctx`] like the delete
 //! confirmation does ([`CtxMenu::unsaved`]), so key/mouse/hover routing and the drawing hooks
 //! are the context menu's own; everything specific lives here.
@@ -19,7 +19,7 @@ use winit::keyboard::{Key, NamedKey};
 /// What to do once the user has answered.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pending {
-    /// "Fechar outras" (`keep = Some(tab)`) or "Fechar todas" (`None`).
+    /// "Close others" (`keep = Some(tab)`) or "Close all" (`None`).
     CloseTabs { keep: Option<usize> },
     /// Open another project folder.
     SwitchProject(PathBuf),
@@ -36,7 +36,7 @@ pub struct Unsaved {
     pub pending: Pending,
     /// Names of the unsaved tabs involved.
     pub names: Vec<String>,
-    /// How many of them are pinned tabs that stay open ("Fechar todas"): only saved, never closed.
+    /// How many of them are pinned tabs that stay open ("Close all"): only saved, never closed.
     pub kept: usize,
     /// A debug session is running and will be stopped (project switch).
     pub debug: bool,
@@ -57,7 +57,7 @@ impl Unsaved {
         self
     }
 
-    /// "Salvar tudo" only makes sense when there is something to save.
+    /// "Save all" only makes sense when there is something to save.
     pub fn has_save(&self) -> bool {
         !self.names.is_empty()
     }
@@ -73,10 +73,10 @@ impl Unsaved {
 
     pub fn label(&self, c: Choice) -> &'static str {
         match c {
-            Choice::Save => "Salvar tudo",
-            Choice::Discard if self.has_save() => "Descartar",
-            Choice::Discard => "Parar e trocar",
-            Choice::Cancel => "Cancelar",
+            Choice::Save => "Save all",
+            Choice::Discard if self.has_save() => "Discard",
+            Choice::Discard => "Stop and switch",
+            Choice::Cancel => "Cancel",
         }
     }
 
@@ -91,27 +91,27 @@ impl Unsaved {
     pub fn text(&self) -> (String, Vec<String>) {
         let n = self.names.len();
         let title = match (n, self.debug) {
-            (0, _) => "Há uma depuração em andamento".to_string(),
-            (1, _) => format!("“{}” tem alterações não salvas", self.names[0]),
-            _ => format!("{n} abas têm alterações não salvas"),
+            (0, _) => "A debug session is running".to_string(),
+            (1, _) => format!("“{}” has unsaved changes", self.names[0]),
+            _ => format!("{n} tabs have unsaved changes"),
         };
         let mut body = Vec::new();
         if n > 1 {
             let shown: Vec<&str> = self.names.iter().take(3).map(String::as_str).collect();
-            let more = if n > 3 { format!(" e mais {}", n - 3) } else { String::new() };
+            let more = if n > 3 { format!(" and {} more", n - 3) } else { String::new() };
             body.push(format!("{}{more}", shown.join(", ")));
         }
         if self.debug {
-            body.push(if n == 0 { "Ela será encerrada ao trocar de projeto." } else { "A depuração em andamento também será encerrada." }.into());
+            body.push(if n == 0 { "It will be stopped when you switch projects." } else { "The running debug session will also be stopped." }.into());
         }
         if matches!(self.pending, Pending::SwitchProject(_)) {
-            body.push("As abas abertas serão fechadas ao trocar de projeto.".into());
+            body.push("Open tabs will be closed when you switch projects.".into());
         } else if self.kept > 0 && self.kept == n {
-            body.push(if n == 1 { "A aba fixada continua aberta." } else { "As abas fixadas continuam abertas." }.into());
+            body.push(if n == 1 { "The pinned tab stays open." } else { "Pinned tabs stay open." }.into());
         } else if self.kept > 0 {
-            body.push(format!("{} fixada(s) continua(m) aberta(s); as demais serão fechadas.", self.kept));
+            body.push(format!("{} pinned tab(s) stay open; the rest will be closed.", self.kept));
         } else if n > 0 {
-            body.push("As abas selecionadas serão fechadas.".into());
+            body.push("The selected tabs will be closed.".into());
         }
         (title, body)
     }
@@ -140,7 +140,7 @@ impl Unsaved {
     }
 }
 
-/// Tabs that "Fechar outras" (`keep = Some(i)`) / "Fechar todas" (`None`) close, highest index
+/// Tabs that "Close others" (`keep = Some(i)`) / "Close all" (`None`) close, highest index
 /// first, plus the unsaved ones among them. Pinned tabs always stay.
 pub fn tabs_to_close(pinned: &[bool], dirty: &[bool], keep: Option<usize>) -> (Vec<usize>, Vec<usize>) {
     let all: Vec<usize> = (0..pinned.len()).rev().filter(|&i| Some(i) != keep && !pinned[i]).collect();
@@ -148,9 +148,9 @@ pub fn tabs_to_close(pinned: &[bool], dirty: &[bool], keep: Option<usize>) -> (V
     (all, unsaved)
 }
 
-/// Unsaved tabs the question lists and "Salvar tudo" saves, in tab order, and how many of them are
-/// pinned tabs that stay open. "Fechar todas" (`keep = None`) includes unsaved *pinned* tabs (they
-/// are not closed, but the user is asked about them and may save them); "Fechar outras" only lists
+/// Unsaved tabs the question lists and "Save all" saves, in tab order, and how many of them are
+/// pinned tabs that stay open. "Close all" (`keep = None`) includes unsaved *pinned* tabs (they
+/// are not closed, but the user is asked about them and may save them); "Close others" only lists
 /// what it closes.
 pub fn tabs_to_ask(pinned: &[bool], dirty: &[bool], keep: Option<usize>) -> (Vec<usize>, usize) {
     let mut v: Vec<usize> = (0..pinned.len()).filter(|&i| dirty[i] && Some(i) != keep && (!pinned[i] || keep.is_none())).collect();
@@ -185,7 +185,7 @@ impl App {
         (self.docs.iter().map(|d| d.pinned).collect(), self.docs.iter().map(|d| d.buf.is_dirty()).collect())
     }
 
-    /// "Fechar outras" / "Fechar todas": closes at once when nothing would be lost, else asks.
+    /// "Close others" / "Close all": closes at once when nothing would be lost, else asks.
     pub fn close_tabs_request(&mut self, keep: Option<usize>) {
         let (pinned, dirty) = self.tab_flags();
         let (list, kept) = tabs_to_ask(&pinned, &dirty, keep);
@@ -206,7 +206,7 @@ impl App {
             self.close_tab(i, true);
         }
         if let Some(k) = kept_idx.filter(|&k| k < self.docs.len()) {
-            // "Fechar outras": the tab the menu was opened on is the one left in front.
+            // "Close others": the tab the menu was opened on is the one left in front.
             self.activate(k);
         }
     }
@@ -227,12 +227,12 @@ impl App {
                 self.lsp_did_save(i);
                 Ok(())
             }
-            Err(e) => Err(format!("não foi possível salvar {name}: {e}")),
+            Err(e) => Err(format!("could not save {name}: {e}")),
         }
     }
 
     /// Save these documents; stops at the first failure and reports it. A document without a file
-    /// path cannot be written: it opens the "Salvar como" prompt, and the rest of the list (and
+    /// path cannot be written: it opens the "Save as" prompt, and the rest of the list (and
     /// `then`, the action that was waiting for the save) continue once that is answered.
     pub fn save_docs_then(&mut self, idxs: Vec<usize>, then: Option<Pending>) {
         let mut rest = idxs.into_iter();
@@ -255,18 +255,18 @@ impl App {
         }
     }
 
-    /// "Salvar como" prompt for the untitled document `i`; `rest` and `then` continue afterwards.
+    /// "Save as" prompt for the untitled document `i`; `rest` and `then` continue afterwards.
     pub fn ask_save_as(&mut self, i: usize, rest: Vec<usize>, then: Option<Pending>, text: String) {
         let name = self.docs.get(i).map(|d| d.name.clone()).unwrap_or_default();
         self.overlay = Overlay::Prompt(Prompt {
             kind: PromptKind::SaveAs { doc: i, rest, then },
-            title: format!("Salvar “{name}” como (caminho; relativo à raiz do projeto)"),
+            title: format!("Save “{name}” as (path; relative to the project root)"),
             field: TextField::with(&text),
         });
         self.request_redraw();
     }
 
-    /// Where a "Salvar como" answer points: `~/x`, an absolute path, or relative to the project root.
+    /// Where a "Save as" answer points: `~/x`, an absolute path, or relative to the project root.
     pub fn resolve_save_path(&self, text: &str) -> Option<PathBuf> {
         let t = text.trim();
         if t.is_empty() || t.ends_with('/') {
@@ -279,22 +279,22 @@ impl App {
         })
     }
 
-    /// The "Salvar como" prompt was accepted with `text`.
+    /// The "Save as" prompt was accepted with `text`.
     pub fn save_as_answer(&mut self, i: usize, rest: Vec<usize>, then: Option<Pending>, text: String) {
         let Some(path) = self.resolve_save_path(&text) else {
-            return self.say("salvar cancelado: caminho vazio");
+            return self.say("save cancelled: empty path");
         };
         if path.is_dir() {
-            self.say(format!("{} é uma pasta", path.display()));
+            self.say(format!("{} is a folder", path.display()));
             return self.ask_save_as(i, rest, then, text);
         }
         if path.exists() {
-            self.say(format!("já existe: {}", path.display()));
+            self.say(format!("already exists: {}", path.display()));
             return self.ask_save_as(i, rest, then, text);
         }
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                return self.say(format!("não foi possível criar {}: {e}", parent.display()));
+                return self.say(format!("could not create {}: {e}", parent.display()));
             }
         }
         self.set_doc_path(i, &path);
@@ -531,19 +531,19 @@ mod tests {
     #[test]
     fn card_text_and_buttons() {
         let u = Unsaved::new(Pending::CloseTabs { keep: None }, names(&["a.ts"]), false);
-        assert_eq!(u.text().0, "“a.ts” tem alterações não salvas");
+        assert_eq!(u.text().0, "“a.ts” has unsaved changes");
         assert_eq!(u.choices(), vec![Choice::Cancel, Choice::Discard, Choice::Save]);
         assert_eq!(u.sel, Choice::Save, "the safe answer is focused first");
         let u = Unsaved::new(Pending::SwitchProject("/x".into()), names(&["a", "b", "c", "d", "e"]), true);
         let (t, body) = u.text();
-        assert_eq!(t, "5 abas têm alterações não salvas");
-        assert!(body[0].contains("a, b, c e mais 2"), "{body:?}");
-        assert!(body.iter().any(|l| l.contains("depuração")));
-        // Debug only: nothing to save, so no "Salvar tudo" and Discard is the "stop" button.
+        assert_eq!(t, "5 tabs have unsaved changes");
+        assert!(body[0].contains("a, b, c and 2 more"), "{body:?}");
+        assert!(body.iter().any(|l| l.contains("debug session")));
+        // Debug only: nothing to save, so no "Save all" and Discard is the "stop" button.
         let u = Unsaved::new(Pending::SwitchProject("/x".into()), vec![], true);
         assert_eq!(u.choices(), vec![Choice::Cancel, Choice::Discard]);
-        assert_eq!(u.label(Choice::Discard), "Parar e trocar");
-        assert_eq!(u.text().0, "Há uma depuração em andamento");
+        assert_eq!(u.label(Choice::Discard), "Stop and switch");
+        assert_eq!(u.text().0, "A debug session is running");
     }
 
     #[test]
@@ -558,9 +558,9 @@ mod tests {
         // Only a pinned tab is unsaved: Close all still has a question for it.
         assert_eq!(tabs_to_ask(&[true, false], &[true, false], None), (vec![0], 1));
         let u = Unsaved::new(Pending::CloseTabs { keep: None }, names(&["a.ts"]), false).with_kept(1);
-        assert_eq!(u.text().1, ["A aba fixada continua aberta."]);
+        assert_eq!(u.text().1, ["The pinned tab stays open."]);
         let u = Unsaved::new(Pending::CloseTabs { keep: None }, names(&["a.ts", "b.ts"]), false).with_kept(1);
-        assert!(u.text().1.iter().any(|l| l.contains("1 fixada(s) continua(m) aberta(s)")), "{:?}", u.text());
+        assert!(u.text().1.iter().any(|l| l.contains("1 pinned tab(s) stay open")), "{:?}", u.text());
     }
 
     #[test]
@@ -597,10 +597,10 @@ mod tests {
         app.close_tabs_request(None);
         assert!(matches!(&app.overlay, Overlay::Ctx(m) if m.unsaved.as_ref().is_some_and(|u| u.names.len() == 2)));
         app.unsaved_answer(Pending::CloseTabs { keep: None }, Choice::Save);
-        // The file with a path was saved; the untitled one raised the "Salvar como" prompt and
+        // The file with a path was saved; the untitled one raised the "Save as" prompt and
         // nothing was closed yet.
         assert_eq!(std::fs::read_to_string(dir.join("seed.txt")).unwrap(), "changed\n");
-        let Overlay::Prompt(p) = &app.overlay else { panic!("expected the Salvar como prompt") };
+        let Overlay::Prompt(p) = &app.overlay else { panic!("expected the Save as prompt") };
         assert!(matches!(&p.kind, PromptKind::SaveAs { doc, .. } if *doc == u));
         assert_eq!(app.docs.len(), 2);
         // Answer with a relative path (inside the project, in a folder that does not exist yet).

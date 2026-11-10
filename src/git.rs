@@ -35,20 +35,20 @@ pub fn status(root: &Path) -> Vec<(String, String)> {
     out.lines().filter(|l| l.len() > 3).map(|l| (l[..2].to_string(), l[3..].to_string())).collect()
 }
 
-/// Short Portuguese relative time ("há 3 dias") from seconds ago.
+/// Short relative time ("3 days ago") from seconds ago.
 pub fn ago(secs: i64) -> String {
     let (n, unit) = match secs {
-        s if s < 60 => return "agora há pouco".to_string(),
-        s if s < 3600 => (s / 60, if s / 60 == 1 { "minuto" } else { "minutos" }),
-        s if s < 86_400 => (s / 3600, if s / 3600 == 1 { "hora" } else { "horas" }),
-        s if s < 86_400 * 30 => (s / 86_400, if s / 86_400 == 1 { "dia" } else { "dias" }),
-        s if s < 86_400 * 365 => (s / (86_400 * 30), if s / (86_400 * 30) == 1 { "mês" } else { "meses" }),
-        s => (s / (86_400 * 365), if s / (86_400 * 365) == 1 { "ano" } else { "anos" }),
+        s if s < 60 => return "just now".to_string(),
+        s if s < 3600 => (s / 60, if s / 60 == 1 { "minute" } else { "minutes" }),
+        s if s < 86_400 => (s / 3600, if s / 3600 == 1 { "hour" } else { "hours" }),
+        s if s < 86_400 * 30 => (s / 86_400, if s / 86_400 == 1 { "day" } else { "days" }),
+        s if s < 86_400 * 365 => (s / (86_400 * 30), if s / (86_400 * 30) == 1 { "month" } else { "months" }),
+        s => (s / (86_400 * 365), if s / (86_400 * 365) == 1 { "year" } else { "years" }),
     };
-    format!("há {n} {unit}")
+    format!("{n} {unit} ago")
 }
 
-/// "Author, há 3 dias · message" for a 0-based `line` of the committed file, if blame works.
+/// "Author, 3 days ago · message" for a 0-based `line` of the committed file, if blame works.
 pub fn blame_line(path: &Path, line: usize) -> Option<String> {
     let dir = path.parent()?;
     let name = path.file_name()?.to_string_lossy().into_owned();
@@ -57,7 +57,7 @@ pub fn blame_line(path: &Path, line: usize) -> Option<String> {
     let field = |k: &str| out.lines().find_map(|x| x.strip_prefix(k)).map(str::to_string);
     let author = field("author ")?;
     if author == "Not Committed Yet" {
-        return Some("Você · alterações não commitadas".to_string());
+        return Some("You · uncommitted changes".to_string());
     }
     let time: i64 = field("author-time ")?.parse().ok()?;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
@@ -85,10 +85,10 @@ mod tests {
 
     #[test]
     fn relative_time_and_blame() {
-        assert_eq!(ago(30), "agora há pouco");
-        assert_eq!(ago(3600), "há 1 hora");
-        assert_eq!(ago(86_400 * 3), "há 3 dias");
-        assert_eq!(ago(86_400 * 400), "há 1 ano");
+        assert_eq!(ago(30), "just now");
+        assert_eq!(ago(3600), "1 hour ago");
+        assert_eq!(ago(86_400 * 3), "3 days ago");
+        assert_eq!(ago(86_400 * 400), "1 year ago");
         let dir = std::env::temp_dir().join(format!("lumen-blame-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -104,7 +104,7 @@ mod tests {
         let b = blame_line(&dir.join("f.ts"), 1).unwrap();
         assert!(b.starts_with("Ana, ") && b.ends_with("primeiro commit"), "{b}");
         std::fs::write(dir.join("f.ts"), "one\nCHANGED\n").unwrap();
-        assert_eq!(blame_line(&dir.join("f.ts"), 1).unwrap(), "Você · alterações não commitadas");
+        assert_eq!(blame_line(&dir.join("f.ts"), 1).unwrap(), "You · uncommitted changes");
         std::fs::remove_dir_all(&dir).ok();
     }
 

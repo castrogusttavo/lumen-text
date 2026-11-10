@@ -141,119 +141,119 @@ impl Cmd {
 }
 
 pub const COMMANDS: &[(&str, &str, Cmd)] = &[
-    ("Arquivo: Salvar", "Ctrl+S", Cmd::Save),
-    ("Arquivo: Fechar aba", "Ctrl+W", Cmd::CloseTab),
-    ("Arquivo: Recarregar do disco", "", Cmd::ReloadFile),
-    ("Arquivo: Abrir…", "Ctrl+P", Cmd::QuickOpen),
-    ("Paleta: Comandos", "Ctrl+Shift+P", Cmd::Commands),
-    ("Visualizar: Alternar sidebar", "Ctrl+B", Cmd::ToggleSidebar),
-    ("Visualizar: Focar explorador", "Ctrl+Shift+E", Cmd::FocusSidebar),
-    ("Visualizar: Próxima aba", "Ctrl+Tab", Cmd::NextTab),
-    ("Visualizar: Aba anterior", "Ctrl+Shift+Tab", Cmd::PrevTab),
-    ("Buscar: No arquivo", "Ctrl+F", Cmd::Find),
-    ("Buscar: Substituir", "Ctrl+H", Cmd::Replace),
-    ("Buscar: No projeto", "Ctrl+Shift+F", Cmd::ProjectSearch),
-    ("Ir para: Linha…", "Ctrl+G", Cmd::GotoLine),
-    ("Ir para: Símbolo no arquivo", "Ctrl+Shift+O", Cmd::GotoSymbol),
-    ("Ir para: Definição", "F12", Cmd::GotoDefinition),
-    ("Ir para: Definição do tipo", "", Cmd::GotoTypeDefinition),
-    ("Ir para: Implementação", "", Cmd::GotoImplementation),
-    ("Ir para: Referências", "Shift+F12", Cmd::FindReferences),
-    ("Ir para: Próximo problema", "F8", Cmd::NextDiagnostic),
-    ("Ir para: Problema anterior", "Shift+F8", Cmd::PrevDiagnostic),
-    ("Código: Renomear símbolo", "F2", Cmd::Rename),
-    ("Código: Mostrar informações (hover) no cursor", "Ctrl+K I", Cmd::ShowHover),
-    ("Código: Formatar documento", "Shift+Alt+F", Cmd::Format),
-    ("Código: Ações rápidas", "Ctrl+.", Cmd::CodeActions),
-    ("Código: Alternar comentário", "Ctrl+/", Cmd::ToggleComment),
-    ("Editar: Desfazer", "Ctrl+Z", Cmd::Undo),
-    ("Editar: Refazer", "Ctrl+Shift+Z", Cmd::Redo),
-    ("LSP: Reiniciar servidores", "", Cmd::RestartLsp),
-    ("LSP: Alternar importação automática na completion", "", Cmd::ToggleAutoImport),
-    ("Tarefas: Executar…", "", Cmd::RunTask),
-    ("Tarefas: Repetir a última", "Ctrl+K R", Cmd::RepeatTask),
-    ("Tarefas: Parar", "Ctrl+K X", Cmd::StopTask),
-    ("Testes: Executar arquivo atual", "Ctrl+K F", Cmd::TestFile),
-    ("Testes: Executar teste sob o cursor", "Ctrl+K T", Cmd::TestAtCursor),
-    ("Visualizar: Alternar painel de saída", "Ctrl+J", Cmd::ToggleOutput),
-    ("Código: Organizar imports", "", Cmd::OrganizeImports),
-    ("Código: Alternar formatar ao salvar", "", Cmd::ToggleFormatOnSave),
-    ("Aparência: Escolher tema…", "", Cmd::PickTheme),
-    ("Arquivo: Novo arquivo…", "A (explorador)", Cmd::NewFile),
-    ("Arquivo: Nova pasta…", "Shift+A (explorador)", Cmd::NewDir),
-    ("Arquivo: Renomear…", "F2 (explorador)", Cmd::RenamePath),
-    ("Arquivo: Excluir…", "Delete (explorador)", Cmd::DeletePath),
-    ("Git: Arquivos alterados", "", Cmd::GitChanges),
-    ("Git: Abrir painel", "Ctrl+Shift+G", Cmd::GitPanel),
-    ("Git: Adicionar arquivo ao stage", "", Cmd::GitStage),
-    ("Git: Remover arquivo do stage", "", Cmd::GitUnstage),
-    ("Git: Adicionar tudo ao stage", "", Cmd::GitStageAll),
-    ("Git: Descartar alterações do arquivo…", "", Cmd::GitDiscard),
+    ("File: Save", "Ctrl+S", Cmd::Save),
+    ("File: Close tab", "Ctrl+W", Cmd::CloseTab),
+    ("File: Reload from disk", "", Cmd::ReloadFile),
+    ("File: Open…", "Ctrl+P", Cmd::QuickOpen),
+    ("Palette: Commands", "Ctrl+Shift+P", Cmd::Commands),
+    ("View: Toggle sidebar", "Ctrl+B", Cmd::ToggleSidebar),
+    ("View: Focus explorer", "Ctrl+Shift+E", Cmd::FocusSidebar),
+    ("View: Next tab", "Ctrl+Tab", Cmd::NextTab),
+    ("View: Previous tab", "Ctrl+Shift+Tab", Cmd::PrevTab),
+    ("Search: In file", "Ctrl+F", Cmd::Find),
+    ("Search: Replace", "Ctrl+H", Cmd::Replace),
+    ("Search: In project", "Ctrl+Shift+F", Cmd::ProjectSearch),
+    ("Go to: Line…", "Ctrl+G", Cmd::GotoLine),
+    ("Go to: Symbol in file", "Ctrl+Shift+O", Cmd::GotoSymbol),
+    ("Go to: Definition", "F12", Cmd::GotoDefinition),
+    ("Go to: Type definition", "", Cmd::GotoTypeDefinition),
+    ("Go to: Implementation", "", Cmd::GotoImplementation),
+    ("Go to: References", "Shift+F12", Cmd::FindReferences),
+    ("Go to: Next problem", "F8", Cmd::NextDiagnostic),
+    ("Go to: Previous problem", "Shift+F8", Cmd::PrevDiagnostic),
+    ("Code: Rename symbol", "F2", Cmd::Rename),
+    ("Code: Show hover info at cursor", "Ctrl+K I", Cmd::ShowHover),
+    ("Code: Format document", "Shift+Alt+F", Cmd::Format),
+    ("Code: Quick actions", "Ctrl+.", Cmd::CodeActions),
+    ("Code: Toggle comment", "Ctrl+/", Cmd::ToggleComment),
+    ("Edit: Undo", "Ctrl+Z", Cmd::Undo),
+    ("Edit: Redo", "Ctrl+Shift+Z", Cmd::Redo),
+    ("LSP: Restart servers", "", Cmd::RestartLsp),
+    ("LSP: Toggle auto-import in completion", "", Cmd::ToggleAutoImport),
+    ("Tasks: Run…", "", Cmd::RunTask),
+    ("Tasks: Repeat last", "Ctrl+K R", Cmd::RepeatTask),
+    ("Tasks: Stop", "Ctrl+K X", Cmd::StopTask),
+    ("Tests: Run current file", "Ctrl+K F", Cmd::TestFile),
+    ("Tests: Run test at cursor", "Ctrl+K T", Cmd::TestAtCursor),
+    ("View: Toggle output panel", "Ctrl+J", Cmd::ToggleOutput),
+    ("Code: Organize imports", "", Cmd::OrganizeImports),
+    ("Code: Toggle format on save", "", Cmd::ToggleFormatOnSave),
+    ("Appearance: Choose theme…", "", Cmd::PickTheme),
+    ("File: New file…", "A (explorer)", Cmd::NewFile),
+    ("File: New folder…", "Shift+A (explorer)", Cmd::NewDir),
+    ("File: Rename…", "F2 (explorer)", Cmd::RenamePath),
+    ("File: Delete…", "Delete (explorer)", Cmd::DeletePath),
+    ("Git: Changed files", "", Cmd::GitChanges),
+    ("Git: Open panel", "Ctrl+Shift+G", Cmd::GitPanel),
+    ("Git: Stage file", "", Cmd::GitStage),
+    ("Git: Unstage file", "", Cmd::GitUnstage),
+    ("Git: Stage all", "", Cmd::GitStageAll),
+    ("Git: Discard file changes…", "", Cmd::GitDiscard),
     ("Git: Commit…", "", Cmd::GitCommit),
-    ("Git: Adicionar trecho (hunk) ao stage", "", Cmd::GitStageHunk),
-    ("Git: Reverter trecho (hunk)", "", Cmd::GitRevertHunk),
-    ("Git: Ver diff do arquivo (lado a lado)", "", Cmd::GitDiffFile),
-    ("Git: Histórico do arquivo", "", Cmd::GitFileHistory),
-    ("Markdown: Abrir leitor ao lado", "Ctrl+Shift+V", Cmd::MarkdownPreview),
-    ("Visualizar: Dividir editor à direita", "Ctrl+\\", Cmd::SplitRight),
-    ("Visualizar: Dividir editor abaixo", "Ctrl+K \\", Cmd::SplitDown),
-    ("Visualizar: Fechar painel dividido (unir todos)", "", Cmd::CloseSplit),
-    ("Visualizar: Fechar painel focado", "Ctrl+K Shift+W", Cmd::ClosePane),
-    ("Visualizar: Focar próximo painel", "Ctrl+K Right", Cmd::FocusOtherPane),
-    ("Visualizar: Focar painel anterior", "Ctrl+K Left", Cmd::FocusPrevPane),
-    ("Visualizar: Focar painel 1", "Ctrl+1", Cmd::FocusLeftPane),
-    ("Visualizar: Focar painel 2", "Ctrl+2", Cmd::FocusRightPane),
-    ("Visualizar: Focar painel 3", "Ctrl+3", Cmd::FocusPane3),
-    ("Visualizar: Focar painel 4", "Ctrl+4", Cmd::FocusPane4),
-    ("Visualizar: Mover aba para o próximo painel", "Ctrl+K Shift+Right", Cmd::MoveToNextPane),
-    ("Visualizar: Mover aba para o painel anterior", "Ctrl+K Shift+Left", Cmd::MoveToPrevPane),
-    ("Git: Conflito — aceitar atual", "", Cmd::ConflictOurs),
-    ("Git: Conflito — aceitar entrada", "", Cmd::ConflictTheirs),
-    ("Git: Conflito — aceitar ambos", "", Cmd::ConflictBoth),
-    ("Ir para: Símbolo no projeto", "Ctrl+T", Cmd::WorkspaceSymbols),
-    ("Ver: Problemas dos arquivos abertos", "", Cmd::Problems),
-    ("Visualizar: Aumentar zoom", "Ctrl+=", Cmd::ZoomIn),
-    ("Visualizar: Diminuir zoom", "Ctrl+-", Cmd::ZoomOut),
-    ("Visualizar: Zoom padrão", "Ctrl+0", Cmd::ZoomReset),
-    ("LSP: Alternar modo enxuto (só arquivos abertos) / projeto completo", "", Cmd::ToggleNarrow),
-    ("Ir para: Voltar", "Alt+←", Cmd::NavBack),
-    ("Ir para: Avançar", "Alt+→", Cmd::NavForward),
-    ("Terminal: Abrir / alternar foco", "Ctrl+`", Cmd::OpenTerminal),
-    ("Terminal: Encerrar", "", Cmd::CloseTerminal),
-    ("Aparência: Seguir tema claro/escuro do sistema", "", Cmd::FollowSystemTheme),
-    ("Visualizar: Alternar Arquivos / Estrutura (outline)", "", Cmd::ToggleOutline),
-    ("Visualizar: Alternar code lens (contagem de referências)", "", Cmd::ToggleCodeLens),
-    ("Visualizar: Alternar inlay hints (tipos e parâmetros)", "", Cmd::ToggleInlayHints),
-    ("Git: Alternar git blame", "", Cmd::ToggleGitBlame),
-    ("Visualizar: Alternar minimap", "", Cmd::ToggleMinimap),
-    ("Visualizar: Alternar quebra de linha", "", Cmd::ToggleWordWrap),
-    ("Projeto: Trocar de projeto…", "", Cmd::ProjectMenu),
-    ("Git: Trocar de branch…", "", Cmd::BranchMenu),
-    ("Dobrar: Dobrar região", "Ctrl+Shift+[", Cmd::Fold),
-    ("Dobrar: Desdobrar região", "Ctrl+Shift+]", Cmd::Unfold),
-    ("Dobrar: Dobrar tudo", "", Cmd::FoldAll),
-    ("Dobrar: Desdobrar tudo", "", Cmd::UnfoldAll),
-    ("Preferências: Configurações", "Ctrl+,", Cmd::OpenSettings),
-    ("Tema: Criar tema personalizado (modelo JSON)", "", Cmd::CreateTheme),
-    ("Tema: Importar temas do Zed (min-theme etc.)", "", Cmd::ImportZedThemes),
-    ("Preferências: Atalhos de teclado", "", Cmd::OpenKeybindings),
-    ("Depurar: Iniciar / continuar", "F5", Cmd::DebugStart),
-    ("Depurar: Parar", "Shift+F5", Cmd::DebugStop),
-    ("Depurar: Alternar ponto de parada", "F9", Cmd::ToggleBreakpoint),
-    ("Depurar: Passo sobre", "F10", Cmd::StepOver),
-    ("Depurar: Passo para dentro", "F11", Cmd::StepInto),
-    ("Depurar: Passo para fora", "Shift+F11", Cmd::StepOut),
-    ("Depurar: Remover todos os pontos de parada", "", Cmd::ClearBreakpoints),
-    ("Editar: Expandir seleção", "Shift+Alt+→", Cmd::ExpandSelection),
-    ("Editar: Reduzir seleção", "Shift+Alt+←", Cmd::ShrinkSelection),
-    ("Ir para: Chamadores (hierarquia de chamadas)", "", Cmd::IncomingCalls),
-    ("Ir para: Chamados (hierarquia de chamadas)", "", Cmd::OutgoingCalls),
-    ("LSP: Alternar versão do tsgo (auto / do projeto / embutida)", "", Cmd::CycleTsgoSource),
-    ("Editar: Ver ramos do histórico (desfazer em árvore)", "", Cmd::UndoBranches),
-    ("Ajuda: Verificar atualizações", "", Cmd::CheckUpdate),
-    ("Ajuda: Reiniciar para atualizar", "", Cmd::RestartUpdate),
-    ("Ajuda: Sobre o Lumen", "", Cmd::About),
-    ("Sair", "Ctrl+Q", Cmd::Quit),
+    ("Git: Stage hunk", "", Cmd::GitStageHunk),
+    ("Git: Revert hunk", "", Cmd::GitRevertHunk),
+    ("Git: View file diff (side by side)", "", Cmd::GitDiffFile),
+    ("Git: File history", "", Cmd::GitFileHistory),
+    ("Markdown: Open reader beside", "Ctrl+Shift+V", Cmd::MarkdownPreview),
+    ("View: Split editor right", "Ctrl+\\", Cmd::SplitRight),
+    ("View: Split editor down", "Ctrl+K \\", Cmd::SplitDown),
+    ("View: Close split (merge all)", "", Cmd::CloseSplit),
+    ("View: Close focused pane", "Ctrl+K Shift+W", Cmd::ClosePane),
+    ("View: Focus next pane", "Ctrl+K Right", Cmd::FocusOtherPane),
+    ("View: Focus previous pane", "Ctrl+K Left", Cmd::FocusPrevPane),
+    ("View: Focus pane 1", "Ctrl+1", Cmd::FocusLeftPane),
+    ("View: Focus pane 2", "Ctrl+2", Cmd::FocusRightPane),
+    ("View: Focus pane 3", "Ctrl+3", Cmd::FocusPane3),
+    ("View: Focus pane 4", "Ctrl+4", Cmd::FocusPane4),
+    ("View: Move tab to next pane", "Ctrl+K Shift+Right", Cmd::MoveToNextPane),
+    ("View: Move tab to previous pane", "Ctrl+K Shift+Left", Cmd::MoveToPrevPane),
+    ("Git: Conflict — accept current", "", Cmd::ConflictOurs),
+    ("Git: Conflict — accept incoming", "", Cmd::ConflictTheirs),
+    ("Git: Conflict — accept both", "", Cmd::ConflictBoth),
+    ("Go to: Symbol in project", "Ctrl+T", Cmd::WorkspaceSymbols),
+    ("View: Problems in open files", "", Cmd::Problems),
+    ("View: Zoom in", "Ctrl+=", Cmd::ZoomIn),
+    ("View: Zoom out", "Ctrl+-", Cmd::ZoomOut),
+    ("View: Reset zoom", "Ctrl+0", Cmd::ZoomReset),
+    ("LSP: Toggle lean mode (open files only) / full project", "", Cmd::ToggleNarrow),
+    ("Go to: Back", "Alt+←", Cmd::NavBack),
+    ("Go to: Forward", "Alt+→", Cmd::NavForward),
+    ("Terminal: Open / toggle focus", "Ctrl+`", Cmd::OpenTerminal),
+    ("Terminal: Kill", "", Cmd::CloseTerminal),
+    ("Appearance: Follow system light/dark theme", "", Cmd::FollowSystemTheme),
+    ("View: Toggle Files / Outline", "", Cmd::ToggleOutline),
+    ("View: Toggle code lens (reference counts)", "", Cmd::ToggleCodeLens),
+    ("View: Toggle inlay hints (types and parameters)", "", Cmd::ToggleInlayHints),
+    ("Git: Toggle git blame", "", Cmd::ToggleGitBlame),
+    ("View: Toggle minimap", "", Cmd::ToggleMinimap),
+    ("View: Toggle word wrap", "", Cmd::ToggleWordWrap),
+    ("Project: Switch project…", "", Cmd::ProjectMenu),
+    ("Git: Switch branch…", "", Cmd::BranchMenu),
+    ("Fold: Fold region", "Ctrl+Shift+[", Cmd::Fold),
+    ("Fold: Unfold region", "Ctrl+Shift+]", Cmd::Unfold),
+    ("Fold: Fold all", "", Cmd::FoldAll),
+    ("Fold: Unfold all", "", Cmd::UnfoldAll),
+    ("Preferences: Settings", "Ctrl+,", Cmd::OpenSettings),
+    ("Theme: Create custom theme (JSON template)", "", Cmd::CreateTheme),
+    ("Theme: Import Zed themes (min-theme etc.)", "", Cmd::ImportZedThemes),
+    ("Preferences: Keyboard shortcuts", "", Cmd::OpenKeybindings),
+    ("Debug: Start / continue", "F5", Cmd::DebugStart),
+    ("Debug: Stop", "Shift+F5", Cmd::DebugStop),
+    ("Debug: Toggle breakpoint", "F9", Cmd::ToggleBreakpoint),
+    ("Debug: Step over", "F10", Cmd::StepOver),
+    ("Debug: Step into", "F11", Cmd::StepInto),
+    ("Debug: Step out", "Shift+F11", Cmd::StepOut),
+    ("Debug: Remove all breakpoints", "", Cmd::ClearBreakpoints),
+    ("Edit: Expand selection", "Shift+Alt+→", Cmd::ExpandSelection),
+    ("Edit: Shrink selection", "Shift+Alt+←", Cmd::ShrinkSelection),
+    ("Go to: Callers (call hierarchy)", "", Cmd::IncomingCalls),
+    ("Go to: Callees (call hierarchy)", "", Cmd::OutgoingCalls),
+    ("LSP: Cycle tsgo version (auto / project / bundled)", "", Cmd::CycleTsgoSource),
+    ("Edit: View undo branches (undo tree)", "", Cmd::UndoBranches),
+    ("Help: Check for updates", "", Cmd::CheckUpdate),
+    ("Help: Restart to update", "", Cmd::RestartUpdate),
+    ("Help: About Lumen", "", Cmd::About),
+    ("Quit", "Ctrl+Q", Cmd::Quit),
 ];
 
 #[derive(Clone)]
@@ -315,7 +315,7 @@ pub enum PromptKind {
     DeletePath { path: PathBuf },
     GitDiscard { path: PathBuf },
     GitCommit,
-    /// "Salvar como" for an untitled document; `rest` (more documents to save) and `then` (the
+    /// "Save as" for an untitled document; `rest` (more documents to save) and `then` (the
     /// action that was waiting for the save) continue after it.
     SaveAs { doc: usize, rest: Vec<usize>, then: Option<crate::app_unsaved::Pending> },
 }
@@ -456,16 +456,16 @@ impl App {
         for p in open.iter().rev().chain(files.iter().filter(|f| !open.contains(f))) {
             items.push(Item { label: self.rel(p), detail: String::new(), action: Action::Open(p.clone(), None) });
         }
-        self.overlay = Overlay::Picker(Picker::new(PickKind::QuickOpen, "Abrir arquivo", items));
+        self.overlay = Overlay::Picker(Picker::new(PickKind::QuickOpen, "Open file", items));
     }
 
     pub fn open_commands(&mut self) {
         let items = COMMANDS.iter().map(|(n, k, c)| Item { label: n.to_string(), detail: k.to_string(), action: Action::Cmd(*c) }).collect();
-        self.overlay = Overlay::Picker(Picker::new(PickKind::Commands, "Comandos", items));
+        self.overlay = Overlay::Picker(Picker::new(PickKind::Commands, "Commands", items));
     }
 
     pub fn open_project_search(&mut self) {
-        let mut p = Picker::new(PickKind::ProjectSearch, "Buscar no projeto", Vec::new());
+        let mut p = Picker::new(PickKind::ProjectSearch, "Search in project", Vec::new());
         if let Some(d) = self.docs.get(self.active) {
             let sel = d.ed.selected_text(&d.buf);
             if !sel.is_empty() && !sel.contains('\n') {
@@ -484,11 +484,11 @@ impl App {
     }
 
     pub fn open_symbols_with(&mut self, items: Vec<Item>) {
-        self.overlay = Overlay::Picker(Picker::new(PickKind::Symbols, "Ir para símbolo", items));
+        self.overlay = Overlay::Picker(Picker::new(PickKind::Symbols, "Go to symbol", items));
     }
 
     pub fn open_code_actions_with(&mut self, items: Vec<Item>) {
-        self.overlay = Overlay::Picker(Picker::new(PickKind::CodeActions, "Ações rápidas", items));
+        self.overlay = Overlay::Picker(Picker::new(PickKind::CodeActions, "Quick actions", items));
     }
 
     /// Bundled themes plus the user's (`~/.config/lumen-text/themes`, incl. converted Zed themes).
@@ -523,10 +523,10 @@ impl App {
         let sel = names.iter().position(|n| *n == current).unwrap_or(0);
         let items = names
             .into_iter()
-            .map(|n| Item { detail: if user.contains(&n) { "seu tema".into() } else { String::new() }, label: n.clone(), action: Action::Theme(n) })
+            .map(|n| Item { detail: if user.contains(&n) { "your theme".into() } else { String::new() }, label: n.clone(), action: Action::Theme(n) })
             .collect();
         self.theme_orig = Some(current);
-        let mut p = Picker::new(PickKind::Themes, "Escolher tema (setas para prévia)", items);
+        let mut p = Picker::new(PickKind::Themes, "Choose theme (arrow keys to preview)", items);
         p.sel = sel;
         self.overlay = Overlay::Picker(p);
     }
@@ -555,12 +555,12 @@ impl App {
 
     pub fn create_custom_theme(&mut self) {
         let Some(dir) = crate::zedtheme::user_theme_dir() else { return };
-        match crate::zedtheme::create_custom_theme_file(&dir, "Meu tema") {
+        match crate::zedtheme::create_custom_theme_file(&dir, "My theme") {
             Ok(path) => {
-                self.say(format!("modelo criado: {} (salve para aplicar; depois escolha o tema)", path.display()));
+                self.say(format!("template created: {} (save to apply, then pick the theme)", path.display()));
                 self.open_path(&path, None);
             }
-            Err(e) => self.say(format!("não foi possível criar o tema: {e}")),
+            Err(e) => self.say(format!("could not create the theme: {e}")),
         }
     }
 
@@ -622,9 +622,9 @@ impl App {
         let Some(d) = self.docs.get(self.active) else { return };
         let items: Vec<Item> = d.buf.undo_branches().into_iter().map(|(n, desc)| Item { label: desc, detail: String::new(), action: Action::UndoBranch(n) }).collect();
         if items.is_empty() {
-            return self.say("sem ramos alternativos a partir daqui (use Ctrl+Z e edite para criar um)");
+            return self.say("no alternative branches from here (use Ctrl+Z and edit to create one)");
         }
-        self.open_locations("Ramos do histórico", items);
+        self.open_locations("Undo branches", items);
     }
 
     pub fn set_theme(&mut self, name: &str) {
@@ -646,17 +646,17 @@ impl App {
                 if persist {
                     self.config.save();
                 }
-                self.say(format!("tema: {name}"));
+                self.say(format!("theme: {name}"));
             }
-            Err(e) => self.say(format!("tema inválido: {e}")),
+            Err(e) => self.say(format!("invalid theme: {e}")),
         }
     }
 
     pub fn open_workspace_symbols(&mut self) {
         if self.with_server_pub().is_none() {
-            return self.say("símbolos do projeto precisam do servidor de linguagem (abra um arquivo TS/JS)");
+            return self.say("project symbols need the language server (open a TS/JS file)");
         }
-        self.overlay = Overlay::Picker(Picker::new(PickKind::WorkspaceSymbols, "Símbolo no projeto (digite para buscar)", Vec::new()));
+        self.overlay = Overlay::Picker(Picker::new(PickKind::WorkspaceSymbols, "Symbol in project (type to search)", Vec::new()));
     }
 
     pub fn open_problems(&mut self) {
@@ -673,9 +673,9 @@ impl App {
             }
         }
         if items.is_empty() {
-            return self.say("nenhum problema nos arquivos abertos");
+            return self.say("no problems in open files");
         }
-        let title = format!("{} problema(s)", items.len());
+        let title = format!("{} problem(s)", items.len());
         self.open_locations(&title, items);
     }
 
@@ -683,11 +683,11 @@ impl App {
         if self.docs.is_empty() {
             return;
         }
-        self.overlay = Overlay::Prompt(Prompt { kind: PromptKind::GotoLine, title: "Ir para linha (linha[:coluna])".into(), field: TextField::default() });
+        self.overlay = Overlay::Prompt(Prompt { kind: PromptKind::GotoLine, title: "Go to line (line[:column])".into(), field: TextField::default() });
     }
 
     pub fn open_prompt_rename(&mut self, name: &str, line: usize, col: usize) {
-        self.overlay = Overlay::Prompt(Prompt { kind: PromptKind::Rename { line, col }, title: "Novo nome do símbolo".into(), field: TextField::with(name) });
+        self.overlay = Overlay::Prompt(Prompt { kind: PromptKind::Rename { line, col }, title: "New symbol name".into(), field: TextField::with(name) });
     }
 
     pub fn start_search(&mut self) {
@@ -855,7 +855,7 @@ impl App {
             Cmd::CreateTheme => self.create_custom_theme(),
             Cmd::ImportZedThemes => {
                 let n = self.import_zed_themes();
-                self.say(format!("{n} tema(s) do Zed importados"));
+                self.say(format!("{n} Zed theme(s) imported"));
             }
             Cmd::OpenSettings => self.open_settings(crate::settingsui::Page::Settings),
             Cmd::OpenKeybindings => self.open_settings(crate::settingsui::Page::Keybinds),
@@ -875,7 +875,7 @@ impl App {
                     d.set_word_wrap(self.config.word_wrap);
                 }
                 let on = self.config.word_wrap;
-                self.say(if on { "quebra de linha: ligada" } else { "quebra de linha: desligada" });
+                self.say(if on { "word wrap: on" } else { "word wrap: off" });
             }
             Cmd::Fold | Cmd::Unfold | Cmd::FoldAll | Cmd::UnfoldAll => {
                 if let Some(d) = self.docs.get_mut(self.active) {
@@ -892,7 +892,7 @@ impl App {
                         }
                     };
                     if !did {
-                        self.say(if c == Cmd::Fold { "nenhuma região para dobrar aqui" } else { "nada dobrado aqui" });
+                        self.say(if c == Cmd::Fold { "no region to fold here" } else { "nothing folded here" });
                     }
                 }
             }
@@ -907,14 +907,14 @@ impl App {
                     l.notify("workspace/didChangeConfiguration", serde_json::json!({"settings": {}}));
                 }
                 let on = self.config.code_lens;
-                self.say(if on { "code lens: ligado" } else { "code lens: desligado" });
+                self.say(if on { "code lens: on" } else { "code lens: off" });
             }
             Cmd::ToggleInlayHints => {
                 self.config.inlay_hints = !self.config.inlay_hints;
                 self.config.save();
                 self.refresh_inlay_hints();
                 let on = self.config.inlay_hints;
-                self.say(if on { "inlay hints: ligado" } else { "inlay hints: desligado" });
+                self.say(if on { "inlay hints: on" } else { "inlay hints: off" });
             }
             Cmd::ToggleGitBlame => self.toggle_git_blame(),
             Cmd::ToggleOutline => {
@@ -930,7 +930,7 @@ impl App {
                 self.config.appearance = if self.config.appearance == "system" { "fixed".into() } else { "system".into() };
                 self.config.save();
                 let on = self.config.appearance == "system";
-                self.say(if on { "tema: seguindo o sistema" } else { "tema: fixo" });
+                self.say(if on { "theme: following the system" } else { "theme: fixed" });
                 self.follow_system_theme();
             }
             Cmd::CycleTsgoSource => self.cycle_tsgo_source(),
@@ -974,7 +974,7 @@ impl App {
             Some(c) => self.run_key_cmd(c),
             None => {
                 if id != "none" {
-                    self.say(format!("atalho aponta para um comando desconhecido: {id}"));
+                    self.say(format!("shortcut points to an unknown command: {id}"));
                 }
                 false
             }
@@ -985,13 +985,13 @@ impl App {
         let Some(d) = self.docs.get(self.active) else { return };
         let Some(path) = d.path().map(PathBuf::from) else { return };
         if d.buf.is_dirty() {
-            self.say("Há alterações não salvas — salve ou feche a aba antes de recarregar");
+            self.say("Unsaved changes — save or close the tab before reloading");
             return;
         }
         let idx = self.active;
         self.close_tab(idx, true);
         self.open_path(&path, None);
-        self.say("Recarregado do disco");
+        self.say("Reloaded from disk");
     }
 
     // ───────────── overlay input ─────────────
@@ -1186,7 +1186,7 @@ impl App {
                     if matches!(p.field.text.trim().to_lowercase().as_str(), "sim" | "s" | "y" | "yes") {
                         self.delete_path(&path)
                     } else {
-                        self.say("exclusão cancelada")
+                        self.say("delete cancelled")
                     }
                 }
                 PromptKind::GitDiscard { path } => {
@@ -1441,7 +1441,7 @@ impl App {
             d.ed.sel = crate::buffer::Sel::caret(d.ed.sel.head.min(d.buf.len_chars()));
             d.sync_edits();
         }
-        self.say(format!("{n} substituições"));
+        self.say(format!("{n} replacements"));
     }
 
     /// Keys while the find bar has focus. Returns true when consumed.
@@ -1577,9 +1577,9 @@ impl App {
                 cv.fill_clip(Rect::new(x, b.y + 6, 1, 16), fg, b);
             }
         };
-        field(cv, &mut self.tx, r.y + 7, &f.field.text, "Buscar", f.field.cursor, f.focused && !f.in_replace, !f.valid, f.field.sel_all);
+        field(cv, &mut self.tx, r.y + 7, &f.field.text, "Search", f.field.cursor, f.focused && !f.in_replace, !f.valid, f.field.sel_all);
         let count = match (f.matches.len(), f.current) {
-            (0, _) => if f.field.text.is_empty() { String::new() } else { "sem resultados".to_string() },
+            (0, _) => if f.field.text.is_empty() { String::new() } else { "no results".to_string() },
             (n, Some(c)) => format!("{} de {}", c + 1, n),
             (n, None) => format!("{n}"),
         };
@@ -1593,7 +1593,7 @@ impl App {
         self.tx.draw_ui(cv, x, ty, &count, dim, r, false);
         if f.show_replace {
             field(cv, &mut self.tx, r.y + 43, &f.replace.text, "Substituir", f.replace.cursor, f.focused && f.in_replace, false, f.replace.sel_all);
-            self.tx.draw_ui(cv, r.x + 8 + field_w + 10, r.y + 43 + 5, "Enter · Ctrl+Alt+Enter todos", dim, r, false);
+            self.tx.draw_ui(cv, r.x + 8 + field_w + 10, r.y + 43 + 5, "Enter · Ctrl+Alt+Enter all", dim, r, false);
         }
     }
 
@@ -1732,7 +1732,7 @@ impl App {
                     picker_bar = Some((Rect::new(r.x, r.y + INPUT_H, r.w, list_h), p.filtered.len() as f64, p.scroll as f64));
                 }
                 if p.filtered.is_empty() {
-                    let msg = if p.kind == PickKind::ProjectSearch && p.field.text.is_empty() { "Digite para buscar no projeto" } else { "Sem resultados" };
+                    let msg = if p.kind == PickKind::ProjectSearch && p.field.text.is_empty() { "Type to search the project" } else { "No results" };
                     self.tx.draw_ui(cv, r.x + 16, r.y + INPUT_H + 10, msg, dim, r, false);
                 }
             }
