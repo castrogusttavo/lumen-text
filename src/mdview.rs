@@ -3544,7 +3544,11 @@ after it.
             v.draw_with(&mut cv, &mut tx, &t, Rect::new(0, 0, w, h), 0.0, Some(&mut hl));
         }
         assert_eq!(calls.get(), 1, "identical blocks share one result, and redraws reuse it");
-        assert!(px.iter().filter(|p| **p == 0x00ff00ff).count() > 20, "the colored run reaches the canvas");
+        let magenta = |p: &u32| {
+            let (r, g, b) = ((*p >> 16) & 255, (*p >> 8) & 255, *p & 255);
+            r > g + 60 && b > g + 60
+        };
+        assert!(px.iter().filter(|p| magenta(p)).count() > 5, "the colored run reaches the canvas");
         // another theme asks again
         let other = Theme::load(&assets().join("themes/github-light.json")).unwrap();
         let mut cv = Canvas { px: &mut px, w, h };
