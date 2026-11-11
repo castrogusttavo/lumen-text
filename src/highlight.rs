@@ -748,7 +748,8 @@ mod tests {
         let text = std::fs::read_to_string(assets().join("language-manifest.json")).unwrap();
         let m: serde_json::Value = serde_json::from_str(&text).unwrap();
         let ids: Vec<&str> = m["languages"].as_array().unwrap().iter().filter_map(|l| l["id"].as_str()).collect();
-        let src = include_str!("highlight.rs");
+        // A Windows checkout may have CRLF line ends (core.autocrlf).
+        let src = include_str!("highlight.rs").replace("\r\n", "\n");
         let start = src.find("pub fn language_for").unwrap();
         let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
         for cap in body.split("=> ").skip(1) {

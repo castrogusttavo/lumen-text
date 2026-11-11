@@ -31,7 +31,7 @@ impl App {
 
     /// Open (or activate) a file. Returns its index.
     pub fn open_path(&mut self, path: &Path, at: Option<(usize, usize)>) -> Option<usize> {
-        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let path = crate::paths::canonical(path).unwrap_or_else(|_| path.to_path_buf());
         let idx = if let Some(i) = self.docs.iter().position(|d| d.path() == Some(path.as_path())) {
             i
         } else {

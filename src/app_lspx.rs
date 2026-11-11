@@ -1020,7 +1020,7 @@ mod tests {
     /// The fake server built from `examples/fake_lsp.rs` (cargo builds examples for `cargo test`).
     fn fake_exe() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
-        let p = exe.parent()?.parent()?.join("examples/fake_lsp");
+        let p = exe.parent()?.parent()?.join("examples").join(format!("fake_lsp{}", std::env::consts::EXE_SUFFIX));
         p.exists().then_some(p)
     }
 
@@ -1028,7 +1028,7 @@ mod tests {
         let d = scratch_base().join(format!("lspx-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        d.canonicalize().unwrap()
+        crate::paths::canonical(&d).unwrap()
     }
 
     /// Run the sync tick and message pump until `cond` holds (or give up after `ms`).

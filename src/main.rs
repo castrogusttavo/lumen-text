@@ -197,13 +197,13 @@ fn main() -> ExitCode {
     for a in &args {
         let (p, at) = parse_target(a);
         if p.is_dir() {
-            root = Some(p.canonicalize().unwrap_or(p));
+            root = Some(paths::canonical(&p).unwrap_or(p));
         } else {
             files.push((p, at));
         }
     }
     let root = root
-        .or_else(|| files.first().and_then(|(p, _)| p.canonicalize().ok()).and_then(|p| lsp::project_root(&p)))
+        .or_else(|| files.first().and_then(|(p, _)| paths::canonical(p).ok()).and_then(|p| lsp::project_root(&p)))
         .or_else(|| {
             // Launched without a target: reopen the project used last time.
             if args.is_empty() && keys.is_none() {

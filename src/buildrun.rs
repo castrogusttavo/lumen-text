@@ -754,8 +754,8 @@ fn classify(l: &str) -> Line {
     {
         return hit(&c[1], c.get(2), c.get(3), &c[4], c.get(5).map_or("", |m| m.as_str()), &c[6]);
     }
-    // Go: `./main.go:12:5: undefined: x`
-    if let Some(c) = re(&GO, r"^((?:\.{1,2}/)?[^\s:]+\.go):(\d+):(\d+): (.*)$").captures(t) {
+    // Go: `./main.go:12:5: undefined: x` (`.\main.go`, `C:\p\main.go` on Windows)
+    if let Some(c) = re(&GO, r"^((?:[A-Za-z]:)?[^\s:]+\.go):(\d+):(\d+): (.*)$").captures(t) {
         return hit(&c[1], c.get(2), c.get(3), "error", "", &c[4]);
     }
     Line::Nothing
@@ -814,6 +814,15 @@ pub fn resolve(root: &Path, cwd: &Path, raw: &str) -> Option<PathBuf> {
             } else {
                 d
             }
+        }
+        // Maven on Windows: `/C:/proj/src/Foo.java`.
+        None if cfg!(windows)
+            && raw.len() > 2
+            && raw.as_bytes()[0] == b'/'
+            && raw.as_bytes()[1].is_ascii_alphabetic()
+            && raw.as_bytes()[2] == b':' =>
+        {
+            raw[1..].to_string()
         }
         None => raw.to_string(),
     };
@@ -904,7 +913,8 @@ mod tests {
         parse(&root(), &root(), text)
             .into_iter()
             .map(|p| {
-                let f = p.file.strip_prefix(root()).unwrap_or(&p.file).to_string_lossy().into_owned();
+                // Joined paths use the OS separator (`src\main.rs` on Windows): compare in `/` form.
+                let f = p.file.strip_prefix(root()).unwrap_or(&p.file).to_string_lossy().replace('\\', "/");
                 (f, p.line + 1, p.col + 1, p.sev, p.code, p.message)
             })
             .collect()
@@ -1122,6 +1132,70 @@ make: *** [Makefile:3: all] Error 1
         std::fs::write(&tmp, "x").unwrap();
         assert_eq!(resolve(&r, &r, &tmp.to_string_lossy()), Some(tmp.clone()));
         std::fs::remove_file(&tmp).ok();
+    }
+
+    /// What the tools print on Windows: backslashes and drive letters, whose `C:` is not a
+    /// `file:line` separator.
+    #[test]
+    fn windows_style_output_is_classified() {
+        let hit = |l: &str| match classify(l) {
+            Line::Hit { file, line, col, sev, code, .. } => Some((file, line + 1, col + 1, sev, code)),
+            Line::Arrow { file, line, col } => Some((file, line + 1, col + 1, Sev::Info, String::new())),
+            _ => None,
+        };
+        let h = |f: &str, l, c, s, code: &str| Some((f.to_string(), l, c, s, code.to_string()));
+        for (line, want) in [
+            (
+                r"C:\proj\Program.cs(12,5): error CS1002: ; expected [C:\proj\App.csproj]",
+                h(r"C:\proj\Program.cs", 12, 5, Sev::Error, "CS1002"),
+            ),
+            (r"src\a.ts(3,7): error TS2304: Cannot find name 'x'.", h(r"src\a.ts", 3, 7, Sev::Error, "TS2304")),
+            (r"src\b.tsx:3:10 - error TS2304: Cannot find name 'foo'.", h(r"src\b.tsx", 3, 10, Sev::Error, "TS2304")),
+            (
+                r"C:\proj\src\demo\App.java:12: error: cannot find symbol",
+                h(r"C:\proj\src\demo\App.java", 12, 1, Sev::Error, ""),
+            ),
+            (
+                r"[ERROR] /C:/proj/src/main/java/demo/App.java:[12,5] cannot find symbol",
+                h("/C:/proj/src/main/java/demo/App.java", 12, 5, Sev::Error, ""),
+            ),
+            (
+                r"[ERROR] C:\proj\src\main\java\demo\App.java:[12,5] cannot find symbol",
+                h(r"C:\proj\src\main\java\demo\App.java", 12, 5, Sev::Error, ""),
+            ),
+            (r"C:\proj\main.c:3:10: warning: unused variable 'z'", h(r"C:\proj\main.c", 3, 10, Sev::Warning, "")),
+            (
+                r"e: file:///C:/proj/src/Main.kt:12:5 Unresolved reference 'foo'.",
+                h("file:///C:/proj/src/Main.kt", 12, 5, Sev::Error, ""),
+            ),
+            (r"e: C:\proj\src\Old.kt: (7, 13): Type mismatch", h(r"C:\proj\src\Old.kt", 7, 13, Sev::Error, "")),
+            (r"  --> src\main.rs:4:18", h(r"src\main.rs", 4, 18, Sev::Info, "")),
+            (r"  --> C:\Users\u\.cargo\x\lib.rs:10:4", h(r"C:\Users\u\.cargo\x\lib.rs", 10, 4, Sev::Info, "")),
+            (r".\main.go:12:5: undefined: foo", h(r".\main.go", 12, 5, Sev::Error, "")),
+            (r"C:\proj\cmd\x.go:3:2: undefined: bar", h(r"C:\proj\cmd\x.go", 3, 2, Sev::Error, "")),
+        ] {
+            assert_eq!(hit(line), want, "{line}");
+        }
+    }
+
+    /// On Windows, diagnostics with drive paths land in the project's files (and repeats with
+    /// another spelling of the same path are dropped).
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_paths_resolve_into_the_project() {
+        let r = PathBuf::from(r"C:\proj");
+        let out = "\
+C:\\proj\\Program.cs(12,5): error CS1002: ; expected [C:\\proj\\App.csproj]
+C:\\proj\\Program.cs(12,5): error CS1002: ; expected [C:\\proj\\App.csproj]
+[ERROR] /C:/proj/src/App.java:[3,1] cannot find symbol
+e: file:///C:/proj/src/Main.kt:7:2 Unresolved reference 'foo'.
+src\\lib.rs:2:1: error: oops
+";
+        let files: Vec<PathBuf> = parse(&r, &r, out).into_iter().map(|p| p.file).collect();
+        assert_eq!(
+            files,
+            vec![r.join("Program.cs"), r.join(r"src\App.java"), r.join(r"src\Main.kt"), r.join(r"src\lib.rs")]
+        );
     }
 
     #[test]

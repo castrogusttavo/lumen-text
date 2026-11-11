@@ -45,6 +45,55 @@ pub fn cache_home() -> Option<PathBuf> {
     pick("XDG_CACHE_HOME", ".cache", "Library/Caches", "LOCALAPPDATA")
 }
 
+/// `std::fs::canonicalize`, minus the `\\?\` verbatim prefix it adds on Windows (see [`simplify`]).
+pub fn canonical(p: &std::path::Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(p).map(simplify)
+}
+
+/// A Windows verbatim path (`\\?\C:\x`, `\\?\UNC\server\share\x`, what `canonicalize` returns) as
+/// the plain path it stands for (`C:\x`, `\\server\share\x`), when that plain form means the same
+/// file. Verbatim paths leak into the UI, session files, `file://` URIs for language servers and
+/// git arguments, and never compare equal to the plain paths tools print. Elsewhere: unchanged.
+pub fn simplify(p: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return p;
+    }
+    match p.to_str().and_then(strip_verbatim) {
+        Some(s) => PathBuf::from(s),
+        None => p,
+    }
+}
+
+/// The plain form of a verbatim path string, or `None` when it is not verbatim or has no plain
+/// equivalent (too long for `MAX_PATH`, or a component Win32 would rewrite: a reserved device
+/// name, a trailing dot or space, a forward slash).
+fn strip_verbatim(s: &str) -> Option<String> {
+    let rest = s.strip_prefix(r"\\?\")?;
+    let (plain, tail) = if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        (format!(r"\\{unc}"), unc)
+    } else {
+        let b = rest.as_bytes();
+        if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
+            return None;
+        }
+        (rest.to_string(), rest.get(3..).unwrap_or(""))
+    };
+    const RESERVED: &[&str] = &["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
+    let bad = |c: &str| {
+        let stem = c.split('.').next().unwrap_or(c).trim_end();
+        let numbered = stem.len() == 4
+            && ["COM", "LPT"].iter().any(|d| stem.get(..3).is_some_and(|s| s.eq_ignore_ascii_case(d)))
+            && stem.as_bytes()[3].is_ascii_digit();
+        c == "."
+            || c == ".."
+            || c.ends_with('.')
+            || c.ends_with(' ')
+            || numbered
+            || RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
+    };
+    (plain.len() < 260 && !plain.contains('/') && !tail.split('\\').filter(|c| !c.is_empty()).any(bad)).then_some(plain)
+}
+
 /// Create a symbolic link at `link` pointing to `target` (on Windows this needs developer mode or admin rights).
 #[cfg(unix)]
 pub fn symlink(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
@@ -134,4 +183,33 @@ pub fn open_url(url: &str) {
             let _ = c.wait();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_prefixes_are_stripped_when_the_plain_path_is_equivalent() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Users\a b\x.rs").as_deref(), Some(r"C:\Users\a b\x.rs"));
+        assert_eq!(strip_verbatim(r"\\?\C:\").as_deref(), Some(r"C:\"));
+        assert_eq!(strip_verbatim(r"\\?\d:"), None, "drive-relative");
+        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\x").as_deref(), Some(r"\\srv\share\x"));
+        assert_eq!(strip_verbatim(r"C:\plain"), None, "not verbatim");
+        assert_eq!(strip_verbatim(r"\\?\Volume{1234}\x"), None, "no drive letter");
+        assert_eq!(strip_verbatim(r"\\?\C:\a\nul.txt"), None, "reserved device name");
+        assert_eq!(strip_verbatim(r"\\?\C:\a\COM1"), None, "reserved device name");
+        assert_eq!(strip_verbatim(r"\\?\C:\a\com10"), Some(r"C:\a\com10".into()));
+        assert_eq!(strip_verbatim(r"\\?\C:\a\dots."), None, "trailing dot");
+        assert_eq!(strip_verbatim(&format!(r"\\?\C:\{}", "x".repeat(300))), None, "past MAX_PATH");
+    }
+
+    #[test]
+    fn canonical_paths_are_plain() {
+        let d = canonical(&std::env::temp_dir()).unwrap();
+        assert!(d.is_absolute());
+        assert!(!d.to_string_lossy().starts_with(r"\\?\"), "{d:?}");
+        #[cfg(unix)]
+        assert_eq!(d, std::fs::canonicalize(std::env::temp_dir()).unwrap());
+    }
 }

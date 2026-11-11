@@ -86,8 +86,33 @@ pub fn pid_alive(pid: u32) -> bool {
     r == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// Is process `pid` still there? (Windows: a process we may not query is someone else's, alive.)
+#[cfg(windows)]
+pub fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: the handle is checked and closed again; the exit code is a plain out-parameter.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(h, &mut code);
+        CloseHandle(h);
+        ok == 0 || code == STILL_ACTIVE
+    }
+}
+
 /// Elsewhere a stale file is left alone (the CLI checks the port anyway).
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn pid_alive(_pid: u32) -> bool {
     true
 }

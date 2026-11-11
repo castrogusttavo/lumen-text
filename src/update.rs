@@ -614,7 +614,7 @@ fn pubkey_from_env(v: &str) -> String {
 impl Env {
     pub fn detect() -> Env {
         let url_override = std::env::var("LUMEN_UPDATE_URL").ok().filter(|v| !v.is_empty());
-        let exe = std::env::current_exe().ok().map(|p| p.canonicalize().unwrap_or(p)).unwrap_or_default();
+        let exe = std::env::current_exe().ok().map(|p| crate::paths::canonical(&p).unwrap_or(p)).unwrap_or_default();
         let appimage = std::env::var("APPIMAGE").ok();
         let kind = detect_kind(&exe, appimage.as_deref(), data_home().as_deref());
         let pkg = pkg_format(&fs::read_to_string("/etc/os-release").unwrap_or_default());
@@ -959,8 +959,8 @@ fn register_desktop(data: &Path, link: &Path) -> Result<PathBuf, String> {
 pub fn refresh_user_integration() {
     let (Some(data), Ok(exe)) = (data_home(), std::env::current_exe()) else { return };
     let root = data.join("lumen-text");
-    let Ok(exe) = exe.canonicalize() else { return };
-    let Ok(root_c) = root.canonicalize() else { return };
+    let Ok(exe) = crate::paths::canonical(&exe) else { return };
+    let Ok(root_c) = crate::paths::canonical(&root) else { return };
     if !exe.starts_with(&root_c) {
         return;
     }
@@ -984,7 +984,7 @@ pub fn cli_install_user() -> i32 {
         eprintln!("HOME is not set");
         return 1;
     };
-    let exe = std::env::current_exe().ok().map(|p| p.canonicalize().unwrap_or(p)).unwrap_or_default();
+    let exe = std::env::current_exe().ok().map(|p| crate::paths::canonical(&p).unwrap_or(p)).unwrap_or_default();
     match install_user(&exe, &crate::config::assets_dir(), current_version(), &home, &data) {
         Ok(i) => {
             println!("Installed lumen-text {} in {}", current_version(), i.version_dir.display());

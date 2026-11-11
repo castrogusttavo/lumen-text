@@ -1273,7 +1273,7 @@ pub fn find_def_line(lines: &[String], name: &str) -> Option<usize> {
 }
 
 fn canon(p: &Path) -> PathBuf {
-    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+    crate::paths::canonical(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// Fill in `case.file` when the report only gave a class name (python, java, c# ...).
