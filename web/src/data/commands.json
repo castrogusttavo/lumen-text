@@ -200,7 +200,7 @@
   "id": "TestWatch"
  },
  {
-  "label": "Tests: Choose runner…",
+  "label": "Tests: Choose target…",
   "shortcut": "",
   "id": "TestRunner"
  },

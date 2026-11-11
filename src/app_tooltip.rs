@@ -55,6 +55,8 @@ pub enum TipKey {
     Ctx(Act),
     /// A button of the AI panel or of the Git | AI switch.
     Ai(crate::app_aipanel::AiHit),
+    /// The Tests panel's target selector and the buttons a log-only target disables.
+    Tests(crate::app_tests::Tip),
 }
 
 /// Pointer-rest state (the text is resolved while drawing).
@@ -347,6 +349,9 @@ impl App {
         if let Some((r, h)) = self.aipanel_tip_target(x, y) {
             return Some((TipKey::Ai(h), r, true));
         }
+        if let Some((r, k)) = self.tests_tip_at(x, y) {
+            return Some((TipKey::Tests(k), r, true));
+        }
         if let Some(gp) = &self.gitpanel
             && self.gitpanel_rect().contains(x, y)
         {
@@ -402,6 +407,7 @@ impl App {
         };
         match key {
             TipKey::Ai(h) => self.aipanel_tip(h),
+            TipKey::Tests(k) => self.tests_tip(k),
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
                 Some(s) => t(&s.name, None, Some(format!("{} · line {}", symbol_kind_name(s.kind), s.sl + 1))),
                 None => TipText::default(),

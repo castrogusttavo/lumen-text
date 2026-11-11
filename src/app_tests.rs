@@ -3,12 +3,13 @@
 
 use crate::{
     app::{App, Focus, KeyIn},
+    app_build::{load_target, save_target},
     app_gitpanel::fit,
     app_overlay::{Action, Item},
     app_panel::PanelTab,
     scrollreg::Reg,
     tasks::{self, Ansi, Event, Running, Segs},
-    testrun::{self, Case, Collector, Counts, Plan, Runner, Scope, Status},
+    testrun::{self, Case, Collector, Counts, Plan, Runner, Scope, ScriptTarget, Status},
     theme::Rgba,
     ui::{Canvas, Rect, TextCtx, line_h},
 };
@@ -69,6 +70,13 @@ pub enum Last {
     Failed,
 }
 
+/// Things of the toolbar that explain themselves on hover (disabled ones included).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tip {
+    Target,
+    Failed,
+}
+
 #[derive(Clone, Debug)]
 pub enum Hit {
     RunAll,
@@ -97,6 +105,15 @@ pub struct TestsState {
     pub detected: Vec<Runner>,
     detected_root: Option<PathBuf>,
     pub runner: Option<Runner>,
+    /// The project's package.json test scripts (see `testrun::script_targets`).
+    pub scripts: Vec<ScriptTarget>,
+    /// Id of the chosen script target; `None`: Auto (the detected runner, `runner`).
+    pub target: Option<String>,
+    /// The current / last run is a log-only script: no tree, only its output and exit code.
+    pub log_only: bool,
+    /// Folder the current / last run ran in (a script's package).
+    run_dir: PathBuf,
+    pub tips: Vec<(Rect, Tip)>,
     pub cases: Vec<Case>,
     idx: HashMap<String, usize>,
     proc: Option<Running>,
@@ -137,6 +154,11 @@ impl Default for TestsState {
             detected: Vec::new(),
             detected_root: None,
             runner: None,
+            scripts: Vec::new(),
+            target: None,
+            log_only: false,
+            run_dir: PathBuf::new(),
+            tips: Vec::new(),
             cases: Vec::new(),
             idx: HashMap::new(),
             proc: None,
@@ -222,6 +244,94 @@ impl TestsState {
     fn case(&self, id: &str) -> Option<&Case> {
         self.idx.get(id).and_then(|&i| self.cases.get(i))
     }
+
+    /// The chosen script target (`None`: Auto).
+    pub fn target(&self) -> Option<&ScriptTarget> {
+        let id = self.target.as_deref()?;
+        self.scripts.iter().find(|t| t.id == id)
+    }
+
+    /// Is the chosen target a script whose results cannot be parsed?
+    pub fn log_only_target(&self) -> bool {
+        self.target().is_some_and(|t| t.run.is_none())
+    }
+}
+
+/// The remembered target, if the project still has it (`""` or a vanished script: Auto).
+pub fn restore_target(saved: Option<&str>, scripts: &[ScriptTarget]) -> Option<String> {
+    saved.filter(|id| scripts.iter().any(|t| t.id == *id)).map(str::to_string)
+}
+
+/// Where the chosen test target of a project is remembered (`None` in tests: nothing is written).
+fn state_path(root: &Path) -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    let base = crate::paths::state_home()?;
+    let h =
+        root.to_string_lossy().bytes().fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
+    Some(base.join("lumen-text").join(format!("tests-{h:016x}.json")))
+}
+
+/// A file name whose icon stands for the runner (`None`: a generic one).
+fn runner_marker(r: Runner) -> Option<&'static str> {
+    Some(match r {
+        Runner::Custom => return None,
+        Runner::Nextest | Runner::Cargo => "Cargo.toml",
+        Runner::Vitest | Runner::Jest | Runner::Playwright | Runner::NodeTest | Runner::Bun => "package.json",
+        Runner::Deno => "deno.json",
+        Runner::Go => "go.mod",
+        Runner::Pytest => "conftest.py",
+        Runner::Phpunit | Runner::Pest => "composer.json",
+        Runner::Rspec => "Gemfile",
+        Runner::Maven => "pom.xml",
+        Runner::Gradle => "build.gradle",
+        Runner::Dotnet => "App.csproj",
+        Runner::Ctest => "CMakeLists.txt",
+    })
+}
+
+/// One line of the test target picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub label: String,
+    pub detail: String,
+    /// What picking it selects: Auto with a runner, or a script target (its id).
+    pub pick: Pick,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pick {
+    Auto(Runner),
+    Script(String),
+}
+
+/// The test target picker, in order: Auto (one entry per detected runner), the scripts that run
+/// with full results, then the log-only ones.
+pub fn target_entries(
+    detected: &[Runner],
+    runner: Option<Runner>,
+    scripts: &[ScriptTarget],
+    cur: Option<&str>,
+) -> Vec<Entry> {
+    let mut v = Vec::new();
+    let mark = |d: String, on: bool| if on { format!("{d} · current") } else { d };
+    for r in detected {
+        let what = if *r == Runner::Custom { "test_command from the settings" } else { "detected runner" };
+        let detail = mark(what.into(), cur.is_none() && runner == Some(*r));
+        v.push(Entry { label: format!("Auto ({})", r.label()), detail, pick: Pick::Auto(*r) });
+    }
+    let place = |t: &ScriptTarget| if t.rel.is_empty() { String::new() } else { format!(" · {}", t.rel) };
+    for t in scripts.iter().filter(|t| t.run.is_some()) {
+        let r = t.runner().map(|r| r.label()).unwrap_or_default();
+        let detail = mark(format!("{r} · {}{}", t.command, place(t)), cur == Some(t.id.as_str()));
+        v.push(Entry { label: t.name.clone(), detail, pick: Pick::Script(t.id.clone()) });
+    }
+    for t in scripts.iter().filter(|t| t.run.is_none()) {
+        let detail = mark(format!("log only · {}{}", t.command, place(t)), cur == Some(t.id.as_str()));
+        v.push(Entry { label: t.name.clone(), detail, pick: Pick::Script(t.id.clone()) });
+    }
+    v
 }
 
 // ───────────── rows ─────────────
@@ -458,34 +568,107 @@ impl App {
         if self.tests.detected_root.as_deref() == Some(self.root.as_path()) {
             return;
         }
+        let saved = state_path(&self.root).and_then(|p| load_target(&p));
+        self.tests_detect();
+        self.tests.target = restore_target(saved.as_deref(), &self.tests.scripts);
+        self.tests_sync_runner();
+    }
+
+    /// Look for runners and test scripts again (the files may have changed).
+    fn tests_detect(&mut self) {
         self.tests.detected = testrun::detect(&self.root, !self.config.test_command.is_empty());
+        self.tests.scripts = testrun::script_targets(&self.root);
         self.tests.detected_root = Some(self.root.clone());
-        if !self.tests.runner.is_some_and(|r| self.tests.detected.contains(&r)) {
+        if self.tests.target().is_none() {
+            self.tests.target = None;
+        }
+        self.tests_sync_runner();
+    }
+
+    /// The runner follows a structured target; Auto keeps a detected one.
+    fn tests_sync_runner(&mut self) {
+        if let Some(r) = self.tests.target().and_then(|t| t.runner()) {
+            self.tests.runner = Some(r);
+        } else if !self.tests.runner.is_some_and(|r| self.tests.detected.contains(&r)) {
             self.tests.runner = self.tests.detected.first().copied();
         }
     }
 
-    pub fn tests_set_runner(&mut self, r: Runner) {
-        self.tests.runner = Some(r);
-        self.say(format!("tests: {}", r.label()));
+    /// Results of another target do not belong to the new one.
+    fn tests_forget_results(&mut self) {
+        if self.tests.proc.is_some() {
+            return;
+        }
+        self.tests.clear_cases();
+        self.tests.sel = None;
+        self.tests.cur_group = None;
+        self.tests.last = None;
+        self.tests.exit = None;
+        self.tests.log_only = false;
+        self.tests.raw.clear();
+        self.tests.raw_plain.clear();
+        self.tests_apply_marks();
     }
 
+    fn tests_remember_target(&self) {
+        if let Some(p) = state_path(&self.root) {
+            save_target(&p, self.tests.target.as_deref().unwrap_or(""));
+        }
+    }
+
+    /// Auto with runner `r` (picked from the target picker).
+    pub fn tests_set_runner(&mut self, r: Runner) {
+        self.tests_ensure_detect();
+        let changed = self.tests.target.is_some() || self.tests.runner != Some(r);
+        self.tests.target = None;
+        self.tests.runner = Some(r);
+        self.tests_remember_target();
+        if changed {
+            self.tests_forget_results();
+        }
+        self.say(format!("tests: Auto ({})", r.label()));
+    }
+
+    /// Run the package.json script `id` from now on (every action of the panel honors it).
+    pub fn tests_set_target(&mut self, id: &str) {
+        self.tests_ensure_detect();
+        let Some(t) = self.tests.scripts.iter().find(|t| t.id == id).cloned() else { return };
+        let changed = self.tests.target.as_deref() != Some(id);
+        self.tests.target = Some(id.to_string());
+        self.tests_sync_runner();
+        self.tests_remember_target();
+        if changed {
+            self.tests_forget_results();
+        }
+        let kind = t.runner().map_or("log only", |r| r.label());
+        self.say(format!("tests: {} ({kind})", t.name));
+    }
+
+    /// The items of the target picker (see [`target_entries`]).
+    pub fn tests_target_items(&self) -> Vec<Item> {
+        target_entries(&self.tests.detected, self.tests.runner, &self.tests.scripts, self.tests.target.as_deref())
+            .into_iter()
+            .map(|e| Item {
+                label: e.label,
+                detail: e.detail,
+                action: match e.pick {
+                    Pick::Auto(r) => Action::TestRunner(r),
+                    Pick::Script(id) => Action::TestTarget(id),
+                },
+            })
+            .collect()
+    }
+
+    /// The test target picker: Auto, then the package.json scripts (structured, then log only).
     pub fn tests_pick_runner(&mut self) {
         self.tests_ensure_detect();
-        if self.tests.detected.is_empty() {
-            return self.say("no test runner found in this project (see test_command in the settings file)");
+        self.tests_detect();
+        let items = self.tests_target_items();
+        if items.is_empty() {
+            return self
+                .say("no test runner or test script found in this project (see test_command in the settings file)");
         }
-        let items: Vec<Item> = self
-            .tests
-            .detected
-            .iter()
-            .map(|r| Item {
-                label: r.label().to_string(),
-                detail: if Some(*r) == self.tests.runner { "current".into() } else { String::new() },
-                action: Action::TestRunner(*r),
-            })
-            .collect();
-        self.open_locations("Test runner", items);
+        self.open_locations("Test target", items);
     }
 
     pub fn tests_open_panel(&mut self) {
@@ -528,7 +711,25 @@ impl App {
         let (cur, _) = d.buf.line_col(d.ed.head());
         let lines: Vec<String> = (0..d.buf.line_count()).map(|l| d.buf.line(l)).collect();
         let name = if at_cursor { testrun::test_name_at_cursor(&ext, &lines, cur) } else { None };
-        let Some(runner) = testrun::runner_for_ext(&self.tests.detected, &ext).or(self.tests.runner) else {
+        let runner = match self.tests.target() {
+            Some(t) => match t.runner() {
+                Some(r) if r.exts().contains(&ext.as_str()) => Some(r),
+                Some(r) => {
+                    let msg =
+                        format!("tests: {} ({}) does not run .{ext} files — pick another target", t.name, r.label());
+                    return self.say(msg);
+                }
+                None => {
+                    let msg = format!(
+                        "tests: {} is log only — pick a structured target to run a file or a single test",
+                        t.name
+                    );
+                    return self.say(msg);
+                }
+            },
+            None => testrun::runner_for_ext(&self.tests.detected, &ext).or(self.tests.runner),
+        };
+        let Some(runner) = runner else {
             return self.say(format!("no test runner detected for .{ext} files"));
         };
         self.tests.runner = Some(runner);
@@ -561,9 +762,9 @@ impl App {
         Some(p.strip_prefix(&self.root).unwrap_or(p).to_string_lossy().into_owned())
     }
 
-    fn tests_spawn(&mut self, cmd: &str, mode: Mode) -> bool {
+    fn tests_spawn(&mut self, cmd: &str, cwd: &Path, mode: Mode) -> bool {
         let wake = self.wake();
-        match tasks::spawn(cmd, &self.root, wake) {
+        match tasks::spawn(cmd, cwd, wake) {
             Ok(r) => {
                 let t = &mut self.tests;
                 t.proc = Some(r);
@@ -587,10 +788,18 @@ impl App {
     fn tests_start(&mut self, last: Last) {
         self.tests_stop_quiet();
         self.tests_ensure_detect();
-        let Some(runner) = self.tests.runner else {
+        let target = self.tests.target().cloned();
+        let runner = self.tests.runner;
+        if target.is_none() && runner.is_none() {
             self.tests_open_panel();
             return self.say("no test runner found in this project (see test_command in the settings file)");
-        };
+        }
+        if let Some(t) = target.as_ref().filter(|t| t.run.is_none())
+            && last != Last::All
+        {
+            let msg = format!("tests: {} is log only — it runs as a whole; pick a structured target for this", t.name);
+            return self.say(msg);
+        }
         let failed = self.tests.real_failures();
         let last = if last == Last::Failed && failed.is_empty() { Last::All } else { last };
         self.tests.drop_placeholder();
@@ -598,7 +807,23 @@ impl App {
             Last::Test { id: Some(id), .. } => self.tests.case(id).cloned(),
             _ => None,
         };
-        let scope = match &last {
+        // A script runs in its package's folder: project-relative files become relative to it.
+        let dir = target.as_ref().map_or_else(|| self.root.clone(), |t| t.dir.clone());
+        let in_dir = |f: &str| -> String {
+            if dir == self.root {
+                return f.to_string();
+            }
+            let abs = self.root.join(f);
+            abs.strip_prefix(&dir).unwrap_or(&abs).to_string_lossy().into_owned()
+        };
+        let scoped = match &last {
+            Last::File(f) => Last::File(in_dir(f)),
+            Last::Test { file, name, id } => {
+                Last::Test { file: file.as_deref().map(in_dir), name: name.clone(), id: id.clone() }
+            }
+            other => other.clone(),
+        };
+        let scope = match &scoped {
             Last::All => Scope::All,
             Last::File(f) => Scope::File(f),
             Last::Test { file, name, .. } => Scope::Test { file: file.as_deref(), name, case: one.as_ref() },
@@ -606,13 +831,18 @@ impl App {
         };
         self.tests.seq += 1;
         let report = std::env::temp_dir().join(format!("lumen-tests-{}-{}.dat", std::process::id(), self.tests.seq));
-        let plan =
-            testrun::plan(runner, &self.root, &scope, &report, (&self.config.test_command, &self.config.test_report));
+        let plan = match (&target, runner) {
+            (Some(t), _) => testrun::plan_script(t, &scope, &report),
+            (None, Some(r)) => {
+                testrun::plan(r, &self.root, &scope, &report, (&self.config.test_command, &self.config.test_report))
+            }
+            (None, None) => return,
+        };
         if plan.cmd.trim().is_empty() {
             return self.say("tests: no command to run");
         }
         let cmd = plan.cmd.clone();
-        if !self.tests_spawn(&cmd, Mode::Run) {
+        if !self.tests_spawn(&cmd, &dir, Mode::Run) {
             plan.remove_temp();
             return;
         }
@@ -647,6 +877,8 @@ impl App {
             }
         }
         self.tests.collector = plan.stream.map(Collector::new);
+        self.tests.log_only = plan.log_only;
+        self.tests.run_dir = dir;
         self.tests.plan = Some(plan);
         self.tests.last = Some(last);
         self.tests.detail_scroll = 0.0;
@@ -738,7 +970,9 @@ impl App {
         }
         if let Some(plan) = self.tests.plan.take() {
             let since = self.tests.started_sys.unwrap_or_else(SystemTime::now);
-            for c in testrun::read_report(&plan, &self.root, since) {
+            let dir =
+                if self.tests.run_dir.as_os_str().is_empty() { self.root.clone() } else { self.tests.run_dir.clone() };
+            for c in testrun::read_report(&plan, &dir, since) {
                 self.tests.upsert(c);
             }
             plan.remove_temp();
@@ -748,6 +982,14 @@ impl App {
             if c.status == Status::Running {
                 c.status = Status::Pending;
             }
+        }
+        if self.tests.log_only {
+            let mark = if code == 0 { "\u{f00c}" } else { "\u{f00d}" };
+            self.tests_push_raw(&format!("{mark} exited with code {code} in {secs:.1}s"));
+            self.tests.detail_scroll = 0.0;
+            let name = self.tests.target().map_or_else(|| "the script".to_string(), |t| t.name.clone());
+            let how = if code == 0 { "passed" } else { "failed" };
+            return self.say(format!("tests: {name} {how} (exit code {code}) in {}", testrun::fmt_secs(secs)));
         }
         // Nothing reported but a bad exit (build error, missing tool...): show why instead of an empty panel.
         if self.tests.cases.iter().all(|c| c.status == Status::Pending) && code != 0 {
@@ -868,7 +1110,9 @@ impl App {
         match runner {
             Runner::Nextest | Runner::Cargo => {
                 self.tests_stop_quiet();
-                if self.tests_spawn("cargo test --no-run --message-format=json", Mode::DebugBuild(case.id.clone())) {
+                let root = self.root.clone();
+                let cmd = "cargo test --no-run --message-format=json";
+                if self.tests_spawn(cmd, &root, Mode::DebugBuild(case.id.clone())) {
                     self.tests.collector = None;
                     self.tests.plan = None;
                     self.tests_push_raw("$ cargo test --no-run  (building the test binary for gdb)");
@@ -956,6 +1200,42 @@ impl App {
             return None;
         }
         self.tests.hits.iter().rev().find(|(r, _)| r.contains(x, y)).map(|(_, h)| h)
+    }
+
+    /// The toolbar item under the pointer that has a tooltip.
+    pub fn tests_tip_at(&self, x: f64, y: f64) -> Option<(Rect, Tip)> {
+        if !self.overlay.is_none() || !self.panel.open || self.panel.tab != PanelTab::Tests {
+            return None;
+        }
+        self.tests.tips.iter().rev().find(|(r, _)| r.contains(x, y)).copied()
+    }
+
+    pub fn tests_tip(&self, k: Tip) -> crate::app_tooltip::TipText {
+        let (title, detail, more) = match k {
+            Tip::Target => match self.tests.target() {
+                Some(t) => {
+                    let how = match t.runner() {
+                        Some(r) => format!("Runs with {} — full results in the tree", r.label()),
+                        None => "Log only — its results can't be parsed, the panel shows its output".to_string(),
+                    };
+                    let mut more = vec![t.command.clone()];
+                    if !t.rel.is_empty() {
+                        more.push(format!("in {}", t.rel));
+                    }
+                    (format!("Test target: {}", t.name), Some(how), more)
+                }
+                None => {
+                    let r = self.tests.runner.map_or("no runner", |r| r.label());
+                    (format!("Test target: Auto ({r})"), Some("Choose a package.json test script".into()), Vec::new())
+                }
+            },
+            Tip::Failed => (
+                "Run failed tests".to_string(),
+                Some("Not for a log-only script: it only runs as a whole".to_string()),
+                Vec::new(),
+            ),
+        };
+        crate::app_tooltip::TipText { title, keys: None, detail, more }
     }
 
     pub fn tests_clickable_at(&self, x: f64, y: f64) -> bool {
@@ -1216,8 +1496,49 @@ impl App {
         w
     }
 
+    /// The target selector, like the Build panel's: the runner's icon, the target and its kind, a chevron.
+    fn t_select(&mut self, cv: &mut Canvas, x: i32, y: i32, clip: Rect) -> i32 {
+        let c = self.theme.chrome;
+        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
+        let enabled = !self.tests.scripts.is_empty() || self.tests.detected.len() > 1;
+        let sel = self.tests.target().map(|t| (t.name.clone(), t.runner()));
+        let (label, tag, runner) = match sel {
+            Some((n, Some(r))) => (n, r.label().to_string(), Some(r)),
+            Some((n, None)) => (n, "log only".to_string(), None),
+            None => match self.tests.runner {
+                Some(r) => ("Auto".to_string(), r.label().to_string(), Some(r)),
+                None => ("No runner".to_string(), String::new(), None),
+            },
+        };
+        let icon = match runner.and_then(runner_marker) {
+            Some(m) => self.tx.icons.file_icon(m),
+            None if self.tests.target.is_some() => "ui/terminal".to_string(),
+            None => "ui/list_todo".to_string(),
+        };
+        let label = fit(&mut self.tx, &label, 220, false);
+        let tw = self.tx.ui_width(&label, false);
+        let tagw = if tag.is_empty() { 0 } else { 8 + sized_w(&mut self.tx, &tag, false, SMALL) };
+        let w = 10 + 16 + 8 + tw + tagw + 10 + 14 + 10;
+        let r = Rect::new(x, y, w, BTN_H);
+        cv.fill_round_clip(r, RAD, strong.with_alpha(0x0e), clip);
+        let (ic, text) = if enabled || self.tests.target.is_some() { (c.accent_text, strong) } else { (dim, dim) };
+        self.tx.icon(cv, &icon, x + 10, y + (BTN_H - 16) / 2, 16, ic, clip);
+        self.tx.draw_ui(cv, x + 34, y + (BTN_H - 18) / 2, &label, text, clip, false);
+        if !tag.is_empty() {
+            self.tx.draw_ui_sized(cv, x + 34 + tw + 8, y + (BTN_H - 17) / 2, &tag, dim, clip, false, SMALL);
+        }
+        let chev = if enabled && self.t_hv(r) { strong } else { dim };
+        self.tx.icon(cv, "ui/chevron_down", r.right() - 24, y + (BTN_H - 14) / 2, 14, chev, clip);
+        if enabled {
+            self.tests.hits.push((r, Hit::Runner));
+        }
+        self.tests.tips.push((r, Tip::Target));
+        w
+    }
+
     pub fn draw_tests(&mut self, cv: &mut Canvas, body: Rect) {
         self.tests.hits.clear();
+        self.tests.tips.clear();
         self.tests_ensure_detect();
         let c = self.theme.chrome;
         let counts = Counts::of(&self.tests.cases);
@@ -1228,7 +1549,8 @@ impl App {
         // ── toolbar ──
         let ty = body.y + (TOOLBAR_H - BTN_H) / 2;
         let mut x = body.x + 10;
-        let has_runner = self.tests.runner.is_some();
+        let has_runner = self.tests.runner.is_some() || self.tests.target.is_some();
+        let log_only = self.tests.log_only_target();
         let debug_build = matches!(self.tests.mode, Mode::DebugBuild(_));
         if running {
             x += self.t_button(cv, x, ty, "Stop", Some("ui/stop"), Btn::Danger, true, Hit::Stop, body) + 6;
@@ -1238,22 +1560,24 @@ impl App {
                 + 6;
         }
         let any_failed = self.tests.cases.iter().any(|c| c.status == Status::Failed && c.id != RUN_FAILED);
-        x += self.t_button(
+        let fw = self.t_button(
             cv,
             x,
             ty,
             "Failed",
             Some("ui/history_rerun"),
             Btn::Secondary,
-            !running && any_failed,
+            !running && any_failed && !log_only,
             Hit::RunFailed,
             body,
-        ) + 6;
+        );
+        if log_only {
+            self.tests.tips.push((Rect::new(x, ty, fw, BTN_H), Tip::Failed));
+        }
+        x += fw + 6;
         let watch_on = self.config.test_watch;
         x += self.t_button(cv, x, ty, "Watch", Some("ui/eye"), Btn::Toggle(watch_on), true, Hit::Watch, body) + 6;
-        let rl = self.tests.runner.map(|r| r.label()).unwrap_or("no runner");
-        let multi = self.tests.detected.len() > 1;
-        x += self.t_button(cv, x, ty, rl, Some("ui/chevron_down"), Btn::Secondary, multi, Hit::Runner, body) + 12;
+        x += self.t_select(cv, x, ty, body) + 12;
 
         // Right side: live status.
         let mut pieces: Vec<(String, Rgba)> = Vec::new();
@@ -1268,6 +1592,19 @@ impl App {
                     pieces.push(("  ".into(), dim));
                     pieces.push((format!("{} failed", counts.failed), c.error));
                 }
+            }
+        } else if self.tests.log_only
+            && counts.total() == 0
+            && let Some(e) = self.tests.exit
+        {
+            pieces.push(match e {
+                0 => ("Passed · exit code 0".to_string(), c.git_added),
+                -1 => ("Stopped".to_string(), dim),
+                e => (format!("Failed · exit code {e}"), c.error),
+            });
+            if let Some(ms) = self.tests.last_ms.filter(|_| e != -1) {
+                pieces.push(("  ·  ".into(), dim));
+                pieces.push((fmt_ms(ms), dim));
             }
         } else if counts.total() > 0 {
             pieces.push((format!("{} passed", counts.passed), c.git_added));
@@ -1306,6 +1643,9 @@ impl App {
             let bw = (body.w / 5).max(80);
             let pos = ((t * 0.8).fract() * (body.w + bw) as f32) as i32 - bw;
             cv.fill_clip(Rect::new(body.x + pos, pb.y, bw, PROG_H), c.accent, pb);
+        } else if total == 0 && self.tests.log_only && matches!(self.tests.exit, Some(e) if e >= 0) {
+            let col = if self.tests.exit == Some(0) { c.git_added } else { c.error };
+            cv.fill_clip(pb, col, pb);
         } else if total > 0 {
             let mut sx = body.x;
             for (n, col) in
@@ -1370,16 +1710,22 @@ impl App {
         if content.h < 30 {
             return;
         }
-        if self.tests.cases.is_empty() {
+        let log_view = self.tests.cases.is_empty() && self.tests.log_only && !self.tests.raw.is_empty();
+        if self.tests.cases.is_empty() && !log_view {
             // Nothing to list: the empty state takes the whole width (no list/detail divider).
             self.draw_tests_empty(cv, content, running);
             return;
         }
         let lw = if content.w >= 720 { (content.w as f32 * 0.56) as i32 } else { content.w / 2 };
+        let lw = if log_view { (content.w * 2 / 5).max(content.w.min(260)) } else { lw };
         let list = Rect::new(content.x, content.y, lw, content.h);
         let detail = Rect::new(content.x + lw, content.y, content.w - lw, content.h);
         cv.fill(Rect::new(detail.x, detail.y, 1, detail.h), c.border);
-        self.draw_tests_list(cv, list);
+        if log_view {
+            self.draw_tests_log_only(cv, list, running);
+        } else {
+            self.draw_tests_list(cv, list);
+        }
         self.draw_tests_detail(cv, Rect::new(detail.x + 1, detail.y, detail.w - 1, detail.h));
     }
 
@@ -1409,6 +1755,28 @@ impl App {
         }
     }
 
+    /// The tree's place for a log-only script: what ran and how it ended (the output is beside it).
+    fn draw_tests_log_only(&mut self, cv: &mut Canvas, area: Rect, running: bool) {
+        let c = self.theme.chrome;
+        let dim = c.tab_inactive_fg;
+        let (name, cmd) = self
+            .tests
+            .target()
+            .map_or_else(|| ("The script".to_string(), String::new()), |t| (t.name.clone(), t.pm.run(&t.name)));
+        let (icon, col, title) = match self.tests.exit {
+            _ if running => ("ui/terminal", c.accent_text, format!("Running {name}…")),
+            Some(0) => ("ui/check", c.git_added, format!("{name} passed")),
+            Some(-1) => ("ui/stop", dim, format!("{name} was stopped")),
+            Some(e) => ("ui/close", c.error, format!("{name} failed (exit code {e})")),
+            None => ("ui/terminal", dim, name.clone()),
+        };
+        let mut lines = vec![("This script's results can't be parsed — showing its output".to_string(), dim)];
+        if !cmd.is_empty() {
+            lines.push((format!("$ {cmd}"), dim));
+        }
+        self.t_empty_state(cv, area, icon, col, &title, &lines);
+    }
+
     fn draw_tests_empty(&mut self, cv: &mut Canvas, area: Rect, running: bool) {
         let c = self.theme.chrome;
         let (dim, bg) = (c.tab_inactive_fg, self.theme.background);
@@ -1434,7 +1802,19 @@ impl App {
             self.tx.draw_ui(cv, pill.x + 16, pill.y + 5, msg, dim, area, false);
             return;
         }
-        if let Some(r) = self.tests.runner {
+        if let Some(t) = self.tests.target().cloned() {
+            let lines = match t.runner() {
+                Some(r) => vec![
+                    (format!("Runs {} with {} — press Run all or Ctrl+K A", t.name, r.label()), dim),
+                    (t.command.clone(), dim),
+                ],
+                None => vec![
+                    (format!("Runs {} — press Run all or Ctrl+K A", t.pm.run(&t.name)), dim),
+                    ("Log only: its results can't be parsed, so the panel shows its output and exit code".into(), dim),
+                ],
+            };
+            self.t_empty_state(cv, area, "ui/list_todo", c.accent_text, "No results yet", &lines);
+        } else if let Some(r) = self.tests.runner {
             let mut lines = vec![(format!("Runs with {} — press Run all or Ctrl+K A", r.label()), dim)];
             if let Some(e) = self.tests.exit.filter(|e| *e != 0) {
                 lines.push((format!("The last run ended with code {e}; see the Output tab for details"), c.error));
@@ -1442,6 +1822,16 @@ impl App {
             if self.tests.detected.len() > 1 {
                 let names: Vec<&str> = self.tests.detected.iter().map(|r| r.label()).collect();
                 lines.push((format!("Also found: {}", names.join(", ")), dim));
+            }
+            if !self.tests.scripts.is_empty() {
+                let n = self.tests.scripts.len();
+                lines.push((
+                    format!(
+                        "{n} package.json test script{} — pick one from the target menu",
+                        if n == 1 { "" } else { "s" }
+                    ),
+                    dim,
+                ));
             }
             self.t_empty_state(cv, area, "ui/list_todo", c.accent_text, "No results yet", &lines);
         } else {
@@ -1714,7 +2104,8 @@ impl App {
             let on = self.tests.show_output;
             self.t_button(cv, bx, by, "Output", Some("ui/terminal"), Btn::Toggle(on), true, Hit::ShowOutput(!on), head);
         } else {
-            self.tx.draw_ui(cv, x, ty0 + 3, "Select a test to see its details", dim, head, false);
+            let hint = if self.tests.log_only { "The script's output" } else { "Select a test to see its details" };
+            self.tx.draw_ui(cv, x, ty0 + 3, hint, dim, head, false);
             let on = self.tests.show_output;
             self.t_button(
                 cv,
@@ -2045,5 +2436,54 @@ mod tests {
         t.upsert(Case { id: "y".into(), ..Default::default() });
         assert_eq!(t.cases.len(), 2);
         assert!(t.case("y").is_some() && t.case("z").is_none());
+    }
+
+    #[test]
+    fn target_picker_lists_auto_then_structured_then_log_only() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        let _g = lock();
+        let dir = tmp("teststargets");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"scripts":{"test":"vitest --project unit","test:e2e":"playwright test","test:visual":"./run.sh","lint":"eslint ."},"devDependencies":{"vitest":"1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), "").unwrap();
+        let mut app = test_app(&dir);
+        app.tests_open_panel();
+        let items = app.tests_target_items();
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, vec!["Auto (vitest)", "test", "test:e2e", "test:visual"]);
+        assert_eq!(items[0].detail, "detected runner · current");
+        assert_eq!(items[1].detail, "vitest · vitest --project unit");
+        assert_eq!(items[2].detail, "playwright · playwright test");
+        assert_eq!(items[3].detail, "log only · ./run.sh");
+        assert!(matches!(&items[0].action, Action::TestRunner(Runner::Vitest)));
+        assert!(matches!(&items[3].action, Action::TestTarget(id) if id == "script::test:visual"));
+        // A structured script becomes the target and the runner follows it.
+        app.tests_set_target("script::test:e2e");
+        assert_eq!(
+            (app.tests.target.as_deref(), app.tests.runner),
+            (Some("script::test:e2e"), Some(Runner::Playwright))
+        );
+        assert!(app.tests_target_items()[2].detail.ends_with(" · current"));
+        assert!(!app.tests.log_only_target());
+        // Log only: file and single-test runs are refused (nothing is started).
+        app.tests_set_target("script::test:visual");
+        assert!(app.tests.log_only_target());
+        app.tests_start(Last::File("a.test.ts".into()));
+        assert!(app.tests.proc.is_none());
+        // An unknown id changes nothing; Auto clears the target.
+        app.tests_set_target("script::gone");
+        assert_eq!(app.tests.target.as_deref(), Some("script::test:visual"));
+        app.tests_set_runner(Runner::Vitest);
+        assert_eq!((app.tests.target.as_deref(), app.tests.runner), (None, Some(Runner::Vitest)));
+        // The remembered choice comes back only while the script exists.
+        let ts = app.tests.scripts.clone();
+        assert_eq!(restore_target(Some("script::test:e2e"), &ts).as_deref(), Some("script::test:e2e"));
+        assert_eq!(restore_target(Some("script::gone"), &ts), None);
+        assert_eq!(restore_target(Some(""), &ts), None);
+        assert_eq!(restore_target(None, &ts), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

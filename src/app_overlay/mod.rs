@@ -37,6 +37,8 @@ pub enum Action {
     WorkspaceEdit(Value),
     Run(String),
     TestRunner(crate::testrun::Runner),
+    /// Tests panel target: a package.json script (its id, see `testrun::ScriptTarget`).
+    TestTarget(String),
     /// Build panel target (its id, see `buildrun::Target`).
     BuildTarget(String),
     /// AI panel agent (its id, see `app_aipanel::AGENTS`).

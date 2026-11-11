@@ -265,6 +265,7 @@ impl App {
                 }
             }
             Action::TestRunner(r) => self.tests_set_runner(r),
+            Action::TestTarget(id) => self.tests_set_target(&id),
             Action::BuildTarget(id) => self.build_set_target(&id),
             Action::AiAgent(id) => self.ai_pick(&id),
             Action::Run(cmd) => {
