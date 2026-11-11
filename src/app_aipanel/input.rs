@@ -28,13 +28,17 @@ impl App {
             return false;
         }
         if self.ai.term.as_ref().is_none_or(|t| !t.alive) {
-            // Empty state or a finished agent: Enter starts it again, Esc hands the keyboard back.
-            match &ev.key {
-                Key::Named(winit::keyboard::NamedKey::Enter) => self.ai_respawn(),
-                Key::Named(winit::keyboard::NamedKey::Escape) => self.ai.focused = false,
-                _ => {}
+            // Empty state or a finished agent: Enter starts it again; anything else hands the
+            // keyboard back to the editor (and still does what it does there).
+            if matches!(&ev.key, Key::Named(winit::keyboard::NamedKey::Enter)) {
+                self.ai_respawn();
+                return true;
             }
-            return true;
+            if matches!(&ev.key, Key::Named(n) if is_modifier(*n)) {
+                return true;
+            }
+            self.ai.focused = false;
+            return matches!(&ev.key, Key::Named(winit::keyboard::NamedKey::Escape));
         }
         if !matches!(&ev.key, Key::Named(n) if is_modifier(*n)) {
             self.ai.on_input();
