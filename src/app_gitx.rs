@@ -36,6 +36,9 @@ pub enum DiffBtn {
     /// Stage / unstage block `i`.
     Hunk(usize),
     Flip,
+    /// Accept / reject the agent's proposed changes.
+    Accept,
+    Reject,
 }
 
 pub struct DiffView {
@@ -52,13 +55,32 @@ pub struct DiffView {
     pub cur: usize,
     /// Buttons drawn last frame.
     pub btns: Vec<(Rect, DiffBtn)>,
+    /// Changes proposed by the agent over the IDE bridge (key of its pending `openDiff`): the
+    /// header offers Accept / Reject instead of the hint.
+    pub proposal: Option<u64>,
 }
 
 impl DiffView {
     /// A read-only diff.
     pub fn plain(title: String, left_name: String, right_name: String, rows: Vec<Row>) -> Self {
         let blocks = gitx::blocks(&rows);
-        DiffView { title, left_name, right_name, rows, scroll: 0.0, src: None, blocks, cur: 0, btns: Vec::new() }
+        DiffView {
+            title,
+            left_name,
+            right_name,
+            rows,
+            scroll: 0.0,
+            src: None,
+            blocks,
+            cur: 0,
+            btns: Vec::new(),
+            proposal: None,
+        }
+    }
+
+    /// Height of the header (a proposal's is taller: two lines and the Accept / Reject pills).
+    pub fn head_h(&self) -> i32 {
+        if self.proposal.is_some() { 40 } else { 28 }
     }
 
     /// The diff of one file on `side` of the index, with hunk staging. None = no differences there.
@@ -212,6 +234,21 @@ impl App {
     pub fn diff_key(&mut self, key: &winit::keyboard::Key) -> bool {
         use winit::keyboard::{Key, NamedKey};
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        if self.diff.as_ref().is_some_and(|d| d.proposal.is_some()) {
+            // The agent's proposal: Ctrl+Enter accepts, Esc rejects, Q does not close it unanswered.
+            match key {
+                Key::Named(NamedKey::Enter) if ctrl && !alt => {
+                    self.ide_decide(true);
+                    return true;
+                }
+                Key::Named(NamedKey::Escape) if !ctrl && !alt => {
+                    self.ide_decide(false);
+                    return true;
+                }
+                Key::Character(c) if c.as_str() == "q" && !ctrl && !alt => return true,
+                _ => {}
+            }
+        }
         if ctrl || alt {
             // Bound shortcuts and chords (Ctrl+J, Ctrl+S, Ctrl+P, Ctrl+K ...) stay global while a
             // diff is open; other Ctrl/Alt letters mean nothing here (and must not stage or close).
@@ -233,7 +270,7 @@ impl App {
         let area_h = self.diff_area().h;
         let Some(dv) = self.diff.as_mut() else { return false };
         let page = (area_h / line_h() as i32 - 3).max(1) as f64;
-        let max = (dv.rows.len() as f64 - ((area_h - 28) / line_h() as i32) as f64).max(0.0);
+        let max = (dv.rows.len() as f64 - ((area_h - dv.head_h()) / line_h() as i32) as f64).max(0.0);
         match key {
             Key::Named(NamedKey::Escape) => self.diff = None,
             Key::Character(c) if c.as_str() == "q" => self.diff = None,
@@ -302,7 +339,7 @@ impl App {
             Some(nd) => {
                 nd.scroll = scroll;
                 nd.cur = keep.min(nd.blocks.len().saturating_sub(1));
-                let max = (nd.rows.len() as f64 - ((area_h - 28) / line_h() as i32) as f64).max(0.0);
+                let max = (nd.rows.len() as f64 - ((area_h - nd.head_h()) / line_h() as i32) as f64).max(0.0);
                 nd.scroll = nd.scroll.min(max);
             }
             None => self.say("no hunks left in this file"),
@@ -331,6 +368,8 @@ impl App {
                 self.diff_toggle_block(i);
             }
             DiffBtn::Flip => self.diff_flip(),
+            DiffBtn::Accept => self.ide_decide(true),
+            DiffBtn::Reject => self.ide_decide(false),
         }
         true
     }
@@ -343,7 +382,7 @@ impl App {
         let area_h = self.diff_area().h;
         let Some(dv) = self.diff.as_mut() else { return false };
         let rows = crate::scroller::wheel_rows(delta, line_h() as f64);
-        let max = (dv.rows.len() as f64 - ((area_h - 28) / line_h() as i32) as f64).max(0.0);
+        let max = (dv.rows.len() as f64 - ((area_h - dv.head_h()) / line_h() as i32) as f64).max(0.0);
         dv.scroll = (dv.scroll + rows).clamp(0.0, max);
         true
     }
@@ -355,7 +394,8 @@ impl App {
         let c = self.theme.chrome;
         let (fg, dim, bg) = (self.theme.foreground, c.tab_inactive_fg, self.theme.background);
         cv.fill(editor, bg);
-        let head_h = 28;
+        let head_h = dv.head_h();
+        let proposal = dv.proposal.is_some();
         let half = editor.w / 2;
         let (lr, rr) = (
             Rect::new(editor.x, editor.y + head_h, half, editor.h - head_h),
@@ -363,7 +403,7 @@ impl App {
         );
         cv.fill(Rect::new(editor.x, editor.y, editor.w, head_h), c.sidebar_bg);
         cv.fill(Rect::new(editor.x, editor.y + head_h - 1, editor.w, 1), c.border);
-        cv.fill(Rect::new(editor.x + half, editor.y, 1, editor.h), c.border);
+        cv.fill(Rect::new(editor.x + half, editor.y + if proposal { head_h } else { 0 }, 1, editor.h), c.border);
         let mut btns: Vec<(Rect, DiffBtn)> = Vec::new();
         let staging = dv.src.as_ref().map(|s| (s.side, s.editable, s.can_flip));
         // Header, right half: the hint, and (when the file has both) the button to flip sides.
@@ -378,30 +418,14 @@ impl App {
             btns.push((r, DiffBtn::Flip));
             hint_right = r.x - 10;
         }
-        self.tx.draw_ui(
-            cv,
-            editor.x + 14,
-            editor.y + 5,
-            &format!("{}   ·   {}", dv.left_name, dv.title),
-            fg,
-            Rect::new(editor.x, editor.y, half, head_h),
-            true,
-        );
-        let narrow = hint_right - editor.x - half < 330;
-        let hint = match (staging.is_some(), narrow) {
-            (true, false) => format!("{}   ·   Esc closes · n/p block · s stage", dv.right_name),
-            (true, true) => format!("{}  ·  n/p · s", dv.right_name),
-            (false, _) => format!("{}   ·   Esc closes · n next block", dv.right_name),
-        };
-        self.tx.draw_ui(
-            cv,
-            editor.x + half + 14,
-            editor.y + 5,
-            &hint,
-            dim,
-            Rect::new(editor.x + half, editor.y, (hint_right - editor.x - half).max(0), head_h),
-            false,
-        );
+        if proposal {
+            let title = dv.title.clone();
+            self.draw_proposal_head(cv, Rect::new(editor.x, editor.y, editor.w, head_h), &title, &mut btns);
+        } else {
+            self.draw_diff_hint(cv, editor, head_h, hint_right, staging.is_some());
+        }
+
+        let Some(dv) = &self.diff else { return };
 
         let lh = line_h() as i32;
         let first = dv.scroll as usize;
@@ -528,6 +552,82 @@ impl App {
         if let Some(d) = self.diff.as_mut() {
             d.btns = btns;
         }
+    }
+
+    /// Header of a plain / staging diff: "left · title" over the left pane, the right side's
+    /// name and the keys over the right one.
+    fn draw_diff_hint(&mut self, cv: &mut Canvas, editor: Rect, head_h: i32, hint_right: i32, staging: bool) {
+        let Some(dv) = &self.diff else { return };
+        let c = self.theme.chrome;
+        let half = editor.w / 2;
+        let left = format!("{}   ·   {}", dv.left_name, dv.title);
+        let narrow = hint_right - editor.x - half < 330;
+        let hint = match (staging, narrow) {
+            (true, false) => format!("{}   ·   Esc closes · n/p block · s stage", dv.right_name),
+            (true, true) => format!("{}  ·  n/p · s", dv.right_name),
+            (false, _) => format!("{}   ·   Esc closes · n next block", dv.right_name),
+        };
+        let fg = self.theme.foreground;
+        self.tx.draw_ui(cv, editor.x + 14, editor.y + 5, &left, fg, Rect::new(editor.x, editor.y, half, head_h), true);
+        self.tx.draw_ui(
+            cv,
+            editor.x + half + 14,
+            editor.y + 5,
+            &hint,
+            c.tab_inactive_fg,
+            Rect::new(editor.x + half, editor.y, (hint_right - editor.x - half).max(0), head_h),
+            false,
+        );
+    }
+
+    /// Header of the agent's proposed changes: who proposes what (and how many more wait), then
+    /// Reject and Accept (accent) pills with their keys.
+    fn draw_proposal_head(&mut self, cv: &mut Canvas, head: Rect, file: &str, btns: &mut Vec<(Rect, DiffBtn)>) {
+        let c = self.theme.chrome;
+        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
+        let (mx, my) = self.mouse;
+        // Pills, right to left: Accept (accent), Reject (outlined).
+        let small = 11.0;
+        let pill = |tx: &mut crate::ui::TextCtx, label: &str, keys: &str| {
+            10 + 14 + 6 + tx.ui_width(label, true) + 8 + tx.ui_width_sized(keys, false, small) + 10
+        };
+        let aw = pill(&mut self.tx, "Accept", "Ctrl+Enter");
+        let rw = pill(&mut self.tx, "Reject", "Esc");
+        let acc = Rect::new(head.right() - 12 - aw, head.y + 6, aw, 28);
+        let rej = Rect::new(acc.x - 8 - rw, head.y + 6, rw, 28);
+        for (r, label, keys, icon, accent, btn) in [
+            (rej, "Reject", "Esc", "ui/close", false, DiffBtn::Reject),
+            (acc, "Accept", "Ctrl+Enter", "ui/check", true, DiffBtn::Accept),
+        ] {
+            let hov = r.contains(mx, my);
+            let (fg, sub) = if accent {
+                cv.fill_round(r, 8, if hov { c.accent.with_alpha(0xe0).over(c.sidebar_bg) } else { c.accent });
+                (c.on_accent, c.on_accent.with_alpha(0xb0))
+            } else {
+                cv.fill_round(r, 8, strong.with_alpha(if hov { 0x1c } else { 0x0c }).over(c.sidebar_bg));
+                cv.ring(r, 8, c.border);
+                (strong, dim)
+            };
+            self.tx.icon(cv, icon, r.x + 10, r.y + 7, 14, fg, r);
+            self.tx.draw_ui(cv, r.x + 30, r.y + 5, label, fg, r, true);
+            let kx = r.x + 30 + self.tx.ui_width(label, true) + 8;
+            self.tx.draw_ui_sized(cv, kx, r.y + 7, keys, sub, r, false, small);
+            btns.push((r, btn));
+        }
+        // Left: sparkle, who proposes, the file and how many more wait.
+        let room = Rect::new(head.x, head.y, (rej.x - 12 - head.x).max(0), head.h);
+        let disc = Rect::new(head.x + 12, head.y + 8, 24, 24);
+        cv.fill_round(disc, 12, c.accent.with_alpha(0x22).over(c.sidebar_bg));
+        self.tx.icon(cv, "ui/sparkle", disc.x + 5, disc.y + 5, 14, c.accent_text, room);
+        let who = self.ai.agent.map_or("the agent", |a| a.name);
+        let more = self.ai.bridge.proposals.len().saturating_sub(1);
+        let title =
+            if more > 0 { format!("Proposed by {who}  ·  {more} more waiting") } else { format!("Proposed by {who}") };
+        let tw = (room.w - 46).max(0);
+        let title = crate::ui::fit_ellipsis(&mut self.tx, &title, tw, true);
+        self.tx.draw_ui(cv, head.x + 46, head.y + 2, &title, strong, room, true);
+        let sub = crate::ui::fit_ellipsis(&mut self.tx, &format!("{file}  ·  current ← → proposed"), tw, false);
+        self.tx.draw_ui_sized(cv, head.x + 46, head.y + 21, &sub, dim, room, false, 12.0);
     }
 
     // ───────────── conflicts ─────────────

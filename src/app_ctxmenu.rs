@@ -300,6 +300,8 @@ pub enum Target {
     Tab(usize),
     /// A commit row of the Git panel's History tab.
     Commit(crate::app_gitpanel::CommitRef),
+    /// The text of the active document.
+    Editor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,6 +328,8 @@ pub enum Act {
     BranchHere,
     TagHere,
     UndoCommit,
+    /// Run a palette command by id (the editor's menu).
+    Run(&'static str),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -448,6 +452,15 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
             }
             v
         }
+        Target::Editor => vec![
+            item(Act::Run("AiSendSelection"), "Send Selection to Agent", "ui/at_sign", "Ctrl+Alt+K"),
+            sep(),
+            item(Act::Run("GotoDefinition"), "Go to Definition", "ui/arrow_up_right", "F12"),
+            item(Act::Run("FindReferences"), "Find References", "ui/magnifying_glass", "Shift+F12"),
+            item(Act::Run("Rename"), "Rename Symbol", "ui/pencil", "F2"),
+            sep(),
+            item(Act::Run("Format"), "Format Document", "ui/text_snippet", "Shift+Alt+F"),
+        ],
         Target::Commit(c) => {
             let mut v = vec![
                 item(Act::CherryPick, "Cherry-pick", "ui/git_commit", ""),
@@ -557,6 +570,18 @@ impl App {
                 }
                 None => Target::Root(self.root.clone()),
             });
+        }
+        // The editor's text (not under an open diff): the caret moves to the click unless it lands
+        // inside the selection, like other editors.
+        let ed = self.layout.editor;
+        if ed.contains(x, y) && !self.docs.is_empty() && !(self.diff.is_some() && self.diff_area().contains(x, y)) {
+            self.focus = Focus::Editor;
+            let d = &mut self.docs[self.active];
+            let p = d.pos_at(x, y);
+            if d.ed.sel.is_empty() || p < d.ed.sel.start() || p > d.ed.sel.end() {
+                d.ed.click(&mut d.buf, p, false);
+            }
+            return Some(Target::Editor);
         }
         None
     }
@@ -720,6 +745,7 @@ impl App {
             Target::Multi(v) => v.first().cloned(),
             Target::Tab(i) => self.docs.get(*i).and_then(|d| d.path()).map(Path::to_path_buf),
             Target::Commit(_) => None,
+            Target::Editor => self.docs.get(self.active).and_then(|d| d.path()).map(Path::to_path_buf),
         }
     }
 
@@ -787,6 +813,10 @@ impl App {
         }
         if let Target::Commit(c) = t {
             return self.git_commit_menu_act(act, c);
+        }
+        if let Act::Run(id) = act {
+            self.run_bound(id);
+            return;
         }
         let path = self.ctx_path(&t);
         let name =
@@ -903,7 +933,7 @@ impl App {
                     self.toggle_md_reader();
                 }
             }
-            Act::CherryPick | Act::CopyHash | Act::BranchHere | Act::TagHere | Act::UndoCommit => {}
+            Act::CherryPick | Act::CopyHash | Act::BranchHere | Act::TagHere | Act::UndoCommit | Act::Run(_) => {}
         }
     }
 
@@ -1285,6 +1315,26 @@ mod tests {
             labels(&entries_for(&multi, &f)),
             ["Cut", "Copy", "-", "Duplicate", "-", "Move to Trash", "Delete", "-", "Copy Paths"]
         );
+        // The editor's text: the agent first, then the language server's actions.
+        let ed = entries_for(&Target::Editor, &f);
+        assert_eq!(
+            labels(&ed),
+            [
+                "Send Selection to Agent",
+                "-",
+                "Go to Definition",
+                "Find References",
+                "Rename Symbol",
+                "-",
+                "Format Document"
+            ]
+        );
+        // Every editor entry runs a command that exists.
+        for e in &ed {
+            if let Entry::Item { act: Act::Run(id), .. } = e {
+                assert!(crate::app_overlay::Cmd::from_id(id).is_some(), "{id}");
+            }
+        }
     }
 
     #[test]

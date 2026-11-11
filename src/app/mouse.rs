@@ -114,7 +114,9 @@ impl App {
             return self.request_redraw();
         }
         if self.diff.is_some() && self.diff_area().contains(x, y) {
-            return;
+            // The diff's keys (n / p, Accept / Reject) need the keyboard off the terminal.
+            self.focus = Focus::Editor;
+            return self.request_redraw();
         }
         if self.conflict_click(x, y) {
             return self.request_redraw();

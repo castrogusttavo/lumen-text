@@ -24,6 +24,7 @@ impl App {
         self.tests_tick(now, &mut want);
         self.build_tick(now, &mut want);
         self.ai_tick(now, &mut want);
+        self.ide_tick(now, &mut want);
         self.term_tick(&mut want);
 
         // Git gutter against the buffer, debounced.

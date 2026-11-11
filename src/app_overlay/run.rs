@@ -94,6 +94,7 @@ impl App {
             Cmd::AiNewSession => self.ai_respawn(),
             Cmd::AiStop => self.ai_stop(),
             Cmd::AiChooseAgent => self.ai_choose_agent(),
+            Cmd::AiSendSelection => self.ai_send_selection(),
             Cmd::GitStage => self.git_stage(true),
             Cmd::GitUnstage => self.git_stage(false),
             Cmd::GitStageAll => self.git_stage_all(),

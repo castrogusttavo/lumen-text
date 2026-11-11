@@ -54,6 +54,9 @@ pub struct Signals<'a> {
     pub attention: bool,
     /// It worked since the user last typed.
     pub worked: bool,
+    /// What the agent's own hooks last reported (Claude Code over the IDE bridge): when present it
+    /// wins over every heuristic above, except the process having ended.
+    pub hook: Option<Status>,
 }
 
 /// A title that starts with a spinner frame (braille dots, as agent CLIs animate while busy).
@@ -65,6 +68,9 @@ pub fn title_busy(title: &str) -> bool {
 pub fn status(s: &Signals) -> Status {
     if !s.alive {
         return Status::Exited(s.exit.unwrap_or(-1));
+    }
+    if let Some(h) = s.hook {
+        return h;
     }
     if !s.any_output {
         return Status::Starting;
@@ -94,6 +100,10 @@ pub enum AiHit {
     Install(usize),
     /// Look for installed agents again.
     Refresh,
+    /// The IDE bridge indicator (connected or not).
+    Ide,
+    /// Proposed changes waiting for Accept / Reject.
+    Diffs,
 }
 
 pub struct AiState {
@@ -122,6 +132,8 @@ pub struct AiState {
     pub hits: Vec<(Rect, AiHit)>,
     /// The left edge is being dragged.
     pub resizing: bool,
+    /// The IDE bridge (Claude Code's diffs, selection, diagnostics, hooks).
+    pub bridge: super::bridge::Bridge,
 }
 
 impl Default for AiState {
@@ -142,6 +154,7 @@ impl Default for AiState {
             unseen: false,
             hits: Vec::new(),
             resizing: false,
+            bridge: Default::default(),
         }
     }
 }
@@ -179,6 +192,7 @@ impl AiState {
             title: &t.grid.title,
             attention: self.attention,
             worked: self.worked,
+            hook: self.bridge.hook,
         });
         if s == Status::Working {
             self.worked = true;
@@ -200,6 +214,7 @@ impl AiState {
         self.worked = false;
         self.seen_bells = 0;
         self.unseen = false;
+        self.bridge.hook = None;
     }
 
     /// The user typed: whatever it asked for is being answered.
@@ -207,5 +222,7 @@ impl AiState {
         self.attention = false;
         self.worked = false;
         self.unseen = false;
+        // The heuristic takes over until the agent's next hook (an answered prompt resumes work).
+        self.bridge.hook = None;
     }
 }

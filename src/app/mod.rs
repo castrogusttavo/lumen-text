@@ -378,6 +378,8 @@ impl App {
         }
         if std::env::var_os("LUMEN_HEADLESS").is_none() {
             crate::app_topbar::remember_project(&app.root);
+            // The IDE bridge listens from the start, so any `claude` can attach with /ide.
+            app.ide_start();
         }
         if app.docs.is_empty() {
             app.say("Ctrl+P opens a file · Ctrl+Shift+P commands");

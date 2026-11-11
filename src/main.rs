@@ -61,6 +61,7 @@ mod highlight;
 mod hover_md;
 mod icon_pack;
 mod icons;
+mod ide;
 mod ignore_filter;
 mod inlay;
 mod instance;

@@ -95,6 +95,16 @@ impl App {
                     _ => self.say("no agent CLI found on PATH"),
                 }
             }
+            Some(AiHit::Diffs) => self.ide_show_next(),
+            Some(AiHit::Ide) => {
+                if !self.ai.bridge.proposals.is_empty() {
+                    self.ide_show_next();
+                } else if self.ai.bridge.connected() {
+                    self.say("Claude Code is connected: its edits open here as diffs, and it sees your selection");
+                } else {
+                    self.say("Not connected yet — Claude Code connects once it starts (or run /ide in it)");
+                }
+            }
             Some(AiHit::Install(i)) => {
                 if let Some(a) = AGENTS.get(i) {
                     self.ai_pick(a.id);
@@ -196,6 +206,24 @@ impl App {
             AiHit::Stop => ("Stop".into(), None, Some(format!("Hang up {name} and everything it started"))),
             AiHit::Close => ("Hide panel".into(), keys("AiPanel"), Some("The agent keeps running".into())),
             AiHit::Refresh => ("Look for agents again".into(), None, None),
+            AiHit::Ide if self.ai.bridge.connected() => (
+                "IDE bridge — connected".into(),
+                None,
+                Some("Edits open as diffs here · the selection and diagnostics are shared".into()),
+            ),
+            AiHit::Ide => (
+                "IDE bridge — not connected".into(),
+                None,
+                Some("Claude Code connects when it starts here, or with /ide".into()),
+            ),
+            AiHit::Diffs => {
+                let n = self.ai.bridge.proposals.len();
+                (
+                    format!("{n} proposed change{} waiting", if n == 1 { "" } else { "s" }),
+                    None,
+                    Some("Click to review · Ctrl+Enter accepts · Esc rejects".into()),
+                )
+            }
             AiHit::Install(_) => (String::new(), None, None),
         };
         TipText { title, keys, detail, more: Vec::new() }

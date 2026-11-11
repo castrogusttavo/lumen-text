@@ -120,6 +120,7 @@ impl App {
         if self.ai.term.is_none() {
             return;
         }
+        right = self.ai_draw_bridge(cv, h, right);
         // Status chip in the room left between the picker and the buttons: dot + words, or a lone dot.
         let (label, col) = self.ai_status_look();
         let lw = self.tx.ui_width_sized(&label, false, SMALL);
@@ -147,6 +148,38 @@ impl App {
             self.tx.draw_ui_sized(cv, dx + 14, chip.y + 3, &label, col, chip, false, SMALL);
         }
         self.ai.hits.push((chip, AiHit::Status));
+    }
+
+    /// Claude Code only: the IDE bridge indicator (link icon, green when connected) and the count of
+    /// proposed changes waiting for an answer. Returns the new right edge of the free room.
+    fn ai_draw_bridge(&mut self, cv: &mut Canvas, h: Rect, mut right: i32) -> i32 {
+        if self.ai.agent.is_none_or(|a| a.id != "claude") && !self.ai.bridge.connected() {
+            return right;
+        }
+        let c = self.theme.chrome;
+        let pending = self.ai.bridge.proposals.len();
+        if pending > 0 {
+            let label = pending.to_string();
+            let lw = self.tx.ui_width_sized(&label, true, SMALL);
+            let w = 8 + 14 + 5 + lw + 9;
+            let r = Rect::new(right - w, h.y + 11, w, 22);
+            cv.fill_round(r, 8, c.accent.with_alpha(0x2a).over(c.sidebar_bg));
+            self.tx.icon(cv, "ui/file_diff", r.x + 8, r.y + 4, 14, c.accent_text, r);
+            self.tx.draw_ui_sized(cv, r.x + 27, r.y + 3, &label, c.accent_text, r, true, SMALL);
+            self.ai.hits.push((r, AiHit::Diffs));
+            right = r.x - 4;
+        }
+        let connected = self.ai.bridge.connected();
+        let b = Rect::new(right - 28, h.y + 8, 28, 28);
+        let (icon, tint) =
+            if connected { ("ui/link", c.git_added) } else { ("ui/disconnected", c.tab_inactive_fg.with_alpha(0x80)) };
+        self.tx.icon(cv, icon, b.x + 6, b.y + 6, 16, tint, b);
+        if connected {
+            // A small "live" dot on the icon's corner.
+            cv.fill_round(Rect::new(b.right() - 9, b.y + 5, 6, 6), 3, c.git_added);
+        }
+        self.ai.hits.push((b, AiHit::Ide));
+        b.x - 4
     }
 
     /// The agent's terminal, plus the "exited" card when the process has ended.

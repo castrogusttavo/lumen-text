@@ -310,6 +310,11 @@
   "id": "AiChooseAgent"
  },
  {
+  "label": "AI: Send Selection to Agent",
+  "shortcut": "Ctrl+Alt+K",
+  "id": "AiSendSelection"
+ },
+ {
   "label": "Git: Stage file",
   "shortcut": "",
   "id": "GitStage"

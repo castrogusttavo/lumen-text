@@ -64,6 +64,10 @@
   "id": "AiPanel"
  },
  {
+  "combo": "ctrl+alt+k",
+  "id": "AiSendSelection"
+ },
+ {
   "combo": "ctrl+t",
   "id": "WorkspaceSymbols"
  },

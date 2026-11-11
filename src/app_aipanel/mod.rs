@@ -9,8 +9,10 @@
 //! and hides the panel. Hiding it never stops the agent.
 //!
 //! Modules: `agents` (which CLIs, finding them) and the status heuristic in `state` are plain code
-//! covered by unit tests; `draw` and `input` are the App glue. A later IDE bridge (diffs, hooks,
-//! selection context over MCP) plugs into the same session.
+//! covered by unit tests; `draw` and `input` are the App glue; `bridge` is the editor side of the
+//! IDE bridge (`crate::ide`): Claude Code started here connects back to Lumen over MCP, so its
+//! edits open in the diff view (Accept / Reject), it sees the selection, open files and
+//! diagnostics, and its hooks drive the status chip.
 
 use crate::{
     app::{App, Focus, KeyIn},
@@ -26,6 +28,9 @@ use std::{
 use winit::{event::MouseScrollDelta, keyboard::Key, window::CursorIcon};
 
 mod agents;
+pub mod bridge;
+#[cfg(test)]
+mod bridge_tests;
 mod draw;
 mod input;
 mod state;
@@ -150,17 +155,29 @@ impl App {
         let inner = self.ai_inner_rect();
         let (rows, cols) =
             if inner.w > 0 && inner.h > 0 { crate::termview::fit(self.tx.cell_w, inner.w, inner.h) } else { (24, 80) };
-        let (program, args) = command_for(&exe);
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (program, mut args) = command_for(&exe);
         let path = path_with(exe.parent(), std::env::var_os("PATH").as_deref());
+        // Claude Code connects back to Lumen (the IDE bridge) and reports its status by hooks.
+        let bridge = if a.id == "claude" { self.ide_agent_setup() } else { None };
+        if let Some((_, _, settings)) = &bridge {
+            args.extend(["--settings".to_string(), settings.clone()]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         // A CLI started from inside another agent session (or an IDE's terminal) must not think it
-        // is nested or attached to that IDE.
+        // is nested or attached to that IDE: those variables go, and ours replace them.
         let mut env: Vec<EnvEdit> = vec![
             ("TERM_PROGRAM", Some("lumen-text")),
             ("CLAUDECODE", None),
             ("CLAUDE_CODE_ENTRYPOINT", None),
             ("CLAUDE_CODE_SSE_PORT", None),
         ];
+        if let Some((port, hook_token, _)) = &bridge {
+            env.extend([
+                ("CLAUDE_CODE_SSE_PORT", Some(port.as_str())),
+                ("ENABLE_IDE_INTEGRATION", Some("true")),
+                (crate::ide::HOOK_ENV, Some(hook_token.as_str())),
+            ]);
+        }
         if let Some(p) = path.as_deref() {
             env.push(("PATH", Some(p)));
         }

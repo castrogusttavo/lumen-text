@@ -12,6 +12,7 @@ fn sig(alive: bool, idle_ms: u64) -> Signals<'static> {
         title: "",
         attention: false,
         worked: false,
+        hook: None,
     }
 }
 
@@ -35,10 +36,24 @@ fn status_follows_process_output_title_and_attention() {
     assert_eq!(Status::Waiting.label(), "Waiting for you");
     assert_eq!(Status::Exited(2).label(), "Exited (2)");
     assert!(title_busy("⠋ x") && !title_busy("✳ x") && !title_busy(""));
+    // The agent's own hooks win over every heuristic, but not over the process having ended.
+    assert_eq!(
+        status(&Signals { hook: Some(Status::Done), ..sig(true, 10) }),
+        Status::Done,
+        "streaming, but Stop fired"
+    );
+    assert_eq!(
+        status(&Signals { hook: Some(Status::Working), ..sig(true, 60_000) }),
+        Status::Working,
+        "quiet tool run"
+    );
+    let asks = Signals { hook: Some(Status::Waiting), worked: true, ..sig(true, 5) };
+    assert_eq!(status(&asks), Status::Waiting, "a permission prompt");
+    assert_eq!(status(&Signals { hook: Some(Status::Working), exit: Some(1), ..sig(false, 0) }), Status::Exited(1));
 }
 
 #[cfg(unix)]
-fn stub(dir: &std::path::Path, name: &str, body: &str, exec: bool) {
+pub(super) fn stub(dir: &std::path::Path, name: &str, body: &str, exec: bool) {
     use std::os::unix::fs::PermissionsExt;
     let p = dir.join(name);
     std::fs::write(&p, body).unwrap();
@@ -120,7 +135,7 @@ while :; do\n\
 done\n";
 
 #[cfg(unix)]
-fn wait_screen(app: &mut App, want: &str) -> String {
+pub(super) fn wait_screen(app: &mut App, want: &str) -> String {
     let end = Instant::now() + Duration::from_secs(15);
     let mut text = String::new();
     while Instant::now() < end {
