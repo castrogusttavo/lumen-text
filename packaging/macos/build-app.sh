@@ -69,6 +69,12 @@ dmgdir="$work/dmg"; mkdir "$dmgdir"
 cp -R "$app" "$dmgdir/"
 ln -s /Applications "$dmgdir/Applications"
 rm -f "$out/$name.dmg"
-hdiutil create -volname "Lumen Text" -srcfolder "$dmgdir" -fs HFS+ -format UDZO -ov "$out/$name.dmg" >/dev/null
+# hdiutil sporadically fails with "Resource busy" on CI runners (Spotlight/diskarbitrationd): retry.
+for attempt in 1 2 3 4 5; do
+  hdiutil create -volname "Lumen Text" -srcfolder "$dmgdir" -fs HFS+ -format UDZO -ov "$out/$name.dmg" >/dev/null && break
+  [ "$attempt" = 5 ] && { echo "hdiutil create failed after $attempt attempts" >&2; exit 1; }
+  echo "hdiutil busy, retrying ($attempt)..." >&2
+  sleep $((attempt * 5))
+done
 (cd "$out" && shasum -a 256 "$name.dmg" > "$name.dmg.sha256")
 echo "Built $out/$name.dmg"
