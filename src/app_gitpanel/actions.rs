@@ -278,8 +278,7 @@ impl App {
     }
 
     fn git_prompt(&mut self, ask: GitAsk, title: impl Into<String>, text: &str) {
-        self.overlay =
-            Overlay::Prompt(Prompt { kind: PromptKind::Git(ask), title: title.into(), field: TextField::with(text) });
+        self.overlay = Overlay::Prompt(Prompt::new(PromptKind::Git(ask), title.into(), TextField::with(text)));
         self.request_redraw();
     }
 
