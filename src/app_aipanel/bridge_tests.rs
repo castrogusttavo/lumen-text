@@ -250,6 +250,11 @@ fn ide_bridge_end_to_end_with_a_fake_claude() {
     let btns = app.diff.as_ref().map(|d| d.btns.clone()).unwrap_or_default();
     let accept = btns.iter().find(|(_, b)| *b == DiffBtn::Accept).map(|(r, _)| *r).expect("Accept pill drawn");
     assert!(btns.iter().any(|(_, b)| *b == DiffBtn::Reject), "Reject pill drawn");
+    // A hand over the pills (not the text I-beam of the editor area below them).
+    for (r, _) in &btns {
+        app.mouse = ((r.x + r.w / 2) as f64, (r.y + r.h / 2) as f64);
+        assert_eq!(app.cursor_for(), winit::window::CursorIcon::Pointer, "pointer over the diff buttons");
+    }
     assert!(app.diff_click((accept.x + 6) as f64, (accept.y + 6) as f64));
     let r = c.reply(&mut app, d1);
     assert_eq!((text_of(&r["result"], 0), text_of(&r["result"], 1)), ("FILE_SAVED".into(), "one\nTWO\n".into()));

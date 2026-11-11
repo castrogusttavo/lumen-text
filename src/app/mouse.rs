@@ -297,6 +297,7 @@ impl App {
             || self.tests_clickable_at(x, y)
             || self.build_clickable_at(x, y)
             || l.completion_rows.iter().any(|(r, _)| r.contains(x, y))
+            || self.diff_btn_at(x, y).is_some()
         {
             return CursorIcon::Pointer;
         }

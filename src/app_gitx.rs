@@ -355,6 +355,11 @@ impl App {
         }
     }
 
+    /// The open diff's button under the pointer (for the hand cursor; the buttons draw their own hover).
+    pub fn diff_btn_at(&self, x: f64, y: f64) -> Option<Rect> {
+        self.diff.as_ref()?.btns.iter().find(|(r, _)| r.contains(x, y)).map(|(r, _)| *r)
+    }
+
     /// Left click on a hunk button / the flip button. Returns true when consumed.
     pub fn diff_click(&mut self, x: f64, y: f64) -> bool {
         let Some(&(_, b)) = self.diff.as_ref().and_then(|d| d.btns.iter().find(|(r, _)| r.contains(x, y))) else {
