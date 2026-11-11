@@ -256,7 +256,7 @@ impl App {
         cv.card(fr, 8, c.tab_active_bg, c.border);
         let fg = c.tab_active_fg;
         let icon = self.tx.icons.file_icon(&doc.name);
-        let name = doc.name.clone();
+        let (name, _) = self.tab_label(d.doc, true);
         self.tx.icon(cv, &icon, fx + 12, bar.y + (bar.h - 16) / 2, 16, fg, fr);
         self.tx.draw_ui(cv, fx + 34, bar.y + (bar.h - 18) / 2, &name, fg, fr, true);
     }
@@ -370,6 +370,42 @@ mod tests {
         assert_eq!(shown[0], "d");
         app.move_tab(9, 0); // out of range: nothing happens
         assert_eq!(app.docs.len(), 4);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn long_tab_names_are_cut_and_the_hover_tint_follows_a_closed_tab() {
+        use crate::app::TAB_NAME_MAX;
+        use crate::app_unsaved::testkit;
+        use crate::ui::Canvas;
+        let _g = testkit::lock();
+        let dir = testkit::tmp("tabname");
+        let mut app = testkit::test_app(&dir);
+        let long = testkit::untitled(&mut app, "x");
+        app.docs[long].name = format!("{}.ts", "a_really_long_component_name_".repeat(6));
+        app.size = (1400, 800);
+        let (w, h) = (1400usize, 800usize);
+        let mut px = vec![0u32; w * h];
+        let mut frame = |app: &mut App| {
+            app.render_into(&mut Canvas { px: &mut px, w: w as i32, h: h as i32 }, 0.016);
+        };
+        app.activate(0);
+        frame(&mut app);
+
+        // The long name is drawn cut, and its tab is no wider than the cap plus the icon/close room.
+        let (label, lw) = app.tab_label(long, false);
+        assert!(label.ends_with('…') && lw <= TAB_NAME_MAX, "{label:?} {lw}");
+        let tab = app.layout.tabs.iter().find(|t| t.2 == long).map(|t| t.0).expect("tab drawn");
+        assert!(tab.w <= TAB_NAME_MAX + 34 + 34, "tab width {}", tab.w);
+
+        // Pointer on the inactive long tab: it gets the hover tint.
+        app.mouse = (tab.x as f64 + tab.w as f64 / 2.0, tab.y as f64 + tab.h as f64 / 2.0);
+        frame(&mut app);
+        assert!(app.hover_rect.is_some(), "hovered tab is tinted");
+        // Closing it without moving the mouse leaves no tint behind where it was.
+        app.close_tab(long, true);
+        frame(&mut app);
+        assert!(app.hover_rect.is_none(), "stale hover tint after closing the tab: {:?}", app.hover_rect);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

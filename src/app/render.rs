@@ -141,6 +141,10 @@ impl App {
         crate::perf::lap!("panels");
         self.draw_status(cv);
         crate::perf::lap!("status");
+        // Re-aim the hover tint at what is under the pointer in this frame's layout: a closed or
+        // switched tab, a deleted row or a toggled panel must not leave the old tint behind (a
+        // "shadow") until the mouse moves again.
+        self.hover_rect = self.hover_target();
         if let Some((r, rad)) = self.hover_rect {
             let f = self.theme.foreground;
             cv.fill_round(r, rad, f.with_alpha(if self.theme.background.luminance() < 0.5 { 0x16 } else { 0x12 }));
@@ -167,7 +171,7 @@ impl App {
         let mut geo: Vec<(usize, i32, i32)> = Vec::with_capacity(order.len());
         let mut x = 6;
         for &i in &order {
-            let w = self.tx.ui_width(&self.docs[i].name, false)
+            let w = self.tx.ui_width(&self.docs[i].name, false).min(TAB_NAME_MAX)
                 + 34
                 + 34
                 + 11 * pane_docs.iter().filter(|p| p.0 == i).count() as i32;
@@ -207,7 +211,9 @@ impl App {
             }
             let fname = self.tx.icons.file_icon(&d.name);
             self.tx.icon(cv, &fname, r.x + 12, r.y + (bar.h - 16) / 2, 16, fg, strip);
-            self.tx.draw_ui(cv, r.x + lead, ty, &d.name, fg, strip, active);
+            let (label, name_w) = self.tab_label(i, active);
+            let d = &self.docs[i];
+            self.tx.draw_ui(cv, r.x + lead, ty, &label, fg, strip, active);
             let close = Rect::new(r.right() - 28, r.y, 28, bar.h);
             let (mx, my) = self.mouse;
             let over_tab = strip.contains(mx, my) && r.contains(mx, my) && self.overlay.is_none() && !dragging;
@@ -240,7 +246,6 @@ impl App {
                 let seg = (r.w - 28) / pane_docs.iter().filter(|p| p.0 == i).count() as i32;
                 let nth = pane_docs.iter().take(k).filter(|p| p.0 == i).count() as i32;
                 cv.fill_clip(Rect::new(r.x + 14 + nth * seg, bar.bottom() - 5, (seg - 2).max(4), 2), col, strip);
-                let name_w = self.tx.ui_width(&d.name, active);
                 self.tx.draw_ui(
                     cv,
                     r.x + lead + name_w + 6 + nth * 11,
@@ -273,6 +278,18 @@ impl App {
                 );
             }
         }
+    }
+
+    /// A tab's name as drawn (cut with "…" past `TAB_NAME_MAX`) and its width.
+    pub(crate) fn tab_label(&mut self, doc: usize, bold: bool) -> (String, i32) {
+        let name = &self.docs[doc].name;
+        let full = self.tx.ui_width(name, bold);
+        if full <= TAB_NAME_MAX {
+            return (name.clone(), full);
+        }
+        let label = crate::ui::fit_ellipsis(&mut self.tx, name, TAB_NAME_MAX, bold);
+        let w = self.tx.ui_width(&label, bold);
+        (label, w)
     }
 
     pub(super) fn draw_sidebar(&mut self, cv: &mut Canvas) {

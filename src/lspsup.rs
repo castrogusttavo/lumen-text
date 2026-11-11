@@ -9,8 +9,10 @@ use std::{
 
 /// A server that keeps dying is restarted this many times, then reported as crashed.
 pub const MAX_RESTARTS: u32 = 4;
-/// How long a server with no open document is kept running before it is stopped.
-pub const IDLE_GRACE: Duration = Duration::from_secs(45);
+/// How long a server with no open document is kept running before it is stopped: short, so closing
+/// the last Markdown/CSS/... file frees the server right away (as tsgo does), yet closing one file
+/// and opening the next of the same language does not restart it.
+pub const IDLE_GRACE: Duration = Duration::from_secs(2);
 /// A server that ran at least this long was healthy: its crash counter starts over.
 pub const STABLE_AFTER: Duration = Duration::from_secs(60);
 

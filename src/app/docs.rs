@@ -163,6 +163,7 @@ impl App {
             self.hover = None;
             self.completion = None;
             self.close_armed = None;
+            self.dismiss_tooltip();
             self.request_redraw();
         }
     }
@@ -179,6 +180,10 @@ impl App {
         self.docs.remove(idx);
         self.split_doc_removed(idx);
         self.close_armed = None;
+        // The code hover, completion list and tooltip belong to the old layout: drop them now.
+        self.hover = None;
+        self.completion = None;
+        self.dismiss_tooltip();
         if self.active >= self.docs.len() {
             self.active = self.docs.len().saturating_sub(1);
         } else if idx < self.active {
