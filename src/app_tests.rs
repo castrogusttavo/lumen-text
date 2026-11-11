@@ -1991,10 +1991,11 @@ mod tests {
         app.tests_focus();
         key(&mut app, NamedKey::ArrowDown);
         assert_eq!(app.tests.cur_group.as_deref(), Some("a.rs"), "first stop: the group row");
+        // With no run in progress failures are listed first, as drawn: two (failed), then one.
         key(&mut app, NamedKey::ArrowDown);
-        assert_eq!((app.tests.sel.as_deref(), app.tests.cur_group.as_deref()), (Some("a.rs::one"), None));
+        assert_eq!((app.tests.sel.as_deref(), app.tests.cur_group.as_deref()), (Some("a.rs::two"), None));
         key(&mut app, NamedKey::ArrowDown);
-        assert_eq!(app.tests.sel.as_deref(), Some("a.rs::two"));
+        assert_eq!(app.tests.sel.as_deref(), Some("a.rs::one"));
         key(&mut app, NamedKey::ArrowLeft);
         assert_eq!(app.tests.cur_group.as_deref(), Some("a.rs"));
         key(&mut app, NamedKey::ArrowLeft);
