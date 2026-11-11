@@ -627,8 +627,7 @@ impl App {
                         gp.tab = Tab::Changes;
                         gp.amend = false;
                         gp.amend_draft.clear();
-                        gp.msg = TextField::with(&msg);
-                        gp.msg_top = 0;
+                        gp.msg.set_text(&msg);
                         gp.msg_focus = true;
                         gp.focused = true;
                     }

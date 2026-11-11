@@ -94,6 +94,7 @@ mod tasks;
 mod terminal;
 mod termview;
 mod testrun;
+mod textarea;
 mod textmate;
 mod theme;
 mod tree;

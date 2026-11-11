@@ -18,6 +18,13 @@ impl App {
 
     /// Mouse button released: ends an edge drag and stores the width in `config.json`.
     pub fn gitpanel_release(&mut self) {
+        let selected = self.gitpanel.as_mut().is_some_and(|gp| {
+            gp.msg_auto = None;
+            gp.msg.release()
+        });
+        if selected {
+            self.request_redraw();
+        }
         if self.gitpanel.as_mut().is_some_and(|gp| std::mem::take(&mut gp.resizing)) {
             self.config.save();
             self.request_redraw();
@@ -171,29 +178,27 @@ impl App {
         let Some(top) = gp.top.clone() else { return };
         if gp.amend {
             gp.amend = false;
-            gp.msg = TextField::with(&std::mem::take(&mut gp.amend_draft));
+            gp.msg.set_text(&std::mem::take(&mut gp.amend_draft));
         } else {
             match gitsync::last_message(&top) {
                 Some(m) => {
-                    gp.amend_draft = std::mem::take(&mut gp.msg.text);
-                    gp.msg = TextField::with(&m);
+                    gp.amend_draft = gp.msg.text().to_string();
+                    gp.msg.set_text(&m);
                     gp.amend = true;
                     gp.msg_focus = true;
                 }
-                None => return gp.say("No commit to amend", false),
+                None => gp.say("No commit to amend", false),
             }
         }
-        gp.msg_top = 0;
     }
 
     pub(super) fn gp_amend(&mut self, gp: &mut GitPanel, top: &Path) {
         // The commit being rewritten is already on the upstream when nothing is ahead of it.
         let published = gp.sync.upstream.is_some() && gp.sync.ahead == 0;
-        match gitsync::commit_amend(top, &gp.msg.text) {
+        match gitsync::commit_amend(top, gp.msg.text()) {
             Ok(line) => {
                 gp.amend = false;
-                gp.msg = TextField::with(&std::mem::take(&mut gp.amend_draft));
-                gp.msg_top = 0;
+                gp.msg.set_text(&std::mem::take(&mut gp.amend_draft));
                 let extra = if published { " (already published: the push requires force)" } else { "" };
                 gp.say(format!("Commit amended{extra}"), true);
                 if published {
@@ -214,7 +219,7 @@ impl App {
 
     pub(super) fn gp_commit(&mut self, gp: &mut GitPanel) {
         let Some(top) = gp.top.clone() else { return };
-        if gp.msg.text.trim().is_empty() {
+        if gp.msg.text().trim().is_empty() {
             gp.say("Write a commit message", false);
             gp.msg_focus = true;
             return;
@@ -233,10 +238,9 @@ impl App {
                 return gp.say(format!("git add: {e}"), false);
             }
         }
-        match commit(&top, &gp.msg.text) {
+        match commit(&top, gp.msg.text()) {
             Ok(line) => {
-                gp.msg = TextField::default();
-                gp.msg_top = 0;
+                gp.msg.set_text("");
                 gp.say(line.clone(), true);
                 self.say(format!("commit: {line}"));
                 self.sync_docs_with_head();
@@ -372,12 +376,44 @@ impl App {
                 }
             }
         }
+        self.gp_msg_autoscroll(&mut gp, now, want);
         if gp.closed {
             self.git_detach_job(&mut gp);
             self.focus = crate::app::Focus::Editor;
         } else {
             self.gitpanel = Some(gp);
         }
+    }
+
+    /// Dragging a selection above / below the message box keeps scrolling it (faster the
+    /// farther the pointer is) and the selection follows.
+    fn gp_msg_autoscroll(&mut self, gp: &mut GitPanel, now: Instant, want: &mut impl FnMut(Instant)) {
+        let (mx, my) = self.mouse;
+        let b = gp.msg_box;
+        let dist = if !gp.msg.dragging() {
+            0.0
+        } else if my < b.y as f64 {
+            my - b.y as f64
+        } else if my > b.bottom() as f64 {
+            my - b.bottom() as f64
+        } else {
+            0.0
+        };
+        if dist == 0.0 {
+            gp.msg_auto = None;
+            return;
+        }
+        let dt = gp.msg_auto.map_or(0.016, |t| now.saturating_duration_since(t).as_secs_f64().min(0.1));
+        gp.msg_auto = Some(now);
+        let speed = dist.signum() * (60.0 + dist.abs() * 10.0).min(2000.0);
+        if gp.msg.scroll_by((speed * dt) as f32) {
+            let (ox, oy) = gp.msg_origin();
+            let tx = &mut self.tx;
+            gp.msg.relayout(&mut |s: &str| tx.ui_char_xs(s, false, None));
+            gp.msg.drag_to((mx - ox) as f32, (my - oy) as f32);
+            self.request_redraw();
+        }
+        want(now + Duration::from_millis(16));
     }
 
     pub(super) fn gp_open_diff_change(&mut self, gp: &mut GitPanel, i: usize) {

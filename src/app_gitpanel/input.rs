@@ -50,45 +50,14 @@ impl App {
         if is_modifier_key(key) {
             return true;
         }
-        // Anything bound to a command (Ctrl+P, Ctrl+Shift+G, ...) keeps working.
+        // Anything bound to a command (Ctrl+P, Ctrl+Shift+G, ...) keeps working, except the
+        // editing keys of the message box (Ctrl+A / C / X / V / Z / Y, word moves...).
         let bound = (ctrl || alt) && self.keymap.lookup(ctrl, shift, alt, key).is_some();
+        if gp.msg_focus && gp.tab == Tab::Changes {
+            return self.gp_msg_key(gp, ev, bound);
+        }
         if bound {
             return Self::gp_pass(gp);
-        }
-        if gp.msg_focus && gp.tab == Tab::Changes {
-            let f = &mut gp.msg;
-            match key {
-                Key::Named(NamedKey::Enter) => ml_insert(f, "\n"),
-                Key::Named(NamedKey::Backspace) => {
-                    if ctrl {
-                        f.delete_word();
-                    } else {
-                        f.backspace();
-                    }
-                }
-                Key::Named(NamedKey::Delete) => {
-                    f.delete();
-                }
-                Key::Named(NamedKey::ArrowLeft) => f.left(),
-                Key::Named(NamedKey::ArrowRight) => f.right(),
-                Key::Named(NamedKey::ArrowUp) => ml_vertical(f, -1),
-                Key::Named(NamedKey::ArrowDown) => ml_vertical(f, 1),
-                Key::Named(NamedKey::Home) => ml_home(f),
-                Key::Named(NamedKey::End) => ml_end(f),
-                Key::Named(NamedKey::Tab) => gp.msg_focus = false,
-                Key::Character(c) if ctrl && !alt && c.to_lowercase() == "v" => {
-                    let t = self.clip.get();
-                    ml_insert(&mut gp.msg, &t);
-                }
-                // Any other Ctrl/Alt combo has no meaning here: let the global shortcut run.
-                _ if ctrl || alt => return Self::gp_pass(gp),
-                _ => {
-                    if let Some(t) = &ev.text {
-                        ml_insert(f, t);
-                    }
-                }
-            }
-            return true;
         }
         // List mode. Ctrl/Alt + a character key means nothing here (the arrows, Enter, Space,
         // Delete and Tab below keep working with modifiers): let the global shortcut run.
@@ -151,8 +120,44 @@ impl App {
             _ if ctrl || alt => return Self::gp_pass(gp),
             _ => {}
         }
-        let view = self.gitpanel_rect().h - gp.chrome_h() - if gp.tab == Tab::Changes { COMMIT_AREA_H } else { 0 };
+        let view = self.gitpanel_rect().h - gp.chrome_h() - if gp.tab == Tab::Changes { gp.commit_area_h() } else { 0 };
         gp.reveal(view);
+        true
+    }
+
+    /// A key while the message box has the focus. `bound`: the key runs a command elsewhere.
+    fn gp_msg_key(&mut self, gp: &mut GitPanel, ev: &KeyIn, bound: bool) -> bool {
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        if matches!(ev.key, Key::Named(NamedKey::Tab)) && !ctrl && !alt {
+            gp.msg_focus = false;
+            return true;
+        }
+        // The text may have changed since the last frame: Up / Down / Home / End need its lines.
+        let tx = &mut self.tx;
+        gp.msg.relayout(&mut |s: &str| tx.ui_char_xs(s, false, None));
+        match gp.msg.key(&ev.key, ctrl, shift, alt) {
+            KeyAct::Handled => return true,
+            KeyAct::Copy(t) => {
+                self.clip.set(&t);
+                return true;
+            }
+            KeyAct::Paste => {
+                let t = self.clip.get();
+                gp.msg.insert(&t);
+                return true;
+            }
+            KeyAct::Ignored => {}
+        }
+        let text = ev.text.as_deref().filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+        // AltGr arrives as Ctrl+Alt on some systems: its characters are typed, not shortcuts.
+        let altgr = ctrl && alt && text.is_some() && !bound;
+        if (ctrl || alt) && !altgr {
+            // No meaning here: let the global shortcut run.
+            return Self::gp_pass(gp);
+        }
+        if let Some(t) = text {
+            gp.msg.type_text(t);
+        }
         true
     }
 
@@ -242,29 +247,11 @@ impl App {
                 Some(Hit::Section(g)) => self.gp_section(&mut gp, g),
                 Some(Hit::Msg) => {
                     gp.msg_focus = true;
-                    let b = gp.msg_box;
-                    let line = gp.msg_top + ((y as i32 - b.y - 8).max(0) / LINE) as usize;
-                    let text_line = gp
-                        .msg
-                        .text
-                        .split('\n')
-                        .nth(line.min(gp.msg.text.split('\n').count() - 1))
-                        .unwrap_or("")
-                        .to_string();
-                    let target = x as i32 - (b.x + 12) + gp.msg_hscroll;
-                    let mut col = 0;
-                    for n in 1..=text_line.chars().count() {
-                        let pre: String = text_line.chars().take(n).collect();
-                        let w = self.tx.ui_width(&pre, false);
-                        let prev: String = text_line.chars().take(n - 1).collect();
-                        let wp = self.tx.ui_width(&prev, false);
-                        if target >= (w + wp) / 2 {
-                            col = n;
-                        } else {
-                            break;
-                        }
-                    }
-                    gp.msg.cursor = ml_index(&gp.msg, line, col);
+                    let clicks = gp.msg_click_count(x, y);
+                    let (ox, oy) = gp.msg_origin();
+                    let tx = &mut self.tx;
+                    gp.msg.relayout(&mut |s: &str| tx.ui_char_xs(s, false, None));
+                    gp.msg.press((x - ox) as f32, (y - oy) as f32, clicks, self.mods.shift_key());
                 }
                 Some(Hit::Opt) => gp.include_all = !gp.include_all,
                 Some(Hit::Amend) => self.gp_toggle_amend(&mut gp),
@@ -334,6 +321,12 @@ impl App {
         if !p.contains(x, y) {
             return false;
         }
+        // Over a message box with more text than it shows: the box scrolls.
+        if gp.tab == Tab::Changes && gp.msg_box.contains(x, y) && gp.msg.max_scroll() > 0.0 {
+            let px = crate::scroller::wheel_px(delta, Self::gp_msg_line() as f64);
+            gp.msg.scroll_by(px as f32);
+            return true;
+        }
         let px = crate::scroller::wheel_px(delta, crate::ui::line_h() as f64);
         let k = if gp.tab == Tab::Changes { 0 } else { 1 };
         gp.scroll[k] =
@@ -355,6 +348,14 @@ impl App {
                 return true;
             }
             return false;
+        }
+        // Selecting in the message box with the button down (also outside the box).
+        if gp.msg.dragging() {
+            let (ox, oy) = gp.msg_origin();
+            let tx = &mut self.tx;
+            gp.msg.relayout(&mut |s: &str| tx.ui_char_xs(s, false, None));
+            gp.msg.drag_to((x - ox) as f32, (y - oy) as f32);
+            return true;
         }
         let h = if p.contains(x, y) { gp.hit_at(x, y) } else { None };
         let changed = h != gp.hover;

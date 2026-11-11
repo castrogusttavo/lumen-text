@@ -108,19 +108,32 @@ pub(super) const FILE_H: i32 = 30;
 pub(super) const SEC_H: i32 = 34;
 pub(super) const COMMIT_H: i32 = 52;
 pub(super) const CFILE_H: i32 = 28;
-pub(super) const MSG_H: i32 = 92;
 pub(super) const AMEND_H: i32 = 28;
-pub(super) const COMMIT_AREA_H: i32 = 12 + 22 + MSG_H + 8 + AMEND_H + 34 + 12;
+/// Commit area around the message box: notice row, gaps, Amend row, Commit button.
+pub(super) const COMMIT_CHROME_H: i32 = 12 + 22 + 8 + AMEND_H + 34 + 12;
+/// Smallest row height of the message box.
 pub(super) const LINE: i32 = 18;
+/// Message box padding (horizontal / vertical).
+pub(super) const MSG_PAD_X: i32 = 12;
+pub(super) const MSG_PAD_Y: i32 = 10;
+/// The message box shows 3 to 10 visual lines, then scrolls.
+pub(super) const MSG_MIN_LINES: i32 = 3;
+pub(super) const MSG_MAX_LINES: i32 = 10;
+/// Room kept for the changes list above when the message box grows.
+pub(super) const MSG_LIST_ROOM: i32 = 3 * FILE_H + SEC_H;
 
 pub struct GitPanel {
     pub root: PathBuf,
     pub top: Option<PathBuf>,
     pub tab: Tab,
     pub changes: Vec<Change>,
-    pub msg: TextField,
-    pub msg_top: usize,
+    /// Commit message: soft-wrapped, scrolls vertically, real selection, undo.
+    pub msg: TextArea,
     pub msg_focus: bool,
+    /// Last press in the message box (when, where, click count) for double / triple clicks.
+    pub msg_click: (Instant, (f64, f64), u32),
+    /// Last autoscroll step while dragging a selection out of the message box.
+    pub msg_auto: Option<Instant>,
     /// Keyboard focus is inside the panel.
     pub focused: bool,
     pub include_all: bool,
@@ -136,8 +149,8 @@ pub struct GitPanel {
     pub open_file: Option<usize>,
     pub hits: Vec<(Rect, Hit)>,
     pub hover: Option<Hit>,
+    /// Message box as drawn (its height follows the text).
     pub msg_box: Rect,
-    pub msg_hscroll: i32,
     pub sig: u64,
     pub hist_sig: u64,
     pub closed: bool,
@@ -182,9 +195,10 @@ impl GitPanel {
             top: None,
             tab: Tab::Changes,
             changes: Vec::new(),
-            msg: TextField::default(),
-            msg_top: 0,
+            msg: TextArea::default(),
             msg_focus: true,
+            msg_click: (Instant::now(), (f64::NAN, f64::NAN), 0),
+            msg_auto: None,
             focused: true,
             include_all: true,
             notice: None,
@@ -200,7 +214,6 @@ impl GitPanel {
             hits: Vec::new(),
             hover: None,
             msg_box: Rect::default(),
-            msg_hscroll: 0,
             sig: 0,
             hist_sig: 0,
             closed: false,
@@ -293,6 +306,30 @@ impl GitPanel {
     /// Everything above the list: tabs, branch row and strip.
     pub fn chrome_h(&self) -> i32 {
         HEAD_H + BRANCH_H + self.strip_h()
+    }
+
+    /// Height of the message box: as drawn last, the 3-line minimum before the first frame.
+    pub fn msg_h(&self) -> i32 {
+        self.msg_box.h.max(MSG_MIN_LINES * LINE + 2 * MSG_PAD_Y)
+    }
+
+    /// Height of the commit area pinned to the bottom of the Changes tab.
+    pub fn commit_area_h(&self) -> i32 {
+        COMMIT_CHROME_H + self.msg_h()
+    }
+
+    /// Top-left corner of the message text (view coordinates of the text area).
+    pub fn msg_origin(&self) -> (f64, f64) {
+        ((self.msg_box.x + MSG_PAD_X) as f64, (self.msg_box.y + MSG_PAD_Y) as f64)
+    }
+
+    /// Click count of a press in the message box at (x, y): 1, 2 (word), 3 (line), then 1 again.
+    pub fn msg_click_count(&mut self, x: f64, y: f64) -> u32 {
+        let (t, (px, py), n) = self.msg_click;
+        let near = (x - px).abs() < 5.0 && (y - py).abs() < 5.0;
+        let n = if near && t.elapsed() < Duration::from_millis(400) { n % 3 + 1 } else { 1 };
+        self.msg_click = (Instant::now(), (x, y), n);
+        n
     }
 
     pub fn reset_history(&mut self) {
