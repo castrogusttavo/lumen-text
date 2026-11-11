@@ -39,6 +39,7 @@ const NO_NUMBERS: u32 = 1;
 const NO_BOOKMARKS: u32 = 2;
 const NO_BREAKPOINTS: u32 = 4;
 const BAR_SHIFT: u32 = 4; // two bits: 0 show, 1 auto, 2 never
+const WS_SHIFT: u32 = 6; // two bits: 0 none, 1 boundary, 2 trailing, 3 all
 
 #[cfg(not(test))]
 mod store {
@@ -120,12 +121,34 @@ pub fn set_scrollbar(m: Scrollbar) {
     store::set((store::get() & !(3 << BAR_SHIFT)) | (v << BAR_SHIFT));
 }
 
+/// Which whitespace the editor draws (`render_whitespace`).
+pub fn whitespace() -> crate::whitespace::Render {
+    use crate::whitespace::Render;
+    match (store::get() >> WS_SHIFT) & 3 {
+        1 => Render::Boundary,
+        2 => Render::Trailing,
+        3 => Render::All,
+        _ => Render::Off,
+    }
+}
+pub fn set_whitespace(m: crate::whitespace::Render) {
+    use crate::whitespace::Render;
+    let v = match m {
+        Render::Off => 0,
+        Render::Boundary => 1,
+        Render::Trailing => 2,
+        Render::All => 3,
+    };
+    store::set((store::get() & !(3 << WS_SHIFT)) | (v << WS_SHIFT));
+}
+
 /// Load every display setting from the config.
 pub fn apply(c: &crate::config::Config) {
     set_line_numbers(c.show_line_numbers);
     set_bookmarks(c.show_bookmarks);
     set_breakpoints(c.show_breakpoints);
     set_scrollbar(Scrollbar::from_name(&c.scrollbar));
+    set_whitespace(crate::whitespace::Render::from_name(&c.render_whitespace));
 }
 
 // ── auto-hide scrollbars ──
@@ -204,6 +227,19 @@ mod tests {
         set_scrollbar(Scrollbar::Auto);
         assert!(show_line_numbers() && !show_bookmarks());
         assert_eq!(scrollbar(), Scrollbar::Auto);
+    }
+
+    #[test]
+    fn whitespace_mode_shares_the_word_without_touching_the_rest() {
+        use crate::whitespace::Render;
+        assert_eq!(whitespace(), Render::Off, "nothing drawn by default");
+        set_scrollbar(Scrollbar::Auto);
+        for m in [Render::All, Render::Trailing, Render::Boundary, Render::Off] {
+            set_whitespace(m);
+            assert_eq!(whitespace(), m);
+            assert_eq!(scrollbar(), Scrollbar::Auto);
+            assert!(show_line_numbers());
+        }
     }
 
     #[test]

@@ -188,6 +188,8 @@ pub struct Theme {
     pub line_highlight: Rgba,
     pub line_number: Rgba,
     pub line_number_active: Rgba,
+    /// Dots and arrows of `render_whitespace` (`editorWhitespace.foreground`, else a faded foreground).
+    pub whitespace: Rgba,
     pub chrome: Chrome,
     rules: Vec<Rule>,
 }
@@ -277,6 +279,8 @@ impl Theme {
         let find_match_current =
             tame(ck("editor.findMatchBackground", Rgba(0x51, 0xc0, 0xa8, 0x80)), background, fg_ui, 0x08);
         let foreground = fg_ui;
+        let whitespace =
+            color("editorWhitespace.foreground", background.mix(foreground, if dark { 0.24 } else { 0.28 }));
         let sem_raw = |key: &str, fb: Rgba| ok(ck(key, fb), 4.5);
         let (git_added, git_deleted) = (
             sem_raw("editorGutter.addedBackground", Rgba(0x58, 0xa6, 0x4a, 0xff)),
@@ -378,6 +382,7 @@ impl Theme {
             line_highlight,
             line_number,
             line_number_active,
+            whitespace,
             chrome,
             rules,
         })
@@ -549,6 +554,7 @@ mod tests {
             line_highlight: Rgba(0, 0, 0, 255),
             line_number: Rgba(0, 0, 0, 255),
             line_number_active: Rgba(0, 0, 0, 255),
+            whitespace: Rgba(0, 0, 0, 255),
             chrome: Chrome::test_default(),
             rules: rules
                 .iter()

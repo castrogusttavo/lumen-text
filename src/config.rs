@@ -122,6 +122,12 @@ pub struct Config {
     /// Interval in ms of the polling fallback used where inotify cannot be trusted (NFS, SMB, FUSE,
     /// 9p, FAT/exFAT, watch limit reached); at least `poller::MIN_MS`.
     pub watcher_poll_ms: u64,
+    /// Draw spaces and tabs: "none" (default), "boundary", "trailing" or "all" (see `whitespace`).
+    pub render_whitespace: String,
+    /// On save: strip spaces/tabs at line ends (Markdown is skipped unless `.editorconfig` asks)
+    /// and end the file with a line break. `.editorconfig` overrides both per file.
+    pub trim_trailing_whitespace: bool,
+    pub insert_final_newline: bool,
 }
 
 /// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
@@ -157,11 +163,12 @@ pub const STATUS_ITEMS: &[(&str, &str, bool)] = &[
     ("position", "Line and column", false),
     ("indent", "Indentation", false),
     ("language", "Language", false),
+    ("encoding", "Encoding", false),
 ];
 
 /// The bottom bar items of the right-hand group in their default order, left to right. They can
 /// be reordered with `Config::status_order` (config.json) or the settings modal.
-pub const STATUS_RIGHT: &[&str] = &["position", "indent", "language", "terminal", "debug", "git", "ram"];
+pub const STATUS_RIGHT: &[&str] = &["position", "indent", "encoding", "language", "terminal", "debug", "git", "ram"];
 
 /// The left-hand group in its default order (sidebar toggle, project search, problems).
 pub const STATUS_LEFT: &[&str] = &["sidebar", "search", "problems"];
@@ -179,13 +186,24 @@ fn normalize_order(list: &[String], all: &[&str]) -> Vec<String> {
             out.push(id.clone());
         }
     }
-    for id in all {
+    for id in all.iter().filter(|id| !LATE_ITEMS.contains(*id)) {
         if !out.iter().any(|o| o == id) {
             out.push((*id).to_string());
         }
     }
+    // Items added in a later version go right after their default left neighbour, so an order
+    // stored before they existed gains them where they belong instead of at the far end.
+    for (k, id) in all.iter().enumerate().filter(|(_, id)| LATE_ITEMS.contains(*id)) {
+        if !out.iter().any(|o| o == id) {
+            let at = k.checked_sub(1).and_then(|p| out.iter().position(|o| o == all[p])).map_or(out.len(), |p| p + 1);
+            out.insert(at, (*id).to_string());
+        }
+    }
     out
 }
+
+/// Bottom bar items that came after `status_order` was first stored (see `normalize_order`).
+const LATE_ITEMS: &[&str] = &["encoding"];
 
 /// `list` cleaned up into a permutation of [`STATUS_RIGHT`]: unknown ids and repeats are dropped
 /// and the missing ones are appended in their default order.
@@ -280,6 +298,9 @@ impl Default for Config {
             hot_exit: true,
             persistent_undo: true,
             watcher_poll_ms: crate::poller::DEFAULT_MS,
+            render_whitespace: "none".into(),
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
         }
     }
 }
@@ -555,6 +576,9 @@ impl Config {
             hot_exit: v["hot_exit"].as_bool().unwrap_or(true),
             persistent_undo: v["persistent_undo"].as_bool().unwrap_or(true),
             watcher_poll_ms: clean_poll_ms(v["watcher_poll_ms"].as_u64()),
+            render_whitespace: crate::whitespace::normalize(v["render_whitespace"].as_str()),
+            trim_trailing_whitespace: v["trim_trailing_whitespace"].as_bool().unwrap_or(false),
+            insert_final_newline: v["insert_final_newline"].as_bool().unwrap_or(false),
         }
     }
 
@@ -588,6 +612,9 @@ impl Config {
         v["hot_exit"] = json!(self.hot_exit);
         v["persistent_undo"] = json!(self.persistent_undo);
         v["watcher_poll_ms"] = json!(self.watcher_poll_ms);
+        v["render_whitespace"] = json!(self.render_whitespace);
+        v["trim_trailing_whitespace"] = json!(self.trim_trailing_whitespace);
+        v["insert_final_newline"] = json!(self.insert_final_newline);
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -687,6 +714,9 @@ mod tests {
             hot_exit: false,
             persistent_undo: false,
             watcher_poll_ms: 5000,
+            render_whitespace: "boundary".into(),
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);
@@ -795,7 +825,12 @@ mod tests {
         assert_eq!(normalize_status_order(&[]), v(STATUS_RIGHT));
         assert_eq!(
             normalize_status_order(&v(&["git", "bogus", "git", "sidebar", "ram"])),
-            v(&["git", "ram", "position", "indent", "language", "terminal", "debug"])
+            v(&["git", "ram", "position", "indent", "encoding", "language", "terminal", "debug"])
+        );
+        // An order stored before an item existed gains it next to its default neighbour.
+        assert_eq!(
+            normalize_status_order(&v(&["git", "ram", "position", "indent", "language", "terminal", "debug"])),
+            v(&["git", "ram", "position", "indent", "encoding", "language", "terminal", "debug"])
         );
         assert_eq!(Config::default().status_order, v(STATUS_RIGHT));
     }
@@ -805,7 +840,7 @@ mod tests {
         let mut c = Config::default();
         assert!(!c.move_status("position", -1), "already leftmost");
         assert!(c.move_status("position", 1));
-        assert_eq!(c.status_order[..3], ["indent", "position", "language"]);
+        assert_eq!(c.status_order[..3], ["indent", "position", "encoding"]);
         assert!(c.move_status_to("ram", 0));
         assert_eq!(c.status_slot("ram"), Some(0));
         assert!(c.move_status_to("ram", 99), "clamped to the last slot");
@@ -823,6 +858,7 @@ mod tests {
         std::fs::write(&p, r#"{"status_order": ["git", "nope", "language", "git"]}"#).unwrap();
         let mut c = Config::load_from(&p);
         assert_eq!(c.status_order[..3], ["git", "language", "position"]);
+        assert_eq!(c.status_order[4], "encoding", "after indent, its default neighbour");
         assert_eq!(c.status_order.len(), STATUS_RIGHT.len());
         c.move_status("git", 1);
         c.save_to(&p).unwrap();
@@ -850,13 +886,14 @@ mod tests {
     #[test]
     fn stepping_skips_hidden_items_so_the_bar_always_changes() {
         let mut c = Config::default();
-        // position, indent, language, terminal, debug, git, ram: hide indent and language.
+        // position, indent, encoding, language, terminal, debug, git, ram: hide the three after position.
         c.set_status_item("indent", false);
+        c.set_status_item("encoding", false);
         c.set_status_item("language", false);
         assert_eq!(c.status_rank("position"), 1);
         assert_eq!(c.status_rank("terminal"), 2, "hidden items do not count");
-        assert!(c.step_status("position", 1), "hops over the two hidden items and the terminal button");
-        assert_eq!(c.status_order[..5], ["indent", "language", "terminal", "position", "debug"]);
+        assert!(c.step_status("position", 1), "hops over the three hidden items and the terminal button");
+        assert_eq!(c.status_order[..6], ["indent", "encoding", "language", "terminal", "position", "debug"]);
         assert_eq!(c.status_rank("position"), 2);
         assert!(c.step_status("position", -1));
         assert_eq!(c.status_rank("position"), 1);
@@ -868,9 +905,9 @@ mod tests {
         // Last visible item with only hidden ones after it.
         let mut d = Config::default();
         d.set_status_item("ram", false);
-        d.move_status_to("git", 6);
+        d.move_status_to("git", 99);
         assert_eq!(d.status_order.last().map(String::as_str), Some("git"));
-        d.move_status_to("ram", 6);
+        d.move_status_to("ram", 99);
         assert!(!d.step_status("git", 1), "only the hidden RAM item is to its right");
         // A hidden item itself moves one slot at a time.
         let slot = d.status_slot("ram").unwrap();

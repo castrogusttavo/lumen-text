@@ -551,6 +551,11 @@ impl App {
                     None,
                     self.docs.get(self.active).map(|d| format!("Current: {}", d.lang.unwrap_or("text"))),
                 ),
+                StatusBtn::Encoding => t(
+                    "Reopen or save with another encoding…",
+                    None,
+                    self.docs.get(self.active).map(|d| format!("Current: {}", d.buf.encoding.label())),
+                ),
             },
         }
     }

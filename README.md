@@ -33,6 +33,9 @@ and no GPU driver:
 
 **Editor**
 - Rope buffer (`ropey`), atomic save, CRLF, tree-shaped undo history, opens a 100k-line file in ~21 ms
+- File encodings: UTF-8 (with or without BOM), UTF-16 LE/BE (BOM or no BOM) and Windows-1252 are detected and saved back the same way; the bottom bar shows the encoding and offers "Reopen with encoding…" / "Save with encoding…" (also ISO-8859-1/15/2, Windows-1250/1251/1253/1254, KOI8-R, Shift_JIS, EUC-JP, GBK, Big5, EUC-KR). Binary files are refused with a message instead of opening as garbage
+- [EditorConfig](https://editorconfig.org): `indent_style`, `indent_size`, `tab_width`, `end_of_line` (files without a line break yet), `charset`, `trim_trailing_whitespace`, `insert_final_newline` and `max_line_length` (read, not used yet), with the usual section globs, applied when a file opens
+- Render whitespace (none / boundary / trailing / all, palette "Toggle render whitespace"); trim trailing whitespace and insert a final newline on save (one undo step; Markdown is not trimmed unless `.editorconfig` asks)
 - Multi-cursor, auto-indent, bracket pairs and matching, JSX/HTML tag closing, Emmet, snippets with tab stops
 - Column (box) selection: `Shift+Alt+drag`, middle-button drag or `Ctrl+Shift+Alt+arrows`; one cursor per line in visual columns (tabs expanded), carets at the end of shorter lines, folded lines skipped, buffer lines (not wrapped rows) with word wrap
 - Jump to character (`Alt+J`, flash / easymotion style): type 1–2 characters, then the label shown over the match (`Shift` extends the selection)
@@ -306,6 +309,8 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `show_bookmarks` / `show_breakpoints` | `true` / `true` | Gutter marks; with breakpoints off the gutter click does nothing |
 | `scrollbar` | `"show"` | `"show"`, `"auto"` (fade in while scrolling or pointing) or `"never"` |
 | `enable_lsp` | `true` | Master switch for every language server |
+| `render_whitespace` | `"none"` | Draw spaces as dots and tabs as arrows: `"none"`, `"boundary"` (all but single spaces between words), `"trailing"` or `"all"`; theme key `editorWhitespace.foreground` |
+| `trim_trailing_whitespace` / `insert_final_newline` | `false` / `false` | On save: strip spaces and tabs at line ends (never in Markdown, where two spaces are a line break, unless `.editorconfig` says so) / end the file with a line break. A file's `.editorconfig` overrides both |
 | `ui_scale` | `0` | `0` = automatic from the window scale factor, else up to 4 |
 | `format_on_save` | `false` | Run the formatter on save |
 | `hot_exit` | `true` | Quitting keeps every unsaved buffer (untitled ones too) under `$XDG_STATE_HOME/lumen-text/backups/<project>/` and reopens them, unsaved, with the session; dirty buffers are also backed up ~2 s after the last edit (at most every 10 s while typing) for crashes. A backup goes away when its buffer is saved or closed without saving. `false` asks before quitting, as before |
@@ -324,8 +329,8 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `local_history` / `local_history_max_entries` | `true` / `50` | Keep a snapshot of a file on every save and before a reload from disk (*File: Local history*); snapshots kept per file, 1 to 1000 |
 | `explorer_hide_gitignored` | `true` | Hide what `.gitignore`, the global ignore file and `.git/info/exclude` ignore; `false` shows those entries dimmed |
 | `watcher_poll_ms` | `2000` | Interval of the polling fallback used where inotify cannot be trusted (NFS, SMB, FUSE, 9p, FAT/exFAT, watch limit reached): only open files and expanded folders are checked (250 to 60000) |
-| `status_items` | `{}` | Map of bottom-bar item id to `true`/`false` (`search`, `problems`, `terminal`, `debug`, `git`, `ram`, `position`, `indent`, `language`) |
-| `status_order` | position, indent, language, terminal, debug, git, ram | Order of the right-hand bottom-bar items |
+| `status_items` | `{}` | Map of bottom-bar item id to `true`/`false` (`search`, `problems`, `terminal`, `debug`, `git`, `ram`, `position`, `indent`, `encoding`, `language`) |
+| `status_order` | position, indent, encoding, language, terminal, debug, git, ram | Order of the right-hand bottom-bar items |
 | `status_left_order` | sidebar, search, problems | Order of the left-hand bottom-bar items |
 | `git_pull_strategy` | `""` | `"merge"`, `"rebase"` or `"ff-only"`: how Pull integrates remote commits (empty = ask when the branches diverge) |
 | `git_worktree_dir` | `""` | Folder new worktrees go in, one sub-folder per branch (`~` and `{repo}` expanded, relative = to the main worktree); empty = `<repo>/../<repo>-worktrees` |
@@ -370,6 +375,8 @@ VS Code keys; the mapping table is documented at the top of `src/zedtheme.rs`).
 src/
   buffer.rs, editor.rs     rope (ropey), grouped/tree undo, atomic save; cursors, selections, multi-cursor
   backup.rs, undo_store.rs, app_backup.rs  hot exit / crash backups of unsaved buffers, persistent undo
+  encoding.rs, editorconfig.rs, whitespace.rs, app_filefmt.rs  file encodings (detect, decode, encode),
+                           .editorconfig parser and globs, whitespace rendering and save fixes
   textmate.rs, highlight.rs  vscode-textmate port on onig; background, incremental tokenization
   theme.rs, zedtheme.rs    VS Code themes, WCAG-checked chrome; Zed theme import, custom template
   ui.rs, doc/, docview.rs  drawing primitives (cosmic-text, tiny-skia); document state and render, word wrap/folds
@@ -392,7 +399,7 @@ assets/   grammars, themes, language-manifest.json, icons, licenses
 packaging/  tarball, deb, rpm, Arch, AppImage, Flatpak scripts
 ```
 
-Dependencies are deliberately few and compiled with minimal features (`image-webp`, `png`, `zune-jpeg`
+Dependencies are deliberately few and compiled with minimal features (`encoding_rs` only for legacy encodings, `image-webp`, `png`, `zune-jpeg`
 and `gif` only for Markdown images). The binary is a single executable plus the `assets` directory.
 
 ## Performance notes

@@ -4,7 +4,7 @@
 use ropey::Rope;
 use std::{
     fs::{self, File},
-    io::{self, BufReader, BufWriter},
+    io::{self, BufWriter},
     path::{Path, PathBuf},
 };
 
@@ -287,6 +287,8 @@ pub struct Buffer {
     saved_version: u64,
     dirty_line: Option<usize>,
     pub crlf: bool,
+    /// How the file's bytes encode the text: read as this, saved as this (see `encoding`).
+    pub encoding: crate::encoding::TextEncoding,
     /// Unique id of this buffer (a reloaded document gets a new one).
     gen_id: u64,
     /// Edits not yet consumed by the document (`take_edits`).
@@ -318,6 +320,7 @@ impl Buffer {
             saved_version: 0,
             dirty_line: None,
             crlf,
+            encoding: crate::encoding::TextEncoding::UTF8,
             gen_id: NEXT_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             pending: Vec::new(),
             log: Vec::new(),
@@ -333,8 +336,16 @@ impl Buffer {
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
-        let rope = Rope::from_reader(BufReader::new(File::open(path)?))?;
-        Ok(Self::from_rope(rope, Some(path.to_path_buf())))
+        Self::open_as(path, None)
+    }
+
+    /// Open `path` decoded as `enc`, or in the encoding detected from its bytes when `None`
+    /// (valid UTF-8 streams in without a copy; binary files are refused).
+    pub fn open_as(path: &Path, enc: Option<crate::encoding::TextEncoding>) -> io::Result<Self> {
+        let (rope, encoding) = crate::encoding::read_file(path, enc)?;
+        let mut b = Self::from_rope(rope, Some(path.to_path_buf()));
+        b.encoding = encoding;
+        Ok(b)
     }
 
     /// O(1) immutable copy of the text (ropey shares its nodes), for background workers.
@@ -694,7 +705,17 @@ impl Buffer {
 
     // ── saving ──
 
-    /// Atomic save: write a temp file next to the target, then rename over it.
+    /// The text, encoded, into a new file at `path`.
+    fn write_to_file(&self, path: &Path) -> io::Result<()> {
+        use std::io::Write;
+        let mut w = BufWriter::new(File::create(path)?);
+        crate::encoding::write_rope(&self.rope, self.encoding, &mut w)?;
+        w.flush()
+    }
+
+    /// Atomic save: write a temp file next to the target (in the buffer's encoding), then rename
+    /// over it. A failed write (a character the encoding cannot represent, a full disk) leaves
+    /// the original untouched and no temp file behind.
     pub fn save(&mut self) -> io::Result<()> {
         let Some(path) = self.path.clone() else {
             return Err(io::Error::other("buffer has no path"));
@@ -703,11 +724,9 @@ impl Buffer {
             "{}lumen-tmp",
             path.extension().map(|e| format!("{}.", e.to_string_lossy())).unwrap_or_default()
         ));
-        {
-            let mut w = BufWriter::new(File::create(&tmp)?);
-            self.rope.write_to(&mut w)?;
-            use std::io::Write;
-            w.flush()?;
+        if let Err(e) = self.write_to_file(&tmp) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
         }
         if let Ok(meta) = fs::metadata(&path) {
             let _ = fs::set_permissions(&tmp, meta.permissions());

@@ -223,6 +223,7 @@ impl App {
     /// atomic write and the follow-ups (LSP `didSave`, git gutter, disk stamp).
     pub fn save_doc(&mut self, i: usize) -> Result<(), String> {
         let warn = self.format_for_save(i);
+        self.whitespace_on_save(i);
         let Some(d) = self.docs.get_mut(i) else { return Ok(()) };
         let name = d.name.clone();
         match d.buf.save() {

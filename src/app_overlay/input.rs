@@ -258,6 +258,7 @@ impl App {
             }
             Action::SetIndent(spec) => self.set_doc_indent(&spec),
             Action::SetLang(id) => self.set_doc_language(id),
+            Action::Encoding(spec) => self.encoding_action(&spec),
             Action::WorkspaceEdit(v) => {
                 if v.get("__resolve").is_some() {
                     self.resolve_code_action(&v["__resolve"]);

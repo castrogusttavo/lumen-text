@@ -34,6 +34,8 @@ pub enum Action {
     SetIndent(String),
     /// Language of the current document (`None` = plain text).
     SetLang(Option<String>),
+    /// Encoding pickers of the current document (see `app_filefmt::encoding_action`).
+    Encoding(String),
     WorkspaceEdit(Value),
     Run(String),
     TestRunner(crate::testrun::Runner),

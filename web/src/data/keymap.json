@@ -144,6 +144,10 @@
   "id": "OpenTerminal"
  },
  {
+  "combo": "ctrl+shift+`",
+  "id": "NewTerminal"
+ },
+ {
   "combo": "ctrl+shift+[",
   "id": "Fold"
  },
@@ -226,6 +230,26 @@
  {
   "combo": "shift+alt+left",
   "id": "ShrinkSelection"
+ },
+ {
+  "combo": "ctrl+shift+alt+up",
+  "id": "ColumnSelectUp"
+ },
+ {
+  "combo": "ctrl+shift+alt+down",
+  "id": "ColumnSelectDown"
+ },
+ {
+  "combo": "ctrl+shift+alt+left",
+  "id": "ColumnSelectLeft"
+ },
+ {
+  "combo": "ctrl+shift+alt+right",
+  "id": "ColumnSelectRight"
+ },
+ {
+  "combo": "alt+j",
+  "id": "JumpTo"
  },
  {
   "combo": "ctrl+k r",

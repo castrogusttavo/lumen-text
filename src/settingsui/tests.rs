@@ -156,11 +156,11 @@ fn bottom_bar_has_one_toggle_per_optional_item_and_none_for_the_mandatory_one() 
 fn bottom_bar_order_has_one_stepper_per_right_hand_item() {
     let defs = default_settings();
     let vals = default_values();
-    assert_eq!(crate::config::STATUS_RIGHT.len(), 7);
+    assert_eq!(crate::config::STATUS_RIGHT.len(), 8);
     for (slot, id) in crate::config::STATUS_RIGHT.iter().enumerate() {
         let key = format!("status_pos_{id}");
         let def = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("missing {key}"));
-        assert!(matches!(def.kind, SettingKind::Number { min, max, step } if min == 1.0 && max == 7.0 && step == 1.0));
+        assert!(matches!(def.kind, SettingKind::Number { min, max, step } if min == 1.0 && max == 8.0 && step == 1.0));
         assert_eq!(vals[&key], json!(slot + 1), "{key} default slot");
     }
 }

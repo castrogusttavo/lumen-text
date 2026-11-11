@@ -167,6 +167,13 @@ impl App {
             // Read when the app quits / the next backup pass runs, and when a file is opened or closed.
             "hot_exit" => self.config.hot_exit = b.unwrap_or(true),
             "persistent_undo" => self.config.persistent_undo = b.unwrap_or(true),
+            "render_whitespace" => {
+                self.config.render_whitespace = crate::whitespace::normalize(v.as_str());
+                display::set_whitespace(crate::whitespace::Render::from_name(&self.config.render_whitespace));
+            }
+            // Read on the next save.
+            "trim_trailing_whitespace" => self.config.trim_trailing_whitespace = b.unwrap_or(false),
+            "insert_final_newline" => self.config.insert_final_newline = b.unwrap_or(false),
             "build_command" | "run_command" => {
                 let cmd = v.as_str().unwrap_or("").trim().to_string();
                 if key == "build_command" {

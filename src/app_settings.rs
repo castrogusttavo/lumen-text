@@ -41,7 +41,8 @@ impl App {
             "status_pos_position": c.status_rank("position"), "status_pos_indent": c.status_rank("indent"),
             "status_pos_language": c.status_rank("language"), "status_pos_terminal": c.status_rank("terminal"),
             "status_pos_debug": c.status_rank("debug"), "status_pos_git": c.status_rank("git"),
-            "status_pos_ram": c.status_rank("ram"),
+            "status_pos_ram": c.status_rank("ram"), "status_pos_encoding": c.status_rank("encoding"),
+            "status_encoding": c.status_visible("encoding"),
         });
         if let (Some(dst), Some(src)) = (v.as_object_mut(), pos.as_object()) {
             dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));

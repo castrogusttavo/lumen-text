@@ -15,6 +15,31 @@
   "id": "ReloadFile"
  },
  {
+  "label": "File: Local history",
+  "shortcut": "",
+  "id": "LocalHistory"
+ },
+ {
+  "label": "File: Local history (deleted files)",
+  "shortcut": "",
+  "id": "LocalHistoryDeleted"
+ },
+ {
+  "label": "File: Reopen with encoding…",
+  "shortcut": "",
+  "id": "ReopenWithEncoding"
+ },
+ {
+  "label": "File: Save with encoding…",
+  "shortcut": "",
+  "id": "SaveWithEncoding"
+ },
+ {
+  "label": "View: Toggle render whitespace",
+  "shortcut": "",
+  "id": "ToggleRenderWhitespace"
+ },
+ {
   "label": "File: Open…",
   "shortcut": "Ctrl+P",
   "id": "QuickOpen"
@@ -410,6 +435,26 @@
   "id": "GitUndoCommit"
  },
  {
+  "label": "Git: Worktrees…",
+  "shortcut": "",
+  "id": "GitWorktrees"
+ },
+ {
+  "label": "Git: New worktree…",
+  "shortcut": "",
+  "id": "GitWorktreeNew"
+ },
+ {
+  "label": "Git: Remove worktree…",
+  "shortcut": "",
+  "id": "GitWorktreeRemove"
+ },
+ {
+  "label": "Git: Prune worktrees",
+  "shortcut": "",
+  "id": "GitWorktreePrune"
+ },
+ {
   "label": "Markdown: Open reader beside",
   "shortcut": "Ctrl+Shift+V",
   "id": "MarkdownPreview"
@@ -538,6 +583,31 @@
   "label": "Terminal: Kill",
   "shortcut": "",
   "id": "CloseTerminal"
+ },
+ {
+  "label": "Terminal: New terminal",
+  "shortcut": "Ctrl+Shift+`",
+  "id": "NewTerminal"
+ },
+ {
+  "label": "Terminal: Split / unsplit",
+  "shortcut": "",
+  "id": "SplitTerminal"
+ },
+ {
+  "label": "Terminal: Rename…",
+  "shortcut": "",
+  "id": "RenameTerminal"
+ },
+ {
+  "label": "Terminal: Next terminal",
+  "shortcut": "",
+  "id": "NextTerminal"
+ },
+ {
+  "label": "Terminal: Previous terminal",
+  "shortcut": "",
+  "id": "PrevTerminal"
  },
  {
   "label": "Appearance: Follow system light/dark theme",
@@ -758,5 +828,30 @@
   "label": "Quit",
   "shortcut": "Ctrl+Q",
   "id": "Quit"
+ },
+ {
+  "label": "Edit: Column select up",
+  "shortcut": "Ctrl+Shift+Alt+↑",
+  "id": "ColumnSelectUp"
+ },
+ {
+  "label": "Edit: Column select down",
+  "shortcut": "Ctrl+Shift+Alt+↓",
+  "id": "ColumnSelectDown"
+ },
+ {
+  "label": "Edit: Column select left",
+  "shortcut": "Ctrl+Shift+Alt+←",
+  "id": "ColumnSelectLeft"
+ },
+ {
+  "label": "Edit: Column select right",
+  "shortcut": "Ctrl+Shift+Alt+→",
+  "id": "ColumnSelectRight"
+ },
+ {
+  "label": "Go to: Jump to…",
+  "shortcut": "Alt+J",
+  "id": "JumpTo"
  }
 ]
