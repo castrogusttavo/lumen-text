@@ -591,13 +591,13 @@
   "key": "scrollbar",
   "section": "Editor display",
   "label": "Scrollbars",
-  "help": "Show keeps the thin bars visible; Auto fades them in while you scroll or point at them; Never hides them (the wheel and keys still scroll).",
+  "help": "Never (the default) hides them (the wheel, touchpad and keys still scroll); Show keeps the thin bars visible; Auto fades them in while you scroll or point at them.",
   "kind": "choice",
   "options": [
    "show",
    "auto",
    "never"
   ],
-  "default": "show"
+  "default": "never"
  }
 ]

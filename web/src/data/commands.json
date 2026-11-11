@@ -305,6 +305,56 @@
   "id": "GitFileHistory"
  },
  {
+  "label": "Git: Create Branch…",
+  "shortcut": "",
+  "id": "GitCreateBranch"
+ },
+ {
+  "label": "Git: Delete Branch…",
+  "shortcut": "",
+  "id": "GitDeleteBranch"
+ },
+ {
+  "label": "Git: Create Tag…",
+  "shortcut": "",
+  "id": "GitCreateTag"
+ },
+ {
+  "label": "Git: Delete Tag…",
+  "shortcut": "",
+  "id": "GitDeleteTag"
+ },
+ {
+  "label": "Git: Push Tags…",
+  "shortcut": "",
+  "id": "GitPushTags"
+ },
+ {
+  "label": "Git: Create Release…",
+  "shortcut": "",
+  "id": "GitCreateRelease"
+ },
+ {
+  "label": "Git: Cherry-pick…",
+  "shortcut": "",
+  "id": "GitCherryPick"
+ },
+ {
+  "label": "Git: Continue Cherry-pick",
+  "shortcut": "",
+  "id": "GitCherryPickContinue"
+ },
+ {
+  "label": "Git: Abort Cherry-pick",
+  "shortcut": "",
+  "id": "GitCherryPickAbort"
+ },
+ {
+  "label": "Git: Undo Last Commit",
+  "shortcut": "",
+  "id": "GitUndoCommit"
+ },
+ {
   "label": "Markdown: Open reader beside",
   "shortcut": "Ctrl+Shift+V",
   "id": "MarkdownPreview"
