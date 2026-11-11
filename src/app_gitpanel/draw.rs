@@ -177,6 +177,12 @@ impl App {
     /// Height of the force-push / strategy card for a panel `w` px wide (text wrapped, buttons in rows).
     pub(super) fn gp_measure_prompt(&mut self, gp: &mut GitPanel, w: i32) {
         if gp.force.is_none() && !gp.strategy_ask {
+            if let Some(a) = gp.card() {
+                let lines = wrap_lines(&mut self.tx, &a.text, w - 32, 6).len() as i32;
+                let widths: Vec<i32> = a.buttons.iter().map(|b| self.tx.ui_width(&b.label, false) + 18).collect();
+                let rows = button_rows(&widths, w - 20, 4).len() as i32;
+                gp.prompt_h = 8 + lines * STRIP_LINE + 6 + rows * 28 + 4;
+            }
             return;
         }
         let text = gp.force.map_or(STRATEGY_TEXT, ForceWhy::text);
@@ -190,7 +196,7 @@ impl App {
     /// Draw the force-push / strategy card; true when one was drawn.
     pub(super) fn gp_draw_card(&mut self, cv: &mut Canvas, gp: &mut GitPanel, area: Rect) -> bool {
         if gp.force.is_none() && !gp.strategy_ask {
-            return false;
+            return self.gp_draw_ask(cv, gp, area);
         }
         let c = self.theme.chrome;
         let strong = c.tab_active_fg;
@@ -220,6 +226,38 @@ impl App {
                     c.accent_text
                 };
                 right -= self.gp_text_btn(cv, gp, right, y, label, hit, tint) + 4;
+            }
+            k += n;
+        }
+        true
+    }
+
+    /// Draw the confirmation card (`GitPanel::card`); true when there is one.
+    pub(super) fn gp_draw_ask(&mut self, cv: &mut Canvas, gp: &mut GitPanel, area: Rect) -> bool {
+        let Some(a) = gp.card() else { return false };
+        let c = self.theme.chrome;
+        if a.warn {
+            cv.fill(Rect::new(area.x, area.y, 3, area.h), c.error.with_alpha(0xc0));
+        }
+        let lines = wrap_lines(&mut self.tx, &a.text, area.w - 32, 6);
+        for (i, l) in lines.iter().enumerate() {
+            self.tx.draw_ui(cv, area.x + 16, area.y + 6 + i as i32 * STRIP_LINE, l, c.tab_active_fg, area, false);
+        }
+        let widths: Vec<i32> = a.buttons.iter().map(|b| self.tx.ui_width(&b.label, false) + 18).collect();
+        let rows = button_rows(&widths, area.w - 20, 4);
+        let first_y = area.y + 6 + lines.len() as i32 * STRIP_LINE + 6;
+        let mut k = 0;
+        for (ri, n) in rows.iter().enumerate() {
+            let y = first_y + ri as i32 * 28;
+            let mut right = area.right() - 10;
+            for i in (k..k + n).rev() {
+                let b = &a.buttons[i];
+                let tint = match b.tone {
+                    Tone::Accent => c.accent_text,
+                    Tone::Danger => c.error,
+                    Tone::Quiet => c.tab_inactive_fg,
+                };
+                right -= self.gp_text_btn(cv, gp, right, y, &b.label, Hit::Ask(i), tint) + 4;
             }
             k += n;
         }
@@ -426,8 +464,27 @@ impl App {
         }
         y += MSG_H + 8;
 
+        // "Undo last commit" on the right of the Amend row (only the last one, never during a
+        // merge / rebase / cherry-pick).
+        let mut undo_w = 0;
+        if gp.can_undo && !gp.amend && gp.state == RepoState::Clean {
+            let label = "Undo last commit";
+            let lw = self.tx.ui_width(label, false) + 18 + 20;
+            if area.w - 24 - lw > 150 {
+                let r = Rect::new(area.right() - 12 - lw, y + 2, lw, 24);
+                let hov = self.hv(r);
+                if hov {
+                    cv.fill_round(r, 8, strong.with_alpha(0x1c));
+                }
+                let tint = if hov { strong } else { dim };
+                self.tx.icon(cv, "ui/undo", r.x + 8, r.y + 4, 16, tint, r);
+                self.tx.draw_ui(cv, r.x + 28, r.y + 3, label, tint, r, false);
+                gp.hits.push((r, Hit::UndoLast));
+                undo_w = lw + 6;
+            }
+        }
         // Amend checkbox.
-        let am = Rect::new(area.x + 12, y, area.w - 24, AMEND_H);
+        let am = Rect::new(area.x + 12, y, area.w - 24 - undo_w, AMEND_H);
         let ah = self.hv(am);
         if ah {
             cv.fill_round(am, 8, strong.with_alpha(0x12));
@@ -533,7 +590,31 @@ impl App {
                     let subj = fit(&mut self.tx, &subj, r.w - 44, open);
                     self.tx.draw_ui(cv, r.x + 32, y + 7, &subj, strong, vis, open);
                     let meta = format!("{}  ·  {}  ·  {}", e.short, e.author, git::ago((now - e.ts).max(0)));
-                    let meta = fit(&mut self.tx, &meta, r.w - 44, false);
+                    // Tags as small pills at the end of the second line (at most half of it).
+                    let tags = gp.tags.get(&e.hash).cloned().unwrap_or_default();
+                    let mut pill_right = r.right() - 10;
+                    let pill_min = r.x + 32 + (r.w - 44) / 2;
+                    for t in &tags {
+                        let label = fit(&mut self.tx, t, 120, false);
+                        let pw = self.tx.ui_width(&label, false) * 12 / 13 + 14;
+                        if pill_right - pw < pill_min {
+                            break;
+                        }
+                        let pr = Rect::new(pill_right - pw, y + 27, pw, 18);
+                        cv.fill_round_clip(pr, 8, c.accent.with_alpha(0x2e), vis);
+                        self.tx.draw_ui_sized(
+                            cv,
+                            pr.x + 7,
+                            pr.y + 1,
+                            &label,
+                            c.accent_text,
+                            pr.intersect(&vis),
+                            false,
+                            12.0,
+                        );
+                        pill_right -= pw + 4;
+                    }
+                    let meta = fit(&mut self.tx, &meta, pill_right - (r.x + 32) - 4, false);
                     self.tx.draw_ui_sized(cv, r.x + 32, y + 28, &meta, dim, vis, false, 12.0);
                     gp.hits.push((r.intersect(&vis), Hit::Commit(i)));
                 }

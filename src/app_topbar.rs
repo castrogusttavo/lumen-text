@@ -59,6 +59,8 @@ pub enum Entry {
     Project(PathBuf, bool),
     OpenProject,
     Branch(Branch),
+    /// "New branch…" at the top of the branch menu (prefilled with what was typed).
+    NewBranch,
     /// Open the folder being browsed as the project.
     UseDir(PathBuf),
     Up(PathBuf),
@@ -79,6 +81,8 @@ pub struct TopMenu {
     pub dir: PathBuf,
     /// Rows drawn last frame, for the mouse.
     pub rows: Vec<(Rect, usize)>,
+    /// Delete buttons of local branches drawn last frame: (button, branch).
+    pub trash: Vec<(Rect, String)>,
     pub now: i64,
 }
 
@@ -215,6 +219,7 @@ impl TopMenu {
             scroll: 0,
             dir,
             rows: Vec::new(),
+            trash: Vec::new(),
             now: now_secs(),
         };
         m.refilter();
@@ -240,7 +245,7 @@ impl TopMenu {
                 }
             };
             match e {
-                Entry::UseDir(_) | Entry::Up(_) => lead.push(i),
+                Entry::UseDir(_) | Entry::Up(_) | Entry::NewBranch => lead.push(i),
                 Entry::OpenProject => trail.push(i),
                 Entry::Project(p, recent) => {
                     if !searching {
@@ -399,7 +404,8 @@ impl App {
                 if branches.is_empty() {
                     return self.say("no branches (is the folder a git repository?)");
                 }
-                let entries = branches.into_iter().map(Entry::Branch).collect();
+                let entries =
+                    std::iter::once(Entry::NewBranch).chain(branches.into_iter().map(Entry::Branch)).collect();
                 self.overlay = Overlay::TopMenu(Box::new(TopMenu::new(kind, anchor, entries, self.root.clone())));
             }
             MenuKind::Browse => {
@@ -458,6 +464,7 @@ impl App {
         }
 
         let mut rows = Vec::new();
+        let mut trash = Vec::new();
         // Mid-glide: rows shift up by a fraction of a row, one more shows at the bottom, all clipped.
         let off = self.region_off(Reg::TopMenu, ROW);
         let lclip = Rect::new(r.x, top, r.w, MAX_ROWS as i32 * ROW + 10);
@@ -484,6 +491,14 @@ impl App {
                     self.tx.icon(cv, "ui/folder_open", rr.x + 12, iy, 16, c.accent, rr);
                     self.tx.draw_ui(cv, rr.x + 38, ly, "Open folder…", c.accent_text, rr, false);
                 }
+                Entry::NewBranch => {
+                    self.tx.icon(cv, "ui/git_branch_plus", rr.x + 12, iy, 16, c.accent, rr);
+                    let q = m.field.text.trim();
+                    let label =
+                        if q.is_empty() { "New branch…".to_string() } else { format!("Create branch “{q}”…") };
+                    let label = fit(&mut self.tx, &label, rr.w - 60);
+                    self.tx.draw_ui(cv, rr.x + 38, ly, &label, c.accent_text, rr, false);
+                }
                 Entry::UseDir(p) => {
                     self.tx.icon(cv, "ui/check", rr.x + 12, iy, 16, c.accent, rr);
                     let label = format!("Open “{}” as a project", project_name(p));
@@ -506,13 +521,25 @@ impl App {
                     self.tx.draw_ui(cv, rr.x + 38, ly, &name, name_col, rr, b.current);
                     let used = self.tx.ui_width(&name, b.current);
                     let dx = rr.x + 38 + used + 12;
-                    let end = rr.right() - if b.current { 34 } else { 12 };
+                    // Local branches other than the current one get a delete button on the
+                    // highlighted row (it asks before deleting).
+                    let deletable = !b.remote && !b.current;
+                    let end = rr.right() - if b.current || (deletable && k == m.sel) { 40 } else { 12 };
                     self.tx.draw_ui(cv, dx, ly, "|", dim.with_alpha(0x70), rr, false);
                     let info = format!("{}, {}, {}", b.author, git::ago((m.now - b.when).max(0)), b.subject);
                     let info = fit(&mut self.tx, &info, end - (dx + 16));
                     self.tx.draw_ui(cv, dx + 16, ly, &info, dim, rr, false);
                     if b.current {
                         self.tx.icon(cv, "ui/check", rr.right() - 28, iy, 16, c.accent, rr);
+                    } else if deletable && k == m.sel {
+                        let tr = Rect::new(rr.right() - 34, y + (ROW - 26) / 2, 26, 26);
+                        let (mx, my) = self.mouse;
+                        let hot = tr.contains(mx, my);
+                        if hot {
+                            cv.fill_round_clip(tr, 8, c.error.with_alpha(0x2a), lclip);
+                        }
+                        self.tx.icon(cv, "ui/trash", tr.x + 5, tr.y + 5, 16, if hot { c.error } else { dim }, rr);
+                        trash.push((tr.intersect(&lclip), b.name.clone()));
                     }
                 }
             }
@@ -522,6 +549,7 @@ impl App {
             self.tx.draw_ui(cv, r.x + 16, top + 10, "No results", dim, r, false);
         }
         m.rows = rows;
+        m.trash = trash;
         let (total, pos) = (m.filtered.len() as f64, m.scroll as f64);
         self.overlay = Overlay::TopMenu(m);
         if total > MAX_ROWS as f64 {
@@ -532,6 +560,12 @@ impl App {
 
     pub fn topmenu_mouse(&mut self, x: f64, y: f64) -> bool {
         let Overlay::TopMenu(m) = &mut self.overlay else { return false };
+        if let Some((_, name)) = m.trash.iter().find(|(r, _)| r.contains(x, y)) {
+            let name = name.clone();
+            self.overlay = Overlay::None;
+            self.git_ask_delete_branch(&name);
+            return true;
+        }
         if let Some((_, k)) = m.rows.iter().find(|(r, _)| r.contains(x, y)) {
             m.sel = *k;
             self.topmenu_accept();
@@ -621,6 +655,7 @@ impl App {
             Entry::OpenProject => self.open_topmenu(MenuKind::Browse, m.anchor),
             Entry::Up(p) | Entry::Dir(p) => self.overlay = Overlay::TopMenu(Box::new(browse_menu(m.anchor, p))),
             Entry::Branch(b) => self.checkout_branch(b, &m.entries),
+            Entry::NewBranch => self.git_new_branch(None, m.field.text.trim()),
         }
     }
 

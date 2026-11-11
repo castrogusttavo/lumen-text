@@ -35,6 +35,7 @@ impl App {
             if gp.confirm.take().is_some()
                 || gp.publish.take().is_some()
                 || gp.force.take().is_some()
+                || gp.ask.take().is_some()
                 || std::mem::take(&mut gp.strategy_ask)
             {
             } else if gp.msg_focus && gp.tab == Tab::Changes && self.diff.is_none() {
@@ -156,8 +157,21 @@ impl App {
     }
 
     /// Right click on the Pull button: choose how pulls integrate (merge / rebase / ff-only).
+    /// On a History row: the commit menu (cherry-pick, copy hash, branch / tag here, undo).
     pub fn gitpanel_right_click(&mut self, x: f64, y: f64) -> bool {
         let Some(gp) = self.gitpanel.as_mut() else { return false };
+        if let Some(Hit::Commit(i)) = gp.hit_at(x, y)
+            && gp.top.is_some()
+            && let Some(e) = gp.commits.get(i)
+        {
+            let c = CommitRef { hash: e.hash.clone(), head: i == 0 };
+            if let Some(k) = gp.rows().iter().position(|r| *r == Row::Commit(i)) {
+                gp.cursor = k;
+            }
+            gp.focused = true;
+            self.git_open_commit_menu(c, (x as i32, y as i32));
+            return true;
+        }
         if gp.top.is_none() || gp.job.is_some() || gp.hit_at(x, y) != Some(Hit::Pull) {
             return false;
         }
@@ -183,6 +197,9 @@ impl App {
         let Some(mut gp) = self.gitpanel.take() else { return false };
         let p = self.gitpanel_rect();
         let inside = p.contains(x, y);
+        // Card buttons run once the panel is back in place (they may reopen or refresh it).
+        let mut deferred: Option<GitAct> = None;
+        let mut undo = false;
         if !inside {
             gp.focused = false;
             gp.msg_focus = false;
@@ -268,6 +285,11 @@ impl App {
                 Some(Hit::ForceNo) => gp.force = None,
                 Some(Hit::Strategy(st)) => self.gp_pull_with(&mut gp, st),
                 Some(Hit::StrategyNo) => gp.strategy_ask = false,
+                Some(Hit::Ask(i)) => {
+                    deferred = gp.card().and_then(|a| a.buttons.get(i).map(|b| b.act.clone()));
+                    gp.ask = None;
+                }
+                Some(Hit::UndoLast) => undo = true,
                 Some(Hit::JobCancel) => {
                     if let Some(j) = gp.job.as_mut() {
                         j.cancel();
@@ -295,6 +317,12 @@ impl App {
             self.focus = crate::app::Focus::Editor;
         } else {
             self.gitpanel = Some(gp);
+        }
+        if let Some(act) = deferred {
+            self.git_act(act);
+        }
+        if undo {
+            self.git_undo_commit();
         }
         inside
     }

@@ -211,6 +211,11 @@ pub fn act_hint(act: Act) -> Option<&'static str> {
         Act::CloseAll => "Closes all tabs except pinned ones",
         Act::TogglePin => "Pinned tabs stay on the left and survive “Close All”",
         Act::Markdown => "Shows the rendered text beside the editor",
+        Act::CherryPick => "Applies this commit's changes on top of the current branch (git cherry-pick)",
+        Act::BranchHere => "Creates a branch at this commit and switches to it",
+        Act::TagHere => "Tags this commit (annotated when you give a message)",
+        Act::UndoCommit => "Removes the last commit and keeps its changes staged (git reset --soft HEAD~1)",
+        Act::CopyHash => return None,
         Act::NewFile | Act::NewFolder | Act::Rename | Act::CloseTab => return None,
     })
 }

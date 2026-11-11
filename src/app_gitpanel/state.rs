@@ -41,6 +41,10 @@ pub enum Hit {
     /// A pull strategy button of the chooser card, and its "Cancel".
     Strategy(PullStrategy),
     StrategyNo,
+    /// Button `n` of the confirmation card (`GitPanel::card`).
+    Ask(usize),
+    /// "Undo last commit" next to the Amend checkbox.
+    UndoLast,
 }
 
 /// Why the force-push card is showing.
@@ -161,6 +165,14 @@ pub struct GitPanel {
     pub strategy_ask: bool,
     /// Height of the card above, measured at the last draw (it depends on the width).
     pub prompt_h: i32,
+    /// Confirmation card (delete branch / tag, release, undo a published commit…).
+    pub ask: Option<Ask>,
+    /// Merge / rebase / cherry-pick in progress, as of the last refresh.
+    pub state: RepoState,
+    /// HEAD has a parent, so "Undo last commit" makes sense.
+    pub can_undo: bool,
+    /// Commit hash -> its tags (pills on the History rows).
+    pub tags: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl GitPanel {
@@ -204,8 +216,13 @@ impl GitPanel {
             force: None,
             strategy_ask: false,
             prompt_h: PROMPT_H,
+            ask: None,
+            state: RepoState::Clean,
+            can_undo: false,
+            tags: std::collections::HashMap::new(),
         };
         p.refresh();
+        p.tags = p.top.as_deref().map(tag_map).unwrap_or_default();
         p
     }
 
@@ -221,6 +238,10 @@ impl GitPanel {
             Some(t) => gitsync::info(t),
             None => SyncInfo::default(),
         };
+        (self.state, self.can_undo) = match &self.top {
+            Some(t) => (repo_state(t), git_run(t, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_ok()),
+            None => (RepoState::Clean, false),
+        };
         self.confirm = None;
         let n = self.rows().len();
         self.cursor = self.cursor.min(n.saturating_sub(1));
@@ -235,7 +256,7 @@ impl GitPanel {
     pub fn strip_h(&self) -> i32 {
         if self.publish.is_some() {
             PROMPT_H
-        } else if self.force.is_some() || self.strategy_ask {
+        } else if self.force.is_some() || self.strategy_ask || self.card().is_some() {
             self.prompt_h.max(PROMPT_H)
         } else if self.job.is_some() {
             STRIP_LINE + 10
@@ -281,6 +302,7 @@ impl GitPanel {
         self.files.clear();
         self.open_file = None;
         self.scroll[1] = 0.0;
+        self.tags = self.top.as_deref().map(tag_map).unwrap_or_default();
         if self.tab == Tab::History {
             self.load_more();
         }

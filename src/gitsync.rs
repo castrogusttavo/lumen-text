@@ -8,8 +8,12 @@ use crate::app_gitpanel::git_run;
 use std::{
     io::Read,
     path::Path,
-    process::{Command, Stdio},
-    sync::mpsc::{Receiver, Sender, channel},
+    process::{Child, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        mpsc::{Receiver, Sender, channel},
+    },
     time::Instant,
 };
 
@@ -156,6 +160,45 @@ pub enum Op {
         remote: String,
         branch: String,
     },
+    /// `push <remote> refs/tags/<tag>`, or every tag (`--tags`) when `tag` is None.
+    PushTags {
+        remote: String,
+        tag: Option<String>,
+    },
+    /// `push <remote> --delete <refname>`: a branch or a tag on the remote.
+    DeleteRemote {
+        remote: String,
+        refname: String,
+    },
+    /// GitHub release through the `gh` CLI: the tag is pushed first, then
+    /// `gh release create <tag> --verify-tag …` publishes the release.
+    Release(ReleasePlan),
+}
+
+/// Everything a release is published with (the confirmation card shows all of it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleasePlan {
+    /// Remote the tag is pushed to before the release is created.
+    pub remote: String,
+    /// `owner/repo` on GitHub (`gh --repo`).
+    pub slug: String,
+    pub tag: String,
+    pub title: String,
+    /// Release notes; None = `--generate-notes` (GitHub writes them from the merged PRs / commits).
+    pub notes: Option<String>,
+}
+
+/// Arguments of `gh` for a release.
+pub fn release_args(p: &ReleasePlan) -> Vec<String> {
+    let mut v: Vec<String> = ["release", "create", &p.tag, "--repo", &p.slug, "--verify-tag", "--title", &p.title]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    match p.notes.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => v.extend(["--notes".to_string(), n.to_string()]),
+        None => v.push("--generate-notes".into()),
+    }
+    v
 }
 
 impl Op {
@@ -165,6 +208,9 @@ impl Op {
             Op::Fetch => "Fetch",
             Op::Pull | Op::PullWith(_) => "Pull",
             Op::Push | Op::ForcePush | Op::Publish { .. } => "Push",
+            Op::PushTags { .. } => "Push tags",
+            Op::DeleteRemote { .. } => "Delete on remote",
+            Op::Release(_) => "Release",
         }
     }
 
@@ -175,6 +221,9 @@ impl Op {
             Op::Push => "Pushing",
             Op::ForcePush => "Force pushing",
             Op::Publish { .. } => "Publishing",
+            Op::PushTags { .. } => "Pushing tags",
+            Op::DeleteRemote { .. } => "Deleting on remote",
+            Op::Release(_) => "Publishing release",
         }
     }
 
@@ -185,6 +234,9 @@ impl Op {
             Op::Push => "Push complete",
             Op::ForcePush => "Force push complete",
             Op::Publish { .. } => "Branch published",
+            Op::PushTags { .. } => "Tags pushed",
+            Op::DeleteRemote { .. } => "Deleted on the remote",
+            Op::Release(_) => "Release published",
         }
     }
 }
@@ -207,6 +259,20 @@ pub fn args_for(op: &Op, pull_configured: bool) -> Vec<String> {
             v.extend([remote.clone(), branch.clone()]);
             v
         }
+        Op::PushTags { remote, tag: Some(t) } => s(&["push", "--progress", remote, &format!("refs/tags/{t}")]),
+        Op::PushTags { remote, tag: None } => s(&["push", "--progress", remote, "--tags"]),
+        Op::DeleteRemote { remote, refname } => s(&["push", "--progress", remote, "--delete", refname]),
+        // The git step of a release: make sure the tag is on the remote (`--verify-tag` needs it).
+        Op::Release(p) => s(&["push", "--progress", &p.remote, &format!("refs/tags/{}", p.tag)]),
+    }
+}
+
+/// The programs a job runs, one after the other, each only if the previous one succeeded.
+pub fn steps_for(op: &Op, pull_configured: bool) -> Vec<(&'static str, Vec<String>)> {
+    let git = ("git", args_for(op, pull_configured));
+    match op {
+        Op::Release(p) => vec![git, ("gh", release_args(p))],
+        _ => vec![git],
     }
 }
 
@@ -325,6 +391,12 @@ pub fn summarize(op: &Op, stdout: &str, stderr: &[String]) -> String {
             "Pull complete (rebase)".into()
         }
         Op::Publish { remote, branch } => format!("Branch published: {remote}/{branch}"),
+        Op::PushTags { .. } if err.contains("Everything up-to-date") => "Tags already on the remote".into(),
+        // gh prints the address of the new release.
+        Op::Release(p) => match stdout.lines().map(str::trim).rfind(|l| l.starts_with("http")) {
+            Some(url) => format!("Release {} published: {url}", p.tag),
+            None => format!("Release {} published", p.tag),
+        },
         _ => op.done().to_string(),
     }
 }
@@ -339,23 +411,28 @@ pub enum Msg {
     Done(Result<String, Fail>),
 }
 
-/// A git command running on a worker thread.
+/// A git command (or a short chain of them, see [`steps_for`]) running on a worker thread.
 pub struct Job {
     pub op: Op,
     pub started: Instant,
     pub rx: Receiver<Msg>,
     /// Last progress line git printed.
     pub progress: String,
-    pid: u32,
+    /// Process (group) of the step running now.
+    pid: Arc<AtomicU32>,
     pub cancelled: bool,
+    /// Tells the worker not to start the next step.
+    stop: Arc<AtomicBool>,
 }
 
 impl Job {
     /// Stop the command (the whole process group: ssh / credential helpers included).
     pub fn cancel(&mut self) {
-        if self.pid != 0 && !self.cancelled {
+        let pid = self.pid.load(Ordering::SeqCst);
+        if pid != 0 && !self.cancelled {
             self.cancelled = true;
-            crate::tasks::kill_group(self.pid as i32);
+            self.stop.store(true, Ordering::SeqCst);
+            crate::tasks::kill_group(pid as i32);
         }
     }
 
@@ -381,18 +458,20 @@ fn finish(tx: &Sender<Msg>, wake: &(dyn Fn() + Send + Sync), r: Result<String, F
     wake();
 }
 
-/// Start `op` in the repository at `top`. `wake` is called after every message so the event loop
-/// redraws. git never prompts: no terminal (new session) and `GIT_TERMINAL_PROMPT=0`.
-pub fn spawn(top: &Path, op: Op, wake: crate::lsp::Wake) -> Job {
-    let (tx, rx) = channel();
-    let pull_configured = git_run(top, &["config", "--get", "pull.rebase"]).is_ok()
-        || git_run(top, &["config", "--get", "pull.ff"]).is_ok();
-    let args = args_for(&op, pull_configured);
-    let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(top)
-        .args(&args)
+/// One step of a job: never prompts (no terminal: new session; `GIT_TERMINAL_PROMPT=0`,
+/// `GH_PROMPT_DISABLED=1`), output piped.
+fn step_command(program: &str, top: &Path, args: &[String]) -> Command {
+    let mut cmd = Command::new(program);
+    if program == "git" {
+        cmd.arg("-C").arg(top);
+    } else {
+        cmd.current_dir(top);
+    }
+    cmd.args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env("NO_COLOR", "1")
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -408,75 +487,114 @@ pub fn spawn(top: &Path, op: Op, wake: crate::lsp::Wake) -> Job {
     }
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW
-    let mut job =
-        Job { op: op.clone(), started: Instant::now(), rx, progress: String::new(), pid: 0, cancelled: false };
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            finish(&tx, &*wake, Err(Fail { kind: FailKind::Other, text: format!("git: {e}") }));
-            return job;
-        }
-    };
-    job.pid = child.id();
+    cmd
+}
+
+/// Wait for `child`, streaming its stderr as progress: (succeeded, killed by a signal, stdout,
+/// stderr lines without the progress noise).
+fn drain(mut child: Child, tx: &Sender<Msg>, wake: &(dyn Fn() + Send + Sync)) -> (bool, bool, String, Vec<String>) {
     let (mut out, mut err) = (child.stdout.take(), child.stderr.take());
-    std::thread::spawn(move || {
-        let out_thread = std::thread::spawn(move || {
-            let mut s = String::new();
-            if let Some(o) = out.as_mut() {
-                let mut b = Vec::new();
-                let _ = o.read_to_end(&mut b);
-                s = String::from_utf8_lossy(&b).into_owned();
-            }
-            s
-        });
-        let mut lines: Vec<String> = Vec::new();
-        let mut buf = [0u8; 4096];
-        let mut carry = Vec::new();
-        if let Some(e) = err.as_mut() {
-            loop {
-                match e.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        carry.extend_from_slice(&buf[..n]);
-                        // Only complete lines (ending in \r or \n) are reported.
-                        if let Some(cut) = carry.iter().rposition(|b| *b == b'\r' || *b == b'\n') {
-                            let chunk = String::from_utf8_lossy(&carry[..=cut]).into_owned();
-                            carry.drain(..=cut);
-                            for l in split_progress(&chunk) {
-                                let _ = tx.send(Msg::Progress(l.clone()));
-                                lines.push(l);
-                            }
-                            wake();
+    let out_thread = std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(o) = out.as_mut() {
+            let mut b = Vec::new();
+            let _ = o.read_to_end(&mut b);
+            s = String::from_utf8_lossy(&b).into_owned();
+        }
+        s
+    });
+    let mut lines: Vec<String> = Vec::new();
+    let mut buf = [0u8; 4096];
+    let mut carry = Vec::new();
+    if let Some(e) = err.as_mut() {
+        loop {
+            match e.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    carry.extend_from_slice(&buf[..n]);
+                    // Only complete lines (ending in \r or \n) are reported.
+                    if let Some(cut) = carry.iter().rposition(|b| *b == b'\r' || *b == b'\n') {
+                        let chunk = String::from_utf8_lossy(&carry[..=cut]).into_owned();
+                        carry.drain(..=cut);
+                        for l in split_progress(&chunk) {
+                            let _ = tx.send(Msg::Progress(l.clone()));
+                            lines.push(l);
                         }
+                        wake();
                     }
                 }
             }
         }
-        lines.extend(split_progress(&String::from_utf8_lossy(&carry)));
-        let status = child.wait();
-        let stdout = out_thread.join().unwrap_or_default();
-        let ok = status.as_ref().is_ok_and(|s| s.success());
-        // Progress percentages are noise in an error message.
-        let keep: Vec<String> = lines
-            .into_iter()
-            .filter(|l| {
-                !l.contains("% (") && !l.starts_with("remote: Counting") && !l.starts_with("remote: Compressing")
-            })
-            .collect();
-        let res = if ok {
-            Ok(summarize(&op, &stdout, &keep))
-        } else {
-            let mut f = classify(&keep);
-            #[cfg(unix)]
-            let killed = status.as_ref().is_ok_and(|s| std::os::unix::process::ExitStatusExt::signal(s).is_some());
-            #[cfg(not(unix))]
-            let killed = false;
-            if killed {
-                f = Fail { kind: FailKind::Cancelled, text: "Cancelled".into() };
+    }
+    lines.extend(split_progress(&String::from_utf8_lossy(&carry)));
+    let status = child.wait();
+    let stdout = out_thread.join().unwrap_or_default();
+    let ok = status.as_ref().is_ok_and(|s| s.success());
+    #[cfg(unix)]
+    let killed = status.as_ref().is_ok_and(|s| std::os::unix::process::ExitStatusExt::signal(s).is_some());
+    #[cfg(not(unix))]
+    let killed = false;
+    // Progress percentages are noise in an error message.
+    let keep: Vec<String> = lines
+        .into_iter()
+        .filter(|l| !l.contains("% (") && !l.starts_with("remote: Counting") && !l.starts_with("remote: Compressing"))
+        .collect();
+    (ok, killed, stdout, keep)
+}
+
+/// Start `op` in the repository at `top`. `wake` is called after every message so the event loop
+/// redraws. Nothing ever prompts (see [`step_command`]). A multi-step op stops at the first failure.
+pub fn spawn(top: &Path, op: Op, wake: crate::lsp::Wake) -> Job {
+    let (tx, rx) = channel();
+    let pull_configured = git_run(top, &["config", "--get", "pull.rebase"]).is_ok()
+        || git_run(top, &["config", "--get", "pull.ff"]).is_ok();
+    let mut steps = steps_for(&op, pull_configured).into_iter();
+    let (pid, stop) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicBool::new(false)));
+    let job = Job {
+        op: op.clone(),
+        started: Instant::now(),
+        rx,
+        progress: String::new(),
+        pid: pid.clone(),
+        cancelled: false,
+        stop: stop.clone(),
+    };
+    let Some((program, args)) = steps.next() else {
+        finish(&tx, &*wake, Ok(summarize(&op, "", &[])));
+        return job;
+    };
+    let mut child = match step_command(program, top, &args).spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            finish(&tx, &*wake, Err(Fail { kind: FailKind::Other, text: format!("{program}: {e}") }));
+            return job;
+        }
+    };
+    pid.store(child.id(), Ordering::SeqCst);
+    let top = top.to_path_buf();
+    std::thread::spawn(move || {
+        loop {
+            let (ok, killed, stdout, keep) = drain(child, &tx, &*wake);
+            if !ok {
+                let f =
+                    if killed { Fail { kind: FailKind::Cancelled, text: "Cancelled".into() } } else { classify(&keep) };
+                return finish(&tx, &*wake, Err(f));
             }
-            Err(f)
-        };
-        finish(&tx, &*wake, res);
+            let Some((program, args)) = steps.next() else {
+                return finish(&tx, &*wake, Ok(summarize(&op, &stdout, &keep)));
+            };
+            if stop.load(Ordering::SeqCst) {
+                return finish(&tx, &*wake, Err(Fail { kind: FailKind::Cancelled, text: "Cancelled".into() }));
+            }
+            child = match step_command(program, &top, &args).spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    let text = format!("{program}: {e}");
+                    return finish(&tx, &*wake, Err(Fail { kind: FailKind::Other, text }));
+                }
+            };
+            pid.store(child.id(), Ordering::SeqCst);
+        }
     });
     job
 }
@@ -759,6 +877,62 @@ mod tests {
         let e = wait(spawn(&a, Op::Pull, noop())).unwrap_err();
         assert_eq!(e.kind, FailKind::Diverged, "{e:?}");
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn tags_and_branches_are_pushed_and_deleted_on_a_local_remote() {
+        let base = tmp("tagsremote");
+        let (remote, a) = (base.join("remote.git"), base.join("a"));
+        init(&remote, true);
+        init(&a, false);
+        git_run(&a, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+        commit_file(&a, "f.txt", "one\n", "first");
+        git_run(&a, &["tag", "v1"]).unwrap();
+        git_run(&a, &["tag", "v2"]).unwrap();
+        git_run(&a, &["branch", "feat"]).unwrap();
+        let has = |r: &str| git_run(&remote, &["show-ref", "--verify", "--quiet", r]).is_ok();
+
+        let one = Op::PushTags { remote: "origin".into(), tag: Some("v1".into()) };
+        assert_eq!(args_for(&one, false), ["push", "--progress", "origin", "refs/tags/v1"]);
+        assert_eq!(wait(spawn(&a, one.clone(), noop())).unwrap(), "Tags pushed");
+        assert!(has("refs/tags/v1") && !has("refs/tags/v2"), "only the chosen tag");
+        assert_eq!(wait(spawn(&a, one, noop())).unwrap(), "Tags already on the remote");
+        let all = Op::PushTags { remote: "origin".into(), tag: None };
+        assert_eq!(args_for(&all, false), ["push", "--progress", "origin", "--tags"]);
+        wait(spawn(&a, all, noop())).unwrap();
+        assert!(has("refs/tags/v2"));
+
+        let del = Op::DeleteRemote { remote: "origin".into(), refname: "refs/tags/v1".into() };
+        assert_eq!(args_for(&del, false), ["push", "--progress", "origin", "--delete", "refs/tags/v1"]);
+        assert_eq!(wait(spawn(&a, del, noop())).unwrap(), "Deleted on the remote");
+        assert!(!has("refs/tags/v1"));
+        git_run(&a, &["push", "-q", "origin", "feat"]).unwrap();
+        assert!(has("refs/heads/feat"));
+        wait(spawn(&a, Op::DeleteRemote { remote: "origin".into(), refname: "refs/heads/feat".into() }, noop()))
+            .unwrap();
+        assert!(!has("refs/heads/feat"));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn release_runs_after_the_tag_push_and_reports_the_address() {
+        let p = ReleasePlan {
+            remote: "origin".into(),
+            slug: "o/r".into(),
+            tag: "v1".into(),
+            title: "One".into(),
+            notes: Some("n".into()),
+        };
+        let op = Op::Release(p);
+        let steps = steps_for(&op, false);
+        assert_eq!(steps.iter().map(|s| s.0).collect::<Vec<_>>(), ["git", "gh"]);
+        assert_eq!(steps_for(&Op::Fetch, false).len(), 1);
+        assert_eq!(
+            summarize(&op, "https://github.com/o/r/releases/tag/v1\n", &[]),
+            "Release v1 published: https://github.com/o/r/releases/tag/v1"
+        );
+        assert_eq!(summarize(&op, "", &[]), "Release v1 published");
+        assert_eq!((op.label(), op.busy()), ("Release", "Publishing release"));
     }
 
     #[test]
