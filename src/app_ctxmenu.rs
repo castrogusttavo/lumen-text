@@ -300,6 +300,8 @@ pub enum Target {
     Tab(usize),
     /// A commit row of the Git panel's History tab.
     Commit(crate::app_gitpanel::CommitRef),
+    /// Changed files of the Git panel (the selection, or the file right-clicked).
+    GitFiles(Vec<PathBuf>),
     /// The text of the active document.
     Editor,
 }
@@ -330,6 +332,10 @@ pub enum Act {
     BranchHere,
     TagHere,
     UndoCommit,
+    Checkout,
+    Revert,
+    /// Changed files of the Git panel: stash them.
+    StashFiles,
     /// Run a palette command by id (the editor's menu).
     Run(&'static str),
 }
@@ -465,13 +471,22 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
             sep(),
             item(Act::Run("Format"), "Format Document", "ui/text_snippet", "Shift+Alt+F"),
         ],
+        Target::GitFiles(v) => vec![
+            item(Act::StashFiles, if v.len() == 1 { "Stash File…" } else { "Stash Selected Files…" }, "ui/archive", ""),
+            sep(),
+            item(Act::CopyPath, "Copy Path", "hugeicons/link", ""),
+        ],
         Target::Commit(c) => {
             let mut v = vec![
-                item(Act::CherryPick, "Cherry-pick", "ui/git_commit", ""),
-                item(Act::CopyHash, "Copy Hash", "hugeicons/copy", ""),
+                item(Act::Checkout, "Checkout", "ui/git_branch", ""),
                 sep(),
                 item(Act::BranchHere, "Create Branch Here…", "ui/git_branch_plus", ""),
                 item(Act::TagHere, "Create Tag Here…", "ui/hash", ""),
+                sep(),
+                item(Act::CherryPick, "Cherry-pick", "ui/git_commit", ""),
+                item(Act::Revert, "Revert", "ui/rotate_ccw", ""),
+                sep(),
+                item(Act::CopyHash, "Copy Hash", "hugeicons/copy", ""),
             ];
             if c.head {
                 v.extend([sep(), item(Act::UndoCommit, "Undo Last Commit", "ui/undo", "")]);
@@ -749,6 +764,7 @@ impl App {
             Target::Multi(v) => v.first().cloned(),
             Target::Tab(i) => self.docs.get(*i).and_then(|d| d.path()).map(Path::to_path_buf),
             Target::Commit(_) => None,
+            Target::GitFiles(v) => v.first().cloned(),
             Target::Editor => self.docs.get(self.active).and_then(|d| d.path()).map(Path::to_path_buf),
         }
     }
@@ -817,6 +833,9 @@ impl App {
         }
         if let Target::Commit(c) = t {
             return self.git_commit_menu_act(act, c);
+        }
+        if let (Target::GitFiles(paths), Act::StashFiles) = (&t, act) {
+            return self.git_stash_files(paths);
         }
         if let Act::Run(id) = act {
             self.run_bound(id);
@@ -942,7 +961,15 @@ impl App {
                     self.hist_list(&p);
                 }
             }
-            Act::CherryPick | Act::CopyHash | Act::BranchHere | Act::TagHere | Act::UndoCommit | Act::Run(_) => {}
+            Act::CherryPick
+            | Act::CopyHash
+            | Act::BranchHere
+            | Act::TagHere
+            | Act::UndoCommit
+            | Act::Checkout
+            | Act::Revert
+            | Act::StashFiles
+            | Act::Run(_) => {}
         }
     }
 

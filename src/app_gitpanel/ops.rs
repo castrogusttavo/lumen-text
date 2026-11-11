@@ -73,6 +73,7 @@ impl App {
         self.ai_hide();
         self.refresh_git_status();
         let mut gp = Box::new(GitPanel::new(&self.root));
+        gp.wake = Some(self.wake());
         // A command that kept running while the panel was closed is shown again.
         gp.job = self.gitbg.detached.take();
         self.gitpanel = Some(gp);
@@ -107,6 +108,8 @@ impl App {
         self.root.hash(&mut h);
         let gitdir = gp.top.clone().unwrap_or_else(|| self.root.clone()).join(".git");
         mtime(&gitdir.join("index")).hash(&mut h);
+        // Stashes pushed or dropped elsewhere (a terminal) show up too.
+        mtime(&gitdir.join("logs").join("refs").join("stash")).hash(&mut h);
         let sig = h.finish();
         let hist =
             mtime(&gitdir.join("logs").join("HEAD")) as u64 ^ (mtime(&gitdir.join("HEAD")) as u64).rotate_left(7);
@@ -360,6 +363,10 @@ impl App {
     /// Per-event hook (`App::tick`): collect the finished command and keep the elapsed counter alive.
     pub fn gitpanel_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
         let Some(mut gp) = self.gitpanel.take() else { return };
+        // A page of history arrived from the worker (it woke the event loop).
+        if gp.poll_history() && gp.tab == Tab::History {
+            self.request_redraw();
+        }
         if let Some(job) = gp.job.as_mut() {
             let before = job.progress.len();
             match job.poll() {
@@ -463,7 +470,7 @@ impl App {
         gp.open_file = None;
         // Another commit may have been collapsed above this one: re-find it and bring the commit
         // together with its files into view.
-        if let Some(k) = gp.rows().iter().position(|r| *r == Row::Commit(i)) {
+        if let Some(k) = gp.index_of(Row::Commit(i)) {
             gp.cursor = k;
             let view = self.gitpanel_rect().h - gp.chrome_h();
             gp.reveal_span(k, k + gp.files.len(), view);
@@ -481,7 +488,9 @@ impl App {
             Row::File(i) => self.gp_open_diff_change(gp, i),
             Row::Commit(i) => self.gp_toggle_commit(gp, i),
             Row::CFile(j) => self.gp_open_diff_commit(gp, j),
-            Row::Header(_) => {}
+            Row::Stash(i) => self.gp_toggle_stash(gp, i),
+            Row::SFile(j) => self.gp_open_diff_stash(gp, j),
+            Row::Header(_) | Row::StashHead | Row::NoChanges => {}
         }
     }
 }

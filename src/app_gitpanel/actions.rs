@@ -32,11 +32,11 @@ pub struct Ask {
     pub buttons: Vec<AskBtn>,
 }
 
-fn btn(label: impl Into<String>, act: GitAct, tone: Tone) -> AskBtn {
+pub(super) fn btn(label: impl Into<String>, act: GitAct, tone: Tone) -> AskBtn {
     AskBtn { label: label.into(), act, tone }
 }
 
-fn cancel() -> AskBtn {
+pub(super) fn cancel() -> AskBtn {
     btn("Cancel", GitAct::Dismiss, Tone::Quiet)
 }
 
@@ -71,6 +71,36 @@ pub enum GitAct {
     },
     /// Worktree cards (see `app_worktree`).
     Worktree(crate::app_worktree::WtAct),
+    /// Open the stash prompt for the selected files (or everything).
+    StashStart,
+    /// `git stash push` (with `--include-untracked` when `untracked`; only `paths` when given).
+    Stash {
+        message: String,
+        paths: Vec<String>,
+        untracked: bool,
+    },
+    /// `git stash apply` / `pop` of the stash whose commit is `sha`.
+    StashApply {
+        sha: String,
+        pop: bool,
+    },
+    /// Ask before dropping a stash, then drop it.
+    StashDropAsk {
+        sha: String,
+    },
+    StashDrop {
+        sha: String,
+    },
+    /// `git switch <target>`, or `git switch --detach <target>` when `detach`.
+    Checkout {
+        target: String,
+        detach: bool,
+    },
+    /// Prompt for a new branch at this commit.
+    NewBranchAt(String),
+    RevertContinue,
+    RevertAbortAsk,
+    RevertAbort,
 }
 
 /// Text prompts of the git features (`PromptKind::Git`).
@@ -101,6 +131,12 @@ pub enum GitAsk {
     },
     /// Worktree prompts (see `app_worktree`).
     Worktree(crate::app_worktree::WtAsk),
+    /// Optional message of a new stash of `paths` (everything when empty); `untracked` None =
+    /// ask when untracked files are involved.
+    StashMessage {
+        paths: Vec<String>,
+        untracked: Option<bool>,
+    },
 }
 
 /// Picker choices of the git features (`Action::Git`).
@@ -115,6 +151,10 @@ pub enum GitPick {
     CherryPick(String),
     /// Worktree pickers (see `app_worktree`).
     Worktree(crate::app_worktree::WtPick),
+    /// A stash of the "Stashes…" picker (its commit hash).
+    Stash(String),
+    /// Switch to this local branch.
+    Checkout(String),
 }
 
 /// A commit row of the History tab, as the context menu sees it.
@@ -123,6 +163,8 @@ pub struct CommitRef {
     pub hash: String,
     /// It is the checked-out commit (only it can be undone).
     pub head: bool,
+    /// Local branches pointing at it, other than the checked-out one ("Checkout" switches to them).
+    pub branches: Vec<String>,
 }
 
 /// The card shown while a cherry-pick waits for its conflicts to be resolved.
@@ -133,6 +175,34 @@ pub fn cherry_card() -> Ask {
         buttons: vec![
             btn("Continue", GitAct::CherryContinue, Tone::Accent),
             btn("Abort…", GitAct::CherryAbortAsk, Tone::Danger),
+        ],
+    }
+}
+
+/// The card shown while a revert waits for its conflicts to be resolved.
+pub fn revert_card() -> Ask {
+    Ask {
+        text: "Revert in progress: resolve the conflicting files and stage them, then Continue. Abort puts the branch back where it was.".into(),
+        warn: false,
+        buttons: vec![
+            btn("Continue", GitAct::RevertContinue, Tone::Accent),
+            btn("Abort…", GitAct::RevertAbortAsk, Tone::Danger),
+        ],
+    }
+}
+
+/// Card offering a detached checkout of a commit no local branch points at.
+pub fn detached_card(hash: &str) -> Ask {
+    let short = &hash[..hash.len().min(7)];
+    Ask {
+        text: format!(
+            "No local branch points at {short}. Check it out as a detached HEAD? Commits made there belong to no branch until you create one."
+        ),
+        warn: false,
+        buttons: vec![
+            btn("Checkout detached", GitAct::Checkout { target: hash.to_string(), detach: true }, Tone::Accent),
+            btn("Create branch here…", GitAct::NewBranchAt(hash.to_string()), Tone::Accent),
+            cancel(),
         ],
     }
 }
@@ -213,13 +283,18 @@ pub fn release_card(plan: ReleasePlan, new_tag_at: Option<String>) -> Ask {
 impl GitPanel {
     /// The card to show: an explicit question, else the cherry-pick-in-progress card.
     pub fn card(&self) -> Option<Ask> {
-        self.ask.clone().or_else(|| (self.state == RepoState::CherryPick && self.job.is_none()).then(cherry_card))
+        self.ask.clone().or_else(|| match self.state {
+            _ if self.job.is_some() => None,
+            RepoState::CherryPick => Some(cherry_card()),
+            RepoState::Revert => Some(revert_card()),
+            _ => None,
+        })
     }
 }
 
 impl App {
     /// Repository of the project, or a message saying there is none.
-    fn git_top(&mut self) -> Option<PathBuf> {
+    pub(super) fn git_top(&mut self) -> Option<PathBuf> {
         let top = git::toplevel(&self.root);
         if top.is_none() {
             self.say("This folder is not a git repository");
@@ -239,7 +314,7 @@ impl App {
     }
 
     /// HEAD, refs or files moved: refresh everything that shows them.
-    fn git_refs_changed(&mut self, files_too: bool) {
+    pub(super) fn git_refs_changed(&mut self, files_too: bool) {
         self.refresh_git_status();
         self.sync_docs_with_head();
         if files_too {
@@ -283,7 +358,7 @@ impl App {
         self.request_redraw();
     }
 
-    fn git_prompt(&mut self, ask: GitAsk, title: impl Into<String>, text: &str) {
+    pub(super) fn git_prompt(&mut self, ask: GitAsk, title: impl Into<String>, text: &str) {
         self.overlay = Overlay::Prompt(Prompt::new(PromptKind::Git(ask), title.into(), TextField::with(text)));
         self.request_redraw();
     }
@@ -520,6 +595,7 @@ impl App {
                 self.git_ask(release_card(plan, new_tag_at));
             }
             GitAsk::Worktree(w) => self.worktree_answer(&top, w, text),
+            GitAsk::StashMessage { paths, untracked } => self.git_stash_message(&top, paths, untracked, text),
         }
     }
 
@@ -545,6 +621,53 @@ impl App {
             }
             GitPick::CherryPick(hash) => self.git_cherry_pick(&hash),
             GitPick::Worktree(w) => self.worktree_pick(&top, w),
+            GitPick::Stash(sha) => self.git_stash_show(&sha),
+            GitPick::Checkout(branch) => self.git_act(GitAct::Checkout { target: branch, detach: false }),
+        }
+    }
+
+    /// "Checkout" in the commit menu: switch to the local branch at that commit (choose when
+    /// there are several), else offer a detached checkout.
+    pub fn git_checkout_commit(&mut self, c: &CommitRef) {
+        match c.branches.len() {
+            0 if c.head => self.say("That commit is already checked out"),
+            0 => self.git_ask(detached_card(&c.hash)),
+            1 => self.git_act(GitAct::Checkout { target: c.branches[0].clone(), detach: false }),
+            _ => {
+                let items: Vec<Item> = c
+                    .branches
+                    .iter()
+                    .map(|b| Item {
+                        label: b.clone(),
+                        detail: "git switch".into(),
+                        action: Action::Git(GitPick::Checkout(b.clone())),
+                    })
+                    .collect();
+                self.overlay = Overlay::Picker(choice_picker("Checkout branch…", items, 0));
+            }
+        }
+    }
+
+    /// "Revert" in the commit menu: a new commit undoing this one.
+    pub fn git_revert(&mut self, hash: &str) {
+        let Some(top) = self.git_top() else { return };
+        let short = &hash[..hash.len().min(7)];
+        match revert_commit(&top, hash) {
+            Ok(line) => {
+                self.git_refs_changed(true);
+                self.git_report(format!("Reverted {short}: {line}"), true);
+            }
+            Err(CherryFail::Conflict) => {
+                self.git_refs_changed(true);
+                if self.gitpanel.is_none() {
+                    self.open_git_panel();
+                }
+                self.git_report(
+                    format!("Revert of {short} stopped on conflicts: resolve the marked files, stage them and Continue (or Abort)"),
+                    false,
+                );
+            }
+            Err(CherryFail::Other(e)) => self.git_report(format!("Revert: {e}"), false),
         }
     }
 
@@ -587,6 +710,8 @@ impl App {
             Act::BranchHere => self.git_new_branch(Some(c.hash), ""),
             Act::TagHere => self.git_new_tag(Some(c.hash)),
             Act::UndoCommit => self.git_undo_commit(),
+            Act::Checkout => self.git_checkout_commit(&c),
+            Act::Revert => self.git_revert(&c.hash),
             _ => {}
         }
     }
@@ -679,6 +804,59 @@ impl App {
                 self.git_start_job(Op::Release(plan));
             }
             GitAct::Worktree(w) => self.worktree_act(&top, w),
+            GitAct::StashStart => {
+                let paths = self.stash_targets();
+                self.git_stash_start(paths, None);
+            }
+            GitAct::Stash { message, paths, untracked } => self.git_stash_run(&top, &message, paths, untracked),
+            GitAct::StashApply { sha, pop } => self.git_stash_apply(&top, &sha, pop),
+            GitAct::StashDropAsk { sha } => match list_stashes(&top).into_iter().find(|e| e.sha == sha) {
+                Some(e) => self.git_ask(stash_drop_card(&e)),
+                None => self.git_report("That stash no longer exists", false),
+            },
+            GitAct::StashDrop { sha } => match stash_drop(&top, &sha) {
+                Ok(m) => {
+                    self.git_refs_changed(false);
+                    self.git_report(m, true);
+                }
+                Err(e) => self.git_report(format!("git stash drop: {e}"), false),
+            },
+            GitAct::Checkout { target, detach } => {
+                let r = if detach { checkout_detached(&top, &target) } else { switch_branch(&top, &target) };
+                match r {
+                    Ok(m) => {
+                        self.git_refs_changed(true);
+                        self.git_report(m, true);
+                    }
+                    Err(e) => self.git_report(format!("git switch: {e}"), false),
+                }
+            }
+            GitAct::NewBranchAt(hash) => self.git_new_branch(Some(hash), ""),
+            GitAct::RevertContinue => match revert_continue(&top) {
+                Ok(m) => {
+                    self.git_refs_changed(true);
+                    self.git_report(m, true);
+                }
+                Err(e) => {
+                    self.git_refs_changed(false);
+                    self.git_report(format!("Revert --continue: {e}"), false);
+                }
+            },
+            GitAct::RevertAbortAsk => self.git_ask(Ask {
+                text: "Abort the revert? The conflict resolutions made so far are thrown away and the branch goes back to where it was.".into(),
+                warn: true,
+                buttons: vec![
+                    btn("Abort revert", GitAct::RevertAbort, Tone::Danger),
+                    btn("Keep resolving", GitAct::Dismiss, Tone::Quiet),
+                ],
+            }),
+            GitAct::RevertAbort => match revert_abort(&top) {
+                Ok(m) => {
+                    self.git_refs_changed(true);
+                    self.git_report(m, true);
+                }
+                Err(e) => self.git_report(format!("Revert --abort: {e}"), false),
+            },
         }
     }
 }

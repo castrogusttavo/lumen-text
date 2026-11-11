@@ -1,13 +1,18 @@
 //! Git panel docked on the right: two tabs.
 //!   * "Changes": changed files grouped as Staged / Unstaged / Untracked (checkbox =
 //!     stage/unstage, click = side-by-side diff against HEAD, trash = discard with a second click
-//!     to confirm) and a multi-line commit message box (Ctrl+Enter commits).
-//!   * "History": `git log` loaded a page at a time while scrolling; a click on a commit
-//!     expands its files and shows the first file's diff.
+//!     to confirm), Ctrl / Shift + click to select files, a multi-line commit message box
+//!     (Ctrl+Enter commits), and the stashes (stash all / the selected files, apply, pop, drop,
+//!     and their files with the side-by-side diff).
+//!   * "History": the commit graph (lanes, merges, branch / tag / HEAD labels) of every branch,
+//!     streamed a page at a time from a worker thread and drawn row by row for the visible part
+//!     only; a click on a commit expands its files and shows the first file's diff, a right click
+//!     opens the commit menu (checkout, branch / tag here, cherry-pick, revert, copy hash).
 //!
-//! Modules: `logic` (parsers, git calls) is plain code covered by unit tests against real temporary
-//! repositories; the message box is a `crate::textarea::TextArea`; `state` is the panel model;
-//! `ops`, `input` and `draw` are the App glue.
+//! Modules: `logic`, `refs`, `stash` and `graph` (parsers, git calls, lane assignment) are plain
+//! code covered by unit tests against real temporary repositories; the message box is a
+//! `crate::textarea::TextArea`; `state` and `history` are the panel model; `ops`, `input`,
+//! `draw`, `draw_graph`, `actions` and `stash_ui` are the App glue.
 
 use crate::{
     app::{App, KeyIn},
@@ -35,15 +40,26 @@ use winit::{
 
 mod actions;
 mod draw;
+mod draw_graph;
+mod graph;
+mod history;
 mod input;
 mod logic;
 mod ops;
 mod refs;
+mod stash;
+mod stash_ui;
 mod state;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_graph;
 
 pub use actions::*;
+pub use graph::*;
+pub use history::*;
 pub use logic::*;
 pub use refs::*;
+pub use stash::*;
+pub use stash_ui::*;
 pub use state::*;

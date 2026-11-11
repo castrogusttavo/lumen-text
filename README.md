@@ -67,6 +67,8 @@ and no GPU driver:
   existing branch (default `<repo>/../<repo>-worktrees/<branch>`, see `git_worktree_dir`) in the background; open it in
   this window (each project keeps its own session) or in a new window; remove (asks, and asks again before forcing a
   dirty one) and prune. The branch chip shows a worktree icon when the project is a linked worktree
+- Stashes in the panel: stash everything or the selected files (Ctrl / Shift + click; untracked files on request), apply, pop, drop, view a stash's files and diff; a stash that conflicts opens the conflicting file. Palette: `Git: Stash…`, `Git: Stash Pop`, `Git: Stashes…`
+- Commit graph in the History tab: coloured lanes of every branch with merge and fork curves, branch / tag / HEAD labels, streamed a page at a time (smooth on 100k-commit repositories); right click a commit to check it out, branch or tag from it, cherry-pick, revert or copy its hash
 
 **Debugging**
 - Breakpoints in the gutter, step over/into/out, stack, variables and output tab
