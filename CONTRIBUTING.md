@@ -36,6 +36,20 @@ cargo test --release name_of_test             # one test: much cheaper while ite
 
 Use `--release`: debug builds of the tokenizer and renderer are far too slow for the tests.
 
+### Language servers, end to end
+
+`src/lsp_matrix.rs` opens a small project with a deliberate error in every supported language (C, C++, C#, Java,
+Kotlin, TypeScript, JavaScript, CSS/SCSS/Less, HTML, JSON, YAML, TOML, Python, Go, Rust, Ruby, PHP, Lua, Zig, Bash,
+Markdown, Dockerfile) through the real servers and checks that each starts and answers with diagnostics, hover and
+completion. It needs the servers installed, so it is `#[ignore]`d in the normal run; CI runs it in the job
+"Language servers".
+
+```sh
+tools/install-lsp-servers.sh                  # pinned servers into ~/.local/share/lumen-text/lsp (Linux)
+cargo test --release lsp_matrix -- --ignored --nocapture --test-threads=1
+LUMEN_LSP_ONLY=java,csharp cargo test --release lsp_matrix -- --ignored --nocapture --test-threads=1
+```
+
 ### Icons and HugeIcons Pro
 
 You do **not** need any key to build, test or send a pull request: without HugeIcons Pro the app uses the bundled

@@ -1,6 +1,7 @@
 //! Real language servers, end to end through the editor (`#[ignore]`d: needs the servers installed).
 //!
-//! `cargo test --release lsp_matrix -- --ignored --nocapture --test-threads=1`
+//! `tools/install-lsp-servers.sh`, then `cargo test --release lsp_matrix -- --ignored --nocapture --test-threads=1`
+//! (CI job "Language servers")
 //! (`LUMEN_LSP_ONLY=java,csharp` runs a subset; `LUMEN_LSP_FILES=a.py:b.go` opens real files instead).
 //!
 //! Each case writes a tiny project with a deliberate error, opens the file in a headless `App` with
