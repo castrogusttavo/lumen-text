@@ -86,6 +86,9 @@ pub struct Config {
     /// Hide what `.gitignore` (and the global ignore file and `.git/info/exclude`) ignores in the explorer;
     /// off shows those entries dimmed.
     pub explorer_hide_gitignored: bool,
+    /// AI panel: a desktop notification when a session waits for you or is done while Lumen is
+    /// not focused.
+    pub ai_notifications: bool,
     /// The user's `language_servers` object, kept verbatim (see `lspreg`); `Null` when absent.
     pub language_servers: Value,
     /// Buffer font: the code editor and everything monospace (terminal, output, diffs, code blocks).
@@ -277,6 +280,7 @@ impl Default for Config {
             markdown_remote_images: true,
             test_watch: false,
             explorer_hide_gitignored: true,
+            ai_notifications: true,
             language_servers: Value::Null,
             buffer_font_family: String::new(),
             buffer_font_size: 14.0,
@@ -531,6 +535,7 @@ impl Config {
             run_command: v["run_command"].as_str().unwrap_or("").trim().to_string(),
             markdown_remote_images: v["markdown_remote_images"].as_bool().unwrap_or(true),
             explorer_hide_gitignored: v["explorer_hide_gitignored"].as_bool().unwrap_or(true),
+            ai_notifications: v["ai_notifications"].as_bool().unwrap_or(true),
             language_servers: v.get("language_servers").cloned().unwrap_or(Value::Null),
             scroll_speed: v["scroll_speed"].as_f64().map_or(1.0, |f| f as f32).clamp(0.1, 5.0),
             ui_scale: v["ui_scale"].as_f64().map_or(0.0, |f| f as f32).clamp(0.0, 4.0),
@@ -604,6 +609,7 @@ impl Config {
         v["build_command"] = json!(self.build_command);
         v["run_command"] = json!(self.run_command);
         v["markdown_remote_images"] = json!(self.markdown_remote_images);
+        v["ai_notifications"] = json!(self.ai_notifications);
         v["sidebar_width"] = json!(self.sidebar_width);
         v["git_worktree_dir"] = json!(self.git_worktree_dir);
         v["scrollbar_v"] = json!(2);
@@ -693,6 +699,7 @@ mod tests {
             run_command: "./out/app --port 8080".into(),
             markdown_remote_images: false,
             explorer_hide_gitignored: false,
+            ai_notifications: false,
             language_servers: json!({"rust": {"command": "ra"}}),
             buffer_font_family: "JetBrains Mono".into(),
             buffer_font_size: 17.0,

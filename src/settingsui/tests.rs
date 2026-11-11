@@ -189,7 +189,8 @@ fn sections_in_order_and_visible_by_section() {
             "Fonts",
             "Editor display",
             "Build",
-            "Files"
+            "Files",
+            "AI"
         ]
     );
     assert_eq!(p.visible().len(), 2);

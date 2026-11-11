@@ -550,7 +550,10 @@ impl App {
                 StatusBtn::Ai => t(
                     "AI agent",
                     self.shortcut_text("AiPanel"),
-                    Some(format!("{} — click to open the AI panel", self.ai.status.label())),
+                    Some(format!(
+                        "{} — click to open the AI panel",
+                        self.ai.badge().map_or_else(|| "Agent".to_string(), |(b, _)| b)
+                    )),
                 ),
                 StatusBtn::Language => t(
                     "Change language…",

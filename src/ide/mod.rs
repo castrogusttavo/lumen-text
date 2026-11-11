@@ -5,7 +5,9 @@
 //! with `/ide`.
 //!
 //! The same listener takes plain HTTP POSTs from Claude Code's `http` hooks (`/lumen/hook/…`,
-//! bearer token), which report the agent's status more reliably than watching its output.
+//! bearer token), which report the agent's status more reliably than watching its output. Each
+//! agent the panel starts gets hook URLs ending in its own session id (`/lumen/hook/done/3`), so
+//! several sessions share one listener and their reports still reach the right one.
 //!
 //! Threads: one accepts, one per connection reads, one per connection writes (the UI thread only
 //! queues bytes, so it never blocks on a socket). Everything the editor must answer goes to the UI
@@ -67,9 +69,11 @@ pub enum Event {
         method: String,
         params: Value,
     },
-    /// A hook POST: the route after [`HOOK_PREFIX`] and the hook's JSON input.
+    /// A hook POST: the route after [`HOOK_PREFIX`], the AI panel session it names (the path's
+    /// last segment) and the hook's JSON input.
     Hook {
         route: String,
+        session: Option<u64>,
         body: Value,
     },
 }
@@ -268,13 +272,24 @@ pub fn utf16_col(line: &str, col: usize) -> usize {
     line.chars().take(col).map(char::len_utf16).sum()
 }
 
+/// Route and session of a hook path (`/lumen/hook/done/3` → `("done", Some(3))`).
+pub fn hook_route(path: &str) -> (String, Option<u64>) {
+    let rest = path.strip_prefix(HOOK_PREFIX).unwrap_or_default();
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let mut parts = rest.split('/');
+    let route = parts.next().unwrap_or_default().to_string();
+    (route, parts.next().and_then(|s| s.parse().ok()))
+}
+
 /// The `--settings` JSON that makes Claude Code report its status to us: `http` hooks posting to
 /// this server (merged with the user's own hooks — hook entries from every settings source add up).
-pub fn hook_settings(port: u16) -> String {
+/// With `session`, every URL ends in that id so the report reaches the right AI panel session.
+pub fn hook_settings(port: u16, session: Option<u64>) -> String {
+    let tail = session.map(|s| format!("/{s}")).unwrap_or_default();
     let h = |route: &str| {
         json!({
             "type": "http",
-            "url": format!("http://127.0.0.1:{port}{HOOK_PREFIX}{route}"),
+            "url": format!("http://127.0.0.1:{port}{HOOK_PREFIX}{route}{tail}"),
             "headers": { "Authorization": format!("Bearer ${HOOK_ENV}") },
             "allowedEnvVars": [HOOK_ENV],
             "timeout": 5,
@@ -385,9 +400,9 @@ fn hook(mut s: TcpStream, req: &Request, mut body: Vec<u8>, sh: &Shared) {
     body.truncate(len);
     // Answer first: the agent waits on the hook.
     respond(&mut s, "200 OK");
-    let route = req.path[HOOK_PREFIX.len()..].split(['?', '/']).next().unwrap_or_default().to_string();
+    let (route, session) = hook_route(&req.path);
     let body = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    sh.emit(Event::Hook { route, body });
+    sh.emit(Event::Hook { route, session, body });
 }
 
 fn ws_session(mut s: TcpStream, req: &Request, rest: Vec<u8>, sh: &Arc<Shared>) {

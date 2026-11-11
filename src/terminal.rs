@@ -1211,6 +1211,11 @@ impl Term {
         self.pty.write(bytes);
     }
 
+    /// The program's process id.
+    pub fn pid(&self) -> Option<u32> {
+        self.pty.pid()
+    }
+
     /// End the program (SIGHUP to its process group on Unix); its last screen stays readable.
     pub fn hangup(&mut self) {
         self.pty.hangup();

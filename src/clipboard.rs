@@ -124,6 +124,34 @@ pub fn offer_mime(desktop: &str, forced: Option<&str>) -> &'static str {
     }
 }
 
+/// What the clipboard holds, as a paste into a terminal program sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Offer {
+    /// Files copied in a file manager.
+    Files(FileList),
+    /// An image and no text: a program that reads images from the clipboard (an agent CLI on
+    /// `Ctrl+V`) has to fetch it itself.
+    Image,
+    Text(String),
+    Empty,
+}
+
+/// What a list of offered MIME types (Wayland) or targets (X11), one per line, carries:
+/// (files, an image, plain text).
+pub fn offered_kinds(types: &str) -> (bool, bool, bool) {
+    let (mut files, mut image, mut text) = (false, false, false);
+    for t in types.lines().map(str::trim) {
+        let base = t.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+        match base.as_str() {
+            URI_LIST | GNOME_FILES => files = true,
+            "text/plain" | "utf8_string" | "string" | "text" => text = true,
+            b if b.starts_with("image/") => image = true,
+            _ => {}
+        }
+    }
+    (files, image, text)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Backend {
     Wayland,
@@ -343,6 +371,26 @@ impl Clipboard {
         true
     }
 
+    /// What a paste would bring: files (from a file manager), an image without text, text, or
+    /// nothing. Where the types cannot be listed (macOS, Windows, `xsel`, no tool) it is the text.
+    pub fn offer(&mut self) -> Offer {
+        let types = typed_read(self.backend, None).and_then(|(prog, args)| {
+            let out = self.tool(prog).args(args).stderr(Stdio::null()).output().ok()?;
+            out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+        });
+        if let Some(types) = types {
+            let (files, image, text) = offered_kinds(&types);
+            if files && let Some(f) = self.get_files() {
+                return Offer::Files(f);
+            }
+            if image && !text {
+                return Offer::Image;
+            }
+        }
+        let t = self.get();
+        if t.is_empty() { Offer::Empty } else { Offer::Text(t) }
+    }
+
     /// Files another program (or this one) copied to the system clipboard.
     pub fn get_files(&mut self) -> Option<FileList> {
         let this = &*self;
@@ -471,6 +519,32 @@ mod tests {
         std::fs::write(dir.join("mime"), "text/uri-list\nx-special/gnome-copied-files\n").unwrap();
         std::fs::write(dir.join("data"), "cut\nfile:///tmp/zz").unwrap();
         assert_eq!(c.get_files(), Some(FileList { paths: vec!["/tmp/zz".into()], cut: true }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn offers_are_classified_from_the_types() {
+        assert_eq!(offered_kinds("image/png\n"), (false, true, false));
+        assert_eq!(offered_kinds("TARGETS\nUTF8_STRING\nimage/png\n"), (false, true, true));
+        assert_eq!(offered_kinds("text/plain;charset=utf-8\n"), (false, false, true));
+        assert_eq!(offered_kinds("text/html\nimage/jpeg"), (false, true, false), "HTML is not plain text");
+        assert_eq!(offered_kinds("x-special/gnome-copied-files\ntext/plain"), (true, false, true));
+        let dir = std::env::temp_dir().join(format!("lumen-fakeclip-offer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut c = Clipboard::with_fake_tools(&dir);
+        std::fs::write(dir.join("mime"), "image/png\n").unwrap();
+        std::fs::write(dir.join("data"), "\u{89}PNG").unwrap();
+        assert_eq!(c.offer(), Offer::Image, "a screenshot: the agent reads it itself");
+        std::fs::write(dir.join("mime"), "image/png\ntext/plain\n").unwrap();
+        std::fs::write(dir.join("data"), "caption").unwrap();
+        assert_eq!(c.offer(), Offer::Text("caption".into()), "text wins when there is some");
+        std::fs::write(dir.join("mime"), "text/uri-list\n").unwrap();
+        std::fs::write(dir.join("data"), "file:///tmp/a%20b.png\r\n").unwrap();
+        assert_eq!(c.offer(), Offer::Files(FileList { paths: vec!["/tmp/a b.png".into()], cut: false }));
+        let mut c = Clipboard::in_process();
+        assert_eq!(c.offer(), Offer::Empty);
+        c.set("x");
+        assert_eq!(c.offer(), Offer::Text("x".into()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

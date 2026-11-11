@@ -543,9 +543,11 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Focused(false) => {
                 self.git_bg_focus(false);
                 self.fswatch_blur();
+                self.ai_window_focus(false);
             }
             WindowEvent::Focused(true) => {
                 self.git_bg_focus(true);
+                self.ai_window_focus(true);
                 self.follow_system_theme();
                 // Open files' mtimes, the git dir and the expanded folders: refresh what moved.
                 self.fswatch_focus();

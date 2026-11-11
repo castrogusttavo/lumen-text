@@ -1177,7 +1177,7 @@ impl App {
             StatusBtn::Encoding => self.open_encoding_menu(),
             StatusBtn::Update => self.update_indicator_click(),
             StatusBtn::Build => self.build_toggle_panel(),
-            StatusBtn::Ai => self.ai_show(),
+            StatusBtn::Ai => self.ai_badge_click(),
             StatusBtn::Ram => {}
         }
         true

@@ -90,7 +90,10 @@ and no GPU driver:
 
 **AI panel**
 - Your own agent CLI (Claude Code, Gemini CLI or Codex CLI) in a panel on the right (`Ctrl+Shift+A`), sharing the slot with the Git panel (a `Git | AI` switch on top). It runs in the project folder with your environment and its own login: Lumen never handles API keys
-- Status chip (Starting / Working / Waiting for you / Done / Exited), New session / Restart / Stop, and a status bar badge when a hidden agent finishes or needs you
+- Several agents at once: one tab per session (agent icon, name, status dot), `+` starts another (pick the agent), double-click renames, middle-click or `×` closes. Each session has its own terminal, status and working folder (`AI: New session in worktree…` starts one in a git worktree)
+- Status chip (Starting / Working / Waiting for you / Done / Exited), Restart / Stop, a status bar badge summing up the sessions that finished or need you ("2 waiting"), and `Ctrl+Alt+A` to jump to the next session waiting for you
+- Desktop notification when a session waits for you or is done while Lumen is in the background (`notify-send` or D-Bus on Linux, `osascript` on macOS; once per turn; `ai_notifications`)
+- `Ctrl+V` pastes the clipboard as one bracketed paste, however long; an image is left to the agent (Claude Code reads it itself), files copied in a file manager paste as their paths
 - While the panel has the focus every key goes to the agent (`Esc` included, `Ctrl+J`, `Ctrl+B`...); `Ctrl+Shift+P`, `Ctrl+Q` and `Ctrl+Shift+A` stay with Lumen. Click the editor or press `Ctrl+1` to type in the editor again
 
 **Themes**
@@ -274,6 +277,7 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Bottom panel / terminal | `Ctrl+J` / ``Ctrl+` `` |
 | New terminal | ``Ctrl+Shift+` `` (split, rename, next / previous: command palette or the strip's buttons) |
 | AI panel: show / focus / hide | `Ctrl+Shift+A` (back to the editor: click it or `Ctrl+1`) |
+| AI: next session waiting for you | `Ctrl+Alt+A` |
 | Tests: at cursor / file / rerun / stop | `Ctrl+K T` / `Ctrl+K F` / `Ctrl+K R` / `Ctrl+K X` |
 | Tests panel: run all / re-run failed / debug at cursor | `Ctrl+K A` / `Ctrl+K E` / `Ctrl+K D` |
 | Debug: start / stop / breakpoint | `F5` / `Shift+F5` / `F9` (or click the gutter) |
@@ -345,6 +349,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `git_pull_strategy` | `""` | `"merge"`, `"rebase"` or `"ff-only"`: how Pull integrates remote commits (empty = ask when the branches diverge) |
 | `git_worktree_dir` | `""` | Folder new worktrees go in, one sub-folder per branch (`~` and `{repo}` expanded, relative = to the main worktree); empty = `<repo>/../<repo>-worktrees` |
 | `tab_width` | `4` | Columns a tab character spans (2, 4 or 8); per-file picks live in the session |
+| `ai_notifications` | `true` | Desktop notification when an AI panel session waits for you or is done while Lumen is not focused |
 | `git_panel_width` / `md_split` | `0` / `0.5` | Panel width in px (0 = automatic); Markdown source share (0.2 to 0.8) |
 
 Environment variables: `LUMEN_THEME` (path to a theme file), `LUMEN_ASSETS` (assets directory),
@@ -417,6 +422,7 @@ src/
   search.rs, replace.rs     project search (gitignore-aware walk) and the replace engine (captures, line endings, atomic writes)
   macros.rs                keyboard macros (record, replay as one undo step, macros.json)
   fuzzy.rs, snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs
+  app_aipanel/, ide/, notify.rs  AI panel sessions (agent CLIs in PTYs), Claude Code IDE bridge, desktop notifications
   script.rs                headless mode for tests and screenshots
 assets/   grammars, themes, language-manifest.json, icons, licenses
 packaging/  tarball, deb, rpm, Arch, AppImage, Flatpak scripts

@@ -174,6 +174,8 @@ impl App {
             // Read on the next save.
             "trim_trailing_whitespace" => self.config.trim_trailing_whitespace = b.unwrap_or(false),
             "insert_final_newline" => self.config.insert_final_newline = b.unwrap_or(false),
+            // Read when a session next finishes or asks.
+            "ai_notifications" => self.config.ai_notifications = b.unwrap_or(true),
             "build_command" | "run_command" => {
                 let cmd = v.as_str().unwrap_or("").trim().to_string();
                 if key == "build_command" {

@@ -27,7 +27,7 @@ impl App {
             }
             return false;
         }
-        if self.ai.term.as_ref().is_none_or(|t| !t.alive) {
+        if self.ai.term().is_none_or(|t| !t.alive) {
             // Empty state or a finished agent: Enter starts it again; anything else hands the
             // keyboard back to the editor (and still does what it does there).
             if matches!(&ev.key, Key::Named(winit::keyboard::NamedKey::Enter)) {
@@ -43,7 +43,52 @@ impl App {
         if !matches!(&ev.key, Key::Named(n) if is_modifier(*n)) {
             self.ai.on_input();
         }
+        if let Key::Character(c) = &ev.key
+            && ctrl
+            && !alt
+            && c.eq_ignore_ascii_case("v")
+        {
+            if shift {
+                let text = self.clip.get();
+                self.ai_paste_text(&text);
+            } else {
+                self.ai_paste();
+            }
+            return true;
+        }
         self.term_type(Which::Ai, ev)
+    }
+
+    /// `Ctrl+V` in the agent: files copied in a file manager paste as their paths, text as one
+    /// bracketed paste; an image (with no text) leaves the key to the agent, which reads the
+    /// clipboard itself (Claude Code and Codex attach it).
+    pub fn ai_paste(&mut self) {
+        let text = match self.clip.offer() {
+            crate::clipboard::Offer::Files(f) => {
+                let paths: Vec<String> = f.paths.iter().map(|p| paste_path(p)).collect();
+                format!("{} ", paths.join(" "))
+            }
+            crate::clipboard::Offer::Text(t) => t,
+            crate::clipboard::Offer::Image | crate::clipboard::Offer::Empty => {
+                if let Some(t) = self.ai.term_mut() {
+                    t.sel = None;
+                    t.write(&[0x16]);
+                }
+                return;
+            }
+        };
+        self.ai_paste_text(&text);
+    }
+
+    /// Paste `text` into the agent whole, as one paste (see [`paste_payload`]).
+    pub fn ai_paste_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let Some(t) = self.ai.term_mut() else { return };
+        let bytes = paste_payload(text, t.grid.bracketed_paste);
+        t.sel = None;
+        t.write(&bytes);
     }
 
     /// A press anywhere: the panel keeps the keyboard only for clicks inside it (handled by
@@ -86,7 +131,10 @@ impl App {
             Some(AiHit::TabAi) | Some(AiHit::Status) => {}
             Some(AiHit::Close) => self.ai_hide(),
             Some(AiHit::Agent) => self.ai_choose_agent(),
-            Some(AiHit::New) | Some(AiHit::Restart) => self.ai_respawn(),
+            Some(AiHit::New) => self.ai_new_session_menu(),
+            Some(AiHit::Restart) => self.ai_respawn(),
+            Some(AiHit::Session(i)) => self.ai_tab_click(i, button),
+            Some(AiHit::CloseSession(i)) => self.ai_close_session(i),
             Some(AiHit::Stop) => self.ai_stop(),
             Some(AiHit::Refresh) => {
                 self.ai_detect(true);
@@ -99,7 +147,7 @@ impl App {
             Some(AiHit::Ide) => {
                 if !self.ai.bridge.proposals.is_empty() {
                     self.ide_show_next();
-                } else if self.ai.bridge.connected() {
+                } else if self.ai_bridge_connected() {
                     self.say("Claude Code is connected: its edits open here as diffs, and it sees your selection");
                 } else {
                     self.say("Not connected yet — Claude Code connects once it starts (or run /ide in it)");
@@ -111,13 +159,34 @@ impl App {
                 }
             }
             None => {
-                let alive = self.ai.term.as_ref().is_some_and(|t| t.alive);
-                if alive && y >= (self.aipanel_rect().y + HEAD_H) as f64 {
+                let alive = self.ai.term().is_some_and(|t| t.alive);
+                if alive && y >= (self.aipanel_rect().y + self.ai_top_h()) as f64 {
                     self.term_press(Which::Ai, x, y, button);
                 }
             }
         }
         true
+    }
+
+    /// A click on session tab `i`: middle-click closes it, a second click soon after renames
+    /// it, otherwise it is shown.
+    fn ai_tab_click(&mut self, i: usize, button: u8) {
+        let Some(id) = self.ai.sessions.get(i).map(|s| s.id) else { return };
+        if button == 1 {
+            return self.ai_close_session(i);
+        }
+        if button != 0 {
+            return;
+        }
+        let now = Instant::now();
+        let double =
+            self.ai.last_tab_click.is_some_and(|(last, t)| last == id && t.elapsed().as_millis() < DOUBLE_CLICK_MS);
+        self.ai.last_tab_click = Some((id, now));
+        self.ai_activate(i);
+        if double {
+            self.ai.last_tab_click = None;
+            self.ai_rename_prompt();
+        }
     }
 
     /// Wheel over the agent's terminal.
@@ -126,7 +195,7 @@ impl App {
         if !self.ai.open || !self.aipanel_rect().contains(x, y) {
             return false;
         }
-        if self.ai.term.is_some() {
+        if self.ai.term().is_some() {
             self.term_wheel(Which::Ai, delta);
         }
         true
@@ -167,7 +236,7 @@ impl App {
         if !self.ai.open || !self.right_slot_rect().contains(x, y) {
             return None;
         }
-        let body = y >= (self.aipanel_rect().y + HEAD_H) as f64 && self.ai.term.is_some();
+        let body = y >= (self.aipanel_rect().y + self.ai_top_h()) as f64 && self.ai.term().is_some();
         Some(if body { CursorIcon::Text } else { CursorIcon::Default })
     }
 
@@ -175,8 +244,15 @@ impl App {
     pub fn aipanel_hover_target(&self) -> Option<(Rect, i32)> {
         let (x, y) = self.mouse;
         let (r, h) = self.ai.hit_at(x, y)?;
-        let active_tab = (h == AiHit::TabAi && self.ai.open) || (h == AiHit::TabGit && !self.ai.open);
-        (!active_tab && !matches!(h, AiHit::Status)).then_some((r, 8))
+        let active_tab = (h == AiHit::TabAi && self.ai.open)
+            || (h == AiHit::TabGit && !self.ai.open)
+            || h == AiHit::Session(self.ai.active);
+        let radius = match h {
+            AiHit::CloseSession(_) => 4,
+            AiHit::Session(_) => 7,
+            _ => 8,
+        };
+        (!active_tab && !matches!(h, AiHit::Status)).then_some((r, radius))
     }
 
     /// The button under the pointer, for a tooltip.
@@ -186,27 +262,44 @@ impl App {
 
     pub fn aipanel_tip(&self, h: AiHit) -> TipText {
         let keys = |id: &str| crate::app_tooltip::shortcut_in(&self.keymap.entries(), id);
-        let name = self.ai.agent.map_or("the agent", |a| a.name);
+        let name = self.ai.agent().map_or("the agent", |a| a.name);
+        let status = self.ai.cur().map_or(Status::Starting, Session::status);
         let (title, keys, detail): (String, Option<String>, Option<String>) = match h {
             AiHit::TabGit => ("Git".into(), keys("GitPanel"), Some("Changes and history".into())),
             AiHit::TabAi => (
                 "AI".into(),
                 keys("AiPanel"),
-                Some(format!("{} — {}", self.ai.agent.map_or("Agent", |a| a.name), self.ai.status.label())),
+                Some(match self.ai.badge() {
+                    Some((b, _)) => b,
+                    None => format!("{} — {}", self.ai.agent().map_or("Agent", |a| a.name), status.label()),
+                }),
             ),
             AiHit::Agent => ("Choose agent…".into(), None, Some("Claude Code, Gemini CLI or Codex CLI".into())),
             AiHit::Status => {
-                let title = self.ai.term.as_ref().map(|t| t.grid.title.clone()).unwrap_or_default();
-                (self.ai.status.label(), None, (!title.is_empty()).then_some(title))
+                let title = self.ai.term().map(|t| t.grid.title.clone()).unwrap_or_default();
+                (status.label(), None, (!title.is_empty()).then_some(title))
             }
-            AiHit::New => ("New session".into(), None, Some(format!("End this conversation and start {name} again"))),
+            AiHit::New => ("New session…".into(), keys("AiNewSession"), Some("Start another agent alongside".into())),
+            AiHit::Session(i) => match self.ai.sessions.get(i) {
+                Some(s) => (
+                    format!("{} — {}", s.name, s.status().label()),
+                    None,
+                    Some(format!("{} · {}", s.agent.name, crate::app_topbar::tilde(&s.cwd))),
+                ),
+                None => (String::new(), None, None),
+            },
+            AiHit::CloseSession(_) => (
+                "Close session".into(),
+                keys("AiCloseSession"),
+                Some("Ends the agent and everything it started".into()),
+            ),
             AiHit::Restart => {
                 ("Restart agent".into(), None, Some(format!("Relaunch {name} (picks up login or config changes)")))
             }
             AiHit::Stop => ("Stop".into(), None, Some(format!("Hang up {name} and everything it started"))),
             AiHit::Close => ("Hide panel".into(), keys("AiPanel"), Some("The agent keeps running".into())),
             AiHit::Refresh => ("Look for agents again".into(), None, None),
-            AiHit::Ide if self.ai.bridge.connected() => (
+            AiHit::Ide if self.ai_bridge_connected() => (
                 "IDE bridge — connected".into(),
                 None,
                 Some("Edits open as diffs here · the selection and diagnostics are shared".into()),
@@ -226,7 +319,11 @@ impl App {
             }
             AiHit::Install(_) => (String::new(), None, None),
         };
-        TipText { title, keys, detail, more: Vec::new() }
+        let more = match h {
+            AiHit::Session(_) => vec!["Double-click to rename · middle-click to close".to_string()],
+            _ => Vec::new(),
+        };
+        TipText { title, keys, detail, more }
     }
 }
 

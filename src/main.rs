@@ -96,6 +96,7 @@ mod mdimg;
 mod mdview;
 mod mem;
 mod minimap;
+mod notify;
 mod paths;
 mod perf;
 mod poller;

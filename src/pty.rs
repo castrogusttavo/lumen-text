@@ -89,6 +89,11 @@ mod imp {
             Ok((Pty { master, child: Some(child), pid }, Box::new(reader)))
         }
 
+        /// The program's process id (it leads its own process group).
+        pub fn pid(&self) -> Option<u32> {
+            u32::try_from(self.pid).ok()
+        }
+
         pub fn write(&mut self, bytes: &[u8]) {
             let _ = self.master.write_all(bytes);
             let _ = self.master.flush();
@@ -225,6 +230,11 @@ mod imp {
             let reader = pair.master.try_clone_reader().map_err(io::Error::other)?;
             let writer = pair.master.take_writer().map_err(io::Error::other)?;
             Ok((Pty { master: pair.master, writer, child }, reader))
+        }
+
+        /// The program's process id.
+        pub fn pid(&self) -> Option<u32> {
+            self.child.process_id()
         }
 
         pub fn write(&mut self, bytes: &[u8]) {
