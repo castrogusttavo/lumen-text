@@ -37,6 +37,7 @@ and no GPU driver:
 - Word wrap, folding, sticky scroll, indent guides, minimap, breadcrumbs, color swatches
 - Find/replace (case, regex), project search, symbols, go to line, back/forward navigation
 - Tabs, quick open (fuzzy), session restore, live reload when files change on disk (inotify)
+- **Local history**, independent of git: a snapshot on every save and right before a buffer is reloaded because another program (a formatter, `git checkout`, the AI agent) rewrote the file. *File: Local history* (also in the tab and explorer context menus) lists them ("3 minutes ago · Saved", date, size), opens a side-by-side diff of the snapshot against the buffer and restores it as one undoable edit (`r` or *Restore this version*); *File: Local history (deleted files)* brings back files that no longer exist. Stored in `$XDG_STATE_HOME/lumen-text/history` (default `~/.local/state`): identical snapshots are skipped, files over 5 MB are not kept, 50 snapshots per file and 200 MB in total (oldest pruned first)
 - Fonts: separate **interface** and **buffer** (code, terminal, diffs) fonts with a searchable picker of the installed families, weight, size, line height and ligatures, all live
 - Display options: line numbers, bookmarks (`Ctrl+F2`), breakpoint dots, scrollbars (show / auto-hide / never) and a master switch for the language servers
 - Smooth Zed-style scrolling, drag selection by word/line, Wayland and X11 clipboard, IME, fractional hi-DPI scaling
@@ -303,6 +304,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `word_wrap` / `sticky_scroll` / `indent_guides` | `false` / `true` / `true` | Editor view options |
 | `breadcrumbs` / `git_blame` | `true` / `true` | Path bar above the editor; inline blame |
 | `ram_display` | `"long"` | `"long"` (numbers) or `"short"` (a chip icon) |
+| `local_history` / `local_history_max_entries` | `true` / `50` | Keep a snapshot of a file on every save and before a reload from disk (*File: Local history*); snapshots kept per file, 1 to 1000 |
 | `explorer_hide_gitignored` | `true` | Hide what `.gitignore`, the global ignore file and `.git/info/exclude` ignore; `false` shows those entries dimmed |
 | `status_items` | `{}` | Map of bottom-bar item id to `true`/`false` (`search`, `problems`, `terminal`, `debug`, `git`, `ram`, `position`, `indent`, `language`) |
 | `status_order` | position, indent, language, terminal, debug, git, ram | Order of the right-hand bottom-bar items |

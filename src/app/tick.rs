@@ -151,6 +151,7 @@ impl App {
         self.last_disk_check = now;
         want(now + EVERY);
         let mut notes: Vec<String> = Vec::new();
+        let hist = self.hist_store();
         for d in &mut self.docs {
             let (Some(old), Some(cur)) = (d.disk_mtime, d.stat_mtime()) else { continue };
             if old == cur {
@@ -162,8 +163,14 @@ impl App {
                     d.conflict = true;
                     notes.push(format!("{} changed on disk and you have unsaved changes (Ctrl+S overwrites)", d.name));
                 }
-            } else if d.reload_from_disk().is_ok() {
-                notes.push(format!("{} reloaded (changed on disk)", d.name));
+            } else {
+                // Keep the old text in the local history before another program's version replaces it.
+                if let (Some(s), Some(p)) = (&hist, d.path()) {
+                    crate::localhist::record_buf(s, p, &d.buf, crate::localhist::Source::Reload);
+                }
+                if d.reload_from_disk().is_ok() {
+                    notes.push(format!("{} reloaded (changed on disk)", d.name));
+                }
             }
         }
         if let Some(n) = notes.pop() {

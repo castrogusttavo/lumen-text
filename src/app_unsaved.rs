@@ -231,6 +231,7 @@ impl App {
                 d.disk_mtime = d.stat_mtime();
                 d.conflict = false;
                 self.lsp_did_save(i);
+                self.hist_snapshot(i, crate::localhist::Source::Save);
                 if let Some(w) = warn {
                     self.say_for(format!("Saved {name}, but {w}"), 8);
                 }

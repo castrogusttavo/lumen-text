@@ -277,6 +277,8 @@ impl App {
                 self.set_theme(&name)
             }
             Action::GitShow(path, commit, subject) => self.open_diff_commit(&path, &commit, &subject),
+            Action::LocalHist(path, Some(file)) => self.hist_show(&path, &file),
+            Action::LocalHist(path, None) => self.hist_list(&path),
             Action::Git(p) => self.git_pick(p),
             Action::UndoBranch(n) => {
                 if let Some(d) = self.docs.get_mut(self.active)

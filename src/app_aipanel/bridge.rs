@@ -575,6 +575,7 @@ impl App {
         if let Some(i) = self.docs.iter().position(|d| d.path() == Some(path.as_path()))
             && !self.docs[i].buf.is_dirty()
         {
+            self.hist_snapshot(i, crate::localhist::Source::Reload);
             let _ = self.docs[i].reload_from_disk();
         }
         let who = self.ai.agent.map_or("The agent", |a| a.name);

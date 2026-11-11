@@ -46,6 +46,8 @@ pub enum Action {
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),
+    /// Local history of a file: one snapshot (its file name) to compare, or `None` = list them.
+    LocalHist(PathBuf, Option<String>),
     /// Branch / tag / release / cherry-pick pickers (see `app_gitpanel::actions`).
     Git(crate::app_gitpanel::GitPick),
 }

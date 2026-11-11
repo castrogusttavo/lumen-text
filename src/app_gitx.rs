@@ -39,6 +39,8 @@ pub enum DiffBtn {
     /// Accept / reject the agent's proposed changes.
     Accept,
     Reject,
+    /// Put a local-history snapshot back (see `app_localhist`).
+    Restore,
 }
 
 pub struct DiffView {
@@ -58,6 +60,8 @@ pub struct DiffView {
     /// Changes proposed by the agent over the IDE bridge (key of its pending `openDiff`): the
     /// header offers Accept / Reject instead of the hint.
     pub proposal: Option<u64>,
+    /// A local-history snapshot against the current text: the header offers Restore.
+    pub restore: Option<crate::app_localhist::Restore>,
 }
 
 impl DiffView {
@@ -75,6 +79,7 @@ impl DiffView {
             cur: 0,
             btns: Vec::new(),
             proposal: None,
+            restore: None,
         }
     }
 
@@ -267,6 +272,12 @@ impl App {
             self.diff_toggle_block(cur);
             return true;
         }
+        if matches!(key, Key::Character(c) if c.as_str() == "r")
+            && self.diff.as_ref().is_some_and(|d| d.restore.is_some())
+        {
+            self.hist_restore();
+            return true;
+        }
         let area_h = self.diff_area().h;
         let Some(dv) = self.diff.as_mut() else { return false };
         let page = (area_h / line_h() as i32 - 3).max(1) as f64;
@@ -375,6 +386,7 @@ impl App {
             DiffBtn::Flip => self.diff_flip(),
             DiffBtn::Accept => self.ide_decide(true),
             DiffBtn::Reject => self.ide_decide(false),
+            DiffBtn::Restore => self.hist_restore(),
         }
         true
     }
@@ -421,6 +433,16 @@ impl App {
             cv.fill_round(r, 7, c.accent.with_alpha(if hov { 0x40 } else { 0x24 }));
             self.tx.draw_ui(cv, r.x + 10, r.y + 3, label, c.accent_text, r, false);
             btns.push((r, DiffBtn::Flip));
+            hint_right = r.x - 10;
+        }
+        if dv.restore.is_some() {
+            let label = "Restore this version";
+            let w = self.tx.ui_width(label, false) + 20;
+            let r = Rect::new(editor.right() - 10 - w, editor.y + 3, w, head_h - 6);
+            let hov = r.contains(self.mouse.0, self.mouse.1);
+            cv.fill_round(r, 7, c.accent.with_alpha(if hov { 0x40 } else { 0x24 }));
+            self.tx.draw_ui(cv, r.x + 10, r.y + 3, label, c.accent_text, r, false);
+            btns.push((r, DiffBtn::Restore));
             hint_right = r.x - 10;
         }
         if proposal {
@@ -570,6 +592,9 @@ impl App {
         let hint = match (staging, narrow) {
             (true, false) => format!("{}   ·   Esc closes · n/p block · s stage", dv.right_name),
             (true, true) => format!("{}  ·  n/p · s", dv.right_name),
+            (false, _) if dv.restore.is_some() => {
+                format!("{}   ·   Esc closes · n next block · r restore", dv.right_name)
+            }
             (false, _) => format!("{}   ·   Esc closes · n next block", dv.right_name),
         };
         let fg = self.theme.foreground;

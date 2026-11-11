@@ -207,6 +207,7 @@ impl App {
                 d.conflict = false;
                 let idx = self.active;
                 self.lsp_did_save(idx);
+                self.hist_snapshot(idx, crate::localhist::Source::Save);
                 self.refresh_git_status();
                 match warn {
                     Some(w) => self.say_for(format!("Saved {name}, but {w}"), 8),

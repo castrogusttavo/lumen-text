@@ -59,6 +59,8 @@ impl App {
             Cmd::NextDiagnostic => self.next_diagnostic(true),
             Cmd::PrevDiagnostic => self.next_diagnostic(false),
             Cmd::ReloadFile => self.reload_active(),
+            Cmd::LocalHistory => self.open_local_history(),
+            Cmd::LocalHistoryDeleted => self.open_local_history_deleted(),
             Cmd::RestartLsp => self.restart_lsp(),
             Cmd::ShowLspLog => self.lspx_show_log(),
             Cmd::ToggleAutoImport => self.toggle_auto_import(),

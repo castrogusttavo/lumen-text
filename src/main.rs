@@ -18,6 +18,7 @@ mod app_gitx;
 mod app_hover;
 mod app_ignored;
 mod app_input;
+mod app_localhist;
 mod app_lsp;
 mod app_lspx;
 mod app_md;
@@ -66,6 +67,7 @@ mod ignore_filter;
 mod inlay;
 mod instance;
 mod keymap;
+mod localhist;
 mod lsp;
 mod lsp_guard;
 #[cfg(test)]

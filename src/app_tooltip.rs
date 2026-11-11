@@ -215,6 +215,7 @@ pub fn act_hint(act: Act) -> Option<&'static str> {
         Act::CloseAll => "Closes all tabs except pinned ones",
         Act::TogglePin => "Pinned tabs stay on the left and survive “Close All”",
         Act::Markdown => "Shows the rendered text beside the editor",
+        Act::LocalHistory => "Earlier versions of this file, kept on every save: compare and restore",
         Act::CherryPick => "Applies this commit's changes on top of the current branch (git cherry-pick)",
         Act::BranchHere => "Creates a branch at this commit and switches to it",
         Act::TagHere => "Tags this commit (annotated when you give a message)",
