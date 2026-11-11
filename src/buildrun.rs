@@ -372,9 +372,9 @@ fn dotnet(v: &mut Vec<Target>, root: &Path) {
         return;
     }
     let is_sln = |p: &PathBuf| p.extension().is_some_and(|e| e == "sln" || e == "slnx");
-    let projects: Vec<&PathBuf> = files.iter().filter(|p| !is_sln(*p)).collect();
+    let projects: Vec<&PathBuf> = files.iter().filter(|p| !is_sln(p)).collect();
     // The shallowest solution builds everything; without one, each project is a target.
-    let entries: Vec<&PathBuf> = match files.iter().find(|p| is_sln(*p)) {
+    let entries: Vec<&PathBuf> = match files.iter().find(|p| is_sln(p)) {
         Some(s) => vec![s],
         None => projects.iter().copied().take(4).collect(),
     };
