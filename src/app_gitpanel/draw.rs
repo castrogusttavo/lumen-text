@@ -117,7 +117,12 @@ impl App {
             self.gp_draw_strip(cv, &mut gp, Rect::new(p.x + 1, by + BRANCH_H, p.w - 1, strip_h));
         }
 
-        let commit_h = if gp.tab == Tab::Changes && gp.top.is_some() { COMMIT_AREA_H } else { 0 };
+        let commit_h = if gp.tab == Tab::Changes && gp.top.is_some() {
+            self.gp_msg_layout(&mut gp, p, strip_h);
+            gp.commit_area_h()
+        } else {
+            0
+        };
         let body =
             Rect::new(p.x + 1, by + BRANCH_H + strip_h, p.w - 1, (p.h - HEAD_H - BRANCH_H - strip_h - commit_h).max(0));
         if gp.top.is_none() {
@@ -413,6 +418,84 @@ impl App {
         self.region_bar(cv, crate::scrollreg::Reg::GitChanges, body, total as f64, visible, pos, 1.0, false);
     }
 
+    /// Row height of the message box (the UI line, at least `LINE`).
+    pub(super) fn gp_msg_line() -> i32 {
+        (crate::ui::ui_line().ceil() as i32).max(LINE)
+    }
+
+    /// Wrap the message at the box's inner width and size the box: 3 visual lines minimum, up
+    /// to 10 (less when the panel is short, so the changes list keeps room), then it scrolls.
+    pub(super) fn gp_msg_layout(&mut self, gp: &mut GitPanel, p: Rect, strip_h: i32) {
+        let lh = Self::gp_msg_line();
+        let inner_w = (p.w - 1) - 24 - 2 * MSG_PAD_X;
+        let tx = &mut self.tx;
+        gp.msg.layout(inner_w.max(1) as f32, &mut |s: &str| tx.ui_char_xs(s, false, None));
+        let room = p.h - HEAD_H - BRANCH_H - strip_h - COMMIT_CHROME_H - MSG_LIST_ROOM - 2 * MSG_PAD_Y;
+        let max_lines = (room / lh).clamp(MSG_MIN_LINES, MSG_MAX_LINES);
+        let lines = (gp.msg.line_count() as i32).clamp(MSG_MIN_LINES, max_lines);
+        gp.msg_box.h = lines * lh + 2 * MSG_PAD_Y;
+        gp.msg.set_view(lh as f32, (lines * lh) as f32);
+    }
+
+    /// The message box: wrapped lines (never a horizontal scroll), selection, caret, placeholder,
+    /// and soft fades at the edges while there is more text above / below.
+    fn gp_draw_msg(&mut self, cv: &mut Canvas, gp: &mut GitPanel, b: Rect) {
+        let c = self.theme.chrome;
+        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
+        cv.fill_round(b, 10, c.input_bg);
+        if gp.msg_focus {
+            cv.ring(b, 10, c.accent.with_alpha(0xa0));
+        } else if self.hv(b) {
+            cv.ring(b, 10, strong.with_alpha(0x30));
+        }
+        gp.hits.push((b, Hit::Msg));
+        let lh = Self::gp_msg_line();
+        let (ox, oy) = (b.x + MSG_PAD_X, b.y + MSG_PAD_Y);
+        let inner_w = b.w - 2 * MSG_PAD_X;
+        // Scrolled rows slide under the padding, up to 4 px from the border.
+        let clip = Rect::new(b.x + 4, b.y + 4, b.w - 8, b.h - 8);
+        // Text centred in its row.
+        let ty = ((lh as f32 - crate::ui::ui_line()) / 2.0).max(0.0).round() as i32;
+        if gp.msg.text().is_empty() {
+            let ph = fit(&mut self.tx, "Commit message (Ctrl+Enter to commit)", inner_w, false);
+            self.tx.draw_ui(cv, ox, oy + ty, &ph, dim, clip, false);
+        }
+        let scroll = gp.msg.scroll.round() as i32;
+        let row_y = |k: usize| oy + k as i32 * lh - scroll;
+        let first = (scroll / lh).max(0) as usize;
+        let last = ((scroll + b.h) / lh + 1).max(0) as usize;
+        let sel = self.theme.selection;
+        for (k, x0, x1) in gp.msg.sel_spans() {
+            if (first..=last).contains(&k) {
+                let (a, z) = (x0.round() as i32, x1.round() as i32);
+                cv.fill_clip(Rect::new(ox + a, row_y(k), (z - a).max(1), lh), sel, clip);
+            }
+        }
+        for (k, l) in gp.msg.lines().iter().enumerate().take(last + 1).skip(first) {
+            let t = gp.msg.line_text(l);
+            self.tx.draw_ui(cv, ox, row_y(k) + ty, &t, strong, clip, false);
+        }
+        if gp.msg_focus && gp.focused {
+            let (k, x) = gp.msg.caret();
+            // Spaces hanging past the wrap edge never push the caret out of the box.
+            let cx = ox + (x.round() as i32).min(inner_w + 4);
+            cv.fill_clip(Rect::new(cx, row_y(k) + 1, 1, lh - 2), strong, clip);
+        }
+        let fade = |cv: &mut Canvas, edge: i32, down: bool| {
+            for i in 0..MSG_PAD_Y {
+                let a = (255 * (MSG_PAD_Y - i) / MSG_PAD_Y) as u8;
+                let y = if down { edge + i } else { edge - 1 - i };
+                cv.fill_exact(Rect::new(b.x + 4, y, b.w - 8, 1), c.input_bg.with_alpha(a), clip);
+            }
+        };
+        if gp.msg.scroll > 0.5 {
+            fade(cv, b.y + 4, true);
+        }
+        if gp.msg.scroll < gp.msg.max_scroll() - 0.5 {
+            fade(cv, b.bottom() - 4, false);
+        }
+    }
+
     /// Message box + options + Commit button, pinned to the bottom of the panel.
     pub(super) fn gp_draw_commit_area(&mut self, cv: &mut Canvas, gp: &mut GitPanel, area: Rect) {
         let c = self.theme.chrome;
@@ -427,42 +510,11 @@ impl App {
             self.tx.draw_ui(cv, area.x + 16, y + 1, &txt, if ok { c.git_added } else { c.error }, area, false);
         }
         y += 22;
-        // Message box.
-        let b = Rect::new(area.x + 12, y, area.w - 24, MSG_H);
+        // Message box (sized by `gp_msg_layout`).
+        let b = Rect::new(area.x + 12, y, area.w - 24, gp.msg_h());
         gp.msg_box = b;
-        cv.fill_round(b, 10, c.input_bg);
-        if gp.msg_focus {
-            cv.ring(b, 10, c.accent.with_alpha(0xa0));
-        } else if self.hv(b) {
-            cv.ring(b, 10, strong.with_alpha(0x30));
-        }
-        gp.hits.push((b, Hit::Msg));
-        let inner = Rect::new(b.x + 4, b.y + 4, b.w - 8, b.h - 8);
-        let vis_lines = ((MSG_H - 16) / LINE) as usize;
-        let lines: Vec<&str> = gp.msg.text.split('\n').collect();
-        let (cl, cc) = ml_pos(&gp.msg);
-        if cl < gp.msg_top {
-            gp.msg_top = cl;
-        } else if cl >= gp.msg_top + vis_lines {
-            gp.msg_top = cl + 1 - vis_lines;
-        }
-        let cur_line = lines.get(cl).copied().unwrap_or("");
-        let prefix: String = cur_line.chars().take(cc).collect();
-        let cx = self.tx.ui_width(&prefix, false);
-        let room = inner.w - 16;
-        gp.msg_hscroll = (cx - room).max(0);
-        if gp.msg.text.is_empty() {
-            self.tx.draw_ui(cv, b.x + 12, b.y + 8, "Commit message (Ctrl+Enter to commit)", dim, inner, false);
-        }
-        for (k, l) in lines.iter().enumerate().skip(gp.msg_top).take(vis_lines) {
-            let ly = b.y + 8 + (k - gp.msg_top) as i32 * LINE;
-            self.tx.draw_ui(cv, b.x + 12 - gp.msg_hscroll, ly, l, strong, inner, false);
-        }
-        if gp.msg_focus && gp.focused {
-            let ly = b.y + 8 + (cl - gp.msg_top) as i32 * LINE;
-            cv.fill_clip(Rect::new(b.x + 12 + cx - gp.msg_hscroll, ly + 1, 1, LINE - 2), strong, inner);
-        }
-        y += MSG_H + 8;
+        self.gp_draw_msg(cv, gp, b);
+        y += b.h + 8;
 
         // "Undo last commit" on the right of the Amend row (only the last one, never during a
         // merge / rebase / cherry-pick).
@@ -503,7 +555,7 @@ impl App {
         // Option + Commit button.
         let staged = gp.staged();
         let ready =
-            !gp.msg.text.trim().is_empty() && (gp.amend || staged > 0 || (gp.include_all && !gp.changes.is_empty()));
+            !gp.msg.text().trim().is_empty() && (gp.amend || staged > 0 || (gp.include_all && !gp.changes.is_empty()));
         let label = if gp.amend { "Amend" } else { "Commit" };
         let bw = self.tx.ui_width(label, true) + 36;
         let btn = Rect::new(area.right() - 12 - bw, y, bw, 34);

@@ -5,8 +5,9 @@
 //!   * "History": `git log` loaded a page at a time while scrolling; a click on a commit
 //!     expands its files and shows the first file's diff.
 //!
-//! Modules: `logic` (parsers, git calls) and `msg` (message editing) are plain code covered by unit tests
-//! against real temporary repositories; `state` is the panel model; `ops`, `input` and `draw` are the App glue.
+//! Modules: `logic` (parsers, git calls) is plain code covered by unit tests against real temporary
+//! repositories; the message box is a `crate::textarea::TextArea`; `state` is the panel model;
+//! `ops`, `input` and `draw` are the App glue.
 
 use crate::{
     app::{App, KeyIn},
@@ -15,6 +16,7 @@ use crate::{
     git,
     gitsync::{self, Fail, FailKind, Job, Op, PullStrategy, SyncInfo},
     gitx::{self, Side},
+    textarea::{KeyAct, TextArea},
     theme::Rgba,
     ui::{Canvas, Rect, TextCtx},
 };
@@ -35,7 +37,6 @@ mod actions;
 mod draw;
 mod input;
 mod logic;
-mod msg;
 mod ops;
 mod refs;
 mod state;
@@ -44,6 +45,5 @@ mod tests;
 
 pub use actions::*;
 pub use logic::*;
-pub use msg::*;
 pub use refs::*;
 pub use state::*;

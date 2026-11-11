@@ -58,31 +58,6 @@ fn log_and_name_status_parsing() {
 }
 
 #[test]
-fn message_editing_is_multiline() {
-    let mut f = TextField::default();
-    ml_insert(&mut f, "titulo");
-    ml_insert(&mut f, "\n\ncorpo ç\r\nfim\tx");
-    assert_eq!(f.text, "titulo\n\ncorpo ç\nfim    x");
-    assert_eq!(ml_pos(&f), (3, 8));
-    ml_vertical(&mut f, -1);
-    assert_eq!(ml_pos(&f), (2, 7), "clamped to the shorter line");
-    ml_vertical(&mut f, -1);
-    assert_eq!(ml_pos(&f), (1, 0), "short line clamps the column");
-    ml_vertical(&mut f, -1);
-    assert_eq!(ml_pos(&f), (0, 0));
-    ml_vertical(&mut f, -1);
-    assert_eq!(f.cursor, 0, "up on the first line goes home");
-    ml_end(&mut f);
-    assert_eq!(ml_pos(&f), (0, 6));
-    ml_vertical(&mut f, 1);
-    ml_home(&mut f);
-    assert_eq!(ml_pos(&f), (1, 0));
-    assert!(f.backspace(), "backspace joins lines");
-    assert_eq!(f.text, "titulo\ncorpo ç\nfim    x");
-    assert_eq!(ml_index(&f, 9, 99), f.len(), "clamped to the end");
-}
-
-#[test]
 fn stage_unstage_commit_discard_in_a_real_repo() {
     let dir = tmp_repo("flow");
     std::fs::write(dir.join("a.ts"), "one\n").unwrap();
@@ -732,4 +707,94 @@ fn confirmation_cards_take_over_the_strip() {
     gp.state = RepoState::CherryPick;
     assert_eq!(gp.card(), Some(cherry_card()));
     assert!(gp.strip_h() >= PROMPT_H);
+}
+
+#[test]
+fn commit_box_wraps_scrolls_selects_all_and_commits() {
+    use crate::app_unsaved::testkit::{lock, test_app, tmp};
+    use winit::keyboard::ModifiersState;
+    let _g = lock();
+    let dir = tmp("gpbox");
+    for a in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "t@t"],
+        &["config", "user.name", "Ana"],
+        &["config", "commit.gpgsign", "false"],
+    ] {
+        git_run(&dir, a).unwrap();
+    }
+    let mut app = test_app(&dir);
+    app.size = (1200, 800);
+    app.open_git_panel();
+    let (w, h) = (1200, 800);
+    let mut px = vec![0u32; (w * h) as usize];
+    let mut frame = |app: &mut App| {
+        app.render_into(&mut Canvas { px: &mut px, w, h }, 0.016);
+    };
+    frame(&mut app);
+    let typ = |app: &mut App, s: &str| {
+        for c in s.chars() {
+            let t = c.to_string();
+            app.handle_key(&KeyIn { key: Key::Character(t.clone().into()), text: Some(t) });
+        }
+    };
+    let ctrl = |app: &mut App, key: Key| {
+        app.mods = ModifiersState::CONTROL;
+        app.handle_key(&KeyIn { key, text: None });
+        app.mods = ModifiersState::empty();
+    };
+    {
+        let gp = app.gitpanel.as_ref().unwrap();
+        assert!(gp.focused && gp.msg_focus, "the box has the focus when the panel opens");
+        assert_eq!(gp.msg_box.h, 3 * App::gp_msg_line() + 2 * MSG_PAD_Y, "three lines when empty");
+    }
+    // A long message wraps inside the box: no line is wider than it (spaces may hang).
+    let long = "feat: a commit message long enough to wrap many times inside the narrow git panel ".repeat(10);
+    typ(&mut app, &long);
+    frame(&mut app);
+    {
+        let gp = app.gitpanel.as_ref().unwrap();
+        assert_eq!(gp.msg.text(), long, "wrapping is visual only");
+        let inner = (gp.msg_box.w - 2 * MSG_PAD_X) as f32;
+        let lines = gp.msg.lines();
+        assert!(lines.len() > 10, "{} visual lines", lines.len());
+        for l in lines {
+            let t = gp.msg.line_text(l);
+            let ink = t.trim_end().chars().count();
+            assert!(l.xs[ink] <= inner + 0.5, "{t:?} is {}px wide in a {inner}px box", l.xs[ink]);
+        }
+        let lh = App::gp_msg_line();
+        assert_eq!(gp.msg_box.h, MSG_MAX_LINES * lh + 2 * MSG_PAD_Y, "the box grows up to 10 lines");
+        assert!(gp.msg.scroll > 0.0 && gp.msg.scroll == gp.msg.max_scroll(), "then scrolls to the caret");
+        let (k, _) = gp.msg.caret();
+        assert_eq!(k, lines.len() - 1);
+    }
+    // The wheel over the box scrolls the box.
+    let b = app.gitpanel.as_ref().unwrap().msg_box;
+    app.mouse = ((b.x + 20) as f64, (b.y + 20) as f64);
+    let up = winit::dpi::PhysicalPosition::new(0.0, 40.0);
+    assert!(app.gitpanel_wheel(MouseScrollDelta::PixelDelta(up)), "touchpad over the box");
+    let gp = app.gitpanel.as_ref().unwrap();
+    assert!(gp.msg.scroll < gp.msg.max_scroll(), "scrolled up: {}", gp.msg.scroll);
+    // Ctrl+A (bound to the editor's Select All) belongs to the box; typing replaces everything.
+    ctrl(&mut app, Key::Character("a".into()));
+    typ(&mut app, "fix: wrap the commit box");
+    frame(&mut app);
+    let gp = app.gitpanel.as_ref().unwrap();
+    assert!(gp.msg_focus, "Ctrl+A kept the focus in the box");
+    assert_eq!(gp.msg.text(), "fix: wrap the commit box");
+    assert_eq!(gp.msg.line_count(), 1);
+    assert_eq!(gp.msg.scroll, 0.0);
+    // Enter is a new line, Ctrl+Z undoes, Ctrl+Enter commits.
+    app.handle_key(&KeyIn { key: Key::Named(NamedKey::Enter), text: Some("\r".into()) });
+    typ(&mut app, "oops");
+    ctrl(&mut app, Key::Character("z".into()));
+    ctrl(&mut app, Key::Character("z".into()));
+    assert_eq!(app.gitpanel.as_ref().unwrap().msg.text(), "fix: wrap the commit box");
+    ctrl(&mut app, Key::Named(NamedKey::Enter));
+    let gp = app.gitpanel.as_ref().unwrap();
+    assert_eq!(gp.msg.text(), "", "the box is emptied after the commit");
+    assert_eq!(git_run(&dir, &["log", "-1", "--format=%s"]).unwrap().trim(), "fix: wrap the commit box");
+    drop(app);
+    std::fs::remove_dir_all(&dir).ok();
 }
