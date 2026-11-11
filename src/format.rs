@@ -87,6 +87,34 @@ pub fn run(f: &Formatter, text: &str) -> Result<String, String> {
     }
 }
 
+/// Does Biome's config leave `file` out (`files.includes`, ignore files)? Through stdin Biome hands
+/// an ignored file back unchanged and says nothing, so ask it about the path itself (no `--write`:
+/// nothing is touched on disk). Only asked when the stdin run changed nothing.
+pub fn biome_ignores(f: &Formatter, file: &Path) -> bool {
+    if f.name != "biome" {
+        return false;
+    }
+    let rel = file.strip_prefix(&f.cwd).unwrap_or(file);
+    let Ok(out) = Command::new(&f.bin)
+        .arg("format")
+        .arg(rel)
+        .current_dir(&f.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+    else {
+        return false;
+    };
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    reports_ignored(&text)
+}
+
+/// Biome's report for a path its configuration ignores.
+fn reports_ignored(report: &str) -> bool {
+    report.contains("provided but ignored") || report.contains("No files were processed")
+}
+
 /// The first meaningful line of a tool's stderr: info/warning notes and decoration are skipped, an
 /// explicit error line wins.
 pub fn error_line(stderr: &str) -> String {
@@ -306,5 +334,14 @@ mod tests {
         outer.cwd = base.clone();
         assert!(run(&outer, "ok\n").unwrap_err().contains("nested root"));
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn biome_ignored_report_is_recognized() {
+        // Biome 2.4 for `biome format lib/a.ts` when files.includes leaves it out.
+        let ignored = "Checked 0 files in 2ms. No fixes applied.\nformat ━━━━\n  × No files were processed in the specified paths.\n  i These paths were provided but ignored:\n  - lib/a.ts\n";
+        assert!(reports_ignored(ignored));
+        assert!(!reports_ignored("Checked 1 file in 3ms. No fixes applied.\n"));
+        assert!(!reports_ignored("Formatter would have printed the following content:\n"));
     }
 }

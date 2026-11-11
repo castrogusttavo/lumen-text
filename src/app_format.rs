@@ -29,6 +29,8 @@ pub enum Fmt {
     Failed(String),
     /// The server did not answer in time (the text is untouched).
     TimedOut(String),
+    /// The project's formatter config leaves this file out (e.g. Biome's `files.includes`).
+    Ignored(String),
     NoFormatter,
 }
 
@@ -56,6 +58,8 @@ impl App {
         if let Some(f) = crate::format::detect(&path) {
             let text = self.docs[i].buf.to_string();
             return match crate::format::run(&f, &text) {
+                // Unchanged may also mean "not one of mine": Biome says nothing about ignored files.
+                Ok(new) if new == text && crate::format::biome_ignores(&f, &path) => Fmt::Ignored(f.name.into()),
                 Ok(new) if new == text => Fmt::Same(f.name.into()),
                 Ok(new) => {
                     self.docs[i].replace_text(&new);
@@ -179,6 +183,8 @@ impl App {
             Fmt::Changed(_) | Fmt::Same(_) => None,
             Fmt::Failed(e) => Some(format!("formatting failed: {e}")),
             Fmt::TimedOut(n) => Some(format!("{n} did not answer in time, so it was saved unformatted")),
+            // Once per file: saving it again must not keep repeating it.
+            Fmt::Ignored(n) => self.fmt_told.insert(format!("ignored:{}", path.display())).then(|| ignored_msg(&n)),
             Fmt::NoFormatter => {
                 let key = crate::format::type_key(&path);
                 self.fmt_told.insert(key.clone()).then(|| no_formatter_msg(&key))
@@ -200,6 +206,7 @@ impl App {
             Fmt::Same(n) => self.say(format!("already formatted ({n})")),
             Fmt::Failed(e) => self.say_for(format!("failed to format — {e}"), 8),
             Fmt::TimedOut(n) => self.say_for(format!("{n} did not answer in time — try again"), 8),
+            Fmt::Ignored(n) => self.say_for(ignored_msg(&n), 8),
             Fmt::NoFormatter => {
                 let key = crate::format::type_key(&path);
                 self.fmt_told.insert(key.clone());
@@ -210,6 +217,11 @@ impl App {
 }
 
 pub(crate) const TIMEOUT: &str = "timeout";
+
+fn ignored_msg(name: &str) -> String {
+    let cfg = if name == "biome" { " (files.includes / ignore in biome.json)" } else { "" };
+    format!("{name} ignores this file{cfg} — not formatted")
+}
 
 fn no_formatter_msg(key: &str) -> String {
     format!("no formatter for {key} — add a biome.json or a prettier config")
@@ -274,6 +286,53 @@ mod tests {
         // The palette toggle goes through the same state.
         app.toggle_format_on_save();
         assert!(app.config.format_on_save && app.format_on_save_on());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_biome_ignores_is_reported_once_not_silently_skipped() {
+        let _g = lock();
+        let dir = project("biomeign");
+        let mut app = test_app(&dir);
+        app.apply_setting("format_on_save", &json!(true));
+        // biome.json covers src/ only: through stdin Biome hands lib/ files back untouched and
+        // silent; asked about the path, it reports it as ignored (like the real Biome 2).
+        std::fs::write(dir.join("biome.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/.bin")).unwrap();
+        let bin = dir.join("node_modules/.bin/biome");
+        let script = r#"#!/bin/sh
+case "$2" in
+  --stdin-file-path=*/src/*) sed 's/  */ /g' ;;
+  --stdin-file-path=*) cat ;;
+  src/*) echo 'Checked 1 file' ;;
+  *) echo 'No files were processed in the specified paths.'; echo 'These paths were provided but ignored:' ;;
+esac
+"#;
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let lib = dir.join("lib/y.ts");
+        let i = open(&mut app, &lib, "const   b  =  2\n");
+        app.docs[i].replace_text("const   b  =  3\n");
+        app.save_active();
+        assert_eq!(std::fs::read_to_string(&lib).unwrap(), "const   b  =  3\n", "ignored: saved as typed");
+        assert!(status(&app).contains("biome ignores this file"), "told why: {}", status(&app));
+        // Once per file: the next save is quiet.
+        app.docs[i].replace_text("const   b  =  4\n");
+        app.save_active();
+        assert!(!status(&app).contains("ignores"), "not repeated: {}", status(&app));
+
+        // A covered file is still formatted, with no notice.
+        let src = dir.join("src/x.ts");
+        let j = open(&mut app, &src, "let   z  =  3\n");
+        app.docs[j].replace_text("let   z  =  4\n");
+        app.save_active();
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "let z = 4\n");
+        assert!(!status(&app).contains("ignores"));
+        // Already-formatted covered file: unchanged, and not mistaken for ignored.
+        app.save_active();
+        assert!(!status(&app).contains("ignores"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
