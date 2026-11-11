@@ -123,9 +123,9 @@ impl TextEncoding {
             Kind::Utf16Le => "UTF-16 LE".into(),
             Kind::Utf16Be => "UTF-16 BE".into(),
             Kind::Latin1 => "ISO-8859-1".into(),
-            Kind::Legacy(e) => match e.name() {
-                n if n.starts_with("windows-") => format!("Windows-{}", &n["windows-".len()..]),
-                n => n.to_string(),
+            Kind::Legacy(e) => match e.name().strip_prefix("windows-") {
+                Some(page) => format!("Windows-{page}"),
+                None => e.name().to_string(),
             },
         }
     }
@@ -180,7 +180,7 @@ fn utf16_guess(head: &[u8]) -> Option<Kind> {
     let (mut even, mut odd) = (0usize, 0usize);
     for (i, b) in head[..units * 2].iter().enumerate() {
         if *b == 0 {
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 even += 1;
             } else {
                 odd += 1;
@@ -269,7 +269,7 @@ pub fn decode(bytes: &[u8], enc: TextEncoding) -> String {
                 .chunks_exact(2)
                 .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) });
             let mut s: String = char::decode_utf16(units).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)).collect();
-            if b.len() % 2 == 1 {
+            if !b.len().is_multiple_of(2) {
                 s.push(char::REPLACEMENT_CHARACTER);
             }
             s
