@@ -236,9 +236,9 @@ jobs:
       - name: Smoke test the .deb (install and run --version)
         if: matrix.arch == 'x86_64'
         run: |
-          # Its hard dependencies ship with the runner image: install without touching the network
-          # (the X11/Wayland Recommends are not needed for the headless check).
-          sudo apt-get install -y --no-download --no-install-recommends ./dist/lumen-text_*.deb
+          # Its hard dependencies ship with the runner image: dpkg installs without touching the
+          # network (the X11/Wayland Recommends are not needed for the headless check).
+          sudo dpkg -i ./dist/lumen-text_*.deb
           lumen-text --version
           test -f /usr/share/lumen-text/assets/language-manifest.json
           # Headless render: proves fonts, assets lookup and the CPU renderer work from the installed layout.

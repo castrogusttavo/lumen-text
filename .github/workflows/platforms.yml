@@ -61,7 +61,7 @@ jobs:
           tools/ci-debian.sh debian:bookworm-slim "rpm" packaging/rpm/build-rpm.sh "$bin" "$VERSION" "$arch" dist
           packaging/appimage/build-appimage.sh "$bin" "$VERSION" "$arch" dist
           ls -l dist
-          sudo apt-get install -y --no-download --no-install-recommends ./dist/lumen-text_*.deb
+          sudo dpkg -i ./dist/lumen-text_*.deb
           lumen-text --version
           d="$(mktemp -d)"; echo hello > "$d/f.txt"
           HOME="$d" XDG_CONFIG_HOME="$d/c" XDG_STATE_HOME="$d/s" \
