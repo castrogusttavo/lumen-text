@@ -1092,6 +1092,61 @@ pub fn match_bracket(buf: &Buffer, pos: usize) -> Option<(usize, usize)> {
     None
 }
 
+/// What to highlight elsewhere in the document while text is selected (Sublime/Zed style).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Occurrence {
+    pub needle: String,
+    /// The selection is a whole word (word boundaries at both ends): match whole words only.
+    pub whole_word: bool,
+}
+
+/// Selections longer than this (chars) do not highlight their other occurrences.
+pub const OCCURRENCE_MAX: usize = 200;
+
+/// The occurrence query for the current selection: only one cursor, holding a non-empty, single-line
+/// selection of 2..=[`OCCURRENCE_MAX`] chars that is not all whitespace.
+pub fn occurrence_query(buf: &Buffer, ed: &Editor) -> Option<Occurrence> {
+    if !ed.extra.is_empty() {
+        return None;
+    }
+    let (a, b) = (ed.sel.start(), ed.sel.end());
+    if !(2..=OCCURRENCE_MAX).contains(&(b - a)) {
+        return None;
+    }
+    let needle = buf.slice(a, b);
+    if needle.contains(['\n', '\r']) || needle.trim().is_empty() {
+        return None;
+    }
+    let word = |c: Option<char>| c.is_some_and(|c| class(c) == Class::Word);
+    let whole_word = word(needle.chars().next())
+        && word(needle.chars().next_back())
+        && !word(a.checked_sub(1).and_then(|p| buf.char_at(p)))
+        && !word(buf.char_at(b));
+    Some(Occurrence { needle, whole_word })
+}
+
+/// Pushes the char-column ranges of `q` in `text` (case-sensitive, non-overlapping) onto `out`,
+/// stopping once `out` holds `cap` ranges.
+pub fn line_occurrences(text: &str, q: &Occurrence, cap: usize, out: &mut Vec<(usize, usize)>) {
+    let n = q.needle.len();
+    let nchars = q.needle.chars().count();
+    let is_word = |c: Option<char>| c.is_some_and(|c| class(c) == Class::Word);
+    // Char column of byte `seen_b`, advanced incrementally so a long line is walked once.
+    let (mut seen_b, mut seen_c) = (0usize, 0usize);
+    let mut from = 0usize;
+    while out.len() < cap {
+        let Some(m) = text[from..].find(q.needle.as_str()).map(|m| from + m) else { break };
+        if q.whole_word && (is_word(text[..m].chars().next_back()) || is_word(text[m + n..].chars().next())) {
+            from = m + text[m..].chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        seen_c += text[seen_b..m].chars().count();
+        seen_b = m;
+        out.push((seen_c, seen_c + nchars));
+        from = m + n;
+    }
+}
+
 /// Guess the indent unit from the first lines of the file.
 pub fn detect_indent(buf: &Buffer) -> String {
     let mut tabs = 0;
@@ -1434,6 +1489,59 @@ mod tests {
         assert_eq!(e.extra.len(), 1);
         e.edit_multi(&mut b, EditKind::Typing, |ed, bf| ed.type_char(bf, '!'));
         assert_eq!(b.to_string(), "!abc\nd!ef");
+    }
+
+    fn occ(text: &str, a: usize, b: usize) -> Option<Occurrence> {
+        let (buf, mut e) = setup(text);
+        e.sel = Sel { anchor: a, head: b };
+        occurrence_query(&buf, &e)
+    }
+
+    fn occ_cols(text: &str, needle: &str, whole_word: bool) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        line_occurrences(text, &Occurrence { needle: needle.into(), whole_word }, 100, &mut out);
+        out
+    }
+
+    #[test]
+    fn occurrence_query_rules() {
+        let text = "let createFakeProject = 1;\ncreateFakeProject();\n  x  \nab";
+        // A whole word (double-click) matches whole words only.
+        assert_eq!(occ(text, 4, 21), Some(Occurrence { needle: "createFakeProject".into(), whole_word: true }));
+        // Part of a word matches the literal text anywhere.
+        assert_eq!(occ(text, 10, 14), Some(Occurrence { needle: "Fake".into(), whole_word: false }));
+        // Reversed selections behave the same.
+        assert_eq!(occ(text, 21, 4).map(|o| o.whole_word), Some(true));
+        // Mixed word/punctuation selection: literal.
+        assert_eq!(occ(text, 22, 25).map(|o| o.whole_word), Some(false));
+        // Ignored: empty, one char, multi-line, whitespace only, too long, several cursors.
+        assert_eq!(occ(text, 4, 4), None);
+        assert_eq!(occ(text, 4, 5), None);
+        assert_eq!(occ(text, 18, 32), None);
+        assert_eq!(occ(text, 48, 50), None);
+        let long = "a".repeat(OCCURRENCE_MAX + 1);
+        assert_eq!(occ(&long, 0, OCCURRENCE_MAX + 1), None);
+        assert!(occ(&long, 0, OCCURRENCE_MAX).is_some());
+        let (buf, mut e) = setup(text);
+        e.sel = Sel { anchor: 4, head: 21 };
+        e.extra.push(Sel { anchor: 27, head: 44 });
+        assert_eq!(occurrence_query(&buf, &e), None);
+    }
+
+    #[test]
+    fn line_occurrences_whole_word_vs_substring() {
+        let line = "foo foobar barfoo foo_x (foo) foo";
+        assert_eq!(occ_cols(line, "foo", true), vec![(0, 3), (25, 28), (30, 33)]);
+        assert_eq!(occ_cols(line, "foo", false), vec![(0, 3), (4, 7), (14, 17), (18, 21), (25, 28), (30, 33)]);
+        // Case-sensitive.
+        assert_eq!(occ_cols("Foo foo FOO", "foo", false), vec![(4, 7)]);
+        // Non-overlapping, columns in chars (not bytes).
+        assert_eq!(occ_cols("aaaa", "aa", false), vec![(0, 2), (2, 4)]);
+        assert_eq!(occ_cols("ção ção", "ção", true), vec![(0, 3), (4, 7)]);
+        // The cap stops the scan.
+        let mut out = Vec::new();
+        line_occurrences("x x x x", &Occurrence { needle: "x".into(), whole_word: true }, 2, &mut out);
+        assert_eq!(out.len(), 2);
     }
 
     #[test]

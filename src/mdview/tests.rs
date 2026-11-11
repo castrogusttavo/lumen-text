@@ -295,16 +295,16 @@ fn paragraph_height_grows_as_width_shrinks() {
     }
     v.ensure_layout(&mut tx, 1400);
     let wide = v.content_height();
-    assert!(last > wide + 22 * 3, "narrow {last} vs wide {wide}");
-    // 2 * PAD padding + whole lines of 22 px
-    assert_eq!((wide - 2 * PAD) % 22, 0);
+    assert!(last > wide + LH[BODY] * 3, "narrow {last} vs wide {wide}");
+    // 2 * PAD padding + whole body lines
+    assert_eq!((wide - 2 * PAD) % LH[BODY], 0);
 }
 
 #[test]
 fn long_unbreakable_word_is_split() {
     let word = "x".repeat(400);
     let (v, _) = laid(&word, 300);
-    assert!(v.content_height() > 2 * PAD + 22 * 2, "{}", v.content_height());
+    assert!(v.content_height() > 2 * PAD + LH[BODY] * 2, "{}", v.content_height());
 }
 
 #[test]
@@ -326,8 +326,9 @@ fn code_block_does_not_wrap() {
     let h_wide = v.content_height();
     v.ensure_layout(&mut tx, 300);
     assert_eq!(v.content_height(), h_wide);
-    // panel = top 18 + 2 lines + bottom 12, plus the document padding
-    assert_eq!(h_wide, 2 * PAD + 18 + 2 * line_h() as i32 + 12);
+    // panel = padding + 2 lines + padding (the language label does not take a row), plus the
+    // document padding
+    assert_eq!(h_wide, 2 * PAD + 2 * CODE_PAD_Y + 2 * code_lh());
 }
 
 #[test]
@@ -368,36 +369,165 @@ fn ordered_list_indent_grows_with_number_width() {
     assert!(x(&v) > x(&v1));
 }
 
+/// The rounded frame of the (first) table.
+fn table_frame(v: &MdView) -> Rect {
+    v.ops()
+        .into_iter()
+        .find_map(|o| match &o.op {
+            Op::Card { r, rad, .. } if *rad == TABLE_RAD => Some(*r),
+            _ => None,
+        })
+        .expect("table frame")
+}
+
+/// Height of a table row whose tallest cell has `n` lines.
+fn row_h(n: i32) -> i32 {
+    n * LH[CELL] + 2 * CELL_PAD_Y
+}
+
 #[test]
 fn table_column_widths_follow_content() {
     let src = "| a | long header here |\n|---|---|\n| short | x |\n| much longer cell text | y |\n";
     let (v, _) = laid(src, 900);
     let lay = v.lay.as_ref().unwrap();
-    let verts: Vec<i32> =
-        v.ops()
-            .into_iter()
-            .filter_map(|o| {
-                if let Op::Fill { r, .. } = &o.op { (r.w == 1 && r.h == 3 * ROW_H).then_some(r.x) } else { None }
-            })
-            .collect();
+    let frame = table_frame(&v);
+    assert_eq!(frame.h, 3 * row_h(1), "short cells stay on one line");
+    let verts: Vec<i32> = v
+        .ops()
+        .into_iter()
+        .filter_map(|o| if let Op::Fill { r, .. } = &o.op { (r.w == 1 && r.h == frame.h).then_some(r.x) } else { None })
+        .collect();
     assert_eq!(verts.len(), 1, "one inner column rule");
     let first = verts[0] - lay.col_x;
     assert!(first > 100, "first column sized by 'much longer cell text', got {first}");
-    let stroke =
-        v.ops().into_iter().find_map(|o| if let Op::Stroke { r, .. } = &o.op { Some(*r) } else { None }).unwrap();
-    assert!(stroke.w < 900 - 2 * PAD);
-    assert_eq!(stroke.h, 3 * ROW_H);
+    assert!(frame.w < 900 - 2 * PAD);
+    // Header row: tinted, semibold; cells at body size.
+    assert!(v.ops().into_iter().any(|o| matches!(o.op, Op::Fill { col: Col::Head, .. })));
+    let head = v
+        .ops()
+        .into_iter()
+        .find_map(|o| match &o.op {
+            Op::Text { text, flags, si, .. } if text == "a" => Some((*flags, *si)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(head.0 & F_B != 0);
+    assert_eq!(SIZES[head.1 as usize], SIZES[BODY]);
 }
 
 #[test]
-fn narrow_table_shrinks_columns_and_ellipsizes() {
+fn narrow_table_wraps_cells_instead_of_ellipsizing() {
     let src = "| a | b |\n|---|---|\n| aaaaaaaa bbbbbbbb cccccccc dddddddd eeeeeeee | zzzzzzzz yyyyyyyy xxxxxxxx wwwwwwww |\n";
     let (v, _) = laid(src, 260);
-    let _lay = v.lay.as_ref().unwrap();
-    let stroke =
-        v.ops().into_iter().find_map(|o| if let Op::Stroke { r, .. } = &o.op { Some(*r) } else { None }).unwrap();
-    assert!(stroke.w <= 260 - 2 * PAD + 2, "table width {}", stroke.w);
-    assert!(v.ops().into_iter().any(|o| matches!(&o.op, Op::Text { text, .. } if text.ends_with("..."))));
+    let frame = table_frame(&v);
+    assert!(frame.w <= 260 - 2 * PAD + 2, "table width {}", frame.w);
+    let texts: Vec<(i32, i32, i32, String)> = v
+        .ops()
+        .into_iter()
+        .filter_map(|o| if let Op::Text { x, w, text, .. } = &o.op { Some((*x, o.y0, *w, text.clone())) } else { None })
+        .collect();
+    assert!(texts.iter().all(|t| !t.3.ends_with("...")), "nothing is cut");
+    // Every letter is drawn (a word wider than its column breaks between characters).
+    let all: String = texts.iter().map(|t| t.3.as_str()).collect();
+    for ch in ['a', 'e', 'z', 'w'] {
+        assert_eq!(all.chars().filter(|&c| c == ch).count(), 8 + usize::from(ch == 'a'), "{ch} in {all}");
+    }
+    // The body row grew to fit its wrapped lines, and the frame encloses every line.
+    assert!(frame.h > row_h(1) + row_h(2), "frame {}", frame.h);
+    assert!(texts.iter().all(|t| t.0 >= frame.x && t.0 + t.2 <= frame.right() && t.1 + LH[CELL] <= frame.bottom()));
+    // Following content is placed below the taller table.
+    let (v2, _) = laid(&format!("{src}\nafter\n"), 260);
+    assert_eq!(v2.content_height(), 2 * PAD + frame.h + BLOCK_GAP + LH[BODY]);
+}
+
+#[test]
+fn long_cells_cap_their_column_and_wrap() {
+    let prose = "word ".repeat(60);
+    let src = format!("| key | notes |\n|---|---|\n| k | {} |\n", prose.trim());
+    let (v, mut tx) = laid(&src, 1400);
+    let frame = table_frame(&v);
+    let mut m = Measure::default();
+    let cap = (m.w(&mut tx, "0", false, CELL) * CELL_MAX_CH).ceil() as i32;
+    assert!(frame.w <= cap + 2 * CELL_PAD_X + 80, "frame {} cap {cap}", frame.w);
+    assert!(frame.w < 736, "a single prose column does not take the whole measure");
+    let words: Vec<i32> = v
+        .ops()
+        .into_iter()
+        .filter_map(|o| if let Op::Text { text, .. } = &o.op { text.contains("word").then_some(o.y0) } else { None })
+        .collect();
+    let mut ys = words;
+    ys.dedup();
+    assert!(ys.len() >= 3, "the notes cell wraps over several lines: {ys:?}");
+    assert!(ys.windows(2).all(|w| w[1] - w[0] == LH[CELL]));
+}
+
+#[test]
+fn links_inside_wrapped_table_cells_are_clickable() {
+    let src = "| a | b |\n|---|---|\n| aaaaaaaa bbbbbbbb cccccccc [target](https://t.io) | z |\n";
+    let mut tx = TextCtx::new(None);
+    let mut v = view(src);
+    v.ensure_layout(&mut tx, 260);
+    let rect = Rect::new(0, 0, 260, 600);
+    let hit = v.all_links()[0];
+    // (all_links y is absolute; the table is the first segment, at y = PAD)
+    assert!(hit.y >= PAD + row_h(1) + CELL_PAD_Y + LH[CELL], "the link wrapped below the first body line");
+    let (px, py) = ((hit.x + hit.w / 2) as f64, (hit.y + hit.h / 2) as f64);
+    assert_eq!(v.link_at(px, py, rect, 0.0).as_deref(), Some("https://t.io"));
+}
+
+#[test]
+fn headings_have_no_rule_and_quotes_are_not_dimmed() {
+    let (v, _) = laid("# Title\n\nbody\n\n> quoted text\n\n---\n", 800);
+    let lay = v.lay.as_ref().unwrap();
+    let rules: Vec<Col> = v
+        .ops()
+        .into_iter()
+        .filter_map(|o| match o.op {
+            Op::Fill { r, col, .. } if r.h == 1 && r.w == lay.col_w => Some(col),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rules, [Col::Rule], "only the thematic break draws a full-width line");
+    let quoted = v
+        .ops()
+        .into_iter()
+        .find_map(|o| match &o.op {
+            Op::Text { x, text, flags, .. } if text.contains("quoted") => Some((*x, *flags)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(quoted.1 & F_DIM, 0);
+    assert_eq!(quoted.0, lay.col_x + QUOTE_INDENT);
+    assert!(v.ops().into_iter().any(|o| matches!(o.op, Op::Fill { r, col: Col::Bar, .. } if r.w == QUOTE_BAR)));
+}
+
+#[test]
+fn palette_softens_prose_but_keeps_it_readable() {
+    let t = theme();
+    let p = Pal::new(&t);
+    assert_ne!(p.text, p.fg, "body text is softer than headings");
+    assert!(p.text.contrast(p.bg) >= 7.0f32.min(p.fg.contrast(p.bg)));
+    assert!(p.dim.contrast(p.bg) >= 4.5);
+    assert!(p.text.contrast(p.code) >= 4.5, "code reads on its chip");
+    // Neutral overlays, faintest first.
+    let d = |c: Rgba| c.contrast(p.bg);
+    assert!(d(p.code) < d(p.border) && d(p.border) < d(p.rule) && d(p.rule) <= d(p.bar));
+}
+
+#[test]
+fn task_boxes_are_centered_on_the_first_line() {
+    let (v, _) = laid("- [ ] one\n- [x] two\n", 800);
+    let boxes: Vec<(i32, i32)> = v
+        .ops()
+        .into_iter()
+        .filter_map(|o| if let Op::Check { x, y, .. } = o.op { Some((x, y)) } else { None })
+        .collect();
+    assert_eq!(boxes.len(), 2);
+    for (c, (bx, by)) in v.all_checks().iter().zip(&boxes) {
+        // (op y is relative to the segment, which starts at PAD; hit boxes are absolute)
+        assert_eq!(by + PAD - c.y, (LH[BODY] - CHECK) / 2);
+        assert!(c.x <= *bx && c.x + c.w >= bx + CHECK, "the hit box covers the drawn box");
+    }
 }
 
 #[test]
@@ -445,7 +575,7 @@ fn code_block_lines_interpolate_linearly() {
     let body: String = (0..20).map(|i| format!("line {i}\n")).collect();
     let (v, _) = laid(&format!("```\n{body}```\n"), 700);
     let ys: Vec<i32> = (1..=20).map(|l| v.y_for_source_line(l).unwrap()).collect();
-    let lh = line_h() as i32;
+    let lh = code_lh();
     for w in ys.windows(2) {
         assert!((w[1] - w[0] - lh).abs() <= 2, "step {} vs line height {lh}", w[1] - w[0]);
     }

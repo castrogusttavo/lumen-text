@@ -10,7 +10,10 @@ pub(super) enum Col {
     Accent,
     AccentSoft,
     Border,
+    Rule,
     Bar,
+    Code,
+    Head,
     Widget,
     Input,
     Bg,
@@ -208,6 +211,8 @@ impl Measure {
         if self.maps.is_empty() {
             self.maps = (0..SIZES.len() * 2).map(|_| HashMap::new()).collect();
         }
+        // Size indices that share a font size share their widths.
+        let si = SIZES.iter().position(|&s| s == SIZES[si]).unwrap_or(si);
         let m = &mut self.maps[si * 2 + bold as usize];
         if let Some(&w) = m.get(s) {
             return w;
@@ -377,24 +382,31 @@ pub(super) struct Lay<'a> {
     pub(super) heads: Vec<(String, i32, bool)>,
 }
 
+/// Space a block wants above it: headings open a section (the block gap plus ~1rem).
 pub(super) fn before(b: &Block) -> i32 {
     match &b.kind {
         Kind::Heading { level, .. } => {
             if *level <= 2 {
-                24
+                BLOCK_GAP + 16
             } else {
-                20
+                BLOCK_GAP + 12
             }
         }
         _ => 0,
     }
 }
 
+/// Space a block wants below it: a heading stays close to the text it introduces.
 pub(super) fn after(b: &Block) -> i32 {
     match &b.kind {
-        Kind::Heading { .. } => 10,
-        _ => 12,
+        Kind::Heading { .. } => 8,
+        _ => BLOCK_GAP,
     }
+}
+
+/// Line height of code blocks: the editor's monospace size on an airier ~1.7 line.
+pub(super) fn code_lh() -> i32 {
+    ((font_size() * 1.7).round() as i32).max(line_h() as i32)
 }
 
 impl Lay<'_> {
@@ -494,48 +506,6 @@ impl Lay<'_> {
         lines
     }
 
-    /// Cut a single-line run list to `max_w`, ending in "..." (a real ellipsis glyph would drag in
-    /// the fallback fonts).
-    pub(super) fn ellipsize(&mut self, line: Vec<Run>, max_w: f32, si: usize, bold_base: bool) -> Vec<Run> {
-        let total = line.last().map_or(0.0, |r| r.x + r.w);
-        if total <= max_w + 0.5 {
-            return line;
-        }
-        let ell = self.m.w(self.tx, "...", bold_base, si);
-        let target = (max_w - ell).max(0.0);
-        let mut out: Vec<Run> = vec![];
-        for run in line {
-            if run.x + run.w <= target {
-                out.push(run);
-                continue;
-            }
-            let code = run.flags & F_CODE != 0;
-            let pad = if code { CHIP_PAD as f32 } else { 0.0 };
-            let bold = bold_base || run.flags & F_B != 0;
-            let (mut buf, mut bw) = (String::new(), 0.0f32);
-            for ch in run.text.chars() {
-                let cw = if code {
-                    cell_count(ch) as f32 * self.tx.cell_w
-                } else {
-                    self.m.w(self.tx, ch.encode_utf8(&mut [0; 4]), bold, si)
-                };
-                if run.x + pad + bw + cw > target {
-                    break;
-                }
-                buf.push(ch);
-                bw += cw;
-            }
-            let mut ex = run.x;
-            if bw > 0.0 {
-                ex = run.x + bw + 2.0 * pad;
-                out.push(Run { x: run.x, w: bw + 2.0 * pad, text: buf, flags: run.flags, link: run.link });
-            }
-            out.push(Run { x: ex, w: ell, text: "...".into(), flags: run.flags & !F_CODE, link: run.link });
-            return out;
-        }
-        out
-    }
-
     /// Truncate a plain string to `max_w` (adds "..."); returns text and width in px.
     pub(super) fn fit(&mut self, s: &str, si: usize, bold: bool, max_w: i32) -> (String, i32) {
         let w = self.m.w(self.tx, s, bold, si);
@@ -597,11 +567,7 @@ impl Lay<'_> {
                 self.heads.push((slug.clone(), y, false));
                 let base = F_B | if *level == 6 || st.dim { F_DIM } else { 0 };
                 self.emit(lines, x, y, si, base);
-                let mut h = n * LH[si];
-                if *level <= 2 {
-                    self.fill(Rect::new(x, y + h + 6, w, 1), Col::Border, 0);
-                    h += 7;
-                }
+                let h = n * LH[si];
                 self.anchor(b, y, y + h);
                 y + h
             }
@@ -614,11 +580,11 @@ impl Lay<'_> {
                 y + h
             }
             Kind::Code { lang, text } => {
-                let lh = line_h() as i32;
+                let lh = code_lh();
                 let lines: Vec<String> =
                     text.split('\n').map(|l| l.trim_end_matches('\r').replace('\t', "    ")).collect();
-                let top = if lang.is_empty() { 12 } else { 18 };
-                let h = top + lines.len() as i32 * lh + 12;
+                let top = CODE_PAD_Y;
+                let h = top + lines.len() as i32 * lh + CODE_PAD_Y;
                 let r = Rect::new(x, y, w, h);
                 let key = fxhash(text.as_bytes(), fxhash(lang.as_bytes(), 3));
                 self.op(y, y + h, Op::Code { r, lang: lang.clone(), lines, lh, top, key, math: false });
@@ -626,14 +592,15 @@ impl Lay<'_> {
                 y + h
             }
             Kind::Math(text) => {
-                let lh = line_h() as i32;
+                let lh = code_lh();
                 let lines: Vec<String> =
                     text.split('\n').map(|l| l.trim_end_matches('\r').replace('\t', "    ")).collect();
-                let h = 18 + lines.len() as i32 * lh + 12;
+                let top = CODE_PAD_Y + 4;
+                let h = top + lines.len() as i32 * lh + top;
                 self.op(
                     y,
                     y + h,
-                    Op::Code { r: Rect::new(x, y, w, h), lang: "math".into(), lines, lh, top: 18, key: 0, math: true },
+                    Op::Code { r: Rect::new(x, y, w, h), lang: "math".into(), lines, lh, top, key: 0, math: true },
                 );
                 self.anchor(b, y, y + h);
                 y + h
@@ -643,14 +610,15 @@ impl Lay<'_> {
                 y
             }
             Kind::Rule => {
-                self.fill(Rect::new(x, y, w, 1), Col::Border, 0);
+                self.fill(Rect::new(x, y, w, 1), Col::Rule, 0);
                 self.anchor(b, y, y + 1);
                 y + 1
             }
             Kind::Quote(bl) => {
-                let y1 = self.blocks(bl, x + QUOTE_INDENT, w - QUOTE_INDENT, y, St { dim: true, ..st });
+                // A neutral bar; the quoted text keeps the body color (dimming it hurt legibility).
+                let y1 = self.blocks(bl, x + QUOTE_INDENT, w - QUOTE_INDENT, y, st);
                 if y1 > y {
-                    self.fill(Rect::new(x, y, 3, y1 - y), Col::Bar, 0);
+                    self.fill(Rect::new(x, y, QUOTE_BAR, y1 - y), Col::Bar, QUOTE_BAR / 2);
                 }
                 y1
             }
@@ -691,8 +659,9 @@ impl Lay<'_> {
             }
             let mid = iy + LH[BODY] / 2;
             if let Some(done) = it.task {
-                self.op(iy + 4, iy + 18, Op::Check { x: x + indent - 22, y: iy + 4, done });
-                self.checks.push(CheckHit { x: x + indent - 26, y: iy, w: 22, h: LH[BODY], off: it.task_off });
+                let (bx, by) = (x + indent - CHECK - 6, iy + (LH[BODY] - CHECK) / 2);
+                self.op(by, by + CHECK, Op::Check { x: bx, y: by, done });
+                self.checks.push(CheckHit { x: bx - 4, y: iy, w: CHECK + 8, h: LH[BODY], off: it.task_off });
             } else if start.is_some() {
                 let f = F_DIM;
                 self.op(
@@ -715,6 +684,9 @@ impl Lay<'_> {
         yy
     }
 
+    /// GFM table: columns sized by content (each capped at ~48ch), cells wrapping inside their column
+    /// (rows as tall as their tallest cell, text top-aligned), a rounded 1px frame, hairline grid and a
+    /// tinted, semibold header row.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn table(
         &mut self,
@@ -732,22 +704,40 @@ impl Lay<'_> {
         }
         let empty: Vec<Inl> = vec![];
         let all: Vec<&[Vec<Inl>]> = std::iter::once(head).chain(rows.iter().map(|r| r.as_slice())).collect();
-        let mut grid: Vec<Vec<Vec<Run>>> = vec![];
+        let cap = (self.m.w(self.tx, "0", false, CELL) * CELL_MAX_CH).ceil() as i32;
         let mut nat = vec![36; ncols];
         for (ri, row) in all.iter().enumerate() {
-            let mut cells = vec![];
             for (c, nat_c) in nat.iter_mut().enumerate() {
                 let inl = row.get(c).unwrap_or(&empty);
-                let runs = self.flow(inl, i32::MAX / 4, SMALL, ri == 0, false).into_iter().next().unwrap_or_default();
-                *nat_c = (*nat_c).max(runs.last().map_or(0.0, |r| r.x + r.w).ceil() as i32 + 2 * CELL_PAD);
-                cells.push(runs);
+                let one = self.flow(inl, i32::MAX / 4, CELL, ri == 0, false);
+                let wide = one.iter().map(|l| l.last().map_or(0.0, |r| r.x + r.w)).fold(0.0f32, f32::max);
+                *nat_c = (*nat_c).max((wide.ceil() as i32).min(cap) + 2 * CELL_PAD_X);
             }
-            grid.push(cells);
         }
         let colw = fit_columns(&nat, w);
         let tw: i32 = colw.iter().sum();
-        let h = all.len() as i32 * ROW_H;
-        self.fill(Rect::new(x, y, tw, ROW_H), Col::Widget, 0);
+        // Wrap every cell in its column; a row is as tall as its tallest cell.
+        let lh = LH[CELL];
+        let mut grid: Vec<Vec<Vec<Vec<Run>>>> = Vec::with_capacity(all.len());
+        let mut row_h: Vec<i32> = Vec::with_capacity(all.len());
+        for (ri, row) in all.iter().enumerate() {
+            let cells: Vec<Vec<Vec<Run>>> = (0..ncols)
+                .map(|c| self.flow(row.get(c).unwrap_or(&empty), colw[c] - 2 * CELL_PAD_X, CELL, ri == 0, true))
+                .collect();
+            let n = cells.iter().map(|l| l.len()).max().unwrap_or(1).max(1) as i32;
+            row_h.push(n * lh + 2 * CELL_PAD_Y);
+            grid.push(cells);
+        }
+        let h: i32 = row_h.iter().sum();
+        let frame = Rect::new(x, y, tw, h);
+        self.op(y, y + h, Op::Card { r: frame, rad: TABLE_RAD, fill: Col::Bg, border: Col::Border });
+        // Header tint inside the frame: rounded at the top, square where it meets the first rule. Both
+        // are pushed with the frame's y0 so the (stable) sort keeps them under the grid lines.
+        let hh = row_h[0];
+        let top = Rect::new(x + 1, y + 1, tw - 2, hh - 1);
+        self.op(y, top.bottom(), Op::Fill { r: top, col: Col::Head, rad: TABLE_RAD - 1 });
+        let low = Rect::new(x + 1, y + hh - TABLE_RAD, tw - 2, TABLE_RAD);
+        self.op(y, low.bottom(), Op::Fill { r: low, col: Col::Head, rad: 0 });
         let mut cx = x;
         for (c, cw) in colw.iter().enumerate() {
             if c > 0 {
@@ -755,26 +745,29 @@ impl Lay<'_> {
             }
             cx += cw;
         }
-        for r in 1..all.len() as i32 {
-            self.fill(Rect::new(x, y + r * ROW_H - 1, tw, 1), Col::Border, 0);
+        let mut ry = y;
+        for rh in &row_h[..row_h.len() - 1] {
+            ry += rh;
+            self.fill(Rect::new(x, ry - 1, tw, 1), Col::Border, 0);
         }
-        self.op(y, y + h, Op::Stroke { r: Rect::new(x, y, tw, h), col: Col::Border });
+        let mut ry = y;
         for (ri, cells) in grid.into_iter().enumerate() {
-            let ry = y + ri as i32 * ROW_H;
             let mut cx = x;
-            for (c, runs) in cells.into_iter().enumerate() {
-                let avail = colw[c] - 2 * CELL_PAD;
-                let runs = self.ellipsize(runs, avail as f32, SMALL, ri == 0);
-                let cw = runs.last().map_or(0.0, |r| r.x + r.w).round() as i32;
-                let ox = match aligns.get(c) {
-                    Some(Alignment::Right) => (avail - cw).max(0),
-                    Some(Alignment::Center) => ((avail - cw) / 2).max(0),
-                    _ => 0,
-                };
-                let ty = ry + (ROW_H - LH[SMALL]) / 2;
-                self.emit(vec![runs], cx + CELL_PAD + ox, ty, SMALL, if ri == 0 { F_B } else { 0 });
+            for (c, lines) in cells.into_iter().enumerate() {
+                let avail = colw[c] - 2 * CELL_PAD_X;
+                for (li, line) in lines.into_iter().enumerate() {
+                    let lw = line.last().map_or(0.0, |r| r.x + r.w).round() as i32;
+                    let ox = match aligns.get(c) {
+                        Some(Alignment::Right) => (avail - lw).max(0),
+                        Some(Alignment::Center) => ((avail - lw) / 2).max(0),
+                        _ => 0,
+                    };
+                    let ty = ry + CELL_PAD_Y + li as i32 * lh;
+                    self.emit(vec![line], cx + CELL_PAD_X + ox, ty, CELL, if ri == 0 { F_B } else { 0 });
+                }
                 cx += colw[c];
             }
+            ry += row_h[ri];
         }
         self.anchor(b, y, y + h);
         y + h

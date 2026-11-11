@@ -260,7 +260,8 @@ impl Doc {
                 cv.fill_clip(Rect::new(rect.x, caret_y, rect.w, lh), theme.line_highlight, rect);
             }
         }
-        let paint_range = |cv: &mut Canvas, a: usize, b: usize, color: Rgba| {
+        // Calls `f` with the on-screen rect of each visible row piece of the char range `a..b`.
+        let range_rects = |a: usize, b: usize, f: &mut dyn FnMut(Rect)| {
             for (lk, _) in vlines.iter().enumerate() {
                 let (ls, ll) = geo[lk];
                 let le = ls + ll;
@@ -279,13 +280,41 @@ impl Doc {
                     let extra = usize::from(row.last && b > le);
                     let va = vc(r, ca, true);
                     let vb = vc(r, cb, false) + extra;
-                    cv.fill_clip(Rect::new(vx(va), ry(r), vx(vb) - vx(va), lh), color, body);
+                    f(Rect::new(vx(va), ry(r), vx(vb) - vx(va), lh));
                 }
             }
+        };
+        let paint_range = |cv: &mut Canvas, a: usize, b: usize, color: Rgba| {
+            range_rects(a, b, &mut |r| cv.fill_clip(r, color, body));
         };
         for (i, &(a, b)) in o.find.iter().enumerate() {
             let color = if Some(i) == o.find_cur { c.find_match_current } else { c.find_match };
             paint_range(cv, a, b, color);
+        }
+        // Other occurrences of the selected text (Sublime/Zed): a soft tint of the selection color with a
+        // faint outline. Only the visible lines are scanned, so it costs the same in any file; it steps
+        // aside while the find bar shows its own matches.
+        if o.find.is_empty()
+            && let Some(q) = crate::editor::occurrence_query(&self.buf, &self.ed)
+        {
+            let base = theme.selection.over(theme.background);
+            let (fill, edge) = (base.with_alpha(0x70), base.mix(theme.foreground, 0.25).with_alpha(0x90));
+            let mut hits: Vec<(usize, usize)> = Vec::new();
+            for (lk, text) in lines.iter().enumerate() {
+                let n0 = hits.len();
+                crate::editor::line_occurrences(text, &q, OCCURRENCE_CAP, &mut hits);
+                for h in &mut hits[n0..] {
+                    *h = (geo[lk].0 + h.0, geo[lk].0 + h.1);
+                }
+            }
+            for &(a, b) in hits.iter().filter(|h| h.0 != sel.start()) {
+                range_rects(a, b, &mut |r| {
+                    cv.fill_round_clip(r, 3, fill, body);
+                    if r.x >= body.x && r.right() <= body.right() && r.y >= body.y && r.bottom() <= body.bottom() {
+                        cv.ring(r, 3, edge);
+                    }
+                });
+            }
         }
         if !sel.is_empty() {
             paint_range(cv, sel.start(), sel.end(), theme.selection);
