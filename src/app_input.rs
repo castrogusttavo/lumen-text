@@ -164,6 +164,10 @@ pub struct InputState {
     pub tree_hb_hot: bool,
     /// Widest sidebar row in px (content width), computed once per frame.
     pub tree_cw: f64,
+    /// Dragging the sidebar's right edge (resize).
+    pub sb_edge: crate::app_sidebar::SidebarEdge,
+    /// Tab strip geometry and a tab being dragged to a new place.
+    pub tabs: crate::app_tabdrag::TabStrip,
 }
 
 const HBAR_H: i32 = 12;
@@ -342,6 +346,7 @@ impl App {
     /// the panel, and auto-scroll while a selection is dragged outside the text. True while busy.
     pub fn input_frame(&mut self, dt: f64) -> bool {
         let mut busy = self.drag_autoscroll(dt);
+        busy |= self.tab_drag_frame(dt);
         busy |= self.regions_frame(dt);
         busy |= self.hover_frame(dt);
         if self.sidebar_open {
@@ -540,6 +545,8 @@ impl App {
     pub fn mouse_up(&mut self) {
         self.hover_mouse_up();
         self.gitpanel_release();
+        self.sidebar_edge_release();
+        self.tab_drag_release();
         self.tree_drag_release();
         self.dragging_minimap = false;
         if self.regions.drag.take().is_some() {

@@ -13,7 +13,7 @@ pub enum Scrollbar {
     Show,
     /// Fade in on scroll or hover, fade out after a moment.
     Auto,
-    /// Never drawn, never grabbed; the wheel and keys still scroll.
+    /// Never drawn, never grabbed; the wheel and keys still scroll. The default setting.
     Never,
 }
 
@@ -21,8 +21,8 @@ impl Scrollbar {
     pub fn from_name(s: &str) -> Scrollbar {
         match s {
             "auto" => Scrollbar::Auto,
-            "never" => Scrollbar::Never,
-            _ => Scrollbar::Show,
+            "show" => Scrollbar::Show,
+            _ => Scrollbar::Never,
         }
     }
 }
@@ -33,7 +33,8 @@ pub const NUMLESS_MARKS_W: i32 = 28;
 /// Clicks within this many px of the gutter's left edge toggle a breakpoint.
 pub const BP_CLICK_W: i32 = 14;
 
-// Bits of the word; all zero = the defaults (everything shown, scrollbars always on).
+// Bits of the word; all zero = everything shown, scrollbars always on. (The `scrollbar` setting
+// defaults to "never"; `apply` writes it at startup, so the zero state is only what tests start from.)
 const NO_NUMBERS: u32 = 1;
 const NO_BOOKMARKS: u32 = 2;
 const NO_BREAKPOINTS: u32 = 4;
@@ -210,7 +211,14 @@ mod tests {
         assert_eq!(Scrollbar::from_name("auto"), Scrollbar::Auto);
         assert_eq!(Scrollbar::from_name("never"), Scrollbar::Never);
         assert_eq!(Scrollbar::from_name("show"), Scrollbar::Show);
-        assert_eq!(Scrollbar::from_name("???"), Scrollbar::Show);
+        assert_eq!(Scrollbar::from_name("???"), Scrollbar::Never, "unknown = the default");
+    }
+
+    #[test]
+    fn the_default_config_hides_scrollbars() {
+        apply(&crate::config::Config::default());
+        assert_eq!(scrollbar(), Scrollbar::Never);
+        assert!(crate::ui::VBar::new(crate::ui::Rect::new(0, 0, 14, 200), 1000.0, 100.0, 0.0).is_none());
     }
 
     #[test]

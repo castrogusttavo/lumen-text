@@ -316,7 +316,7 @@ impl App {
                 _ => None,
             };
         }
-        if !self.overlay.is_none() {
+        if !self.overlay.is_none() || self.tab_dragging() || self.sidebar_resizing() {
             return None;
         }
         let l = &self.layout;
@@ -369,9 +369,10 @@ impl App {
                 let row = &self.tree.rows[k];
                 (row.name.clone(), row.depth)
             };
+            // Same geometry as `draw_sidebar`: cut (drawn with "…") or scrolled out on the left.
             let text_x = side.x + 18 + depth as i32 * 14 + 38 - self.tree.hscroll as i32;
-            let end = text_x + self.tx.ui_width(&name, false);
-            if end > side.right() - 24 || text_x < side.x {
+            let room = crate::app_sidebar::name_room(side, text_x, false);
+            if self.tx.ui_width(&name, false) > room || text_x < side.x {
                 let first = (self.tree.scroll / ROW_H as f64).floor().max(0.0) as usize;
                 let ry = top - (self.tree.scroll as i32 % ROW_H) + (k - first) as i32 * ROW_H;
                 return Some((TipKey::SideRow(k), Rect::new(side.x + 8, ry + 1, side.w - 17, ROW_H - 2), true));

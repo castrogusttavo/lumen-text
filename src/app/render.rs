@@ -17,7 +17,7 @@ impl App {
 
     pub(super) fn compute_layout(&mut self) {
         let (w, h) = (self.size.0 as i32, self.size.1 as i32);
-        let sb = if self.sidebar_open { SIDEBAR_W } else { 0 };
+        let sb = if self.sidebar_open { self.sidebar_w() } else { 0 };
         self.layout.topbar = Rect::new(0, 0, w, TOP_H);
         self.layout.sidebar = Rect::new(0, TOP_H, sb, h - STATUS_H - TOP_H);
         let rw = self.gitpanel_w();
@@ -133,7 +133,11 @@ impl App {
         crate::perf::lap!("sidebar");
         self.draw_panel(cv);
         self.draw_gitpanel(cv);
+        if self.sidebar_open {
+            self.draw_sidebar_edge(cv);
+        }
         self.draw_tree_drag(cv);
+        self.draw_tab_drag(cv);
         crate::perf::lap!("panels");
         self.draw_status(cv);
         crate::perf::lap!("status");
@@ -172,6 +176,8 @@ impl App {
         }
         let view = (bar.w - 12).max(1) as f64;
         self.tabs_max = ((x - 6) as f64 - view).max(0.0);
+        self.inp.tabs.geo.clone_from(&geo);
+        let dragging = self.tab_dragging();
         if self.tabs_seen != Some(self.active) {
             self.tabs_seen = Some(self.active);
             if let Some(&(_, tx0, tw)) = geo.iter().find(|(i, _, _)| *i == self.active) {
@@ -204,7 +210,7 @@ impl App {
             self.tx.draw_ui(cv, r.x + lead, ty, &d.name, fg, strip, active);
             let close = Rect::new(r.right() - 28, r.y, 28, bar.h);
             let (mx, my) = self.mouse;
-            let over_tab = strip.contains(mx, my) && r.contains(mx, my) && self.overlay.is_none();
+            let over_tab = strip.contains(mx, my) && r.contains(mx, my) && self.overlay.is_none() && !dragging;
             let over_close = over_tab && close.contains(mx, my);
             if over_tab {
                 // Hovering a tab (focused or not) reveals its close button; it gets its own
@@ -330,7 +336,11 @@ impl App {
             let badge = self.git_status.get(&row.path).copied();
             let fg = if is_active { c.tab_active_fg } else { c.sidebar_fg };
             let fg = if dim { fg.with_alpha(0x60).over(c.sidebar_bg) } else { fg };
-            self.tx.draw_ui(cv, r.x + hx + indent + 38, y + (ROW_H - 18) / 2, &row.name, fg, body, false);
+            // A name that does not fit before the git dot ends in "…"; scrolling right reveals it.
+            let text_x = r.x + hx + indent + 38;
+            let room = crate::app_sidebar::name_room(r, text_x, false);
+            let name = crate::ui::fit_ellipsis(&mut self.tx, &row.name, room, false);
+            self.tx.draw_ui(cv, text_x, y + (ROW_H - 18) / 2, &name, fg, body, false);
             if let Some(b) = badge {
                 // A quiet dot instead of a colored letter: modified / new / deleted.
                 let dot = match b {
@@ -405,7 +415,9 @@ impl App {
                 _ => "·",
             };
             self.tx.draw_ui(cv, x, y + (ROW_H - 18) / 2, letter, c.accent_text, body, true);
-            self.tx.draw_ui(cv, x + 18, y + (ROW_H - 18) / 2, &s.name, c.sidebar_fg, body, false);
+            let room = crate::app_sidebar::name_room(r, x + 18, true);
+            let name = crate::ui::fit_ellipsis(&mut self.tx, &s.name, room, false);
+            self.tx.draw_ui(cv, x + 18, y + (ROW_H - 18) / 2, &name, c.sidebar_fg, body, false);
         }
     }
 

@@ -425,6 +425,35 @@ impl HBar {
     }
 }
 
+/// `s` shortened with a trailing "…" so it fits `max_w` px in the UI font (`s` itself when it fits,
+/// empty when not even the ellipsis does). Binary search over char boundaries, so it is safe on any
+/// UTF-8 and costs O(log n) measurements (each cached by `TextCtx::ui_width`).
+pub fn fit_ellipsis(tx: &mut TextCtx, s: &str, max_w: i32, bold: bool) -> String {
+    if max_w <= 0 {
+        return String::new();
+    }
+    if tx.ui_width(s, bold) <= max_w {
+        return s.to_string();
+    }
+    // Byte offsets of every char boundary after the first char: candidate cut points.
+    let cuts: Vec<usize> = s.char_indices().skip(1).map(|(i, _)| i).collect();
+    let (mut lo, mut hi) = (0usize, cuts.len()); // number of cut points usable (0 = no prefix)
+    let prefix = |k: usize| if k == 0 { "" } else { &s[..cuts[k - 1]] };
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let cand = format!("{}…", prefix(mid).trim_end());
+        if tx.ui_width(&cand, bold) <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo == 0 && tx.ui_width("…", bold) > max_w {
+        return String::new();
+    }
+    format!("{}…", prefix(lo).trim_end())
+}
+
 #[cfg(test)]
 mod hbar_tests {
     use super::*;
@@ -1646,5 +1675,36 @@ mod tests {
         assert!((mid - 475.0).abs() < 8.0, "{mid}");
         assert_eq!(b.pos_for(-500.0, 0.0, 1000.0, 50.0), 0.0);
         assert_eq!(b.pos_for(9999.0, 0.0, 1000.0, 50.0), 950.0);
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    #[test]
+    fn fit_ellipsis_cuts_on_char_boundaries_and_fits() {
+        let mut tx = TextCtx::new(None);
+        let s = "ção-über-日本語-component.tsx";
+        let full = tx.ui_width(s, false);
+        if full == 0 {
+            return; // no UI font on this machine
+        }
+        assert_eq!(fit_ellipsis(&mut tx, s, full, false), s, "fits: unchanged");
+        assert_eq!(fit_ellipsis(&mut tx, s, 0, false), "");
+        for w in (1..full).step_by(3) {
+            let f = fit_ellipsis(&mut tx, s, w, false);
+            if f.is_empty() {
+                assert!(tx.ui_width("…", false) > w, "empty only when even the ellipsis is too wide");
+                continue;
+            }
+            assert!(f.ends_with('…'), "{f:?}");
+            assert!(tx.ui_width(&f, false) <= w, "{f:?} wider than {w}");
+            assert!(s.starts_with(f.trim_end_matches('…')), "{f:?} is a prefix");
+        }
+        // More room never shows less of the name.
+        let a = fit_ellipsis(&mut tx, s, full / 3, false).chars().count();
+        let b = fit_ellipsis(&mut tx, s, full * 2 / 3, false).chars().count();
+        assert!(b >= a);
     }
 }
