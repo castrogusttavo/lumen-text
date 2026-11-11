@@ -14,6 +14,25 @@ use winit::event::MouseScrollDelta;
 pub const PANEL_HEADER: i32 = 30;
 const MAX_LINES: usize = 6000;
 
+/// Commands whose shortcuts keep working while the terminal has the focus (toggle the panel or
+/// the terminal, sidebar, palette, project search, explorer, Git panel, quit). Everything else,
+/// including plain `Ctrl+<letter>` keys shells rely on (Ctrl+C/D/R/L/A/E/W/U/K/P...), goes to the
+/// shell unless the user binds it to one of these.
+const TERM_GLOBAL: &[&str] =
+    &["ToggleOutput", "OpenTerminal", "ToggleSidebar", "Quit", "Commands", "ProjectSearch", "FocusSidebar", "GitPanel"];
+
+/// Is this key, as bound in the keymap (user file first, then the defaults), one the editor keeps
+/// while the terminal is focused?
+pub fn term_global(
+    keymap: &crate::keymap::Keymap,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    key: &winit::keyboard::Key,
+) -> bool {
+    keymap.lookup(ctrl, shift, alt, key).is_some_and(|id| TERM_GLOBAL.contains(&id))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PanelTab {
     Output,
@@ -130,26 +149,21 @@ impl App {
             self.focus = Focus::Editor;
             return false;
         }
-        // Keys the editor keeps even while the terminal has focus.
-        if let Key::Character(c) = &ev.key {
-            if ctrl && c.as_str() == "`" {
-                return false;
+        if let Key::Character(c) = &ev.key
+            && ctrl
+            && shift
+            && c.to_lowercase() == "v"
+        {
+            let t = self.clip.get();
+            if let Some(term) = self.term.as_mut() {
+                let bytes = term.paste_bytes(&t.replace('\n', "\r"));
+                term.write(&bytes);
             }
-            if ctrl && !shift && matches!(c.as_str(), "j" | "b" | "q") {
-                // Ctrl+J / Ctrl+B / Ctrl+Q: panel, sidebar and quit stay global.
-                return false;
-            }
-            if ctrl && shift && c.to_lowercase() == "v" {
-                let t = self.clip.get();
-                if let Some(term) = self.term.as_mut() {
-                    let bytes = term.paste_bytes(&t.replace('\n', "\r"));
-                    term.write(&bytes);
-                }
-                return true;
-            }
-            if ctrl && shift && matches!(c.to_lowercase().as_str(), "p" | "f" | "e") {
-                return false; // palette / project search / explorer
-            }
+            return true;
+        }
+        // Keys the editor keeps even while the terminal has focus (as bound in the keymap).
+        if term_global(&self.keymap, ctrl, shift, alt, &ev.key) {
+            return false;
         }
         let named = match &ev.key {
             Key::Named(n) => Some(format!("{n:?}")),
@@ -405,9 +419,12 @@ impl App {
             self.layout.panel_tabs.push((Rect::new(x - 8, r.y, w + 16, PANEL_HEADER), tab));
             x += w + 22;
         }
-        let hint = "Ctrl+J closes";
-        let hw = self.tx.ui_width(hint, false);
-        self.tx.draw_ui(cv, r.right() - hw - 14, ty, hint, dim, head, false);
+        // The panel toggle as bound now (a rebinding shows its own combo; switched off: no hint).
+        if let Some(combo) = crate::app_tooltip::shortcut_in(&self.keymap.entries(), "ToggleOutput") {
+            let hint = format!("{combo} closes");
+            let hw = self.tx.ui_width(&hint, false);
+            self.tx.draw_ui(cv, r.right() - hw - 14, ty, &hint, dim, head, false);
+        }
 
         if self.panel.tab == PanelTab::Terminal {
             return self.draw_terminal(cv, body);
@@ -537,5 +554,44 @@ impl App {
                 true,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keymap::Keymap;
+    use winit::keyboard::{Key, NamedKey};
+
+    fn ch(c: &str) -> Key {
+        Key::Character(c.into())
+    }
+
+    #[test]
+    fn terminal_hands_global_shortcuts_back_and_keeps_shell_keys() {
+        let km = Keymap::default();
+        // Ctrl+J closes the panel, also with Caps Lock ("J") or Shift held (ToggleOutput is shift tolerant).
+        assert!(term_global(&km, true, false, false, &ch("j")));
+        assert!(term_global(&km, true, false, false, &ch("J")));
+        assert!(term_global(&km, true, true, false, &ch("J")));
+        for (shift, k) in [(false, "`"), (false, "b"), (false, "q"), (true, "P"), (true, "F"), (true, "E"), (true, "G")]
+        {
+            assert!(term_global(&km, true, shift, false, &ch(k)), "ctrl+{k} (shift: {shift})");
+        }
+        // Readline / job control keys reach the shell.
+        for k in ["c", "d", "r", "l", "a", "e", "w", "u", "k", "p", "z", "f", "h", "t", "g"] {
+            assert!(!term_global(&km, true, false, false, &ch(k)), "ctrl+{k} must reach the shell");
+        }
+        assert!(!term_global(&km, false, false, false, &ch("j")), "plain typing");
+        assert!(!term_global(&km, false, false, true, &Key::Named(NamedKey::ArrowLeft)), "alt+left is word-back");
+        assert!(!term_global(&km, true, true, false, &ch("V")), "ctrl+shift+v pastes into the terminal");
+    }
+
+    #[test]
+    fn terminal_follows_user_rebinding() {
+        let km = Keymap::from_json(r#"{"ctrl+alt+o": "ToggleOutput", "ctrl+j": "none", "ctrl+r": "Commands"}"#);
+        assert!(term_global(&km, true, false, true, &ch("o")));
+        assert!(!term_global(&km, true, false, false, &ch("j")), "disabled: ctrl+j goes to the shell");
+        assert!(term_global(&km, true, false, false, &ch("r")), "the user's choice wins over the shell");
     }
 }

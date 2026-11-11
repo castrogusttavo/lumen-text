@@ -27,6 +27,8 @@ use std::{
 const PLAN_TTL: Duration = Duration::from_secs(30);
 /// A merged request waits this long for a slow companion before answering with what it has.
 const AGG_WAIT: Duration = Duration::from_millis(2500);
+/// How often the open-document sets of registry servers are checked for leaked URIs.
+const STRAY_CHECK: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug)]
 pub struct PlanEntry {
@@ -57,6 +59,8 @@ pub struct LspX {
     /// Resolved commands of idle servers for the status listing: id -> (when, path).
     which: HashMap<String, (Instant, Option<PathBuf>)>,
     dead_logs: HashMap<String, String>,
+    /// Last check for URIs no open document has (see `lspx_close_strays`).
+    strays_at: Option<Instant>,
     pub timing: lspsup::Timing,
 }
 
@@ -340,6 +344,7 @@ impl App {
 
     /// Idle shutdown, backoff wake-ups and the merged-request timeout.
     pub(crate) fn lspx_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        self.lspx_close_strays(now);
         let mut stop = Vec::new();
         let grace = self.lspx.timing.idle_grace;
         for (li, l) in self.lsps.iter().enumerate() {
@@ -448,14 +453,47 @@ impl App {
 
     /// The document is closing (or changing language): close it on every registry server.
     pub(crate) fn lspx_close_doc(&mut self, i: usize) {
-        let Some(uri) = self.docs.get(i).and_then(|d| d.real_uri()) else { return };
+        let Some(real) = self.docs.get(i).and_then(|d| d.real_uri()) else { return };
+        // Registry servers are opened with the real URI; also close the primary-server URI in case
+        // the document reached a server under it (a leak would keep the server alive forever).
+        let mut uris = vec![real];
+        if let Some(u) = self.docs[i].uri().filter(|u| *u != uris[0]) {
+            uris.push(u);
+        }
         for li in 0..self.lsps.len() {
-            if self.lsps[li].is_generic() && self.lsps[li].open_uris.contains(&uri) {
-                self.lsps[li].notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
-                if let Some(g) = &self.lsps[li].generic {
-                    let id = g.id.clone();
-                    self.docs[i].set_ext_diags(&id, Vec::new());
+            if !self.lsps[li].is_generic() {
+                continue;
+            }
+            let mut closed = false;
+            for uri in &uris {
+                if self.lsps[li].open_uris.contains(uri) {
+                    self.lsps[li].notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
+                    closed = true;
                 }
+            }
+            if closed && let Some(g) = &self.lsps[li].generic {
+                let id = g.id.clone();
+                self.docs[i].set_ext_diags(&id, Vec::new());
+            }
+        }
+    }
+
+    /// Safety net for the idle shutdown: a registry server's open set only holds URIs of open
+    /// documents. Anything else (a document that left without its `didClose`) is closed now.
+    fn lspx_close_strays(&mut self, now: Instant) {
+        if self.lspx.strays_at.is_some_and(|t| now < t + STRAY_CHECK) {
+            return;
+        }
+        self.lspx.strays_at = Some(now);
+        if !self.lsps.iter().any(|l| l.is_generic() && !l.open_uris.is_empty()) {
+            return;
+        }
+        let live: HashSet<String> = self.docs.iter().flat_map(|d| [d.real_uri(), d.uri()]).flatten().collect();
+        for l in self.lsps.iter_mut().filter(|l| l.is_generic()) {
+            let stray: Vec<String> = l.open_uris.iter().filter(|u| !live.contains(*u)).cloned().collect();
+            for uri in stray {
+                l.log_line("app", &format!("closing {uri}: no open document has it"));
+                l.notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
             }
         }
     }
@@ -1250,6 +1288,37 @@ mod tests {
         // Reopening starts it again.
         let j = open(&mut app, &dir.join("y.fk"), "// FIXME y\n");
         assert!(pump(&mut app, 8000, |a| !a.docs[j].diags.is_empty()));
+        stop(&mut app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn registry_servers_get_real_uris_and_still_idle_out_in_a_lean_ts_project() {
+        let _g = lock();
+        let Some(exe) = fake_exe() else { return eprintln!("fake_lsp example not built, skipping") };
+        let dir = project("idle-mirror");
+        let mut app = test_app(&dir);
+        app.lspx.timing.idle_grace = Duration::from_millis(250);
+        app.config.language_servers = json!({"fake-a": server(&exe, "a", "primary", json!({}))});
+        // tsgo in lean mode registers a mirror for the project: only tsgo may see mirror URIs.
+        let mirror = dir.join(".tsgo-mirror");
+        crate::doc::register_mirror(mirror.clone(), dir.clone());
+        let f = dir.join("x.fk");
+        let i = open(&mut app, &f, "// FIXME\n");
+        assert!(pump(&mut app, 8000, |a| !a.docs[i].diags.is_empty()), "{:?}", app.status);
+        let real = crate::doc::path_to_uri(&f);
+        assert_eq!(app.lsps[0].open_uris, HashSet::from([real.clone()]), "the registry server got the mirror URI");
+        // A URI that no open document has (a leaked didOpen) must not keep the server alive.
+        app.lsps[0].open_uris.insert(crate::doc::path_to_uri(&mirror.join("x.fk")));
+        app.close_tab(i, true);
+        app.lspx.strays_at = None;
+        let ok = pump(&mut app, 3000, |a| a.lsps.is_empty());
+        crate::doc::unregister_mirror(&dir);
+        assert!(
+            ok,
+            "idle server was never stopped: {:?}",
+            app.lsps.iter().map(|l| l.open_uris.clone()).collect::<Vec<_>>()
+        );
         stop(&mut app);
         let _ = std::fs::remove_dir_all(&dir);
     }

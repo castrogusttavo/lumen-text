@@ -98,11 +98,11 @@ impl App {
     pub fn prompt_git_discard(&mut self) {
         let Some(f) = self.current_file() else { return };
         let name = self.rel(&f);
-        self.overlay = Overlay::Prompt(Prompt {
-            title: format!("Discard changes to {name}? Type 'yes' to confirm"),
-            kind: PromptKind::GitDiscard { path: f },
-            field: TextField::default(),
-        });
+        self.overlay = Overlay::Prompt(Prompt::new(
+            PromptKind::GitDiscard { path: f },
+            format!("Discard changes to {name}? Type 'yes' to confirm"),
+            TextField::default(),
+        ));
     }
 
     pub fn git_discard(&mut self, path: &Path) {
@@ -120,11 +120,11 @@ impl App {
     }
 
     pub fn prompt_git_commit(&mut self) {
-        self.overlay = Overlay::Prompt(Prompt {
-            title: "Commit message (for what is staged)".into(),
-            kind: PromptKind::GitCommit,
-            field: TextField::default(),
-        });
+        self.overlay = Overlay::Prompt(Prompt::new(
+            PromptKind::GitCommit,
+            "Commit message (for what is staged)".into(),
+            TextField::default(),
+        ));
     }
 
     pub fn git_commit(&mut self, msg: &str) {

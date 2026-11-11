@@ -211,6 +211,19 @@ impl App {
     /// Keys while a diff is shown. Returns true when consumed.
     pub fn diff_key(&mut self, key: &winit::keyboard::Key) -> bool {
         use winit::keyboard::{Key, NamedKey};
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        if ctrl || alt {
+            // Bound shortcuts and chords (Ctrl+J, Ctrl+S, Ctrl+P, Ctrl+K ...) stay global while a
+            // diff is open; other Ctrl/Alt letters mean nothing here (and must not stage or close).
+            if self.keymap.lookup(ctrl, shift, alt, key).is_some()
+                || self.keymap.chord_start(ctrl, shift, alt, key).is_some()
+            {
+                return false;
+            }
+            if matches!(key, Key::Character(_)) {
+                return true;
+            }
+        }
         if matches!(key, Key::Character(c) if c.as_str() == "s") && self.diff.as_ref().is_some_and(|d| d.src.is_some())
         {
             let cur = self.diff.as_ref().map_or(0, |d| d.cur);
@@ -617,5 +630,30 @@ mod tests {
         let dv = DiffView::staging_auto(&d, "keep.txt", None, Side::Unstaged, "keep.txt").unwrap();
         assert!(!dv.src.as_ref().unwrap().editable, "deleted in the working tree");
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn global_shortcuts_pass_through_an_open_diff() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        use winit::keyboard::{Key, ModifiersState};
+        let _g = lock();
+        let dir = tmp("diffkeys");
+        let mut app = test_app(&dir);
+        let press = |app: &mut App, mods: ModifiersState, c: &str| {
+            app.mods = mods;
+            app.handle_key(&crate::app::KeyIn { key: Key::Character(c.into()), text: None });
+            app.mods = ModifiersState::empty();
+        };
+        app.diff = Some(DiffView::plain("d".into(), "a".into(), "b".into(), Vec::new()));
+        let open = app.panel.open;
+        press(&mut app, ModifiersState::CONTROL, "j");
+        assert_eq!(app.panel.open, !open, "Ctrl+J toggles the panel even with a diff open");
+        assert!(app.diff.is_some());
+        // An unbound Ctrl+letter is swallowed, but it does not act like the bare letter.
+        press(&mut app, ModifiersState::CONTROL | ModifiersState::ALT, "q");
+        assert!(app.diff.is_some(), "Ctrl+Alt+Q must not close the diff like Q");
+        press(&mut app, ModifiersState::empty(), "q");
+        assert!(app.diff.is_none(), "plain Q still closes it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

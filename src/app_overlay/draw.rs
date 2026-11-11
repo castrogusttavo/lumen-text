@@ -108,13 +108,19 @@ impl App {
                 self.tx.draw_ui(cv, r.x + 16, r.y + 12, &p.title, dim, r, false);
                 let input = Rect::new(r.x + 12, r.y + 38, r.w - 24, 34);
                 cv.card(input, 8, c.input_bg, c.accent);
+                // New file / folder: the folder or the typed name's type icon, text shifted right of it.
+                let mut tx = input.x + 10;
+                if let Some(icon) = p.input_icon() {
+                    self.tx.icon(cv, icon, input.x + 10, input.y + (input.h - 16) / 2, 16, dim, input);
+                    tx += 24;
+                }
                 if p.field.sel_all {
                     let w = self.tx.ui_width(&p.field.text, false);
-                    cv.fill_round(Rect::new(input.x + 8, input.y + 6, w + 4, 22), 4, c.accent.with_alpha(0x50));
+                    cv.fill_round(Rect::new(tx - 2, input.y + 6, w + 4, 22), 4, c.accent.with_alpha(0x50));
                 }
-                self.tx.draw_ui(cv, input.x + 10, input.y + 8, &p.field.text, fg, input.inset(1), false);
+                self.tx.draw_ui(cv, tx, input.y + 8, &p.field.text, fg, input.inset(1), false);
                 let prefix: String = p.field.text.chars().take(p.field.cursor).collect();
-                let x = input.x + 10 + self.tx.ui_width(&prefix, false);
+                let x = tx + self.tx.ui_width(&prefix, false);
                 cv.fill_clip(Rect::new(x, input.y + 8, 1, 18), fg, input);
             }
             Overlay::Picker(p) => {

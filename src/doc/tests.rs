@@ -12,6 +12,30 @@ fn uri_roundtrip() {
 }
 
 #[test]
+fn only_tsgo_documents_are_addressed_under_the_mirror() {
+    let root = std::env::temp_dir().join(format!("lumen-uri-mirror-{}", std::process::id()));
+    let mirror = root.join(".mirror");
+    register_mirror(mirror.clone(), root.clone());
+    let doc = |name: &str, lang| {
+        let mut b = Buffer::from_str("");
+        b.path = Some(root.join(name));
+        Doc::new(b, None, lang, "//", 8.0)
+    };
+    let mut ts = doc("a.ts", Some("typescript"));
+    ts.lsp_root = Some(root.clone());
+    assert_eq!(ts.uri(), Some(path_to_uri(&mirror.join("a.ts"))), "tsgo reads the mirror");
+    assert_eq!(ts.real_uri(), Some(path_to_uri(&root.join("a.ts"))));
+    // Registry servers (marksman for a README in a lean TS repo) never see the mirror.
+    let mut md = doc("README.md", Some("markdown"));
+    md.lsp_root = Some(root.clone());
+    assert_eq!(md.uri(), md.real_uri());
+    // A TS document no tsgo serves (no tsgo root, e.g. a registry primary such as deno).
+    let plain = doc("b.ts", Some("typescript"));
+    assert_eq!(plain.uri(), plain.real_uri());
+    unregister_mirror(&root);
+}
+
+#[test]
 fn replace_text_is_one_undo_step_and_keeps_cursor() {
     let mut d = Doc::new(Buffer::from_str("const  a=1\nlet b = 2\n"), None, None, "//", 8.0);
     d.ed.click(&mut d.buf, 17, false); // inside "let b = 2"

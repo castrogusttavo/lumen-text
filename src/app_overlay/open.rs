@@ -269,19 +269,19 @@ impl App {
         if self.docs.is_empty() {
             return;
         }
-        self.overlay = Overlay::Prompt(Prompt {
-            kind: PromptKind::GotoLine,
-            title: "Go to line (line[:column])".into(),
-            field: TextField::default(),
-        });
+        self.overlay = Overlay::Prompt(Prompt::new(
+            PromptKind::GotoLine,
+            "Go to line (line[:column])".into(),
+            TextField::default(),
+        ));
     }
 
     pub fn open_prompt_rename(&mut self, name: &str, line: usize, col: usize) {
-        self.overlay = Overlay::Prompt(Prompt {
-            kind: PromptKind::Rename { line, col },
-            title: "New symbol name".into(),
-            field: TextField::with(name),
-        });
+        self.overlay = Overlay::Prompt(Prompt::new(
+            PromptKind::Rename { line, col },
+            "New symbol name".into(),
+            TextField::with(name),
+        ));
     }
 
     pub fn start_search(&mut self) {

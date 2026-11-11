@@ -42,7 +42,13 @@ impl App {
         }
 
         // User key bindings win over the built-in shortcuts.
-        if self.diff.is_some() && self.diff_pane_focused() && self.diff_key(&key) {
+        // The diff owns the keys of its pane, not the terminal's, nor a chord's second stroke.
+        if self.diff.is_some()
+            && self.focus != Focus::Terminal
+            && self.chord.is_none()
+            && self.diff_pane_focused()
+            && self.diff_key(&key)
+        {
             self.request_redraw();
             return false;
         }

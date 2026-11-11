@@ -697,7 +697,8 @@ impl App {
     /// Tell the server a document is gone from this URI, without touching server lifetime.
     pub fn lsp_notify_close(&mut self, i: usize) {
         self.lspx_close_doc(i);
-        let Some(li) = self.doc_lsp(i) else { return };
+        // A registry primary was just closed by `lspx_close_doc`; only tsgo is left to tell.
+        let Some(li) = self.doc_lsp(i).filter(|&li| !self.lsps[li].is_generic()) else { return };
         let d = &self.docs[i];
         if d.lsp_open
             && let Some(uri) = d.uri()
@@ -2061,7 +2062,7 @@ pub fn lang_change_plan(old: Option<&str>, new: Option<&str>) -> LangPlan {
 
 impl App {
     /// `didClose` only: the server keeps running (the document is reopened with another language id).
-    fn biome_notify_close(&mut self, i: usize) {
+    pub(crate) fn biome_notify_close(&mut self, i: usize) {
         let Some(lb) = self.biome_index(i) else { return };
         if let Some(uri) = self.docs.get(i).and_then(|d| d.real_uri()) {
             self.lsps[lb].notify("textDocument/didClose", json!({"textDocument": {"uri": uri}}));
@@ -2087,6 +2088,8 @@ impl App {
                 self.docs[i].lang = old;
                 self.lsp_did_close(i);
                 self.docs[i].lang = new;
+                // `lsp_did_close` also closed it on Biome: don't send a second didClose below.
+                self.docs[i].biome_open = false;
             }
         }
         if plan.biome_close && self.docs[i].biome_open {
