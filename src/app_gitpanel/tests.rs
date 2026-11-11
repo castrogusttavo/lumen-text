@@ -772,7 +772,8 @@ fn commit_box_wraps_scrolls_selects_all_and_commits() {
     // The wheel over the box scrolls the box.
     let b = app.gitpanel.as_ref().unwrap().msg_box;
     app.mouse = ((b.x + 20) as f64, (b.y + 20) as f64);
-    assert!(app.gitpanel_wheel(MouseScrollDelta::LineDelta(0.0, 3.0)));
+    let up = winit::dpi::PhysicalPosition::new(0.0, 40.0);
+    assert!(app.gitpanel_wheel(MouseScrollDelta::PixelDelta(up)), "touchpad over the box");
     let gp = app.gitpanel.as_ref().unwrap();
     assert!(gp.msg.scroll < gp.msg.max_scroll(), "scrolled up: {}", gp.msg.scroll);
     // Ctrl+A (bound to the editor's Select All) belongs to the box; typing replaces everything.
