@@ -104,7 +104,7 @@ pub fn defs() -> Vec<SettingDef> {
             "scrollbar",
             "Editor display",
             "Scrollbars",
-            "Show keeps the thin bars visible; Auto fades them in while you scroll or point at them; Never hides them (the wheel and keys still scroll).",
+            "Never (the default) hides them (the wheel, touchpad and keys still scroll); Show keeps the thin bars visible; Auto fades them in while you scroll or point at them.",
             Choice(&["show", "auto", "never"]),
         ),
         d(
@@ -124,7 +124,7 @@ pub fn defaults() -> Value {
         "ui_font_family": "", "ui_font_size": 13, "ui_font_weight": 400,
         "ui_line_height": fontcfg::DEFAULT_UI_LH, "ui_font_ligatures": true,
         "show_line_numbers": true, "show_bookmarks": true, "show_breakpoints": true,
-        "scrollbar": "show", "enable_lsp": true,
+        "scrollbar": "never", "enable_lsp": true,
     })
 }
 

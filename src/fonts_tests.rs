@@ -258,8 +258,10 @@ fn display_settings_apply_live() {
     assert_eq!(app.docs[app.active].gutter_w(), w0);
     app.apply_setting("scrollbar", &json!("never"));
     assert_eq!(display::scrollbar(), Scrollbar::Never);
+    app.apply_setting("scrollbar", &json!("show"));
+    assert_eq!(display::scrollbar(), Scrollbar::Show);
     app.apply_setting("scrollbar", &json!("bogus"));
-    assert_eq!(app.config.scrollbar, "show");
+    assert_eq!(app.config.scrollbar, "never", "unknown values fall back to the default");
     app.apply_setting("show_bookmarks", &json!(false));
     app.apply_setting("show_breakpoints", &json!(false));
     assert!(!display::show_bookmarks() && !display::show_breakpoints());

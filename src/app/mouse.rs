@@ -30,6 +30,10 @@ impl App {
         if self.gitpanel_mouse(x, y) {
             return self.request_redraw();
         }
+        // The sidebar's right edge (resize) comes before its scrollbar, whose track overlaps it.
+        if button == MouseButton::Left && self.sidebar_edge_press(x, y) {
+            return self.request_redraw();
+        }
         if self.topbar_click(x, y) || self.status_click(x, y) {
             return self.request_redraw();
         }
@@ -43,6 +47,9 @@ impl App {
                     self.tab_close_click(i, button);
                 } else {
                     self.activate(i);
+                    if button == MouseButton::Left && self.overlay.is_none() {
+                        self.tab_drag_press(i, x, y);
+                    }
                 }
             }
             return self.request_redraw();
@@ -251,6 +258,12 @@ impl App {
         if let Some(c) = self.gitpanel_cursor(x, y) {
             return c;
         }
+        if self.tab_dragging() {
+            return CursorIcon::Grabbing;
+        }
+        if self.sidebar_resizing() || self.sidebar_on_edge(x, y) {
+            return CursorIcon::ColResize;
+        }
         if self.drag_bar.is_some()
             || self.over_hbar(x, y)
             || self.sidebar_bar.is_some_and(|b| b.track.contains(x, y))
@@ -321,7 +334,12 @@ impl App {
     pub(super) fn hover_target(&self) -> Option<(Rect, i32)> {
         let (x, y) = self.mouse;
         let l = &self.layout;
-        if !self.overlay.is_none() || self.dragging || self.dragging_minimap {
+        if !self.overlay.is_none()
+            || self.dragging
+            || self.dragging_minimap
+            || self.tab_dragging()
+            || self.sidebar_resizing()
+        {
             return None;
         }
         if let Some((r, _)) = l.top_btns.iter().find(|(r, _)| r.contains(x, y)) {
@@ -408,7 +426,7 @@ impl App {
             .layout
             .tabs
             .iter()
-            .find(|(r, _, _)| r.contains(mx, my))
+            .find(|(r, _, _)| r.contains(mx, my) && !self.tab_dragging())
             .map(|(_, close, i)| (*i, close.contains(mx, my)));
         if th != self.tab_hover {
             self.tab_hover = th;
@@ -454,7 +472,7 @@ impl App {
         if self.regions_drag() {
             return self.request_redraw();
         }
-        if self.tree_drag_move() {
+        if self.tree_drag_move() || self.sidebar_edge_move() || self.tab_drag_move() {
             return self.request_redraw();
         }
         if let Some((kind, grab)) = self.drag_bar {

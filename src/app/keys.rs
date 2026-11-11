@@ -18,6 +18,9 @@ impl App {
         }
         self.hover = None;
         self.dismiss_tooltip();
+        if self.tab_drag_key(&ev.key) {
+            return false;
+        }
         let key = ev.key.clone();
 
         if !self.overlay.is_none() {

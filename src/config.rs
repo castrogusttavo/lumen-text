@@ -59,6 +59,8 @@ pub struct Config {
     pub tab_width: usize,
     /// Width in px of the Git panel when the user dragged its edge (0 = automatic).
     pub git_panel_width: i32,
+    /// Width in px of the left sidebar (drag its right edge; a double click there resets it).
+    pub sidebar_width: i32,
     /// Share of the editor area given to the source side of the Markdown reader (0.2 to 0.8).
     pub md_split: f32,
     /// "derived" (default: one calm flat chrome shared by every theme) or "theme" (sidebar, tabs and
@@ -95,17 +97,17 @@ pub struct Config {
     pub show_line_numbers: bool,
     pub show_bookmarks: bool,
     pub show_breakpoints: bool,
-    /// Scrollbars: "show" (always, thin), "auto" (fade in on scroll / hover) or "never".
+    /// Scrollbars: "show" (always, thin), "auto" (fade in on scroll / hover) or "never" (the default).
     pub scrollbar: String,
     /// Master switch for every language server (see `App::lsp_enabled`).
     pub enable_lsp: bool,
 }
 
-/// `scrollbar` setting values; anything else falls back to "show".
+/// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
 pub fn normalize_scrollbar(v: Option<&str>) -> String {
     match v {
         Some(m @ ("show" | "auto" | "never")) => m.to_string(),
-        _ => "show".to_string(),
+        _ => "never".to_string(),
     }
 }
 
@@ -224,6 +226,7 @@ impl Default for Config {
             git_pull_strategy: String::new(),
             tab_width: 4,
             git_panel_width: 0,
+            sidebar_width: crate::app::SIDEBAR_W,
             md_split: 0.5,
             theme_chrome: "derived".into(),
             updates: "auto".into(),
@@ -245,7 +248,7 @@ impl Default for Config {
             show_line_numbers: true,
             show_bookmarks: true,
             show_breakpoints: true,
-            scrollbar: "show".into(),
+            scrollbar: "never".into(),
             enable_lsp: true,
         }
     }
@@ -458,6 +461,9 @@ impl Config {
             git_pull_strategy: clean_pull_strategy(v["git_pull_strategy"].as_str().unwrap_or("")),
             tab_width: clean_tab_width(v["tab_width"].as_u64().unwrap_or(4) as usize),
             git_panel_width: v["git_panel_width"].as_i64().map_or(0, |n| n.clamp(0, 4000) as i32),
+            sidebar_width: v["sidebar_width"]
+                .as_i64()
+                .map_or(crate::app::SIDEBAR_W, |n| n.clamp(crate::app_sidebar::SIDEBAR_MIN_W as i64, 4000) as i32),
             md_split: v["md_split"].as_f64().map_or(0.5, |f| f as f32).clamp(MD_SPLIT_RANGE.0, MD_SPLIT_RANGE.1),
             theme_chrome: if v["theme_chrome"].as_str() == Some("theme") { "theme".into() } else { "derived".into() },
             updates: normalize_updates(v["updates"].as_str()),
@@ -520,6 +526,7 @@ impl Config {
             v["language_servers"] = self.language_servers.clone();
         }
         v["explorer_hide_gitignored"] = json!(self.explorer_hide_gitignored);
+        v["sidebar_width"] = json!(self.sidebar_width);
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -587,6 +594,7 @@ mod tests {
             git_pull_strategy: "rebase".into(),
             tab_width: 8,
             git_panel_width: 512,
+            sidebar_width: 333,
             theme_chrome: "theme".into(),
             updates: "notify".into(),
             test_command: "make test".into(),
@@ -831,7 +839,7 @@ mod tests {
         assert!(!c.buffer_font_ligatures && c.ui_font_ligatures);
         assert!(c.buffer_font_family.is_empty() && c.ui_font_family.is_empty());
         assert!(c.show_line_numbers && c.show_bookmarks && c.show_breakpoints && c.enable_lsp);
-        assert_eq!(c.scrollbar, "show");
+        assert_eq!(c.scrollbar, "never", "scrollbars are hidden by default");
         // The literals above are the fontcfg constants (the docs extractor reads the literals).
         assert_eq!(c.buffer_font_size, crate::fontcfg::DEFAULT_BUFFER_SIZE);
         assert_eq!(c.buffer_line_height, crate::fontcfg::DEFAULT_BUFFER_LH);
@@ -879,13 +887,32 @@ mod tests {
         assert_eq!(c.buffer_line_height, 9.0, "above 4 is pixels");
         assert_eq!(c.ui_line_height, 1.0);
         assert_eq!(c.buffer_font_family, "Fira Code");
-        assert_eq!(c.scrollbar, "show", "unknown mode falls back");
+        assert_eq!(c.scrollbar, "never", "unknown mode falls back to the default");
         assert!(c.show_line_numbers, "a non-bool keeps the default");
-        let c = load(r#"{"buffer_line_height": "tall", "buffer_font_weight": "bold", "scrollbar": "never"}"#);
+        let c = load(r#"{"buffer_line_height": "tall", "buffer_font_weight": "bold", "scrollbar": "show"}"#);
         assert_eq!((c.buffer_line_height, c.buffer_font_weight), (1.57, 400));
-        assert_eq!(c.scrollbar, "never");
+        assert_eq!(c.scrollbar, "show", "an explicit choice is kept");
         let c = load(r#"{"buffer_line_height": 1.9}"#);
         assert_eq!(c.buffer_line_height, 1.9);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sidebar_width_defaults_and_is_cleaned_on_load() {
+        let dir = std::env::temp_dir().join(format!("lumen-cfg-sidebar-{}", std::process::id()));
+        let p = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let load = |raw: &str| {
+            std::fs::write(&p, raw).unwrap();
+            Config::load_from(&p)
+        };
+        assert_eq!(load("{}").sidebar_width, crate::app::SIDEBAR_W, "missing = the classic 256 px");
+        assert_eq!(load(r#"{"sidebar_width": 20}"#).sidebar_width, crate::app_sidebar::SIDEBAR_MIN_W);
+        assert_eq!(load(r#"{"sidebar_width": 99999}"#).sidebar_width, 4000);
+        assert_eq!(load(r#"{"sidebar_width": "wide"}"#).sidebar_width, crate::app::SIDEBAR_W);
+        let c = Config { sidebar_width: 312, ..Config::default() };
+        c.save_to(&p).unwrap();
+        assert_eq!(Config::load_from(&p).sidebar_width, 312, "persisted");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -26,24 +26,7 @@ pub(super) fn on_accent(a: Rgba) -> Rgba {
 
 /// `s` shortened with an ellipsis so it fits in `max_w` pixels.
 pub(super) fn fit(tx: &mut TextCtx, s: &str, max_w: i32, bold: bool) -> String {
-    if max_w <= 0 {
-        return String::new();
-    }
-    if tx.ui_width(s, bold) <= max_w {
-        return s.to_string();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let cand: String = chars[..mid].iter().collect::<String>() + "…";
-        if tx.ui_width(&cand, bold) <= max_w {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    chars[..lo].iter().collect::<String>().trim_end().to_string() + "…"
+    crate::ui::fit_ellipsis(tx, s, max_w, bold)
 }
 
 pub(super) fn push_hit(hits: &mut Vec<(Rect, Hit)>, r: Rect, clip: Rect, h: Hit) {
@@ -53,8 +36,10 @@ pub(super) fn push_hit(hits: &mut Vec<(Rect, Hit)>, r: Rect, clip: Rect, h: Hit)
     }
 }
 
+/// The dropdown's thin bar. Follows the `scrollbar` setting: hidden with "never"; with "auto" the
+/// open dropdown counts as being pointed at (it only exists while the user works in it).
 pub(super) fn scrollbar(cv: &mut Canvas, area: Rect, scroll: f64, content: i32, col: Rgba) {
-    if content <= area.h || area.h <= 0 {
+    if content <= area.h || area.h <= 0 || crate::display::bar_strength(true) <= 0.0 {
         return;
     }
     let th = ((area.h as f64 * area.h as f64 / content as f64) as i32).max(24).min(area.h);
