@@ -693,7 +693,11 @@ pub fn write_mirror(root: &Path, mirror: &Path, includes: &[PathBuf]) -> std::io
         includes.iter().filter_map(|p| p.strip_prefix(root).ok().map(|r| r.to_string_lossy().into_owned())).collect();
     rels.sort();
     rels.dedup();
-    let mut cfg = json!({"include": rels, "compilerOptions": {"incremental": false, "noEmit": true, "rootDir": "."}});
+    // `rootDir` must contain the mirror (the included files) AND the real project (imports resolve
+    // through the symlinks to real paths, and the project's own `rootDir` may be inherited): "." made
+    // every such import a TS6059. Nothing is emitted, so the filesystem root is harmless.
+    let fs_root = mirror.ancestors().last().unwrap_or(mirror).to_string_lossy().into_owned();
+    let mut cfg = json!({"include": rels, "compilerOptions": {"incremental": false, "noEmit": true, "rootDir": fs_root}});
     let real_cfg = root.join("tsconfig.json");
     if real_cfg.exists() {
         cfg["extends"] = json!(real_cfg.to_string_lossy());
@@ -1029,7 +1033,8 @@ mod tests {
         std::fs::write(root.join("tsconfig.json"), "{}").unwrap();
         write_mirror(&root, &base.join("m"), &[]).unwrap();
         let cfg: Value = serde_json::from_str(&std::fs::read_to_string(base.join("m/tsconfig.json")).unwrap()).unwrap();
-        assert_eq!(cfg["compilerOptions"]["rootDir"], json!("."));
+        let rd = cfg["compilerOptions"]["rootDir"].as_str().unwrap();
+        assert!(base.join("m").starts_with(rd) && root.starts_with(rd), "rootDir {rd} must contain mirror and project");
         std::fs::remove_dir_all(&base).ok();
     }
 }
