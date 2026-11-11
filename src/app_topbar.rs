@@ -707,6 +707,7 @@ impl App {
         self.watch_dirs();
         remember_project(&self.root);
         self.restore_session();
+        self.restore_backups();
         let name = project_name(&self.root);
         self.say(format!("project: {name}"));
         self.request_redraw();

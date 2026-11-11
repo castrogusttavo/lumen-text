@@ -38,6 +38,7 @@ and no GPU driver:
 - Find/replace (case, regex), project search, symbols, go to line, back/forward navigation
 - Tabs, quick open (fuzzy), session restore, live reload when files change on disk (inotify)
 - **Local history**, independent of git: a snapshot on every save and right before a buffer is reloaded because another program (a formatter, `git checkout`, the AI agent) rewrote the file. *File: Local history* (also in the tab and explorer context menus) lists them ("3 minutes ago · Saved", date, size), opens a side-by-side diff of the snapshot against the buffer and restores it as one undoable edit (`r` or *Restore this version*); *File: Local history (deleted files)* brings back files that no longer exist. Stored in `$XDG_STATE_HOME/lumen-text/history` (default `~/.local/state`): identical snapshots are skipped, files over 5 MB are not kept, 50 snapshots per file and 200 MB in total (oldest pruned first)
+- Never lose anything: **hot exit** (quitting keeps unsaved tabs, untitled ones too, and reopens them next time, no save prompt), **crash recovery** (unsaved buffers are backed up a few seconds after each edit; a backup whose file changed on disk meanwhile is still restored, with a notice) and **persistent undo** (a file's undo tree survives closing it and restarting while its text is unchanged)
 - Fonts: separate **interface** and **buffer** (code, terminal, diffs) fonts with a searchable picker of the installed families, weight, size, line height and ligatures, all live
 - Display options: line numbers, bookmarks (`Ctrl+F2`), breakpoint dots, scrollbars (show / auto-hide / never) and a master switch for the language servers
 - Smooth Zed-style scrolling, drag selection by word/line, Wayland and X11 clipboard, IME, fractional hi-DPI scaling
@@ -186,7 +187,7 @@ published with every release. Nothing else is sent; there is no telemetry.
 | `"notify"` | Only announces that a new version exists (card + bottom bar icon). The card's *Atualizar agora* button installs it on demand. |
 | `"off"` | Never checks by itself. The command palette entries below still work. |
 
-Command palette: **Help: Check for updates** (always ends in a card: up to date, available or the error), **Help: Restart to update**, **Help: About Lumen** (version, install kind). Restart starts the new executable with your project and restores the session; with unsaved files it asks you to save first.
+Command palette: **Help: Check for updates** (always ends in a card: up to date, available or the error), **Help: Restart to update**, **Help: About Lumen** (version, install kind). Restart starts the new executable with your project and restores the session, unsaved tabs included (with `hot_exit` off it asks you to save first).
 
 What "install" means depends on how you installed Lumen:
 
@@ -293,6 +294,8 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `enable_lsp` | `true` | Master switch for every language server |
 | `ui_scale` | `0` | `0` = automatic from the window scale factor, else up to 4 |
 | `format_on_save` | `false` | Run the formatter on save |
+| `hot_exit` | `true` | Quitting keeps every unsaved buffer (untitled ones too) under `$XDG_STATE_HOME/lumen-text/backups/<project>/` and reopens them, unsaved, with the session; dirty buffers are also backed up ~2 s after the last edit (at most every 10 s while typing) for crashes. A backup goes away when its buffer is saved or closed without saving. `false` asks before quitting, as before |
+| `persistent_undo` | `true` | Keep each file's undo tree after closing it or quitting (`$XDG_STATE_HOME/lumen-text/undo/`, keyed by the canonical path); it is restored only when the file's text still matches. Up to 2 MB per file (older steps and side branches are dropped first), 48 MB in total, least recently used histories pruned first |
 | `updates` | `"auto"` | `"auto"` (check, download and install in the background), `"notify"` (only announce) or `"off"`; see [Updates](#updates) |
 | `auto_import` | `false` | Auto-import in completion (costs RAM and time) |
 | `lsp_narrow` | `false` | opt-in tsgo lean mode (only open files and their imports; less RAM, incomplete cross-file errors/references) |
@@ -349,6 +352,7 @@ VS Code keys; the mapping table is documented at the top of `src/zedtheme.rs`).
 ```
 src/
   buffer.rs, editor.rs     rope (ropey), grouped/tree undo, atomic save; cursors, selections, multi-cursor
+  backup.rs, undo_store.rs, app_backup.rs  hot exit / crash backups of unsaved buffers, persistent undo
   textmate.rs, highlight.rs  vscode-textmate port on onig; background, incremental tokenization
   theme.rs, zedtheme.rs    VS Code themes, WCAG-checked chrome; Zed theme import, custom template
   ui.rs, doc/, docview.rs  drawing primitives (cosmic-text, tiny-skia); document state and render, word wrap/folds

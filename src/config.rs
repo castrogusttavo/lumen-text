@@ -111,6 +111,11 @@ pub struct Config {
     /// `localhist`), at most `local_history_max_entries` per file (1..=1000).
     pub local_history: bool,
     pub local_history_max_entries: usize,
+    /// Quitting keeps unsaved buffers (untitled ones too) and reopens them next time instead of
+    /// asking to save; they are also backed up a moment after each edit, for crashes (`backup.rs`).
+    pub hot_exit: bool,
+    /// Keep each file's undo history after it is closed, while its text stays the same (`undo_store.rs`).
+    pub persistent_undo: bool,
 }
 
 /// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
@@ -265,6 +270,8 @@ impl Default for Config {
             enable_lsp: true,
             local_history: true,
             local_history_max_entries: crate::localhist::DEFAULT_MAX_ENTRIES,
+            hot_exit: true,
+            persistent_undo: true,
         }
     }
 }
@@ -531,6 +538,8 @@ impl Config {
             local_history_max_entries: v["local_history_max_entries"]
                 .as_u64()
                 .map_or(crate::localhist::DEFAULT_MAX_ENTRIES, |n| n.clamp(1, 1000) as usize),
+            hot_exit: v["hot_exit"].as_bool().unwrap_or(true),
+            persistent_undo: v["persistent_undo"].as_bool().unwrap_or(true),
         }
     }
 
@@ -560,6 +569,8 @@ impl Config {
         v["scrollbar_v"] = json!(2);
         v["local_history"] = json!(self.local_history);
         v["local_history_max_entries"] = json!(self.local_history_max_entries);
+        v["hot_exit"] = json!(self.hot_exit);
+        v["persistent_undo"] = json!(self.persistent_undo);
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -655,6 +666,8 @@ mod tests {
             enable_lsp: false,
             local_history: false,
             local_history_max_entries: 7,
+            hot_exit: false,
+            persistent_undo: false,
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

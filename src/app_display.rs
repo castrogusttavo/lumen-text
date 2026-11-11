@@ -164,6 +164,9 @@ impl App {
             }
             // Read by the Markdown reader on its next draw.
             "markdown_remote_images" => self.config.markdown_remote_images = b.unwrap_or(true),
+            // Read when the app quits / the next backup pass runs, and when a file is opened or closed.
+            "hot_exit" => self.config.hot_exit = b.unwrap_or(true),
+            "persistent_undo" => self.config.persistent_undo = b.unwrap_or(true),
             "build_command" | "run_command" => {
                 let cmd = v.as_str().unwrap_or("").trim().to_string();
                 if key == "build_command" {

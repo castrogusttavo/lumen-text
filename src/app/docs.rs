@@ -35,13 +35,14 @@ impl App {
         let idx = if let Some(i) = self.docs.iter().position(|d| d.path() == Some(path.as_path())) {
             i
         } else {
-            let buf = match Buffer::open(&path) {
+            let mut buf = match Buffer::open(&path) {
                 Ok(b) => b,
                 Err(e) => {
                     self.say(format!("Could not open {}: {e}", path.display()));
                     return None;
                 }
             };
+            self.undo_restore(&path, &mut buf);
             let lang = language_for(&path.to_string_lossy());
             let hl = lang.and_then(|l| self.tokenizer_for(l)).map(Highlighter::new);
             let comment = comment_prefix(&path.to_string_lossy());
@@ -176,6 +177,7 @@ impl App {
             self.say(format!("{n} has unsaved changes — close again to discard"));
             return;
         }
+        self.undo_persist(idx, false);
         self.lsp_did_close(idx);
         self.docs.remove(idx);
         self.split_doc_removed(idx);

@@ -242,6 +242,8 @@ pub struct App {
     pub actions_items: Vec<crate::app_overlay::Item>,
     /// Auto-update state (background checks, update card).
     pub upd: crate::app_update::UpdateUi,
+    /// Backups of unsaved buffers (hot exit, crash recovery).
+    pub backup: crate::backup::BackupState,
 }
 
 impl App {
@@ -365,6 +367,7 @@ impl App {
             actions_expected: 0,
             actions_items: Vec::new(),
             upd: crate::app_update::UpdateUi::new(),
+            backup: Default::default(),
         };
         app.refresh_git_status();
         app.watcher = crate::watcher::Watcher::new(app.wake()).ok();
@@ -379,6 +382,7 @@ impl App {
         if !had_args {
             app.restore_session();
         }
+        app.restore_backups();
         if std::env::var_os("LUMEN_HEADLESS").is_none() {
             crate::app_topbar::remember_project(&app.root);
             // The IDE bridge listens from the start, so any `claude` can attach with /ide.
