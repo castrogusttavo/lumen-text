@@ -69,6 +69,8 @@ pub enum GitAct {
         plan: ReleasePlan,
         new_tag_at: Option<String>,
     },
+    /// Worktree cards (see `app_worktree`).
+    Worktree(crate::app_worktree::WtAct),
 }
 
 /// Text prompts of the git features (`PromptKind::Git`).
@@ -97,6 +99,8 @@ pub enum GitAsk {
         title: String,
         new_tag_at: Option<String>,
     },
+    /// Worktree prompts (see `app_worktree`).
+    Worktree(crate::app_worktree::WtAsk),
 }
 
 /// Picker choices of the git features (`Action::Git`).
@@ -109,6 +113,8 @@ pub enum GitPick {
     /// Release for an existing tag, or for a new one (None).
     ReleaseTag(Option<String>),
     CherryPick(String),
+    /// Worktree pickers (see `app_worktree`).
+    Worktree(crate::app_worktree::WtPick),
 }
 
 /// A commit row of the History tab, as the context menu sees it.
@@ -513,6 +519,7 @@ impl App {
                 let plan = ReleasePlan { remote, slug, tag, title, notes };
                 self.git_ask(release_card(plan, new_tag_at));
             }
+            GitAsk::Worktree(w) => self.worktree_answer(&top, w, text),
         }
     }
 
@@ -537,6 +544,7 @@ impl App {
                 self.git_prompt(GitAsk::ReleaseTitle { tag, new_tag_at: None }, title, &t);
             }
             GitPick::CherryPick(hash) => self.git_cherry_pick(&hash),
+            GitPick::Worktree(w) => self.worktree_pick(&top, w),
         }
     }
 
@@ -670,6 +678,7 @@ impl App {
                 }
                 self.git_start_job(Op::Release(plan));
             }
+            GitAct::Worktree(w) => self.worktree_act(&top, w),
         }
     }
 }

@@ -35,6 +35,7 @@ mod app_tooltip;
 mod app_topbar;
 mod app_unsaved;
 mod app_update;
+mod app_worktree;
 mod backup;
 mod bigfile;
 mod bookmarks;
@@ -107,6 +108,7 @@ mod undo_store;
 mod update;
 mod watcher;
 mod winconsole;
+mod worktree;
 mod zedtheme;
 
 use std::{env, path::PathBuf, process::ExitCode};
@@ -158,6 +160,8 @@ fn main() -> ExitCode {
         (1000u32, 700u32),
     );
     let mut scale_arg = None::<f32>;
+    // `--new-window`: never hand the arguments to a running instance (see `instance`).
+    let mut new_window = false;
     let mut it = env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -168,6 +172,7 @@ fn main() -> ExitCode {
             "--install-user" => return exit_code(update::cli_install_user()),
             "--check-update" => return exit_code(update::cli_check(false)),
             "--update" => return exit_code(update::cli_check(true)),
+            "--new-window" => new_window = true,
             "--keys" => keys = it.next(),
             "--scale" => scale_arg = it.next().as_deref().and_then(ui::parse_scale),
             "--snap" => snap = PathBuf::from(it.next().unwrap_or_default()),
@@ -241,9 +246,12 @@ fn main() -> ExitCode {
         let _ = proxy.send_event(app::UserEvent::Wake);
     });
     // One window per user: hand the files to a running instance and leave.
-    let inbox = match instance::claim(&args, wake.clone()) {
+    // A folder other than the running window's project gets its own window (`Role::Own`).
+    let role = if new_window { instance::Role::Own } else { instance::claim(&args, wake.clone()) };
+    let inbox = match role {
         instance::Role::Secondary => return ExitCode::SUCCESS,
         instance::Role::Primary(rx) => rx,
+        instance::Role::Own => instance::no_inbox(),
     };
     std::thread::spawn(update::refresh_user_integration);
     // Learn the user's shell PATH now so the first task or test run does not wait for it.
@@ -255,6 +263,7 @@ fn main() -> ExitCode {
         app.dpi.forced = scale_arg;
     }
     app.inbox = Some(inbox);
+    instance::set_root(&app.root);
     mem::report("app ready");
     app::run(app, el);
     ExitCode::SUCCESS

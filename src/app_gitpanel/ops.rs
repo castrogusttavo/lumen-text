@@ -322,6 +322,7 @@ impl App {
     }
 
     pub(super) fn gp_job_done(&mut self, gp: &mut GitPanel, op: Op, res: Result<String, Fail>) {
+        let res_copy = res.clone();
         match res {
             Ok(msg) => self.gp_note(gp, msg, true),
             Err(f) if f.kind == FailKind::NoUpstream && op == Op::Push => return self.gp_ask_publish(gp),
@@ -348,6 +349,7 @@ impl App {
             }
             Err(f) => self.gp_note(gp, format!("{}: {}", op.label(), f.text), false),
         }
+        self.worktree_job_done(&op, &res_copy, Some(&mut *gp));
         // A pull moves HEAD and files; everything the panel shows may have changed.
         self.sync_docs_with_head();
         self.refresh_tree();
