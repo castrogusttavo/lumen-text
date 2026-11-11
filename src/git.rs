@@ -29,9 +29,22 @@ pub fn head_text(path: &Path) -> Option<String> {
     git(dir, &["show", &format!("HEAD:./{name}")])
 }
 
-/// `git status --porcelain` flags per path, relative to `root`.
+/// The repository's git dir (where `HEAD` and `index` live; `.git/worktrees/<name>` in a linked
+/// worktree) and its common dir (`refs`, `packed-refs`), both absolute.
+pub fn git_dirs(dir: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let out = git(dir, &["rev-parse", "--absolute-git-dir", "--git-common-dir"])?;
+    let mut lines = out.lines().map(str::trim).filter(|l| !l.is_empty());
+    let gitdir = std::path::PathBuf::from(lines.next()?);
+    // `--git-common-dir` may be relative to the directory git ran in.
+    let common = lines.next().map(|c| dir.join(c)).unwrap_or_else(|| gitdir.clone());
+    let common = crate::paths::canonical(&common).unwrap_or(common);
+    Some((gitdir, common))
+}
+
+/// `git status --porcelain` flags per path, relative to `root`. `--no-optional-locks`: never
+/// rewrite the index just to refresh its stat cache, so watching `.git/index` cannot loop.
 pub fn status(root: &Path) -> Vec<(String, String)> {
-    let Some(out) = git(root, &["status", "--porcelain", "-uall"]) else { return Vec::new() };
+    let Some(out) = git(root, &["--no-optional-locks", "status", "--porcelain", "-uall"]) else { return Vec::new() };
     out.lines().filter(|l| l.len() > 3).map(|l| (l[..2].to_string(), l[3..].to_string())).collect()
 }
 

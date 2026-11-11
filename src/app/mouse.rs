@@ -41,7 +41,7 @@ impl App {
         if button == MouseButton::Left && self.sidebar_edge_press(x, y) {
             return self.request_redraw();
         }
-        if self.topbar_click(x, y) || self.status_click(x, y) {
+        if self.topbar_click(x, y) || self.fswatch_click(x, y) || self.status_click(x, y) {
             return self.request_redraw();
         }
         if self.completion_click(x, y) {
@@ -300,6 +300,7 @@ impl App {
             || self.terms_hit_at(x, y).is_some()
             || self.tests_clickable_at(x, y)
             || self.build_clickable_at(x, y)
+            || self.fswatch_clickable_at(x, y)
             || l.completion_rows.iter().any(|(r, _)| r.contains(x, y))
             || self.diff_btn_at(x, y).is_some()
         {

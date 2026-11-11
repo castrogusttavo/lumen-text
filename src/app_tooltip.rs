@@ -59,6 +59,8 @@ pub enum TipKey {
     Tests(crate::app_tests::Tip),
     /// A tab or button of the terminal strip in the bottom panel.
     Term(crate::app_terms::TermHit),
+    /// The explorer's refresh button and the "Polling (NFS)" hint.
+    Fs(crate::app_fswatch::FsTip),
 }
 
 /// Pointer-rest state (the text is resolved while drawing).
@@ -306,7 +308,7 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 impl App {
-    fn shortcut_text(&self, id: &str) -> Option<String> {
+    pub(crate) fn shortcut_text(&self, id: &str) -> Option<String> {
         shortcut_in(&self.keymap.entries(), id)
     }
 
@@ -357,6 +359,9 @@ impl App {
         }
         if let Some((r, k)) = self.tests_tip_at(x, y) {
             return Some((TipKey::Tests(k), r, true));
+        }
+        if let Some((k, r, below)) = self.fswatch_tip_at(x, y) {
+            return Some((TipKey::Fs(k), r, below));
         }
         if let Some(gp) = &self.gitpanel
             && self.gitpanel_rect().contains(x, y)
@@ -415,6 +420,7 @@ impl App {
             TipKey::Ai(h) => self.aipanel_tip(h),
             TipKey::Tests(k) => self.tests_tip(k),
             TipKey::Term(h) => self.terms_tip(h),
+            TipKey::Fs(k) => self.fswatch_tip(k),
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
                 Some(s) => t(&s.name, None, Some(format!("{} · line {}", symbol_kind_name(s.kind), s.sl + 1))),
                 None => TipText::default(),

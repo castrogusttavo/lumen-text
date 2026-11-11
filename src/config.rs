@@ -119,6 +119,9 @@ pub struct Config {
     pub hot_exit: bool,
     /// Keep each file's undo history after it is closed, while its text stays the same (`undo_store.rs`).
     pub persistent_undo: bool,
+    /// Interval in ms of the polling fallback used where inotify cannot be trusted (NFS, SMB, FUSE,
+    /// 9p, FAT/exFAT, watch limit reached); at least `poller::MIN_MS`.
+    pub watcher_poll_ms: u64,
 }
 
 /// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
@@ -276,6 +279,7 @@ impl Default for Config {
             local_history_max_entries: crate::localhist::DEFAULT_MAX_ENTRIES,
             hot_exit: true,
             persistent_undo: true,
+            watcher_poll_ms: crate::poller::DEFAULT_MS,
         }
     }
 }
@@ -421,6 +425,11 @@ impl Config {
     }
 }
 
+/// `watcher_poll_ms` from the file: the default when missing, never below `poller::MIN_MS`, at most a minute.
+pub fn clean_poll_ms(v: Option<u64>) -> u64 {
+    v.map_or(crate::poller::DEFAULT_MS, |n| n.clamp(crate::poller::MIN_MS, 60_000))
+}
+
 pub fn default_path() -> Option<PathBuf> {
     let base = crate::paths::config_home()?;
     Some(base.join("lumen-text").join("config.json"))
@@ -545,6 +554,7 @@ impl Config {
                 .map_or(crate::localhist::DEFAULT_MAX_ENTRIES, |n| n.clamp(1, 1000) as usize),
             hot_exit: v["hot_exit"].as_bool().unwrap_or(true),
             persistent_undo: v["persistent_undo"].as_bool().unwrap_or(true),
+            watcher_poll_ms: clean_poll_ms(v["watcher_poll_ms"].as_u64()),
         }
     }
 
@@ -577,6 +587,7 @@ impl Config {
         v["local_history_max_entries"] = json!(self.local_history_max_entries);
         v["hot_exit"] = json!(self.hot_exit);
         v["persistent_undo"] = json!(self.persistent_undo);
+        v["watcher_poll_ms"] = json!(self.watcher_poll_ms);
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -675,12 +686,22 @@ mod tests {
             local_history_max_entries: 7,
             hot_exit: false,
             persistent_undo: false,
+            watcher_poll_ms: 5000,
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);
         std::fs::write(&p, "{ not json").unwrap();
         assert_eq!(Config::load_from(&p), Config::default(), "corrupt file -> defaults");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn watcher_poll_interval_default_and_bounds() {
+        assert_eq!(Config::default().watcher_poll_ms, 2000);
+        assert_eq!(clean_poll_ms(None), 2000);
+        assert_eq!(clean_poll_ms(Some(10)), crate::poller::MIN_MS);
+        assert_eq!(clean_poll_ms(Some(5000)), 5000);
+        assert_eq!(clean_poll_ms(Some(u64::MAX)), 60_000);
     }
 
     #[test]

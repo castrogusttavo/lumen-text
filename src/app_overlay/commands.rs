@@ -168,6 +168,7 @@ pub enum Cmd {
     ColumnSelectLeft,
     ColumnSelectRight,
     JumpTo,
+    RefreshExplorer,
 }
 
 impl Cmd {
@@ -346,4 +347,5 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Edit: Column select left", "Ctrl+Shift+Alt+←", Cmd::ColumnSelectLeft),
     ("Edit: Column select right", "Ctrl+Shift+Alt+→", Cmd::ColumnSelectRight),
     ("Go to: Jump to…", "Alt+J", Cmd::JumpTo),
+    ("File: Refresh explorer and git status", "", Cmd::RefreshExplorer),
 ];

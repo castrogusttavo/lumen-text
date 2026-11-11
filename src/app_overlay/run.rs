@@ -269,6 +269,7 @@ impl App {
             Cmd::ColumnSelectLeft => self.column_select(0, -1),
             Cmd::ColumnSelectRight => self.column_select(0, 1),
             Cmd::JumpTo => self.jump_start(),
+            Cmd::RefreshExplorer => self.refresh_explorer(),
             Cmd::Quit => {
                 if self.try_quit() {
                     std::process::exit(0);
