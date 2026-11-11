@@ -57,6 +57,8 @@ pub enum Action {
     Git(crate::app_gitpanel::GitPick),
     /// A macro saved in `macros.json` (see `macros`).
     Macro(String),
+    /// "Compare with branch or commit" pickers (see `app_gitcmp`).
+    Compare(crate::app_gitcmp::CmpPick),
 }
 
 #[derive(Clone)]
@@ -94,6 +96,10 @@ pub struct Picker {
     pub word: bool,
     /// Project search: the replace row (Ctrl+Shift+H) and its state.
     pub rep: Option<Box<preplace::ReplaceUi>>,
+    /// Accepts free text too: what was typed becomes one more item, made by this (see
+    /// [`typed_picker`]); `real` is the number of items that are not that one.
+    pub typed: Option<std::rc::Rc<dyn Fn(&str) -> Action>>,
+    pub real: usize,
 }
 
 pub enum PromptKind {
@@ -222,6 +228,15 @@ pub fn choice_picker(title: &str, items: Vec<Item>, sel: usize) -> Picker {
     p
 }
 
+/// A filtering picker that also takes what is typed (a ref, an expression...): a “Use …” item made
+/// by `make` comes first, unless some item starts with the typed text.
+pub fn typed_picker(title: &str, items: Vec<Item>, make: std::rc::Rc<dyn Fn(&str) -> Action>) -> Picker {
+    let mut p = Picker::new(PickKind::Choice, title, items);
+    p.typed = Some(make);
+    p.refilter();
+    p
+}
+
 impl Picker {
     fn new(kind: PickKind, title: &str, items: Vec<Item>) -> Self {
         let mut p = Picker {
@@ -236,13 +251,23 @@ impl Picker {
             regex: false,
             word: false,
             rep: None,
+            typed: None,
+            real: 0,
         };
+        p.real = p.items.len();
         p.refilter();
         p
     }
 
     pub fn refilter(&mut self) {
         let q = self.field.text.trim().to_string();
+        if let Some(make) = self.typed.clone() {
+            self.items.truncate(self.real);
+            if !q.is_empty() {
+                let action = make(&q);
+                self.items.push(Item { label: format!("Use “{q}”"), detail: "as typed".into(), action });
+            }
+        }
         let filter = matches!(
             self.kind,
             PickKind::QuickOpen
@@ -275,6 +300,19 @@ impl Picker {
                 .collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             self.filtered = scored.into_iter().take(300).map(|(_, i, p)| (i, p)).collect();
+        }
+        if self.typed.is_some() && !q.is_empty() {
+            // The typed item: first, unless an item starts with what was typed (then last).
+            let t = self.real;
+            let entry = match self.filtered.iter().position(|(i, _)| *i == t) {
+                Some(k) => self.filtered.remove(k),
+                None => (t, Vec::new()),
+            };
+            if self.filtered.iter().any(|(i, _)| self.items[*i].label.starts_with(&q)) {
+                self.filtered.push(entry);
+            } else {
+                self.filtered.insert(0, entry);
+            }
         }
         self.sel = self.sel.min(self.filtered.len().saturating_sub(1));
         self.scroll = 0;

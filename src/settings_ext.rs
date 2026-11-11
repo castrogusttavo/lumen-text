@@ -177,6 +177,13 @@ pub fn defs() -> Vec<SettingDef> {
             "Shows a system notification when an agent session is waiting for you or done while Lumen is in the background (once per turn).",
             Bool,
         ),
+        d(
+            "diff_ignore_whitespace",
+            "Git",
+            "Diff: ignore whitespace",
+            "Side-by-side diffs ignore changes in spaces, tabs and line endings (git diff -w): such lines do not count as changed and are not highlighted. Staging a hunk or lines still stages their real text. Also a toggle in the diff header (key W).",
+            Bool,
+        ),
     ]
 }
 
@@ -191,6 +198,7 @@ pub fn defaults() -> Value {
         "markdown_remote_images": true, "hot_exit": true, "persistent_undo": true,
         "render_whitespace": "none", "trim_trailing_whitespace": false, "insert_final_newline": false,
         "ai_notifications": true,
+        "diff_ignore_whitespace": false,
     })
 }
 
@@ -209,6 +217,7 @@ pub fn values(c: &Config) -> Value {
         "render_whitespace": c.render_whitespace, "trim_trailing_whitespace": c.trim_trailing_whitespace,
         "insert_final_newline": c.insert_final_newline,
         "ai_notifications": c.ai_notifications,
+        "diff_ignore_whitespace": c.diff_ignore_whitespace,
     })
 }
 

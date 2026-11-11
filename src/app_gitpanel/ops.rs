@@ -446,13 +446,14 @@ impl App {
         let (Some(top), Some(ci)) = (gp.top.clone(), gp.open_commit) else { return };
         let (Some(f), Some(c)) = (gp.files.get(j).cloned(), gp.commits.get(ci).cloned()) else { return };
         let (old, new) = commit_pair(&top, &c.hash, &f);
-        let rows = gitx::side_by_side(&old, &new);
         let name = split_name(&f.path).0.to_string();
-        self.diff = Some(DiffView::plain(
+        self.diff = Some(DiffView::of_texts(
             format!("{name} — {}  {}", c.short, c.subject),
             format!("{}^", c.short),
             c.short.clone(),
-            rows,
+            old,
+            new,
+            self.config.diff_ignore_whitespace,
         ));
         gp.open_file = Some(j);
     }

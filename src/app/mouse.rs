@@ -117,6 +117,9 @@ impl App {
         if self.diff.is_some() && self.diff_area().contains(x, y) {
             // The diff's keys (n / p, Accept / Reject) need the keyboard off the terminal.
             self.focus = Focus::Editor;
+            if button == MouseButton::Left {
+                self.diff_press(x, y); // starts a line selection (line staging)
+            }
             return self.request_redraw();
         }
         if self.conflict_click(x, y) {
@@ -497,6 +500,9 @@ impl App {
             return self.request_redraw();
         }
         if self.regions_drag() {
+            return self.request_redraw();
+        }
+        if self.diff_drag_move(x, y) {
             return self.request_redraw();
         }
         if self.aipanel_move() {

@@ -2,7 +2,7 @@
 //! conflict parsing and resolution, file history, and side-by-side diffs.
 #![allow(dead_code)]
 
-use similar::{DiffTag, TextDiff};
+use similar::{DiffOp, DiffTag, TextDiff};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -30,14 +30,37 @@ pub struct Hunk {
     pub new_len: usize,
 }
 
+/// git's whitespace (`-w` ignores these characters when comparing lines).
+fn is_ws(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c')
+}
+
+/// Line diff of `a` against `b`. `ws` = ignore all whitespace (`git diff -w`): lines compare
+/// equal when they differ only in spaces, tabs or line endings. The ops index the real lines.
+fn line_ops(a: &[&str], b: &[&str], ws: bool) -> Vec<DiffOp> {
+    if !ws {
+        return TextDiff::from_slices(a, b).ops().to_vec();
+    }
+    let key = |l: &&str| l.chars().filter(|c| !is_ws(*c)).collect::<String>();
+    let (ka, kb): (Vec<String>, Vec<String>) = (a.iter().map(key).collect(), b.iter().map(key).collect());
+    let ra: Vec<&str> = ka.iter().map(String::as_str).collect();
+    let rb: Vec<&str> = kb.iter().map(String::as_str).collect();
+    TextDiff::from_slices(&ra, &rb).ops().to_vec()
+}
+
 /// Compute the hunks between `base` and `current` (adjacent ops are merged).
 pub fn hunks(base: &str, current: &str) -> Vec<Hunk> {
+    hunks_ws(base, current, false)
+}
+
+/// [`hunks`], optionally ignoring whitespace (`-w`). The ranges are real line ranges: a hunk
+/// staged from them carries the real lines (whitespace included) of exactly that region.
+pub fn hunks_ws(base: &str, current: &str, ws: bool) -> Vec<Hunk> {
     let a = lines(base);
     let b = lines(current);
-    let diff = TextDiff::from_slices(&a, &b);
     let mut out: Vec<Hunk> = Vec::new();
     let mut cur: Option<Hunk> = None;
-    for op in diff.ops() {
+    for op in line_ops(&a, &b, ws) {
         let (tag, o, n) = op.as_tag_tuple();
         if tag == DiffTag::Equal {
             if let Some(h) = cur.take() {
@@ -67,7 +90,7 @@ pub fn hunk_at_line(hunks: &[Hunk], line: usize) -> Option<&Hunk> {
     })
 }
 
-fn push_body(out: &mut String, prefix: char, ls: &[&str]) {
+pub(crate) fn push_body(out: &mut String, prefix: char, ls: &[&str]) {
     for l in ls {
         out.push(prefix);
         out.push_str(l);
@@ -77,7 +100,7 @@ fn push_body(out: &mut String, prefix: char, ls: &[&str]) {
     }
 }
 
-fn range_header(start: usize, len: usize) -> String {
+pub(crate) fn range_header(start: usize, len: usize) -> String {
     // git: empty ranges report the line *before* the gap (0 at file start).
     let s = if len == 0 { start } else { start + 1 };
     if len == 1 { format!("{s}") } else { format!("{s},{len}") }
@@ -126,15 +149,22 @@ fn apply_hunk(
 ) -> Result<(), String> {
     // Unstaging applies HEAD -> index in reverse onto the index, where the hunk sits at `new_start`.
     let patch = hunk_patch_at(rel_path, base, current, h, if reverse { h.new_start } else { h.base_start });
-    let mut args = vec!["apply", "--cached", "--unidiff-zero"];
+    let mut args = vec!["--cached", "--unidiff-zero"];
     if reverse {
         args.push("--reverse");
     }
-    args.push("-");
+    git_apply(repo_dir, &patch, &args)
+}
+
+/// `git apply <args> -` in `repo_dir` with `patch` on stdin. Whitespace warnings and fixes are
+/// off: the lines must land exactly as they are.
+pub fn git_apply(repo_dir: &Path, patch: &str, args: &[&str]) -> Result<(), String> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(repo_dir)
+        .args(["apply", "--whitespace=nowarn"])
         .args(args)
+        .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -424,13 +454,18 @@ pub fn blocks(rows: &[Row]) -> Vec<(usize, usize)> {
 /// Align `old` and `new` into side-by-side rows. Replace blocks pair lines
 /// up; the surplus becomes Removed / Added rows.
 pub fn side_by_side(old: &str, new: &str) -> Vec<Row> {
+    side_by_side_ws(old, new, false)
+}
+
+/// [`side_by_side`], optionally ignoring whitespace (`-w`): lines that differ only in whitespace
+/// become `Same` rows (each side still shows its own text).
+pub fn side_by_side_ws(old: &str, new: &str, ws: bool) -> Vec<Row> {
     let a = lines(old);
     let b = lines(new);
-    let diff = TextDiff::from_slices(&a, &b);
     let l = |i: usize| Some((i, chomp(a[i]).to_string()));
     let r = |i: usize| Some((i, chomp(b[i]).to_string()));
     let mut rows = Vec::new();
-    for op in diff.ops() {
+    for op in line_ops(&a, &b, ws) {
         let (tag, o, n) = op.as_tag_tuple();
         match tag {
             DiffTag::Equal => {
@@ -510,6 +545,41 @@ pub fn changed_ranges(a: &str, b: &str) -> (Vec<(usize, usize)>, Vec<(usize, usi
                 push_range(&mut ra, o.start, o.end);
                 push_range(&mut rb, n.start, n.end);
             }
+        }
+    }
+    (ra, rb)
+}
+
+/// [`changed_ranges`], optionally ignoring whitespace (`-w`): only the other characters are
+/// compared, so spacing changes are not highlighted. Ranges are still char indexes of `a` / `b`.
+pub fn changed_ranges_ws(a: &str, b: &str, ws: bool) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    if !ws {
+        return changed_ranges(a, b);
+    }
+    // The non-whitespace characters as tokens, with their char index in the line.
+    fn toks(s: &str) -> (Vec<&str>, Vec<usize>) {
+        let (mut t, mut at) = (Vec::new(), Vec::new());
+        for (ci, (bi, ch)) in s.char_indices().enumerate() {
+            if !is_ws(ch) {
+                t.push(&s[bi..bi + ch.len_utf8()]);
+                at.push(ci);
+            }
+        }
+        (t, at)
+    }
+    let ((ta, ia), (tb, ib)) = (toks(a), toks(b));
+    let diff = TextDiff::from_slices(&ta, &tb);
+    let (mut ra, mut rb) = (Vec::new(), Vec::new());
+    let span = |v: &mut Vec<(usize, usize)>, at: &[usize], r: std::ops::Range<usize>| {
+        if !r.is_empty() {
+            push_range(v, at[r.start], at[r.end - 1] + 1);
+        }
+    };
+    for op in diff.ops() {
+        let (tag, o, n) = op.as_tag_tuple();
+        if tag != DiffTag::Equal {
+            span(&mut ra, &ia, o);
+            span(&mut rb, &ib, n);
         }
     }
     (ra, rb)
@@ -1180,5 +1250,54 @@ mod tests {
         let (a, b) = changed_ranges("héllo", "hállo");
         assert_eq!(a, vec![(1, 2)]);
         assert_eq!(b, vec![(1, 2)]);
+    }
+
+    // ---- ignore whitespace (-w) ----
+
+    #[test]
+    fn ws_hunks_skip_whitespace_only_lines() {
+        let (b, c) = ("a\n  b\nx\nc\n", "a\n    b\nx\nC\n");
+        assert_eq!(hunks(b, c).len(), 2);
+        assert_eq!(hunks_ws(b, c, true), vec![Hunk { base_start: 3, base_len: 1, new_start: 3, new_len: 1 }]);
+        assert!(hunks_ws("a\r\nb\n", "a\nb\n", true).is_empty(), "line endings are whitespace too");
+        assert!(hunks_ws("f(a, b)\n", "f(a,b)\n", true).is_empty(), "-w ignores all of it, not just amounts");
+        assert_eq!(hunks_ws("a\n", "a\nb\n", true).len(), 1, "real additions stay");
+        assert_eq!(hunks_ws("a\n", "a\n\n", true).len(), 1, "an added blank line is still a line");
+    }
+
+    #[test]
+    fn ws_rows_keep_each_side_text_and_blocks_match_hunks() {
+        let (o, n) = ("a\n  b\nx\nc\n", "a\n    b\nx\nC\nd\n");
+        let r = side_by_side_ws(o, n, true);
+        let k: Vec<_> = r.iter().map(|r| r.kind).collect();
+        assert_eq!(k, [RowKind::Same, RowKind::Same, RowKind::Same, RowKind::Changed, RowKind::Added]);
+        assert_eq!(r[1].left, Some((1, "  b".into())));
+        assert_eq!(r[1].right, Some((1, "    b".into())));
+        assert_eq!(blocks(&r).len(), hunks_ws(o, n, true).len());
+        assert_eq!(side_by_side_ws(o, n, false), side_by_side(o, n));
+    }
+
+    #[test]
+    fn ws_intraline_ranges_ignore_spacing() {
+        assert_eq!(changed_ranges_ws("foo(a, b)", "foo(a,b)", true), (vec![], vec![]));
+        assert_eq!(changed_ranges_ws("  x = 1", "x = 2", true), (vec![(6, 7)], vec![(4, 5)]));
+        assert_eq!(changed_ranges_ws("ab", "a b", false), changed_ranges("ab", "a b"));
+        assert_eq!(changed_ranges_ws("é = 1", "é=2", true), (vec![(4, 5)], vec![(2, 3)]));
+    }
+
+    #[test]
+    fn ws_hunk_stages_its_real_lines_only() {
+        let (base, cur) = ("a\n  b\nx\nc\n", "a\n    b\nx\nC\n");
+        let t = init();
+        commit_file(&t.0, "f.txt", base, "base");
+        fs::write(t.0.join("f.txt"), cur).unwrap();
+        let hs = hunks_ws(base, cur, true);
+        stage_hunk(&t.0, "f.txt", base, cur, &hs[0]).unwrap();
+        assert_eq!(git(&t.0, &["show", ":f.txt"]), "a\n  b\nx\nC\n", "the re-indent stays unstaged");
+        // Unstage it again from the staged side, still ignoring whitespace.
+        let idx = git(&t.0, &["show", ":f.txt"]);
+        let hs = hunks_ws(base, &idx, true);
+        unstage_hunk(&t.0, "f.txt", base, &idx, &hs[0]).unwrap();
+        assert!(git(&t.0, &["diff", "--cached"]).is_empty());
     }
 }

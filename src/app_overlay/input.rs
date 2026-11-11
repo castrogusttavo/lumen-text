@@ -292,6 +292,7 @@ impl App {
             Action::LocalHist(path, None) => self.hist_list(&path),
             Action::Git(p) => self.git_pick(p),
             Action::Macro(name) => self.macro_run_saved(&name),
+            Action::Compare(p) => self.cmp_pick(p),
             Action::UndoBranch(n) => {
                 if let Some(d) = self.docs.get_mut(self.active)
                     && let Some(sel) = d.buf.redo_branch(n)

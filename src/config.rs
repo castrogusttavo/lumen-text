@@ -83,6 +83,8 @@ pub struct Config {
     pub run_command: String,
     /// Markdown preview: download `http(s)` images (off keeps a placeholder card, for privacy).
     pub markdown_remote_images: bool,
+    /// Diff view: ignore whitespace changes (like `-w`) in hunks and intraline highlights.
+    pub diff_ignore_whitespace: bool,
     /// Hide what `.gitignore` (and the global ignore file and `.git/info/exclude`) ignores in the explorer;
     /// off shows those entries dimmed.
     pub explorer_hide_gitignored: bool,
@@ -278,6 +280,7 @@ impl Default for Config {
             build_command: String::new(),
             run_command: String::new(),
             markdown_remote_images: true,
+            diff_ignore_whitespace: false,
             test_watch: false,
             explorer_hide_gitignored: true,
             ai_notifications: true,
@@ -534,6 +537,7 @@ impl Config {
             build_command: v["build_command"].as_str().unwrap_or("").trim().to_string(),
             run_command: v["run_command"].as_str().unwrap_or("").trim().to_string(),
             markdown_remote_images: v["markdown_remote_images"].as_bool().unwrap_or(true),
+            diff_ignore_whitespace: v["diff_ignore_whitespace"].as_bool().unwrap_or(false),
             explorer_hide_gitignored: v["explorer_hide_gitignored"].as_bool().unwrap_or(true),
             ai_notifications: v["ai_notifications"].as_bool().unwrap_or(true),
             language_servers: v.get("language_servers").cloned().unwrap_or(Value::Null),
@@ -610,6 +614,7 @@ impl Config {
         v["run_command"] = json!(self.run_command);
         v["markdown_remote_images"] = json!(self.markdown_remote_images);
         v["ai_notifications"] = json!(self.ai_notifications);
+        v["diff_ignore_whitespace"] = json!(self.diff_ignore_whitespace);
         v["sidebar_width"] = json!(self.sidebar_width);
         v["git_worktree_dir"] = json!(self.git_worktree_dir);
         v["scrollbar_v"] = json!(2);
@@ -698,6 +703,7 @@ mod tests {
             build_command: "make -j8".into(),
             run_command: "./out/app --port 8080".into(),
             markdown_remote_images: false,
+            diff_ignore_whitespace: true,
             explorer_hide_gitignored: false,
             ai_notifications: false,
             language_servers: json!({"rust": {"command": "ra"}}),
