@@ -68,7 +68,7 @@ jobs:
           cargo test --release perf -- --nocapture --test-threads=1 2>&1 | tee perf.log
           # Process-wide PSS needs a quiet process, so this one is #[ignore]d in the normal test run.
           cargo test --release memory_budget -- --ignored --nocapture --test-threads=1 2>&1 | tee -a perf.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: perf-log
@@ -124,7 +124,7 @@ jobs:
         run: |
           [ -f lsp-matrix.log ] || exit 0
           { echo '```'; sed -n '/===== LSP matrix =====/,/^$/p' lsp-matrix.log | tail -n +2; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: lsp-matrix-log
@@ -251,7 +251,7 @@ jobs:
             timeout 60 lumen-text --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"
           head -c 8 "$d/snap/a.png" | od -An -c | grep -q 'P   N   G'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-linux-${{ matrix.arch }}
           path: dist/
@@ -310,7 +310,7 @@ jobs:
           echo hello > "$d/f.txt"
           HOME="$d" timeout 90 "$d"/pkg/lumen-text-*/lumen-text.exe --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-windows-x86_64
           path: dist/
@@ -378,7 +378,7 @@ jobs:
           d="$(mktemp -d)"; echo hello > "$d/f.txt"
           HOME="$d" "$app" --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-macos-${{ matrix.arch }}
           path: dist/
