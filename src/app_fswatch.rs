@@ -481,7 +481,7 @@ impl App {
 
 /// "2 s", "500 ms".
 fn fmt_ms(ms: u128) -> String {
-    if ms >= 1000 && ms % 1000 == 0 { format!("{} s", ms / 1000) } else { format!("{ms} ms") }
+    if ms >= 1000 && ms.is_multiple_of(1000) { format!("{} s", ms / 1000) } else { format!("{ms} ms") }
 }
 
 #[cfg(test)]
