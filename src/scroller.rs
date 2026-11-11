@@ -516,7 +516,7 @@ mod tests {
             ("app_gitx.rs", "scroller::wheel_rows("),
             ("app_topbar.rs", "scroller::wheel_rows_int("),
             ("app_overlay.rs", "scroller::wheel_rows_int("),
-            ("app_panel.rs", "scroller::wheel_rows_int("),
+            ("app_termio.rs", "scroller::wheel_rows_int("), // both terminals (bottom panel, AI panel)
         ];
         for (file, needle) in surfaces {
             let src = source_of(file);
