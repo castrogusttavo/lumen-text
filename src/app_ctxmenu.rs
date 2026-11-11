@@ -298,6 +298,8 @@ pub enum Target {
     Multi(Vec<PathBuf>),
     /// Document index.
     Tab(usize),
+    /// A commit row of the Git panel's History tab.
+    Commit(crate::app_gitpanel::CommitRef),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,6 +320,12 @@ pub enum Act {
     CloseAll,
     TogglePin,
     Markdown,
+    // Commit rows (see `app_gitpanel::actions`).
+    CherryPick,
+    CopyHash,
+    BranchHere,
+    TagHere,
+    UndoCommit,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -437,6 +445,19 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
                     "ui/file_markdown",
                     "Ctrl+Shift+V",
                 ));
+            }
+            v
+        }
+        Target::Commit(c) => {
+            let mut v = vec![
+                item(Act::CherryPick, "Cherry-pick", "ui/git_commit", ""),
+                item(Act::CopyHash, "Copy Hash", "hugeicons/copy", ""),
+                sep(),
+                item(Act::BranchHere, "Create Branch Here…", "ui/git_branch_plus", ""),
+                item(Act::TagHere, "Create Tag Here…", "ui/hash", ""),
+            ];
+            if c.head {
+                v.extend([sep(), item(Act::UndoCommit, "Undo Last Commit", "ui/undo", "")]);
             }
             v
         }
@@ -698,6 +719,7 @@ impl App {
             Target::Folder(p) | Target::File(p) | Target::Root(p) => Some(p.clone()),
             Target::Multi(v) => v.first().cloned(),
             Target::Tab(i) => self.docs.get(*i).and_then(|d| d.path()).map(Path::to_path_buf),
+            Target::Commit(_) => None,
         }
     }
 
@@ -762,6 +784,9 @@ impl App {
     fn ctx_run(&mut self, act: Act, t: Target) {
         if let Target::Multi(paths) = &t {
             return self.ctx_run_multi(act, paths.clone());
+        }
+        if let Target::Commit(c) = t {
+            return self.git_commit_menu_act(act, c);
         }
         let path = self.ctx_path(&t);
         let name =
@@ -878,6 +903,7 @@ impl App {
                     self.toggle_md_reader();
                 }
             }
+            Act::CherryPick | Act::CopyHash | Act::BranchHere | Act::TagHere | Act::UndoCommit => {}
         }
     }
 

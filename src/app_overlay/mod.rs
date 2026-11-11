@@ -40,6 +40,8 @@ pub enum Action {
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),
+    /// Branch / tag / release / cherry-pick pickers (see `app_gitpanel::actions`).
+    Git(crate::app_gitpanel::GitPick),
 }
 
 #[derive(Clone)]
@@ -97,6 +99,8 @@ pub enum PromptKind {
         path: PathBuf,
     },
     GitCommit,
+    /// Branch / tag / release prompts (see `app_gitpanel::actions`).
+    Git(crate::app_gitpanel::GitAsk),
     /// "Save as" for an untitled document; `rest` (more documents to save) and `then` (the
     /// action that was waiting for the save) continue after it.
     SaveAs {

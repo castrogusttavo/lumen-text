@@ -469,3 +469,267 @@ fn modifier_keys_are_recognised() {
     assert!(!is_modifier_key(&Key::Named(NamedKey::Enter)));
     assert!(!is_modifier_key(&Key::Character("a".into())));
 }
+
+// ───────────── branches, tags, cherry-pick, undo, releases ─────────────
+
+fn commit_file(dir: &Path, name: &str, text: &str, msg: &str) {
+    std::fs::write(dir.join(name), text).unwrap();
+    git_run(dir, &["add", "-A"]).unwrap();
+    git_run(dir, &["commit", "-q", "-m", msg]).unwrap();
+}
+
+fn head(dir: &Path) -> String {
+    git_run(dir, &["rev-parse", "HEAD"]).unwrap().trim().to_string()
+}
+
+#[test]
+fn branches_are_created_switched_to_and_deleted() {
+    let d = tmp_repo("branches");
+    commit_file(&d, "a.txt", "one\n", "first");
+    let first = head(&d);
+    assert!(check_branch_name(&d, "   ").is_err());
+    assert!(check_branch_name(&d, "bad..name").is_err());
+    assert!(check_branch_name(&d, "-x").is_err());
+    assert!(check_branch_name(&d, "main").unwrap_err().contains("already exists"));
+    assert_eq!(check_branch_name(&d, " feat/x ").unwrap(), "feat/x");
+
+    let m = create_branch(&d, "feat/x", None).unwrap();
+    assert!(m.contains("feat/x"), "{m}");
+    assert_eq!(current_branch(&d).as_deref(), Some("feat/x"));
+    assert!(
+        matches!(delete_branch(&d, "feat/x", false), Err(DeleteFail::Other(e)) if e.contains("checked out")),
+        "the checked-out branch is never deleted"
+    );
+    commit_file(&d, "b.txt", "b\n", "only on feat");
+    git_run(&d, &["switch", "-q", "main"]).unwrap();
+    assert_eq!(local_branches(&d).len(), 2);
+
+    // Unmerged work: -d refuses (the UI then offers -D), -D deletes.
+    assert_eq!(delete_branch(&d, "feat/x", false), Err(DeleteFail::Unmerged));
+    assert!(local_branches(&d).contains(&"feat/x".to_string()), "still there after the refusal");
+    delete_branch(&d, "feat/x", true).unwrap();
+    assert_eq!(local_branches(&d), ["main"]);
+
+    // From an older commit (History "Create branch here"): merged, so -d is enough.
+    commit_file(&d, "c.txt", "c\n", "second");
+    create_branch(&d, "old", Some(first.as_str())).unwrap();
+    assert_eq!(head(&d), first);
+    assert_eq!(current_branch(&d).as_deref(), Some("old"));
+    git_run(&d, &["switch", "-q", "main"]).unwrap();
+    delete_branch(&d, "old", false).unwrap();
+    assert!(matches!(delete_branch(&d, "ghost", false), Err(DeleteFail::Other(_))));
+
+    // Upstream of a branch (the "delete on the remote too" choice).
+    assert_eq!(upstream_of(&d, "main"), None);
+    git_run(&d, &["config", "branch.main.remote", "origin"]).unwrap();
+    git_run(&d, &["config", "branch.main.merge", "refs/heads/trunk"]).unwrap();
+    assert_eq!(upstream_of(&d, "main"), Some(("origin".into(), "trunk".into())));
+    std::fs::remove_dir_all(&d).ok();
+}
+
+#[test]
+fn tags_are_created_listed_mapped_and_deleted() {
+    let d = tmp_repo("tags");
+    commit_file(&d, "a.txt", "one\n", "first");
+    let first = head(&d);
+    commit_file(&d, "a.txt", "two\n", "second");
+    let second = head(&d);
+    assert_eq!(tag_args("v1", None, None), ["tag", "v1"]);
+    assert_eq!(tag_args("v1", Some("  "), None), ["tag", "v1"], "a blank message makes a lightweight tag");
+    assert_eq!(tag_args("v1", Some("notes"), Some("abc")), ["tag", "-a", "-m", "notes", "v1", "abc"]);
+
+    create_tag(&d, "v1.0.0", None, None).unwrap();
+    assert_eq!(git_run(&d, &["cat-file", "-t", "v1.0.0"]).unwrap().trim(), "commit", "lightweight");
+    let m = create_tag(&d, "v0.9.0", Some("first cut"), Some(first.as_str())).unwrap();
+    assert!(m.starts_with("Annotated tag"), "{m}");
+    assert_eq!(git_run(&d, &["cat-file", "-t", "v0.9.0"]).unwrap().trim(), "tag", "annotated");
+    assert_eq!(git_run(&d, &["rev-parse", "v0.9.0^{commit}"]).unwrap().trim(), first);
+    assert!(check_tag_name(&d, "v1.0.0").unwrap_err().contains("already exists"));
+    assert!(check_tag_name(&d, "bad tag").is_err());
+    assert!(check_tag_name(&d, "").is_err());
+    assert!(create_tag(&d, "v1.0.0", None, None).is_err());
+
+    let names: Vec<String> = list_tags(&d).into_iter().map(|(n, _)| n).collect();
+    assert!(names.contains(&"v1.0.0".to_string()) && names.contains(&"v0.9.0".to_string()), "{names:?}");
+    let map = tag_map(&d);
+    assert_eq!(map.get(&second), Some(&vec!["v1.0.0".to_string()]));
+    assert_eq!(map.get(&first), Some(&vec!["v0.9.0".to_string()]), "annotated tags are peeled to their commit");
+
+    delete_tag(&d, "v1.0.0").unwrap();
+    assert!(list_tags(&d).iter().all(|(n, _)| n != "v1.0.0"));
+    assert!(delete_tag(&d, "v1.0.0").is_err());
+
+    let m = parse_tag_map("aaa\t\tv1\nbbb\tccc\tv2\nlixo\n");
+    assert_eq!(m.get("aaa"), Some(&vec!["v1".to_string()]));
+    assert_eq!(m.get("ccc"), Some(&vec!["v2".to_string()]));
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    assert_eq!(suggest_next_tag(&s(&["v1.2.3", "v1.2.2"])), "v1.2.4");
+    assert_eq!(suggest_next_tag(&s(&["latest", "1.0.9"])), "1.0.10");
+    assert_eq!(suggest_next_tag(&[]), "v0.1.0");
+    std::fs::remove_dir_all(&d).ok();
+}
+
+#[test]
+fn undo_last_commit_keeps_changes_staged_and_returns_the_message() {
+    let d = tmp_repo("undo");
+    assert!(undo_blocker(&d).unwrap().contains("no commit"));
+    commit_file(&d, "a.txt", "one\n", "first");
+    let why = undo_last_commit(&d).unwrap_err();
+    assert!(why.contains("first commit"), "{why}");
+    commit_file(&d, "b.txt", "b\n", "second\n\nwith a body");
+    assert_eq!(undo_blocker(&d), None);
+    let msg = undo_last_commit(&d).unwrap();
+    assert_eq!(msg, "second\n\nwith a body");
+    assert_eq!(git_run(&d, &["rev-list", "--count", "HEAD"]).unwrap().trim(), "1", "only the last commit");
+    let st = parse_status_z(&git_run(&d, &["status", "--porcelain=v1", "-z"]).unwrap());
+    assert!(st.iter().any(|c| c.path == "b.txt" && c.group == Group::Staged), "{st:?}");
+    assert_eq!(std::fs::read_to_string(d.join("b.txt")).unwrap(), "b\n");
+
+    // Published commits are detected (the UI asks before undoing them).
+    let remote = d.join("remote.git");
+    git_run(&d, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]).unwrap();
+    std::fs::write(d.join(".git/info/exclude"), "remote.git\n").unwrap();
+    git_run(&d, &["commit", "-q", "-m", "second again"]).unwrap();
+    assert!(!head_published(&d), "no upstream");
+    git_run(&d, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+    git_run(&d, &["push", "-q", "-u", "origin", "main"]).unwrap();
+    assert!(head_published(&d));
+    commit_file(&d, "c.txt", "c\n", "local only");
+    assert!(!head_published(&d));
+    std::fs::remove_dir_all(&d).ok();
+}
+
+#[test]
+fn cherry_pick_applies_conflicts_aborts_and_continues() {
+    let d = tmp_repo("cherry");
+    commit_file(&d, "a.txt", "one\n", "first");
+    let first = head(&d);
+    git_run(&d, &["switch", "-q", "-c", "other"]).unwrap();
+    commit_file(&d, "c.txt", "c\n", "add c");
+    let clean = head(&d);
+    commit_file(&d, "a.txt", "theirs\n", "edit a there");
+    let clash = head(&d);
+    git_run(&d, &["switch", "-q", "main"]).unwrap();
+    commit_file(&d, "a.txt", "mine\n", "edit a here");
+
+    let others: Vec<String> = other_commits(&d, 10).into_iter().map(|e| e.hash).collect();
+    assert_eq!(others, [clash.clone(), clean.clone()], "commits of other branches, newest first");
+
+    let line = cherry_pick(&d, &clean).unwrap();
+    assert!(!line.is_empty());
+    assert!(d.join("c.txt").exists());
+    assert_eq!(git_run(&d, &["log", "-1", "--format=%s"]).unwrap().trim(), "add c");
+    assert!(matches!(cherry_pick(&d, &first), Err(CherryFail::Other(e)) if e.contains("already")));
+
+    // A conflict leaves the cherry-pick in progress; abort puts everything back.
+    assert_eq!(cherry_pick(&d, &clash), Err(CherryFail::Conflict));
+    assert_eq!(repo_state(&d), RepoState::CherryPick);
+    assert!(undo_blocker(&d).unwrap().contains("cherry-pick"), "no undo in the middle of a cherry-pick");
+    assert!(matches!(cherry_pick(&d, &clean), Err(CherryFail::Other(_))));
+    let gp = GitPanel::new(&d);
+    assert_eq!(gp.state, RepoState::CherryPick);
+    assert_eq!(gp.card(), Some(cherry_card()), "the panel offers Continue / Abort");
+    cherry_abort(&d).unwrap();
+    assert_eq!(repo_state(&d), RepoState::Clean);
+    assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "mine\n");
+
+    // Resolve, stage, continue: the commit keeps its message.
+    assert_eq!(cherry_pick(&d, &clash), Err(CherryFail::Conflict));
+    assert!(cherry_continue(&d).is_err(), "unresolved files block the commit");
+    std::fs::write(d.join("a.txt"), "merged\n").unwrap();
+    git_run(&d, &["add", "a.txt"]).unwrap();
+    cherry_continue(&d).unwrap();
+    assert_eq!(repo_state(&d), RepoState::Clean);
+    assert_eq!(git_run(&d, &["log", "-1", "--format=%s"]).unwrap().trim(), "edit a there");
+    std::fs::remove_dir_all(&d).ok();
+}
+
+#[test]
+fn release_needs_gh_and_a_github_remote() {
+    assert_eq!(gh_status("lumen-no-such-gh-program"), GhStatus::Missing);
+    assert!(GhStatus::Missing.text().contains("cli.github.com"));
+    assert!(GhStatus::NoAuth.text().contains("gh auth login"));
+    for (url, want) in [
+        ("git@github.com:ana/lumen.git", Some("ana/lumen")),
+        ("https://github.com/ana/lumen", Some("ana/lumen")),
+        ("https://github.com/ana/lumen.git/", Some("ana/lumen")),
+        ("ssh://git@github.com/ana/lumen.git", Some("ana/lumen")),
+        ("https://token@github.com/ana/lumen.git", Some("ana/lumen")),
+        ("https://gitlab.com/ana/lumen.git", None),
+        ("/tmp/remote.git", None),
+        ("https://github.com/ana", None),
+    ] {
+        assert_eq!(github_slug(url).as_deref(), want, "{url}");
+    }
+    let d = tmp_repo("ghremote");
+    git_run(&d, &["remote", "add", "local", "/tmp/x.git"]).unwrap();
+    git_run(&d, &["remote", "add", "fork", "git@github.com:beto/lumen.git"]).unwrap();
+    git_run(&d, &["remote", "add", "origin", "https://github.com/ana/lumen.git"]).unwrap();
+    let g = github_remotes(&d, Some("origin"));
+    assert_eq!(g[0], ("origin".to_string(), "ana/lumen".to_string()), "the push remote comes first");
+    assert_eq!(g.len(), 2, "non-GitHub remotes are left out");
+    std::fs::remove_dir_all(&d).ok();
+
+    let plan = gitsync::ReleasePlan {
+        remote: "origin".into(),
+        slug: "ana/lumen".into(),
+        tag: "v1.2.0".into(),
+        title: "Lumen 1.2".into(),
+        notes: None,
+    };
+    let steps = gitsync::steps_for(&Op::Release(plan.clone()), false);
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0].0, "git");
+    assert_eq!(steps[0].1, ["push", "--progress", "origin", "refs/tags/v1.2.0"], "the tag goes up first");
+    assert_eq!(steps[1].0, "gh");
+    assert_eq!(
+        steps[1].1,
+        [
+            "release",
+            "create",
+            "v1.2.0",
+            "--repo",
+            "ana/lumen",
+            "--verify-tag",
+            "--title",
+            "Lumen 1.2",
+            "--generate-notes"
+        ]
+    );
+    let with_notes = gitsync::ReleasePlan { notes: Some(" Fixes. ".into()), ..plan.clone() };
+    assert_eq!(gitsync::release_args(&with_notes).last().map(String::as_str), Some("Fixes."));
+    assert!(gitsync::release_args(&with_notes).contains(&"--notes".to_string()));
+    let s = release_summary(&plan, Some("0123456789abcdef"));
+    assert!(
+        s.contains("github.com/ana/lumen") && s.contains("v1.2.0") && s.contains("0123456") && s.contains("generated"),
+        "{s}"
+    );
+    let card = release_card(plan.clone(), None);
+    assert!(card.warn && card.buttons.len() == 2, "outward-facing: always confirmed");
+    assert_eq!(card.buttons[0].act, GitAct::Release { plan, new_tag_at: None });
+}
+
+#[test]
+fn confirmation_cards_take_over_the_strip() {
+    let mut gp = GitPanel::new(&std::env::temp_dir().join("lumen-gp-no-such-dir"));
+    assert_eq!(gp.card(), None);
+    gp.ask = Some(delete_branch_card("feat", Some(("origin".into(), "feat".into()))));
+    gp.prompt_h = 110;
+    assert_eq!(gp.strip_h(), 110);
+    let card = gp.card().unwrap();
+    assert!(card.warn);
+    assert_eq!(card.buttons.len(), 3, "delete, delete + remote, cancel");
+    assert_eq!(card.buttons[0].act, GitAct::DeleteBranch { name: "feat".into(), force: false, remote: None });
+    assert!(matches!(&card.buttons[1].act, GitAct::DeleteBranch { remote: Some(_), .. }), "remote only on request");
+    assert_eq!(card.buttons[2].act, GitAct::Dismiss);
+    assert_eq!(delete_branch_card("feat", None).buttons.len(), 2);
+    let forced = unmerged_card("feat", None);
+    assert_eq!(forced.buttons[0].act, GitAct::DeleteBranch { name: "feat".into(), force: true, remote: None });
+    assert_eq!(delete_tag_card("v1", Some("origin")).buttons.len(), 3);
+    assert_eq!(undo_published_card("origin/main").buttons[0].act, GitAct::UndoCommit);
+    gp.ask = None;
+    assert_eq!(gp.strip_h(), 0);
+    gp.state = RepoState::CherryPick;
+    assert_eq!(gp.card(), Some(cherry_card()));
+    assert!(gp.strip_h() >= PROMPT_H);
+}

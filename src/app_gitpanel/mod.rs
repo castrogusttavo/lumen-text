@@ -31,15 +31,19 @@ use winit::{
     window::CursorIcon,
 };
 
+mod actions;
 mod draw;
 mod input;
 mod logic;
 mod msg;
 mod ops;
+mod refs;
 mod state;
 #[cfg(test)]
 mod tests;
 
+pub use actions::*;
 pub use logic::*;
 pub use msg::*;
+pub use refs::*;
 pub use state::*;
