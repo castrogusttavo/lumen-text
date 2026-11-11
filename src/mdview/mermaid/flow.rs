@@ -343,7 +343,7 @@ fn parse_stmt(s: &str, g: &mut Graph) {
 }
 
 pub(crate) fn parse(lines: &[String]) -> Graph {
-    let mut g = Graph { dir: Dir::TB, nodes: vec![], ids: HashMap::new(), edges: vec![], subs: vec![], open: vec![] };
+    let mut g = Graph { dir: Dir::Down, nodes: vec![], ids: HashMap::new(), edges: vec![], subs: vec![], open: vec![] };
     let mut first = true;
     for line in lines {
         for stmt in line.split(';') {
@@ -436,12 +436,14 @@ fn draw_node(d: &mut Diagram, c: (f32, f32), w: f32, h: f32, shape: Shape, lines
         }
         Shape::Cyl => {
             let ry = 7.0;
-            let mut p = vec![P::M(x, y + ry)];
-            p.push(P::L(x, y + h - ry));
-            p.push(P::C(x, y + h + ry * 0.33, x + w, y + h + ry * 0.33, x + w, y + h - ry));
-            p.push(P::L(x + w, y + ry));
-            p.push(P::C(x + w, y - ry * 0.33, x, y - ry * 0.33, x, y + ry));
-            p.push(P::Z);
+            let p = vec![
+                P::M(x, y + ry),
+                P::L(x, y + h - ry),
+                P::C(x, y + h + ry * 0.33, x + w, y + h + ry * 0.33, x + w, y + h - ry),
+                P::L(x + w, y + ry),
+                P::C(x + w, y - ry * 0.33, x, y - ry * 0.33, x, y + ry),
+                P::Z,
+            ];
             d.shape(p, f, s, 1.2);
             let top = vec![P::M(x, y + ry), P::C(x, y + ry * 2.33, x + w, y + ry * 2.33, x + w, y + ry)];
             d.shape(top, None, s, 1.2);

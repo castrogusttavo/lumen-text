@@ -99,7 +99,7 @@ pub fn prune_cache(dir: &Path, cap: u64) {
         if total <= cap {
             break;
         }
-        if std::fs::remove_file(&p).is_ok() {
+        if std::fs::remove_file(p).is_ok() {
             total = total.saturating_sub(len);
         }
     }
@@ -116,7 +116,7 @@ fn fetch_into(fetch: FetchFn, url: &str, dest: &Path, dir: &Path) -> bool {
         && std::fs::metadata(&tmp).is_ok_and(|m| m.len() > 0 && m.len() <= REMOTE_MAX)
         && read_prefix(&tmp, 4096).is_some_and(|b| sniff(&b).is_some())
         && std::fs::rename(&tmp, dest).is_ok();
-    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(tmp);
     if ok {
         prune_cache(dir, REMOTE_CACHE_BYTES);
     }
@@ -772,6 +772,7 @@ impl ImgStore {
     }
 
     /// Download remote images with `f` into `dir` instead of curl and the user cache (tests).
+    #[cfg(test)]
     pub fn set_fetcher(&mut self, f: FetchFn, dir: PathBuf) {
         self.fetch_fn = f;
         self.cache_dir = dir;
@@ -840,8 +841,8 @@ impl ImgStore {
         let path = self.paths.get(id as usize).cloned()?;
         if self.urls.contains_key(&id) {
             if !path.is_file() {
-                if !self.fetch.contains_key(&id) {
-                    self.fetch.insert(id, Fetch::Running);
+                if let std::collections::hash_map::Entry::Vacant(e) = self.fetch.entry(id) {
+                    e.insert(Fetch::Running);
                     self.fetch_q.push_back(id);
                     self.start_fetches();
                 }

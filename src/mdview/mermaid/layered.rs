@@ -7,23 +7,27 @@ use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {
-    TB,
-    BT,
-    LR,
-    RL,
+    /// `TB` / `TD`.
+    Down,
+    /// `BT`.
+    Up,
+    /// `LR`.
+    Right,
+    /// `RL`.
+    Left,
 }
 
 impl Dir {
     pub fn parse(s: &str) -> Dir {
         match s.trim().to_ascii_uppercase().as_str() {
-            "LR" => Dir::LR,
-            "RL" => Dir::RL,
-            "BT" => Dir::BT,
-            _ => Dir::TB,
+            "LR" => Dir::Right,
+            "RL" => Dir::Left,
+            "BT" => Dir::Up,
+            _ => Dir::Down,
         }
     }
     pub fn horizontal(self) -> bool {
-        matches!(self, Dir::LR | Dir::RL)
+        matches!(self, Dir::Right | Dir::Left)
     }
 }
 
@@ -75,8 +79,7 @@ pub fn layout(
         }
         color[s] = 1;
         let mut stack = vec![(s, 0usize)];
-        loop {
-            let Some(top) = stack.last_mut() else { break };
+        while let Some(top) = stack.last_mut() {
             let (v, k) = *top;
             if k < out_e[v].len() {
                 top.1 += 1;
@@ -320,10 +323,10 @@ pub fn layout(
     let cross = (max_c - min_c).max(1.0);
     let map = |c: f32, a: f32| -> (f32, f32) {
         match dir {
-            Dir::TB => (c, a),
-            Dir::BT => (c, along - a),
-            Dir::LR => (a, c),
-            Dir::RL => (along - a, c),
+            Dir::Down => (c, a),
+            Dir::Up => (c, along - a),
+            Dir::Right => (a, c),
+            Dir::Left => (along - a, c),
         }
     };
     let pos: Vec<(f32, f32)> = (0..n).map(|v| map(cx[v], ay[vrank[v]])).collect();
@@ -362,7 +365,7 @@ mod tests {
         let nodes = vec![(60.0, 30.0); 4];
         let edges =
             vec![(0, 1, (0.0, 0.0)), (1, 2, (0.0, 0.0)), (2, 0, (0.0, 0.0)), (0, 3, (40.0, 14.0)), (3, 3, (0.0, 0.0))];
-        let o = layout(&nodes, &edges, Dir::TB, 40.0, 50.0);
+        let o = layout(&nodes, &edges, Dir::Down, 40.0, 50.0);
         assert_eq!(o.pos.len(), 4);
         assert!(o.pos[1].1 > o.pos[0].1 && o.pos[2].1 > o.pos[1].1, "{:?}", o.pos);
         assert!(o.paths[4].is_empty(), "self loop has no path");
@@ -371,7 +374,7 @@ mod tests {
         for (x, y) in &o.pos {
             assert!(x.is_finite() && y.is_finite());
         }
-        let lr = layout(&nodes, &edges[..2], Dir::LR, 40.0, 50.0);
+        let lr = layout(&nodes, &edges[..2], Dir::Right, 40.0, 50.0);
         assert!(lr.pos[1].0 > lr.pos[0].0 && (lr.pos[1].1 - lr.pos[0].1).abs() < 1.0);
     }
 
@@ -379,7 +382,7 @@ mod tests {
     fn siblings_do_not_overlap() {
         let nodes = vec![(80.0, 30.0); 5];
         let edges: Vec<(usize, usize, (f32, f32))> = (1..5).map(|i| (0, i, (0.0, 0.0))).collect();
-        let o = layout(&nodes, &edges, Dir::TB, 30.0, 40.0);
+        let o = layout(&nodes, &edges, Dir::Down, 30.0, 40.0);
         let mut xs: Vec<f32> = o.pos[1..].iter().map(|p| p.0).collect();
         xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!(xs.windows(2).all(|w| w[1] - w[0] >= 80.0 + 30.0 - 0.01), "{xs:?}");

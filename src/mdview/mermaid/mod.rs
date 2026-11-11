@@ -136,12 +136,12 @@ fn clean(src: &str) -> Vec<String> {
 /// Display text of a label: quotes and simple Markdown / HTML markup removed, split into lines at
 /// `<br>` and `\n`.
 pub(crate) fn text_lines(s: &str) -> Vec<String> {
-    let mut t = s.trim().to_string();
-    if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
-        t = t[1..t.len() - 1].to_string();
+    let mut t = s.trim();
+    if let Some(inner) = t.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
+        t = inner;
     }
-    if t.starts_with('`') && t.ends_with('`') && t.len() >= 2 {
-        t = t[1..t.len() - 1].to_string();
+    if let Some(inner) = t.strip_prefix('`').and_then(|x| x.strip_suffix('`')) {
+        t = inner;
     }
     let t = t.replace("<br/>", "\n").replace("<br />", "\n").replace("<br>", "\n").replace("\\n", "\n");
     let t = t.replace("**", "").replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");

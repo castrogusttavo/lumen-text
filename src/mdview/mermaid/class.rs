@@ -128,7 +128,7 @@ fn relation(tok: &str) -> Option<(Mark, Mark, bool)> {
 }
 
 pub(crate) fn parse(lines: &[String]) -> Classes {
-    let mut g = Classes { dir: Dir::TB, classes: vec![], rels: vec![] };
+    let mut g = Classes { dir: Dir::Down, classes: vec![], rels: vec![] };
     let mut body: Option<usize> = None;
     for line in lines.iter().skip(1) {
         let l = line.trim();

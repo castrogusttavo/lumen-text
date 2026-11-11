@@ -621,8 +621,8 @@ impl MdView {
         let hover_link = hover.map_or(0, |(hx, hy)| {
             segs.iter()
                 .find_map(|(_, sl, base)| {
-                    let (cx, cy) = ((hx - ox as f64) as i32, (hy - rect.y as f64) as i32 + sc - base);
-                    sl.links.iter().find(|l| cx >= l.x && cx < l.x + l.w && cy >= l.y && cy < l.y + l.h).map(|l| l.link)
+                    let (cx, cy) = (hx - ox as f64, hy - rect.y as f64 + (sc - base) as f64);
+                    sl.links.iter().find(|l| Rect::new(l.x, l.y, l.w, l.h).contains(cx, cy)).map(|l| l.link)
                 })
                 .unwrap_or(0)
         });

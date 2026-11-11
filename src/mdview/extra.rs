@@ -541,10 +541,7 @@ impl MdView {
     /// The button / toggle under the pointer.
     pub fn hit_at(&self, x: f64, y: f64, rect: Rect, scroll_px: f64) -> Option<Act> {
         let (sl, cx, cy) = self.seg_point(x, y, rect, scroll_px)?;
-        sl.hits
-            .iter()
-            .find(|h| cx >= h.x as f64 && cx < (h.x + h.w) as f64 && cy >= h.y as f64 && cy < (h.y + h.h) as f64)
-            .map(|h| h.act)
+        sl.hits.iter().find(|h| Rect::new(h.x, h.y, h.w, h.h).contains(cx, cy)).map(|h| h.act)
     }
 
     /// Anything that reacts to a click is under the pointer (link, checkbox, button, toggle).
@@ -566,7 +563,7 @@ impl MdView {
             h = fxhash(format!("{a:?}").as_bytes(), h);
         }
         for (a, k) in &sl.areas {
-            if cx >= a.x as f64 && cx < a.right() as f64 && cy >= a.y as f64 && cy < a.bottom() as f64 {
+            if a.contains(cx, cy) {
                 h ^= k.rotate_left(17);
             }
         }

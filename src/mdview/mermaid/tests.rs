@@ -29,7 +29,7 @@ fn has_label(d: &Diagram, t: &str) -> bool {
 fn flowchart_of_the_demo_lays_out_left_to_right() {
     let src = "flowchart LR\n    A[Nova tarefa] --> B{Prioridade alta?}\n    B -- Sim --> C[Fazer agora]\n    B -- Não --> D[Backlog]\n    C --> E[Concluída]\n    D --> E\n";
     let g = flow::parse(&clean(src));
-    assert_eq!(g.dir, layered::Dir::LR);
+    assert_eq!(g.dir, layered::Dir::Right);
     assert_eq!(g.nodes.len(), 5);
     assert_eq!(g.edges.len(), 5);
     let b = g.ids["B"];
@@ -168,7 +168,7 @@ fn class_relations_and_members() {
     assert_eq!((an.attrs.len(), an.methods.len()), (1, 1));
     assert_eq!(g.classes[id("D")].stereo, "<<interface>>");
     assert_eq!(g.classes[id("Box")].name, "Box<T>");
-    assert_eq!(g.dir, layered::Dir::LR);
+    assert_eq!(g.dir, layered::Dir::Right);
     build_ok(src);
 }
 
