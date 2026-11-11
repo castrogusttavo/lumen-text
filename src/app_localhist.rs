@@ -30,12 +30,15 @@ impl App {
     /// The history store to write to, when local history is on.
     pub(crate) fn hist_store(&self) -> Option<Store> {
         self.config.local_history.then_some(())?;
-        self.hist_reader()
+        Some(Store::new(self.hist_root.clone()?, self.config.local_history_max_entries))
     }
 
     /// The history store to read from (also when recording is off: what is there stays reachable).
+    /// Waits for snapshots still being written, so a save made a moment ago is listed.
     fn hist_reader(&self) -> Option<Store> {
-        Some(Store::new(self.hist_root.clone()?, self.config.local_history_max_entries))
+        let store = Store::new(self.hist_root.clone()?, self.config.local_history_max_entries);
+        localhist::flush();
+        Some(store)
     }
 
     /// Snapshot document `i`'s text in the background (after a save, before a reload or a restore).

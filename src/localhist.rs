@@ -322,7 +322,7 @@ impl Store {
                 Some((ix.path, ix.entries.last()?.clone(), n))
             })
             .collect();
-        v.sort_by(|a, b| b.1.ts.cmp(&a.1.ts));
+        v.sort_by_key(|a| std::cmp::Reverse(a.1.ts));
         v
     }
 }
@@ -380,7 +380,8 @@ pub fn record_buf(store: &Store, path: &Path, buf: &crate::buffer::Buffer, sourc
     }
 }
 
-/// Wait until every snapshot queued so far is on disk.
+/// Wait until every snapshot queued so far is on disk (before listing: a save made a moment ago
+/// must show up).
 pub fn flush() {
     let Some(tx) = sender() else { return };
     let (done, wait) = mpsc::channel();
