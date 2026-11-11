@@ -127,8 +127,8 @@ impl App {
         let squeezed = (total > avail).then(|| ((avail - 2 * (n - 1)) / n.max(1)).max(56));
         let (mx, my) = self.mouse;
         let mut x = left;
-        for i in 0..self.ai.sessions.len() {
-            let w = squeezed.unwrap_or(natural[i]);
+        for (i, &nat) in natural.iter().enumerate() {
+            let w = squeezed.unwrap_or(nat);
             if x + w > plus.x - 4 {
                 // No room left: the rest stays reachable by "Next session waiting" and the menu.
                 break;
