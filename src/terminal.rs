@@ -843,11 +843,7 @@ impl vte::Perform for Grid {
                 let s = format!("\x1b[8;{};{}t", self.rows, self.cols);
                 self.reply(&s);
             }
-            'h' | 'l' => {
-                if p.contains(&4) {
-                    self.insert = action == 'h';
-                }
-            }
+            'h' | 'l' if p.contains(&4) => self.insert = action == 'h',
             'A' => self.move_to(self.cy.saturating_sub(get(0, 1)), self.cx),
             'B' | 'e' => self.move_to(self.cy + get(0, 1), self.cx),
             'C' | 'a' => self.move_to(self.cy, self.cx + get(0, 1)),
@@ -1016,24 +1012,18 @@ impl vte::Perform for Grid {
                     self.notices.push((String::new(), body));
                 }
             }
-            b"777" => {
-                if params.get(1).is_some_and(|p| *p == &b"notify"[..]) {
-                    let title = params.get(2).map(|s| String::from_utf8_lossy(s).into_owned()).unwrap_or_default();
-                    self.notices.push((title, text(3)));
-                }
+            b"777" if params.get(1).is_some_and(|p| *p == &b"notify"[..]) => {
+                let title = params.get(2).map(|s| String::from_utf8_lossy(s).into_owned()).unwrap_or_default();
+                self.notices.push((title, text(3)));
             }
             // Default foreground / background color queries (programs pick light or dark styles).
-            b"10" | b"11" => {
-                if params.get(1).is_some_and(|p| *p == &b"?"[..]) {
-                    let c = if *kind == &b"10"[..] { self.colors.0 } else { self.colors.1 };
-                    let end = if bell_terminated { "\x07" } else { "\x1b\\" };
-                    let k = String::from_utf8_lossy(kind).into_owned();
-                    let s = format!(
-                        "\x1b]{k};rgb:{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}{end}",
-                        c.0, c.0, c.1, c.1, c.2, c.2
-                    );
-                    self.reply(&s);
-                }
+            b"10" | b"11" if params.get(1).is_some_and(|p| *p == &b"?"[..]) => {
+                let c = if *kind == &b"10"[..] { self.colors.0 } else { self.colors.1 };
+                let end = if bell_terminated { "\x07" } else { "\x1b\\" };
+                let k = String::from_utf8_lossy(kind).into_owned();
+                let s =
+                    format!("\x1b]{k};rgb:{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}{end}", c.0, c.0, c.1, c.1, c.2, c.2);
+                self.reply(&s);
             }
             _ => {}
         }
@@ -1488,18 +1478,18 @@ mod tests {
     fn sgr_attributes_set_and_reset() {
         let mut g = Grid::new(2, 20);
         feed(&mut g, "\x1b[1;2;3;4;9mA\x1b[22mB\x1b[23;24mC\x1b[29mD\x1b[7;8mE\x1b[27;28mF");
-        let f = |c: usize| g.at(0, c).flags;
-        assert_eq!(f(0), BOLD | DIM | ITALIC | UNDERLINE | STRIKE);
-        assert_eq!(f(1), ITALIC | UNDERLINE | STRIKE, "22 ends bold and dim");
-        assert_eq!(f(2), STRIKE);
-        assert_eq!(f(3), 0);
-        assert_eq!(f(4), INVERSE | HIDDEN);
-        assert_eq!(f(5), 0);
+        let f = |g: &Grid, c: usize| g.at(0, c).flags;
+        assert_eq!(f(&g, 0), BOLD | DIM | ITALIC | UNDERLINE | STRIKE);
+        assert_eq!(f(&g, 1), ITALIC | UNDERLINE | STRIKE, "22 ends bold and dim");
+        assert_eq!(f(&g, 2), STRIKE);
+        assert_eq!(f(&g, 3), 0);
+        assert_eq!(f(&g, 4), INVERSE | HIDDEN);
+        assert_eq!(f(&g, 5), 0);
         feed(&mut g, "\x1b[4:3mG\x1b[4:0mH\x1b[1mI\x1b[0mJ");
-        assert_eq!(f(6), UNDERLINE, "curly underline reads as underline");
-        assert_eq!(f(7), 0);
-        assert_eq!(f(8), BOLD);
-        assert_eq!(f(9), 0);
+        assert_eq!(f(&g, 6), UNDERLINE, "curly underline reads as underline");
+        assert_eq!(f(&g, 7), 0);
+        assert_eq!(f(&g, 8), BOLD);
+        assert_eq!(f(&g, 9), 0);
     }
 
     #[test]

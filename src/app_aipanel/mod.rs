@@ -265,11 +265,7 @@ impl App {
             (Status::Working | Status::Starting, Some(a)) => {
                 want(a + ms(if self.ai.attention { ATTENTION_MS } else { IDLE_MS }));
             }
-            (Status::Starting, None) => {
-                if let Some(t) = self.ai.term.as_ref() {
-                    want(t.started + ms(STARTUP_MS));
-                }
-            }
+            (Status::Starting, None) => want(self.ai.term.as_ref().map_or(now, |t| t.started) + ms(STARTUP_MS)),
             _ => {}
         }
     }
