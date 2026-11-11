@@ -18,13 +18,11 @@ jobs:
   test:
     name: Build and test
     runs-on: ubuntu-latest
+    # No apt step: the runner image has everything the build needs (onig compiles its bundled
+    # copy, Wayland/xkbcommon are dlopened at run time, fontconfig is parsed in Rust, libclang
+    # ships with the image), so CI keeps working when the Ubuntu archive is down.
     steps:
       - uses: actions/checkout@v7
-      - name: System dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
-            libfontconfig1-dev libclang-dev libonig-dev
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
@@ -52,11 +50,6 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
-      - name: System dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
-            libfontconfig1-dev libclang-dev libonig-dev
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build the binary (the startup tests time the real executable)
@@ -82,11 +75,11 @@ jobs:
     # but the red job says which language stopped working.
     steps:
       - uses: actions/checkout@v7
-      - name: System dependencies (and clangd for C/C++)
+      - name: clangd for C/C++ (best effort; the job runs without it)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
-            libfontconfig1-dev libclang-dev libonig-dev clangd
+          command -v clangd && exit 0
+          timeout 180 bash -c 'sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get install -y -qq clangd' \
+            || echo "::warning::clangd unavailable (Ubuntu archive unreachable?): the C/C++ rows of the matrix will fail"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Toolchains the servers run on (or need to analyse their language).
@@ -112,7 +105,7 @@ jobs:
       - name: Versions
         run: |
           php --version | head -1; java -version 2>&1 | head -1; dotnet --version; go version
-          ruby --version; node --version; clangd --version | head -1
+          ruby --version; node --version; { clangd --version || echo "clangd: missing"; } | head -1
       - name: LSP matrix (every language - server starts, diagnostics, hover, completion)
         shell: bash
         run: |
@@ -176,13 +169,10 @@ jobs:
         include: ${{ fromJSON(needs.version.outputs.matrix) }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
+    # No Ubuntu apt here either: rpmbuild and rsvg-convert come from a Debian container
+    # (tools/ci-debian.sh), so a release never waits on the Ubuntu archive.
     steps:
       - uses: actions/checkout@v7
-      - name: System dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
-            libfontconfig1-dev libclang-dev libonig-dev rpm
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -200,8 +190,7 @@ jobs:
             exit 0
           fi
           echo "::add-mask::${HUGEICONS_TOKEN}"
-          sudo apt-get install -y --no-install-recommends librsvg2-bin python3 >/dev/null
-          tools/setup-hugeicons.sh >/dev/null
+          tools/ci-debian.sh node:22-bookworm "librsvg2-bin python3" tools/setup-hugeicons.sh >/dev/null
           ls assets/icons/hugeicons | wc -l
       - name: Build release binary
         env:
@@ -219,7 +208,8 @@ jobs:
           mkdir -p dist
           packaging/tarball/build-tarball.sh "$bin" "$VERSION" "${{ matrix.arch }}" dist
           packaging/deb/build-deb.sh "$bin" "$VERSION" "${{ matrix.arch }}" dist
-          packaging/rpm/build-rpm.sh "$bin" "$VERSION" "${{ matrix.arch }}" dist
+          tools/ci-debian.sh debian:bookworm-slim "rpm" \
+            packaging/rpm/build-rpm.sh "$bin" "$VERSION" "${{ matrix.arch }}" dist
           packaging/appimage/build-appimage.sh "$bin" "$VERSION" "${{ matrix.arch }}" dist
           rm -rf dist/AppDir dist/appimagetool-*.AppImage
       - name: Package (Arch pkg.tar.zst in an archlinux container)
@@ -234,15 +224,18 @@ jobs:
           dpkg-deb --contents dist/*.deb | head -30
           # Licensed HugeIcons masks live inside the binary only, never as loose package files.
           ! dpkg-deb --contents dist/*.deb | grep -q hugeicons
-          ! rpm -qpl dist/*.rpm | grep -q hugeicons
           ! tar tzf dist/*-linux-*.tar.gz | grep -q hugeicons
-          rpm -qp --info dist/*.rpm
-          rpm -qpl dist/*.rpm | head -30
-          rpm -qp --requires dist/*.rpm
+          tools/ci-debian.sh debian:bookworm-slim "rpm" bash -c '
+            set -ex
+            ! rpm -qpl dist/*.rpm | grep -q hugeicons
+            rpm -qp --info dist/*.rpm
+            rpm -qpl dist/*.rpm | head -30
+            rpm -qp --requires dist/*.rpm'
       - name: Smoke test the .deb (install and run --version)
         if: matrix.arch == 'x86_64'
         run: |
-          sudo apt-get install -y ./dist/lumen-text_*.deb
+          # Its dependencies ship with the runner image: install without touching the network.
+          sudo apt-get install -y --no-download ./dist/lumen-text_*.deb
           lumen-text --version
           test -f /usr/share/lumen-text/assets/language-manifest.json
           # Headless render: proves fonts, assets lookup and the CPU renderer work from the installed layout.
@@ -429,8 +422,14 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "${MINISIGN_SECRET_KEY}" ] || { echo "secret MINISIGN_SECRET_KEY is not set (see CONTRIBUTING.md, Releases)" >&2; exit 1; }
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq minisign jq
+          # minisign from its official release (pinned and checksummed), not from the Ubuntu archive;
+          # jq ships with the runner image.
+          ms_tgz="${RUNNER_TEMP}/minisign.tgz"
+          curl -fsSL --retry 3 -o "$ms_tgz" https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz
+          echo "9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73  $ms_tgz" | sha256sum -c -
+          tar -xzf "$ms_tgz" -C "${RUNNER_TEMP}" minisign-linux/x86_64/minisign
+          export PATH="${RUNNER_TEMP}/minisign-linux/x86_64:$PATH"
+          minisign -v
           key="${RUNNER_TEMP}/minisign.key"
           (umask 077; printf '%s\n' "${MINISIGN_SECRET_KEY}" > "$key")
           trap 'rm -f "$key"' EXIT

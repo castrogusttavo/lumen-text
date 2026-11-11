@@ -27,13 +27,9 @@ jobs:
           - { name: macos-x86_64, runner: macos-15-intel }
           - { name: linux-aarch64, runner: ubuntu-22.04-arm }
     steps:
+      # Linux: no apt step (the runner image has what the build needs; rpmbuild runs in a Debian
+      # container), so this keeps working when the Ubuntu archive is down.
       - uses: actions/checkout@v7
-      - name: System dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
-            libfontconfig1-dev libclang-dev libonig-dev rpm
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
@@ -62,10 +58,10 @@ jobs:
           mkdir -p dist
           packaging/tarball/build-tarball.sh "$bin" "$VERSION" "$arch" dist
           packaging/deb/build-deb.sh "$bin" "$VERSION" "$arch" dist
-          packaging/rpm/build-rpm.sh "$bin" "$VERSION" "$arch" dist
+          tools/ci-debian.sh debian:bookworm-slim "rpm" packaging/rpm/build-rpm.sh "$bin" "$VERSION" "$arch" dist
           packaging/appimage/build-appimage.sh "$bin" "$VERSION" "$arch" dist
           ls -l dist
-          sudo apt-get install -y ./dist/lumen-text_*.deb
+          sudo apt-get install -y --no-download ./dist/lumen-text_*.deb
           lumen-text --version
           d="$(mktemp -d)"; echo hello > "$d/f.txt"
           HOME="$d" XDG_CONFIG_HOME="$d/c" XDG_STATE_HOME="$d/s" \
