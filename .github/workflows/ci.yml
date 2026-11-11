@@ -19,7 +19,7 @@ jobs:
     name: Build and test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System dependencies
         run: |
           sudo apt-get update
@@ -51,7 +51,7 @@ jobs:
     # Shared runners are noisy: report, but never block a release.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System dependencies
         run: |
           sudo apt-get update
@@ -68,7 +68,7 @@ jobs:
           cargo test --release perf -- --nocapture --test-threads=1 2>&1 | tee perf.log
           # Process-wide PSS needs a quiet process, so this one is #[ignore]d in the normal test run.
           cargo test --release memory_budget -- --ignored --nocapture --test-threads=1 2>&1 | tee -a perf.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: perf-log
@@ -81,7 +81,7 @@ jobs:
     # Not a dependency of the release: an upstream server breaking must not hold back a release,
     # but the red job says which language stopped working.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System dependencies (and clangd for C/C++)
         run: |
           sudo apt-get update
@@ -124,7 +124,7 @@ jobs:
         run: |
           [ -f lsp-matrix.log ] || exit 0
           { echo '```'; sed -n '/===== LSP matrix =====/,/^$/p' lsp-matrix.log | tail -n +2; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: lsp-matrix-log
@@ -139,7 +139,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       matrix: ${{ steps.version.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Compute version (CalVer YYYY.M.D.N) and build matrix
@@ -177,7 +177,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System dependencies
         run: |
           sudo apt-get update
@@ -251,7 +251,7 @@ jobs:
             timeout 60 lumen-text --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"
           head -c 8 "$d/snap/a.png" | od -An -c | grep -q 'P   N   G'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-linux-${{ matrix.arch }}
           path: dist/
@@ -267,7 +267,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -310,7 +310,7 @@ jobs:
           echo hello > "$d/f.txt"
           HOME="$d" timeout 90 "$d"/pkg/lumen-text-*/lumen-text.exe --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-windows-x86_64
           path: dist/
@@ -329,7 +329,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -378,7 +378,7 @@ jobs:
           d="$(mktemp -d)"; echo hello > "$d/f.txt"
           HOME="$d" "$app" --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-macos-${{ matrix.arch }}
           path: dist/
@@ -395,11 +395,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       # Only the updater's public key is needed here (to double-check the signatures we make).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: src/update_key.pub
           sparse-checkout-cone-mode: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           path: dist

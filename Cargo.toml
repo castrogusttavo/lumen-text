@@ -43,13 +43,13 @@ onig = "6.5.3"
 png = { version = "0.18.1", default-features = false }
 pulldown-cmark = { version = "0.13.6", default-features = false }
 regex = "1.13.1"
-roxmltree = "0.20.0"
+roxmltree = "0.21.2"
 ropey = "1.6.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 similar = "3.2.1"
 softbuffer = "0.4.8"
-tiny-skia = { version = "0.11.4", default-features = false, features = ["std"] }
+tiny-skia = { version = "0.12.0", default-features = false, features = ["std"] }
 vte = "0.15.0"
 winit = "0.30.13"
 zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
