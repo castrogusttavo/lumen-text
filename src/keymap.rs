@@ -74,6 +74,11 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("shift+f11", "StepOut"),
     ("shift+alt+right", "ExpandSelection"),
     ("shift+alt+left", "ShrinkSelection"),
+    ("ctrl+shift+alt+up", "ColumnSelectUp"),
+    ("ctrl+shift+alt+down", "ColumnSelectDown"),
+    ("ctrl+shift+alt+left", "ColumnSelectLeft"),
+    ("ctrl+shift+alt+right", "ColumnSelectRight"),
+    ("alt+j", "JumpTo"),
     // Chords: `Ctrl+K` then a letter.
     ("ctrl+k r", "RepeatTask"),
     ("ctrl+k x", "StopTask"),

@@ -255,6 +255,11 @@ impl App {
             Cmd::CheckUpdate => self.update_check_manual(),
             Cmd::RestartUpdate => self.update_restart_cmd(),
             Cmd::About => self.update_show_about(),
+            Cmd::ColumnSelectUp => self.column_select(-1, 0),
+            Cmd::ColumnSelectDown => self.column_select(1, 0),
+            Cmd::ColumnSelectLeft => self.column_select(0, -1),
+            Cmd::ColumnSelectRight => self.column_select(0, 1),
+            Cmd::JumpTo => self.jump_start(),
             Cmd::Quit => {
                 if self.try_quit() {
                     std::process::exit(0);

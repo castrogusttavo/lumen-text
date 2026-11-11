@@ -26,6 +26,10 @@ impl App {
         if !self.overlay.is_none() {
             return self.overlay_key(ev);
         }
+        // "Jump to…" owns the keys until it jumps or is cancelled.
+        if self.jump.is_some() && self.jump_key(ev) {
+            return false;
+        }
         if self.update_card_key(&key) {
             self.request_redraw();
             return false;
@@ -175,7 +179,14 @@ impl App {
                     if multi {
                         let t = d.ed.copy_text_multi(&d.buf);
                         self.clip.set(&t);
-                        d.ed.edit_multi(&mut d.buf, EditKind::Other, |e, b| e.backspace(b));
+                        // A column selection has carets on lines shorter than the box: they cut
+                        // nothing (a backspace there would eat the character before them).
+                        let any = d.ed.all_sels().iter().any(|s| !s.is_empty());
+                        d.ed.edit_multi(&mut d.buf, EditKind::Other, |e, b| {
+                            if !any || !e.sel.is_empty() {
+                                e.backspace(b)
+                            }
+                        });
                     } else {
                         let t = d.cut_cmd();
                         self.clip.set(&t);

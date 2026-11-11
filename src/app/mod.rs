@@ -178,6 +178,8 @@ pub struct App {
     pub last_click_pos: (f64, f64),
     /// First stroke of a pending chord (normalized, e.g. "ctrl+k"); see `keymap::DEFAULTS`.
     pub chord: Option<String>,
+    /// "Jump to…" waiting for characters / a label (`app_jump.rs`).
+    pub jump: Option<crate::app_jump::Jump>,
     /// Git work that outlives the panel: detached command, background counts, toast.
     pub gitbg: crate::app_gitbg::GitBg,
     /// Language / indentation / tab width the user picked per file (kept in the session).
@@ -316,6 +318,7 @@ impl App {
             last_click: Instant::now(),
             last_click_pos: (0.0, 0.0),
             chord: None,
+            jump: None,
             gitbg: Default::default(),
             picks: Default::default(),
             status: None,

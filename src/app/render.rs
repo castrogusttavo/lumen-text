@@ -117,6 +117,7 @@ impl App {
             }
         }
 
+        self.draw_jump(cv);
         crate::perf::lap!("doc.caret_end");
         busy |= self.draw_md(cv);
         crate::perf::lap!("md");

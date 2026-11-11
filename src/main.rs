@@ -19,6 +19,7 @@ mod app_gitx;
 mod app_hover;
 mod app_ignored;
 mod app_input;
+mod app_jump;
 mod app_localhist;
 mod app_lsp;
 mod app_lspx;
