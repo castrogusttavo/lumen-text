@@ -401,7 +401,7 @@ fn lsp_matrix() {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, text).unwrap();
         }
-        let dir = dir.canonicalize().unwrap();
+        let dir = crate::paths::canonical(&dir).unwrap();
         let mut app = test_app(&dir);
         let o = exercise(&mut app, &dir.join(c.files[0].0), Some(c.hover_on), c.want_diag, c.wait);
         stop(&mut app);
@@ -432,7 +432,7 @@ fn lsp_real_files() {
     // file's real project root from their root markers.
     let scratch = scratch_base().join(format!("lsp-real-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).unwrap();
-    let scratch = scratch.canonicalize().unwrap();
+    let scratch = crate::paths::canonical(&scratch).unwrap();
     for f in list.split(':').filter(|s| !s.is_empty()) {
         let file = PathBuf::from(f);
         let mut app = test_app(&scratch);

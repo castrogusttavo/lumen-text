@@ -225,7 +225,7 @@ mod tests {
         let d = scratch_base().join(format!("fmtsave-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("src")).unwrap();
-        d.canonicalize().unwrap()
+        crate::paths::canonical(&d).unwrap()
     }
 
     /// A prettier config plus a local "prettier" shell script: stdin → `script` → stdout.

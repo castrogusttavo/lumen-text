@@ -278,7 +278,7 @@ impl App {
     fn ide_path(&self, p: &str) -> PathBuf {
         let p = Path::new(p);
         let abs = if p.is_absolute() { p.to_path_buf() } else { self.root.join(p) };
-        abs.canonicalize().unwrap_or(abs)
+        crate::paths::canonical(&abs).unwrap_or(abs)
     }
 
     /// The open document of a path.
@@ -314,7 +314,7 @@ impl App {
     /// plus the last build's problems in files that are not open. One file with `uri`.
     fn ide_diagnostics(&self, uri: Option<&str>) -> Value {
         let want = uri.filter(|u| !u.is_empty()).map(|u| match uri_to_path(u) {
-            Some(p) => p.canonicalize().unwrap_or(p),
+            Some(p) => crate::paths::canonical(&p).unwrap_or(p),
             None => self.ide_path(u),
         });
         let mut out: Vec<Value> = Vec::new();

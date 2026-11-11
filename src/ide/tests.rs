@@ -166,8 +166,8 @@ fn lock_files_are_private_written_removed_and_swept() {
     assert!(p.exists(), "a live Lumen keeps its file");
     assert!(!dir.join("23457.lock").exists(), "a dead Lumen's file goes");
     assert!(dir.join("23458.lock").exists(), "another IDE's file is never touched");
-    #[cfg(unix)]
     assert!(lock::pid_alive(std::process::id()) && !lock::pid_alive(0));
+    assert!(!lock::pid_alive(u32::MAX - 3), "no such process");
     // A real server writes its file and removes it on drop.
     let srv = Server::start(vec![PathBuf::from("/w/proj")], Some(dir.clone()), Arc::new(|| {})).unwrap();
     let lp = srv.lock_path().unwrap().to_path_buf();

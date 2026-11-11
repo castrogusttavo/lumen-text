@@ -190,10 +190,14 @@ impl ServerSpec {
 /// The interpreter of the project's virtualenv: `.venv`, `venv` or `env` in `root`, else the
 /// activated `$VIRTUAL_ENV`.
 pub fn project_python(root: &Path) -> Option<PathBuf> {
+    // Windows venvs keep the interpreter in `Scripts\python.exe`, POSIX ones in `bin/python`.
     let exe = |venv: &Path| {
-        [venv.join("bin/python"), venv.join("bin/python3"), venv.join("Scripts/python.exe")]
-            .into_iter()
-            .find(|p| p.is_file())
+        let (scripts, bin) = (venv.join("Scripts"), venv.join("bin"));
+        let mut c = vec![bin.join("python"), bin.join("python3"), scripts.join("python.exe")];
+        if cfg!(windows) {
+            c.rotate_right(1);
+        }
+        c.into_iter().find(|p| p.is_file())
     };
     [".venv", "venv", "env"]
         .iter()
@@ -456,9 +460,8 @@ fn is_exec(p: &Path) -> bool {
             .is_some_and(|e| ["exe", "cmd", "bat", "com"].iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
-/// `dir/command`, plus the `.exe`/`.cmd`/... variants on Windows.
-fn candidates(dir: &Path, command: &str) -> Vec<PathBuf> {
-    let base = dir.join(command);
+/// `base`, plus its `.exe`/`.cmd`/... variants on Windows (npm installs servers as `.cmd` shims).
+fn candidates(base: PathBuf) -> Vec<PathBuf> {
     if cfg!(unix) {
         return vec![base];
     }
@@ -477,7 +480,8 @@ fn home_dir() -> Option<std::ffi::OsString> {
 }
 
 fn expand_home(s: &str) -> PathBuf {
-    match (s.strip_prefix("~/"), home_dir()) {
+    let rest = s.strip_prefix("~/").or_else(|| if cfg!(windows) { s.strip_prefix("~\\") } else { None });
+    match (rest, home_dir()) {
         (Some(rest), Some(h)) => Path::new(&h).join(rest),
         _ => PathBuf::from(s),
     }
@@ -531,7 +535,7 @@ pub fn child_path(exe: &Path) -> std::ffi::OsString {
     if let Some(d) = exe.parent() {
         push(d.to_path_buf());
     }
-    if let Some(d) = exe.canonicalize().ok().as_deref().and_then(Path::parent) {
+    if let Some(d) = crate::paths::canonical(exe).ok().as_deref().and_then(Path::parent) {
         push(d.to_path_buf());
     }
     for d in user_tool_dirs().into_iter().filter(|d| d.is_dir()) {
@@ -545,12 +549,14 @@ pub fn child_path(exe: &Path) -> std::ffi::OsString {
 
 /// Absolute path of the server's executable, or `None` when it is not installed.
 pub fn resolve_command(command: &str, root: &Path) -> Option<PathBuf> {
-    if command.contains('/') {
+    let is_path =
+        command.contains('/') || (cfg!(windows) && (command.contains('\\') || Path::new(command).is_absolute()));
+    if is_path {
         let p = expand_home(command);
         let p = if p.is_relative() { root.join(p) } else { p };
-        return is_exec(&p).then_some(p);
+        return candidates(p).into_iter().find(|p| is_exec(p));
     }
-    search_dirs(root).into_iter().flat_map(|d| candidates(&d, command)).find(|p| is_exec(p))
+    search_dirs(root).into_iter().flat_map(|d| candidates(d.join(command))).find(|p| is_exec(p))
 }
 
 /// Is `command` available when there is no particular project (status listings)?
@@ -679,8 +685,39 @@ mod tests {
         let o = a.init_options_for(Path::new("/p"));
         assert_eq!(o["typescript"]["tsdk"], "/p/node_modules/typescript/lib");
         assert!(resolve_command("definitely-not-a-real-server-xyz", Path::new("/")).is_none());
-        assert!(resolve_command("sh", Path::new("/")).is_some());
-        assert!(resolve_command("/bin/sh", Path::new("/")).is_some());
+        #[cfg(unix)]
+        {
+            assert!(resolve_command("sh", Path::new("/")).is_some());
+            assert!(resolve_command("/bin/sh", Path::new("/")).is_some());
+        }
+        #[cfg(windows)]
+        {
+            let cmd = PathBuf::from(std::env::var_os("ComSpec").expect("ComSpec"));
+            assert!(resolve_command("cmd", Path::new("/")).is_some_and(|p| p.is_file()));
+            assert_eq!(resolve_command(&cmd.to_string_lossy(), Path::new("/")).as_deref(), Some(cmd.as_path()));
+            // An absolute path without the extension (`C:\Windows\System32\cmd`) finds the `.exe`.
+            let bare = cmd.with_extension("");
+            assert!(resolve_command(&bare.to_string_lossy(), Path::new("/")).is_some_and(|p| p.is_file()));
+        }
+    }
+
+    /// npm installs a server as `node_modules/.bin/<name>.cmd` on Windows (`<name>` alone is a
+    /// shell script Windows can't run): the shim is what gets started.
+    #[cfg(windows)]
+    #[test]
+    fn npm_cmd_shims_are_found_on_windows() {
+        let base = std::env::temp_dir().join(format!("lumen-reg-shim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let bin = base.join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("lumen-fake-ls"), "#!/bin/sh\n").unwrap();
+        std::fs::write(bin.join("lumen-fake-ls.cmd"), "@echo off\r\n").unwrap();
+        assert_eq!(resolve_command("lumen-fake-ls", &base), Some(bin.join("lumen-fake-ls.cmd")));
+        assert_eq!(
+            resolve_command("node_modules/.bin/lumen-fake-ls", &base),
+            Some(base.join("node_modules/.bin/lumen-fake-ls.cmd"))
+        );
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
@@ -710,11 +747,15 @@ mod tests {
     fn python_servers_get_the_project_virtualenv() {
         let base = std::env::temp_dir().join(format!("lumen-reg-venv-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(base.join(".venv/bin")).unwrap();
-        std::fs::write(base.join(".venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
-        std::fs::write(base.join(".venv/bin/python"), "").unwrap();
+        // Where `python -m venv .venv` puts the interpreter on this OS.
+        let venv = base.join(".venv");
+        let py = if cfg!(windows) { venv.join("Scripts").join("python.exe") } else { venv.join("bin").join("python") };
+        std::fs::create_dir_all(py.parent().unwrap()).unwrap();
+        std::fs::write(venv.join("pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+        std::fs::write(&py, "").unwrap();
         let r = Registry::builtin();
-        let py = base.join(".venv/bin/python").to_string_lossy().into_owned();
+        assert_eq!(project_python(&base).as_deref(), Some(py.as_path()));
+        let py = py.to_string_lossy().into_owned();
         assert_eq!(r.get("pyright").unwrap().settings_for(&base)["python"]["pythonPath"], json!(py));
         assert_eq!(r.get("pylsp").unwrap().settings_for(&base)["pylsp"]["plugins"]["jedi"]["environment"], json!(py));
         assert!(r.get("gopls").unwrap().settings_for(&base).pointer("/python").is_none());
