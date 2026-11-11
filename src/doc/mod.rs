@@ -452,8 +452,17 @@ impl Doc {
         self.path().map(path_to_uri)
     }
 
+    /// URI for the document's primary language server. Only tsgo runs in a narrow mirror, so
+    /// only documents it serves (TS family with a tsgo root) are addressed under the mirror path;
+    /// registry servers (marksman, rust-analyzer, ...) always get the real URI, which is also what
+    /// their open-document set and idle shutdown are keyed by.
     pub fn uri(&self) -> Option<String> {
-        self.path().map(|p| path_to_uri(&to_mirror(p)))
+        let p = self.path()?;
+        if self.lsp_root.is_some() && crate::app_lsp::ts_family(self.lang) {
+            Some(path_to_uri(&to_mirror(p)))
+        } else {
+            Some(path_to_uri(p))
+        }
     }
 
     // ── layout ──

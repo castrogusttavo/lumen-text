@@ -118,6 +118,7 @@ impl App {
                 want(t);
             }
         }
+        self.prompt_icon_tick(now, &mut want);
         self.tooltip_tick(now, &mut want);
         self.hover_tick(now, &mut want);
         if let Some((since, pos, requested)) = self.hover_probe {

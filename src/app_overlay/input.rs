@@ -163,12 +163,33 @@ impl App {
                 if schedule {
                     self.search_due = Some(std::time::Instant::now() + std::time::Duration::from_millis(180));
                 }
+                if let Overlay::Prompt(p) = &mut self.overlay
+                    && matches!(p.kind, PromptKind::NewFile { .. })
+                {
+                    p.icon_due = Some(Instant::now() + PROMPT_ICON_DEBOUNCE);
+                }
             }
             Next::Nothing => {}
         }
         self.preview_theme_selection();
         self.request_redraw();
         false
+    }
+
+    /// New-file prompt: resolve the type icon of the typed name once typing paused.
+    pub fn prompt_icon_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        let Overlay::Prompt(p) = &self.overlay else { return };
+        let Some(due) = p.icon_due else { return };
+        if due > now {
+            return want(due);
+        }
+        let name = p.icon_name().to_string();
+        let icon = self.tx.icons.file_icon(&name);
+        if let Overlay::Prompt(p) = &mut self.overlay {
+            p.icon_due = None;
+            p.icon = Some(icon);
+        }
+        self.request_redraw();
     }
 
     pub fn overlay_accept(&mut self) {

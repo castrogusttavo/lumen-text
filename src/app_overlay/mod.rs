@@ -110,6 +110,36 @@ pub struct Prompt {
     pub kind: PromptKind,
     pub title: String,
     pub field: TextField,
+    /// New file: icon of the typed name, resolved once typing pauses (`icon_due`).
+    pub icon: Option<String>,
+    pub icon_due: Option<Instant>,
+}
+
+/// How long the new-file prompt waits after the last keystroke before resolving the type icon.
+pub const PROMPT_ICON_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+
+impl Prompt {
+    pub fn new(kind: PromptKind, title: String, field: TextField) -> Prompt {
+        Prompt { kind, title, field, icon: None, icon_due: None }
+    }
+
+    /// Icon shown in the input: a folder for "New Folder", the type of the typed name for
+    /// "New File" (a plain file until the name is resolved), none for the other prompts.
+    pub fn input_icon(&self) -> Option<&str> {
+        match self.kind {
+            PromptKind::NewDir { .. } => Some("file/folder"),
+            PromptKind::NewFile { .. } => {
+                Some(self.icon.as_deref().filter(|_| !self.field.text.trim().is_empty()).unwrap_or("file/file"))
+            }
+            _ => None,
+        }
+    }
+
+    /// The name whose type the new-file icon shows: last component of what was typed ("src/a.rs" -> "a.rs").
+    pub fn icon_name(&self) -> &str {
+        let t = self.field.text.trim();
+        t.rsplit(['/', '\\']).next().unwrap_or(t)
+    }
 }
 
 pub enum Overlay {

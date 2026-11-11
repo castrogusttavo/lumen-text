@@ -777,7 +777,7 @@ impl App {
                     if rel.is_empty() { "." } else { &rel }
                 );
                 let kind = if is_dir { PromptKind::NewDir { dir } } else { PromptKind::NewFile { dir } };
-                self.overlay = Overlay::Prompt(Prompt { kind, title, field: TextField::default() });
+                self.overlay = Overlay::Prompt(Prompt::new(kind, title, TextField::default()));
             }
             Act::Cut | Act::Copy => {
                 let Some(p) = path else { return };
@@ -807,11 +807,11 @@ impl App {
             }
             Act::Rename => {
                 let Some(p) = path else { return };
-                self.overlay = Overlay::Prompt(Prompt {
-                    title: format!("Rename {name}"),
-                    kind: PromptKind::RenamePath { from: p },
-                    field: TextField::with(&name),
-                });
+                self.overlay = Overlay::Prompt(Prompt::new(
+                    PromptKind::RenamePath { from: p },
+                    format!("Rename {name}"),
+                    TextField::with(&name),
+                ));
             }
             Act::Trash => {
                 let Some(p) = path else { return };

@@ -267,11 +267,11 @@ impl App {
     /// "Save as" prompt for the untitled document `i`; `rest` and `then` continue afterwards.
     pub fn ask_save_as(&mut self, i: usize, rest: Vec<usize>, then: Option<Pending>, text: String) {
         let name = self.docs.get(i).map(|d| d.name.clone()).unwrap_or_default();
-        self.overlay = Overlay::Prompt(Prompt {
-            kind: PromptKind::SaveAs { doc: i, rest, then },
-            title: format!("Save “{name}” as (path; relative to the project root)"),
-            field: TextField::with(&text),
-        });
+        self.overlay = Overlay::Prompt(Prompt::new(
+            PromptKind::SaveAs { doc: i, rest, then },
+            format!("Save “{name}” as (path; relative to the project root)"),
+            TextField::with(&text),
+        ));
         self.request_redraw();
     }
 
@@ -317,7 +317,7 @@ impl App {
         self.save_docs_then(rest, then);
     }
 
-    /// Give the untitled document `i` a file path: name, language, comment prefix, git base.
+    /// Give document `i` a (new) file path: name, language, highlighter, comment prefix, git base.
     pub fn set_doc_path(&mut self, i: usize, path: &Path) {
         let lang = crate::highlight::language_for(&path.to_string_lossy());
         let hl = lang.and_then(|l| self.tokenizer_for(l)).map(crate::highlight::Highlighter::new);
