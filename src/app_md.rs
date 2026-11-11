@@ -474,6 +474,20 @@ impl App {
         true
     }
 
+    /// Right click in the preview on a rendered formula: copy its TeX source. True when there was
+    /// one under the pointer.
+    pub fn md_copy_tex(&mut self, x: f64, y: f64) -> bool {
+        let r = self.layout.md;
+        if r.w <= 0 || !r.contains(x, y) {
+            return false;
+        }
+        let st = self.docs.get(self.active).and_then(|d| d.md.as_ref());
+        let Some(tex) = st.and_then(|st| st.view.math_at(x, y, st.rect, st.scroll)) else { return false };
+        self.clip.set(&tex);
+        self.toast("TeX source copied", true);
+        true
+    }
+
     /// A task checkbox was clicked: flip `[ ]` / `[x]` in the source (one undo step). `off` is the
     /// byte offset of the `[` in the text the preview was built from.
     pub fn md_toggle_task(&mut self, off: usize) {

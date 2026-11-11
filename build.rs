@@ -14,6 +14,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(embedded_hugeicons)");
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=src/icon_pack.rs");
+    pack_math_font();
     let root = Path::new(&env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("assets/icons");
     let mut entries = Vec::new();
     for set in ["hugeicons", "hugeicons_bulk"] {
@@ -36,4 +37,14 @@ fn main() {
     let out = Path::new(&env::var_os("OUT_DIR").unwrap()).join("hugeicons.pack");
     fs::write(&out, icon_pack::pack(&entries)).unwrap();
     println!("cargo::rustc-cfg=embedded_hugeicons");
+}
+
+/// The Markdown preview's math font (STIX Two Math, OFL), deflated into `OUT_DIR/math-font.z`
+/// (inflated on first use by `src/mdview/math/font.rs`).
+fn pack_math_font() {
+    let src = Path::new(&env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("fonts/STIXTwoMath-Regular.otf");
+    println!("cargo::rerun-if-changed={}", src.display());
+    let raw = fs::read(&src).expect("fonts/STIXTwoMath-Regular.otf is missing");
+    let out = Path::new(&env::var_os("OUT_DIR").unwrap()).join("math-font.z");
+    fs::write(out, miniz_oxide::deflate::compress_to_vec(&raw, 9)).unwrap();
 }

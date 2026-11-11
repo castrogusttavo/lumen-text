@@ -65,6 +65,8 @@ pub(super) struct Pal {
     pub(super) widget: Rgba,
     pub(super) input: Rgba,
     pub(super) bg: Rgba,
+    /// The offending part of a formula that does not parse.
+    pub(super) err: Rgba,
 }
 
 impl Pal {
@@ -95,6 +97,7 @@ impl Pal {
             widget: c.widget_bg.with_alpha(255),
             input: c.input_bg.with_alpha(255),
             bg,
+            err: c.error.with_alpha(255).readable_on(&[bg, code], 3.0),
         }
     }
     /// Chip behind inline math: the page tinted with the accent, as long as `text` reads on it.
