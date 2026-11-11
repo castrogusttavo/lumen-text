@@ -245,27 +245,6 @@ impl App {
             Overlay::Picker(Picker::new(PickKind::WorkspaceSymbols, "Symbol in project (type to search)", Vec::new()));
     }
 
-    pub fn open_problems(&mut self) {
-        let mut items = Vec::new();
-        for d in &self.docs {
-            let Some(p) = d.path() else { continue };
-            for g in d.diags.iter().filter(|g| g.severity <= 2) {
-                let icon = if g.severity == 1 { "\u{f057}" } else { "\u{f071}" };
-                items.push(Item {
-                    label: format!("{icon} {}", g.message.lines().next().unwrap_or("")),
-                    detail: format!("{}:{}", self.rel(p), g.sl + 1),
-                    action: Action::Open(p.to_path_buf(), Some((g.sl, g.sc))),
-                });
-            }
-        }
-        items.extend(self.build_problem_items());
-        if items.is_empty() {
-            return self.say("no problems in open files");
-        }
-        let title = format!("{} problem(s)", items.len());
-        self.open_locations(&title, items);
-    }
-
     pub fn open_goto_line(&mut self) {
         if self.docs.is_empty() {
             return;

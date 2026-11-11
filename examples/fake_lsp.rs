@@ -8,6 +8,12 @@
 //! `FAKE_HIGHLIGHT=1` (documentHighlight: every whole-word occurrence, the first as a write) or
 //! `FAKE_HIGHLIGHT=first` (only the first occurrence), `FAKE_LINKED=1` (linkedEditingRange for
 //! `<tag>...</tag>` names).
+//! `FAKE_WORKSPACE=1` (`workspace/diagnostic` over the `*.fk` files of the root: the first report as a
+//! partial result, `unchanged` for files whose `previousResultIds` still match; a file named `hang`
+//! in the root keeps the request open until `$/cancelRequest`), `FAKE_PUSH_CLOSED=1` (publish
+//! diagnostics for every `*.fk` file of the root right after `initialized`), `FAKE_ACTIONS=1`
+//! (`source.organizeImports` with an edit, `source.fixAll` through `codeAction/resolve`),
+//! `FAKE_HANG_ACTIONS=1` (never answer `source.*` code action requests).
 //! A document containing `CRASH` kills the server. Every line containing `FIXME` gets a warning.
 use serde_json::{Value, json};
 use std::io::{BufRead, Read, Write};
@@ -115,8 +121,41 @@ fn linked(text: &str, off: usize) -> Value {
     json!({"ranges": [range(text, a.0, a.1), range(text, b.0, b.1)], "wordPattern": "[a-zA-Z0-9:\\-\\._$]*"})
 }
 
+/// `*.fk` files of `root`, sorted, with the open document's text when it has one.
+fn project_files(root: &str, docs: &std::collections::HashMap<String, String>) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(root) else { return out };
+    let mut paths: Vec<std::path::PathBuf> =
+        rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "fk")).collect();
+    paths.sort();
+    for p in paths {
+        let uri = format!("file://{}", p.display());
+        let text = docs.get(&uri).cloned().unwrap_or_else(|| std::fs::read_to_string(&p).unwrap_or_default());
+        out.push((uri, text));
+    }
+    out
+}
+
+/// A stable id for a text (the `resultId` of a report).
+fn result_id(text: &str) -> String {
+    let h = text.bytes().fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
+    format!("{h:x}")
+}
+
+/// One whole-document edit inserting `line` at the top of `uri`.
+fn insert_top(uri: &Value, line: &str) -> Value {
+    let mut changes = serde_json::Map::new();
+    let edit =
+        json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": line}]);
+    changes.insert(uri.as_str().unwrap_or("").to_string(), edit);
+    json!({"changes": changes})
+}
+
 fn main() {
     let name = std::env::var("FAKE_NAME").unwrap_or_else(|_| "fake".into());
+    let mut root = String::new();
+    // The open workspace pull kept open by a `hang` file: its id.
+    let mut hanging: Option<Value> = None;
     eprintln!("fake server {name} started");
     let mut docs: std::collections::HashMap<String, String> = Default::default();
     let stdin = std::io::stdin();
@@ -166,11 +205,22 @@ fn main() {
                     caps["linkedEditingRangeProvider"] = json!(true);
                 }
                 if env("FAKE_PULL") {
-                    caps["diagnosticProvider"] = json!({"interFileDependencies": false, "workspaceDiagnostics": false});
+                    caps["diagnosticProvider"] =
+                        json!({"interFileDependencies": false, "workspaceDiagnostics": env("FAKE_WORKSPACE")});
                 }
+                if env("FAKE_ACTIONS") || env("FAKE_HANG_ACTIONS") {
+                    caps["codeActionProvider"] = json!({"codeActionKinds": ["quickfix", "source.organizeImports", "source.fixAll"], "resolveProvider": true});
+                }
+                root = m["params"]["rootUri"].as_str().unwrap_or("").trim_start_matches("file://").to_string();
                 reply(json!({"capabilities": caps, "serverInfo": {"name": format!("fake-{name}"), "version": "0.1"}}));
             }
             "initialized" => {
+                if env("FAKE_PUSH_CLOSED") {
+                    for (uri, text) in project_files(&root, &docs) {
+                        send(&json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+                            "params": {"uri": uri, "diagnostics": diags(&text, &name)}}));
+                    }
+                }
                 if env("FAKE_EXIT_AFTER_INIT") {
                     eprintln!("fake server {name} dying on purpose");
                     std::process::exit(3);
@@ -260,8 +310,69 @@ fn main() {
                     json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": nl}]),
                 );
             }
-            "textDocument/codeAction" => reply(json!([{"title": format!("Fix with {name}"), "kind": "quickfix",
-                "edit": {"changes": {}}}, {"title": "Shared action", "kind": "quickfix", "edit": {"changes": {}}}])),
+            "textDocument/codeAction" => {
+                let only = m["params"]["context"]["only"][0].as_str().unwrap_or("");
+                let uri = m["params"]["textDocument"]["uri"].clone();
+                if only.starts_with("source") && env("FAKE_HANG_ACTIONS") {
+                    eprintln!("ignoring {only} on purpose");
+                } else if only == "source.organizeImports" {
+                    reply(json!([{"title": "Organize imports", "kind": "source.organizeImports",
+                        "edit": insert_top(&uri, "// imports organized\n")}]));
+                } else if only == "source.fixAll" {
+                    // No edit: the client resolves it.
+                    reply(json!([{"title": "Fix all", "kind": "source.fixAll.fake", "data": {"uri": uri}}]));
+                } else if only.is_empty() {
+                    reply(json!([{"title": format!("Fix with {name}"), "kind": "quickfix",
+                        "edit": {"changes": {}}}, {"title": "Shared action", "kind": "quickfix", "edit": {"changes": {}}}]));
+                } else {
+                    reply(json!([]));
+                }
+            }
+            "codeAction/resolve" => {
+                let mut a = m["params"].clone();
+                a["edit"] = insert_top(&a["data"]["uri"], "// fixed\n");
+                reply(a);
+            }
+            "workspace/diagnostic" => {
+                let prev: std::collections::HashMap<String, String> = m["params"]["previousResultIds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| Some((p["uri"].as_str()?.to_string(), p["value"].as_str()?.to_string())))
+                    .collect();
+                if std::path::Path::new(&root).join("hang").exists() {
+                    hanging = id.clone();
+                    continue;
+                }
+                let mut reports = Vec::new();
+                let mut unchanged = 0;
+                for (uri, text) in project_files(&root, &docs) {
+                    let rid = result_id(&text);
+                    if prev.get(&uri) == Some(&rid) {
+                        unchanged += 1;
+                        reports.push(json!({"uri": uri, "kind": "unchanged", "resultId": rid, "version": null}));
+                    } else {
+                        reports.push(json!({"uri": uri, "kind": "full", "resultId": rid, "version": null, "items": diags(&text, &name)}));
+                    }
+                }
+                eprintln!("workspace pull: unchanged {unchanged}");
+                let token = m["params"]["partialResultToken"].clone();
+                if !token.is_null() && !reports.is_empty() {
+                    let first = reports.remove(0);
+                    send(
+                        &json!({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": token, "value": {"items": [first]}}}),
+                    );
+                }
+                reply(json!({"items": reports}));
+            }
+            "$/cancelRequest" => {
+                if hanging.as_ref() == Some(&m["params"]["id"]) {
+                    eprintln!("cancelled workspace pull");
+                    send(
+                        &json!({"jsonrpc": "2.0", "id": hanging.take(), "error": {"code": -32800, "message": "cancelled"}}),
+                    );
+                }
+            }
             "shutdown" => reply(Value::Null),
             "exit" => return,
             _ => {

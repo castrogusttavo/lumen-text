@@ -398,7 +398,7 @@ impl App {
         }
     }
 
-    fn biome_index(&self, doc: usize) -> Option<usize> {
+    pub(crate) fn biome_index(&self, doc: usize) -> Option<usize> {
         let root = self.docs.get(doc)?.biome_root.clone().flatten()?;
         self.lsps.iter().position(|l| l.name == "biome" && l.root == root)
     }
@@ -449,6 +449,7 @@ impl App {
         let n = self.docs.len();
         self.lspx_sync_config();
         self.lspx_tick(now, want);
+        self.problems_tick(now, want);
         self.sync_mirrors();
         let mut pull: Vec<usize> = Vec::new(); // server indexes needing a diagnostics refresh
         let mut comp: Option<Option<char>> = None;
@@ -700,6 +701,7 @@ impl App {
     }
 
     pub fn lsp_did_save(&mut self, i: usize) {
+        self.ws_after_save();
         if let (Some(lb), Some(uri)) = (self.biome_index(i), self.docs.get(i).and_then(|d| d.real_uri())) {
             self.lsps[lb].notify("textDocument/didSave", json!({"textDocument": {"uri": uri}}));
         }
@@ -765,6 +767,7 @@ impl App {
     }
 
     pub fn lsp_did_close(&mut self, i: usize) {
+        self.problems_keep_closing(i);
         self.biome_close(i);
         // Registry servers: didClose everywhere; they are stopped after an idle grace period.
         let was_generic = self.doc_lsp(i).is_some_and(|li| self.lsps[li].is_generic());
@@ -834,6 +837,13 @@ impl App {
                 let Some(what) = self.lsps[li].pending.remove(&id) else { return };
                 self.on_tokens(li, what, data);
             }
+            Msg::WsDiag { id, report } => {
+                let Some(what) = self.lsps[li].pending.remove(&id) else { return };
+                if let Pending::WorkspaceDiag { token } = what {
+                    self.ws_report(li, &token, report, true);
+                }
+            }
+            Msg::WsPartial { token, report } => self.ws_report(li, &token, report, false),
             Msg::Notification { method, params } => self.on_notification(li, &method, &params),
             Msg::Request { id, method, params } => self.on_server_request(li, id, &method, &params),
         }
@@ -849,6 +859,8 @@ impl App {
             }
             if li < self.lsps.len() {
                 let root = self.lsps[li].root.clone();
+                let name = self.lsps[li].name.clone();
+                self.lspx.problems.clear_source(&name);
                 crate::doc::unregister_mirror(&root);
                 self.lsps.remove(li);
                 for d in &mut self.docs {
@@ -934,6 +946,10 @@ impl App {
                 let root = self.lsps[li].root.clone();
                 json!([{"uri": path_to_uri(&root), "name": root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()}])
             }
+            "workspace/diagnostic/refresh" => {
+                self.ws_refresh_requested();
+                Value::Null
+            }
             _ => Value::Null,
         };
         self.lsps[li].respond(id, result);
@@ -951,7 +967,17 @@ impl App {
     /// Diagnostics from tsgo (`lint = None`), Biome (`Some(true)`), or a registry server whose id is
     /// `source` (`lint = Some(false)`: stored per server, merged by the document).
     pub(crate) fn set_diags_from(&mut self, uri: &str, items: &Value, lint: Option<bool>, source: &str) {
-        let Some(i) = self.doc_by_uri(uri) else { return };
+        let Some(i) = self.doc_by_uri(uri) else {
+            // A file that is not open (servers publish for the whole project): the Problems panel's
+            // project-wide store keeps it, bounded.
+            let key = match lint {
+                None => "tsgo",
+                Some(true) => "biome",
+                Some(false) => source,
+            };
+            return self.problems_store_closed(uri, key, lint == Some(false), items);
+        };
+        self.lspx.problems.generation += 1;
         let d = &mut self.docs[i];
         let mut out = Vec::new();
         // Spelling is never an error: whatever a spell checker says shows as "info" (dotted underline).
@@ -1008,6 +1034,10 @@ impl App {
         }
         if matches!(what, Pending::Highlight { .. } | Pending::LinkedEditing { .. }) {
             return self.assist_on_response(li, what, result);
+        }
+        if let Pending::WorkspaceDiag { token } = what {
+            // Answers normally arrive parsed as `Msg::WsDiag`; this is an error (cancelled...).
+            return self.ws_failed(li, &token, result.err());
         }
         if let (Pending::Initialize, Ok(v), true) = (&what, &result, self.lsps[li].is_generic()) {
             return self.lspx_initialized(li, v);
@@ -1186,7 +1216,8 @@ impl App {
             Pending::ExecuteCommand
             | Pending::Multi { .. }
             | Pending::Highlight { .. }
-            | Pending::LinkedEditing { .. } => {}
+            | Pending::LinkedEditing { .. }
+            | Pending::WorkspaceDiag { .. } => {}
         }
     }
 

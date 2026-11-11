@@ -64,7 +64,12 @@ and no GPU driver:
 - Document highlights: the caret resting on a symbol lights its read/write occurrences (`textDocument/documentHighlight`; the same word when no server offers it)
 - Linked editing: renaming an opening tag renames the closing one live, one undo step (`textDocument/linkedEditingRange`: tsgo for JSX/TSX, the HTML server for HTML)
 - Full-project mode (default; also reacts to files changed, created or deleted on disk) versus an opt-in lean mode; uses the project's own `tsgo` or a bundled one
-- Formatting with the project's Biome or Prettier (falls back to `tsgo`); lint through `biome lsp-proxy` and ESLint
+- Formatting with the project's Biome or Prettier (falls back to `tsgo`), or the formatter you pick per language
+  (`formatter`); code actions on save (`code_actions_on_save`, e.g. organize imports and fix all, ~1 s timeout each,
+  never blocking the save); lint through `biome lsp-proxy` and ESLint
+- Problems panel (*View: Problems*): problems grouped by file with counts, most severe first, scope switch
+  *Open files* | *Whole project* (`Alt+W`); the whole project adds what servers report for files that are not open and
+  uses LSP 3.17 workspace pull diagnostics (partial results, result ids, cancelled when you leave), bounded in memory
 - **Language servers beyond TypeScript** (see the [Language servers](web/src/content/docs/language-servers.md) page): a data-driven
   registry (`src/lsp_servers.json`) plus `language_servers` in `config.json`; one process per (server, workspace root), started lazily,
   stopped after an idle grace period, restarted with backoff when it crashes; several servers per file (a primary plus companions such
@@ -353,6 +358,9 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `format_on_save` | `false` | Run the formatter on save |
 | `hot_exit` | `true` | Quitting keeps every unsaved buffer (untitled ones too) under `$XDG_STATE_HOME/lumen-text/backups/<project>/` and reopens them, unsaved, with the session; dirty buffers are also backed up ~2 s after the last edit (at most every 10 s while typing) for crashes. A backup goes away when its buffer is saved or closed without saving. `false` asks before quitting, as before |
 | `persistent_undo` | `true` | Keep each file's undo tree after closing it or quitting (`$XDG_STATE_HOME/lumen-text/undo/`, keyed by the canonical path); it is restored only when the file's text still matches. Up to 2 MB per file (older steps and side branches are dropped first), 48 MB in total, least recently used histories pruned first |
+| `formatter` | `{}` (`"auto"`) | Which formatter wins, per language id (`"*"` = all), e.g. `{"python": "lsp:ruff", "typescript": "biome"}`: `"auto"` (project's Biome / Prettier, then the language server), `"biome"`, `"prettier"`, `"lsp"`, `"lsp:<server>"`, `"none"`; a single string applies to every language |
+| `code_actions_on_save` | `[]` | Code action kinds run in order before formatting on save, e.g. `["source.organizeImports", "source.fixAll"]`, or a map per language id (`"*"` = all; an empty list switches them off for a language). Each request waits at most ~1 s (a timeout is flashed in the status bar); files above 20,000 lines are skipped |
+| `problems_scope` | `"open_files"` | Problems panel scope: `"open_files"` or `"project"` (also switched with `Alt+W` in the panel) |
 | `updates` | `"auto"` | `"auto"` (check, download and install in the background), `"notify"` (only announce) or `"off"`; see [Updates](#updates) |
 | `auto_import` | `false` | Auto-import in completion (costs RAM and time) |
 | `lsp_narrow` | `false` | opt-in tsgo lean mode (only open files and their imports; less RAM, incomplete cross-file errors/references) |

@@ -320,6 +320,10 @@ impl App {
             Cmd::OpenProjectSettings => self.open_project_settings(),
             Cmd::ProjectTrust => self.projcfg_trust_prompt(true),
             Cmd::PythonSelectInterpreter => self.open_interpreter_picker(),
+            Cmd::ProblemsProject => {
+                self.set_problems_scope(true);
+                self.open_problems();
+            }
             Cmd::Quit => {
                 if self.try_quit() {
                     std::process::exit(0);

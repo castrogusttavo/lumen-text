@@ -94,6 +94,10 @@ impl App {
         self.regions.modal_from = self.regions.list.len();
         // (list area, total rows, scroll row) of the picker: its scrollbar is added after the borrow ends.
         let mut picker_bar: Option<(Rect, f64, f64)> = None;
+        // Problems panel: the scope switch ("Open files" | "Whole project") in the input row.
+        let chips = matches!(&self.overlay, Overlay::Picker(p) if p.kind == PickKind::Problems)
+            .then(|| self.problems_chips(base, INPUT_H));
+        let project = self.problems_project();
 
         match &self.overlay {
             Overlay::None => {}
@@ -143,7 +147,33 @@ impl App {
                         c.accent.with_alpha(0x50),
                     );
                 }
-                self.tx.draw_ui(cv, r.x + 46, r.y + (INPUT_H - 18) / 2, shown_text, col, r, false);
+                let text_clip = match chips {
+                    Some(ch) => Rect::new(r.x, r.y, ch[0].x - 8 - r.x, INPUT_H),
+                    None => r,
+                };
+                self.tx.draw_ui(cv, r.x + 46, r.y + (INPUT_H - 18) / 2, shown_text, col, text_clip, false);
+                if let Some(ch) = chips {
+                    let outer = Rect::new(ch[0].x - 2, ch[0].y - 2, ch[1].right() - ch[0].x + 4, ch[0].h + 4);
+                    cv.card(outer, 8, c.input_bg, c.border);
+                    for (k, chip) in ch.iter().enumerate() {
+                        let on = (k == 1) == project;
+                        if on {
+                            cv.fill_round(*chip, 6, c.list_active_bg);
+                        }
+                        let label = crate::app_problems::SCOPE_LABELS[k];
+                        let lw = self.tx.ui_width(label, false);
+                        let ty = chip.y + (chip.h - 18) / 2;
+                        self.tx.draw_ui(
+                            cv,
+                            chip.x + (chip.w - lw) / 2,
+                            ty,
+                            label,
+                            if on { fg } else { dim },
+                            *chip,
+                            false,
+                        );
+                    }
+                }
                 if p.kind == PickKind::ProjectSearch {
                     let tag = [(p.case, "Aa"), (p.word, "Word"), (p.regex, ".*")]
                         .iter()
@@ -278,6 +308,12 @@ impl App {
                 if p.filtered.is_empty() {
                     let msg = if p.kind == PickKind::ProjectSearch && p.field.text.is_empty() {
                         "Type to search the project"
+                    } else if p.kind == PickKind::Problems && p.field.text.is_empty() {
+                        if project {
+                            "No problems in the project (Alt+W: open files)"
+                        } else {
+                            "No problems in open files (Alt+W: whole project)"
+                        }
                     } else {
                         "No results"
                     };
