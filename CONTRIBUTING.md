@@ -139,7 +139,7 @@ Short imperative summary (about 70 characters), no trailing period, optional bod
 
 Maintainers do not tag by hand. Every push to `main` that passes `.github/workflows/ci.yml` triggers:
 `test` (build + tests) -> `version` (CalVer `YYYY.M.D.N`: today's UTC date plus the number of that day's tags + 1) -> `build-linux` (binary stamped with `LUMEN_VERSION`, `.tar.gz`, `.deb`, `.rpm`, AppImage, Arch package) -> `release` (`SHA256SUMS`, GitHub Release `vYYYY.M.D.N` with generated notes).
-`Cargo.toml`'s `version` is only the fallback for local builds. Packaging details: [packaging/README.md](packaging/README.md). Pull requests only run build, tests and the perf job.
+`Cargo.toml`'s `version` is only the fallback for local builds. Packaging details: [packaging/README.md](packaging/README.md). Pull requests run lint (fmt, clippy, release build) and tests in parallel; the perf job runs on every push to `main` (or on a pull request labelled `perf`), the language-server matrix (`lsp.yml`) only when LSP code changes.
 
 ### Auto-update: signing, secrets and `latest.json`
 

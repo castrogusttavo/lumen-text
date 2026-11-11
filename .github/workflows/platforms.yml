@@ -46,7 +46,7 @@ jobs:
       - name: Build
         run: cargo build --release --locked
       - name: Test
-        run: cargo test --release --locked
+        run: "cargo test --release --locked -- --skip perf::"
       - name: Package (tar.gz, deb, rpm, AppImage) and smoke test (Linux)
         if: runner.os == 'Linux'
         shell: bash

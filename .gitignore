@@ -2,6 +2,7 @@
 # HugeIcons Pro masks are licensed, not redistributable: generate locally with tools/setup-hugeicons.sh
 /assets/icons/hugeicons/
 /assets/icons/hugeicons_bulk/
+/.hugeicons.enc
 *.orig
 # minisign secret keys must never be committed (the release key lives in a GitHub secret)
 *.key
