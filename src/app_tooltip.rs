@@ -57,6 +57,8 @@ pub enum TipKey {
     Ai(crate::app_aipanel::AiHit),
     /// The Tests panel's target selector and the buttons a log-only target disables.
     Tests(crate::app_tests::Tip),
+    /// A tab or button of the terminal strip in the bottom panel.
+    Term(crate::app_terms::TermHit),
 }
 
 /// Pointer-rest state (the text is resolved while drawing).
@@ -347,6 +349,9 @@ impl App {
         if let Some((r, t)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((TipKey::PanelTab(*t), *r, false));
         }
+        if let Some((r, h)) = self.terms_hit_at(x, y) {
+            return Some((TipKey::Term(h), r, false));
+        }
         if let Some((r, h)) = self.aipanel_tip_target(x, y) {
             return Some((TipKey::Ai(h), r, true));
         }
@@ -409,6 +414,7 @@ impl App {
         match key {
             TipKey::Ai(h) => self.aipanel_tip(h),
             TipKey::Tests(k) => self.tests_tip(k),
+            TipKey::Term(h) => self.terms_tip(h),
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
                 Some(s) => t(&s.name, None, Some(format!("{} · line {}", symbol_kind_name(s.kind), s.sl + 1))),
                 None => TipText::default(),

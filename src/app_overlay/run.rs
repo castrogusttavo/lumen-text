@@ -142,6 +142,11 @@ impl App {
             Cmd::NavForward => self.navigate(false),
             Cmd::OpenTerminal => self.toggle_terminal_focus(),
             Cmd::CloseTerminal => self.close_terminal(),
+            Cmd::NewTerminal => self.new_terminal(),
+            Cmd::SplitTerminal => self.split_terminal(),
+            Cmd::RenameTerminal => self.prompt_rename_terminal(self.terms.active),
+            Cmd::NextTerminal => self.cycle_terminal(1),
+            Cmd::PrevTerminal => self.cycle_terminal(-1),
             Cmd::DebugStart
             | Cmd::DebugStop
             | Cmd::ToggleBreakpoint

@@ -22,7 +22,9 @@ const TRACK_W: i32 = 11;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Reg {
     Output,
+    /// The bottom panel's terminal (the left one when split) and the right one of a split.
     Terminal,
+    TerminalSplit,
     DebugStack,
     DebugVars,
     DebugOut,
@@ -170,8 +172,9 @@ impl App {
             Reg::TestsDetail => Some(self.tests.detail_scroll),
             Reg::Build => Some(self.build_region_value(false)),
             Reg::BuildLog => Some(self.build_region_value(true)),
-            Reg::Terminal => {
-                let t = self.term.as_ref()?;
+            Reg::Terminal | Reg::TerminalSplit => {
+                let id = *self.terms.panes.get(usize::from(id == Reg::TerminalSplit))?;
+                let t = &self.terms.get(id)?.term;
                 Some((t.grid.history_len() - t.scroll_offset.min(t.grid.history_len())) as f64)
             }
             Reg::Modal => match &self.overlay {
@@ -342,9 +345,10 @@ impl App {
                 self.panel.scroll = v;
                 self.panel.follow = v >= max - 1.0;
             }
-            Reg::Terminal => {
+            Reg::Terminal | Reg::TerminalSplit => {
                 // Bar position counts from the oldest line; the terminal's offset from the live screen.
-                if let Some(t) = self.term.as_mut() {
+                let pane = self.terms.panes.get(usize::from(id == Reg::TerminalSplit)).copied();
+                if let Some(t) = pane.and_then(|p| self.terms.get_mut(p)).map(|t| &mut t.term) {
                     t.scroll_offset = ((max - v).round().max(0.0) as usize).min(t.grid.history_len());
                 }
             }

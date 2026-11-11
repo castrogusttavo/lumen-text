@@ -68,6 +68,8 @@ and no GPU driver:
 **Terminal**
 - Integrated PTY terminal with an xterm-compatible emulator (`vte`): truecolor, bold / dim / italic / underline / strikethrough, wide characters, 5,000-line scrollback, alternate screen (`vim`, `less`), bracketed paste, mouse and focus reporting, synchronized output, OSC titles, hyperlinks (`Ctrl+click`), clipboard and notifications
 - Mouse selection with `Ctrl+Shift+C` / `Ctrl+Shift+V`; modified keys the xterm way (`Shift+Enter`, `Shift+Tab`, `Ctrl+Left`...)
+- Several terminals, each with its own shell, scrollback and state: a tab strip in the panel header (`+` new, `×` kill, double click renames; titles follow the program's OSC title or the foreground process), ``Ctrl+Shift+` `` for a new one, and a split that shows two side by side (the clicked one gets the keyboard)
+- Kitty keyboard protocol (progressive enhancement flags 1, 4, 8 and 16, per-screen flag stack) for modern TUIs such as Claude Code, Codex, Neovim and Helix: `Esc`, `Ctrl+…` and modified `Enter` / `Tab` / `Backspace` arrive unambiguously; programs that don't ask keep the legacy encoding. The AI panel's agent gets it too
 
 **AI panel**
 - Your own agent CLI (Claude Code, Gemini CLI or Codex CLI) in a panel on the right (`Ctrl+Shift+A`), sharing the slot with the Git panel (a `Git | AI` switch on top). It runs in the project folder with your environment and its own login: Lumen never handles API keys
@@ -248,6 +250,7 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Explorer: new file / folder / rename / delete | `A` / `Shift+A` / `F2` / `Delete` |
 | Git panel | `Ctrl+Shift+G` (in a diff: `n` / `p` pick a hunk, `s` stage) |
 | Bottom panel / terminal | `Ctrl+J` / ``Ctrl+` `` |
+| New terminal | ``Ctrl+Shift+` `` (split, rename, next / previous: command palette or the strip's buttons) |
 | AI panel: show / focus / hide | `Ctrl+Shift+A` (back to the editor: click it or `Ctrl+1`) |
 | Tests: at cursor / file / rerun / stop | `Ctrl+K T` / `Ctrl+K F` / `Ctrl+K R` / `Ctrl+K X` |
 | Tests panel: run all / re-run failed / debug at cursor | `Ctrl+K A` / `Ctrl+K E` / `Ctrl+K D` |
@@ -364,6 +367,7 @@ src/
   lspreg.rs, lsp_servers.json, lspsup.rs, lspmerge.rs, lsplog.rs, app_lspx.rs  language-server registry and config, supervision
                            (backoff, dynamic registration, progress), merged answers, server log, lifecycle in the app
   dap.rs, tasks.rs, terminal.rs  debug adapters, processes and ANSI output, PTY + VT emulator
+  kittykeys.rs, app_terms.rs  kitty keyboard protocol (flag stack, key encoder); the panel's terminal tabs and split
   git.rs, gitx.rs, gitsync.rs  status, blame, hunks, diff, history, conflicts, fetch/pull/push
   mdview/, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)
   search.rs, fuzzy.rs, snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs

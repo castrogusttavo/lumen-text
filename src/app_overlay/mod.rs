@@ -116,6 +116,10 @@ pub enum PromptKind {
         rest: Vec<usize>,
         then: Option<crate::app_unsaved::Pending>,
     },
+    /// New name for a bottom-panel terminal (see `app_terms`).
+    RenameTerminal {
+        id: u32,
+    },
 }
 
 pub struct Prompt {

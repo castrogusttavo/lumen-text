@@ -111,6 +111,27 @@ mod imp {
             }
         }
 
+        /// Name of the terminal's foreground process (the shell, or the command it runs), for a
+        /// terminal tab's title. Linux only (`/proc`); `None` elsewhere.
+        pub fn foreground_name(&self) -> Option<String> {
+            #[cfg(target_os = "linux")]
+            {
+                // SAFETY: plain query on a valid fd.
+                let pg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+                if pg <= 0 {
+                    return None;
+                }
+                let name = std::fs::read_to_string(format!("/proc/{pg}/comm")).ok()?;
+                let name = name.trim();
+                (!name.is_empty()).then(|| name.to_string())
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = &self.master;
+                None
+            }
+        }
+
         /// Exit code once the program has ended (a signal counts as 128 + its number).
         pub fn try_wait(&mut self) -> Option<i32> {
             use std::os::unix::process::ExitStatusExt;
@@ -206,6 +227,11 @@ mod imp {
         /// Hang up: ConPTY has no process groups, so the program is terminated.
         pub fn hangup(&mut self) {
             let _ = self.child.kill();
+        }
+
+        /// Foreground process name: not available through ConPTY.
+        pub fn foreground_name(&self) -> Option<String> {
+            None
         }
 
         /// Exit code once the program has ended.

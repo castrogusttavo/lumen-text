@@ -235,6 +235,7 @@ impl App {
                 PromptKind::GitCommit => self.git_commit(&p.field.text),
                 PromptKind::Git(ask) => self.git_prompt_answer(ask, p.field.text),
                 PromptKind::SaveAs { doc, rest, then } => self.save_as_answer(doc, rest, then, p.field.text),
+                PromptKind::RenameTerminal { id } => self.rename_terminal(id, &p.field.text),
             },
             Overlay::None => {}
         }
