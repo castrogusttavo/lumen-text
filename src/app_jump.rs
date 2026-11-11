@@ -267,7 +267,7 @@ impl App {
         let Some(ch) = ch else { return false };
         match j.feed(&self.docs[self.active], ch) {
             Step::Wait => self.jump = Some(j),
-            Step::Go { pos, label } => self.jump_to(pos, label && self.mods.shift_key()),
+            Step::Go { pos, label } => self.jump_label_go(pos, label && self.mods.shift_key()),
             Step::Cancel => {
                 if j.found == 0 {
                     self.say(format!("Jump: nothing matches “{}” on screen", j.query));
@@ -277,7 +277,7 @@ impl App {
         true
     }
 
-    fn jump_to(&mut self, pos: usize, extend: bool) {
+    fn jump_label_go(&mut self, pos: usize, extend: bool) {
         self.push_nav();
         let d = &mut self.docs[self.active];
         let pos = pos.min(d.buf.len_chars());
