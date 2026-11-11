@@ -136,7 +136,17 @@ impl App {
             Cmd::GitStashUntracked => self.git_stash_cmd(true),
             Cmd::GitStashPop => self.git_stash_pop_latest(),
             Cmd::GitStashList => self.git_stash_list(),
-            Cmd::MarkdownPreview => self.toggle_md_reader(),
+            Cmd::MarkdownPreview => {
+                // On an SVG, Ctrl+Shift+V flips between the picture and its source instead.
+                if !self.img_toggle_source() {
+                    self.toggle_md_reader()
+                }
+            }
+            Cmd::ImageSource => {
+                if !self.img_toggle_source() {
+                    self.say("Preview / source is for SVG files")
+                }
+            }
             Cmd::SplitRight => self.split_right(),
             Cmd::SplitDown => self.split_down(),
             Cmd::CloseSplit => self.split_close(),
@@ -154,6 +164,10 @@ impl App {
             Cmd::ConflictBoth => self.resolve_conflict(crate::gitx::Pick::Both),
             Cmd::WorkspaceSymbols => self.open_workspace_symbols(),
             Cmd::Problems => self.open_problems(),
+            // On an image tab the zoom commands zoom the picture, not the font.
+            Cmd::ZoomIn if self.img_zoom_cmd(1) => {}
+            Cmd::ZoomOut if self.img_zoom_cmd(-1) => {}
+            Cmd::ZoomReset if self.img_zoom_cmd(0) => {}
             Cmd::ZoomIn => self.zoom(1.0),
             Cmd::ZoomOut => self.zoom(-1.0),
             Cmd::ZoomReset => self.zoom(0.0),
@@ -249,6 +263,7 @@ impl App {
             | Cmd::ToggleBreakpointMarks
             | Cmd::CycleScrollbar
             | Cmd::ToggleLsp
+            | Cmd::ToggleSpellCheck
             | Cmd::ChooseBufferFont
             | Cmd::ChooseUiFont => {}
             // Handled by `run_view_cmd` (app_view.rs) before this match.

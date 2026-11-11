@@ -189,6 +189,9 @@ impl App {
                     self.config.run_command = cmd;
                 }
             }
+            // The registry is rebuilt from it on the next tick (`lspx_sync_config`): the spell
+            // checkers start or stop with the documents they apply to.
+            "spell_check" => self.config.spell_check = b.unwrap_or(false),
             "enable_lsp" => {
                 let on = b.unwrap_or(true);
                 if on != self.config.enable_lsp {
@@ -245,6 +248,7 @@ impl App {
             Cmd::ToggleBookmarkMarks => ("show_bookmarks", json!(!c.show_bookmarks)),
             Cmd::ToggleBreakpointMarks => ("show_breakpoints", json!(!c.show_breakpoints)),
             Cmd::ToggleLsp => ("enable_lsp", json!(!c.enable_lsp)),
+            Cmd::ToggleSpellCheck => ("spell_check", json!(!c.spell_check)),
             Cmd::CycleScrollbar => {
                 let next = match c.scrollbar.as_str() {
                     "show" => "auto",
@@ -259,6 +263,12 @@ impl App {
         let msg = match key {
             "scrollbar" => format!("scrollbars: {}", val.as_str().unwrap_or("show")),
             "enable_lsp" => if val == json!(true) { "language servers: on" } else { "language servers: off" }.into(),
+            "spell_check" => if val == json!(true) {
+                "spell checking: on (harper-ls / typos-lsp, when installed)"
+            } else {
+                "spell checking: off"
+            }
+            .into(),
             _ => format!(
                 "{}: {}",
                 key.trim_start_matches("show_").replace('_', " "),

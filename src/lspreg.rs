@@ -68,6 +68,14 @@ const EDITOR_LANGS: &[&str] = &[
     "prisma",
 ];
 
+/// Built-in spell checkers (companions for prose in comments, strings, Markdown, plain text and
+/// commit messages). They are off unless the `spell_check` setting is on (see [`Registry::with_options`]).
+pub const SPELL_SERVERS: &[&str] = &["harper-ls", "typos-lsp"];
+
+pub fn is_spell_server(id: &str) -> bool {
+    SPELL_SERVERS.contains(&id)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     /// Serves the language: completion, hover, definition... come from it (first installed one wins).
@@ -268,7 +276,7 @@ pub fn language_id(lang: Option<&str>, path: Option<&Path>) -> String {
         Some("make") => "makefile".into(),
         Some("shellscript") => "shellscript".into(),
         Some(l) => l.to_string(),
-        None if ext.is_empty() => "plaintext".into(),
+        None if ext.is_empty() || ext == "txt" || ext == "text" => "plaintext".into(),
         None => ext,
     }
 }
@@ -403,6 +411,20 @@ impl Registry {
                 }
             }
             _ => r.errors.push("language_servers must be an object".to_string()),
+        }
+        r
+    }
+
+    /// [`with_user`](Self::with_user) plus the `spell_check` setting: it turns the built-in spell
+    /// checkers on (or keeps them off), unless the user's own entry for one says `enabled`.
+    pub fn with_options(user: &Value, spell_check: bool) -> Registry {
+        let mut r = Registry::with_user(user);
+        for s in r.servers.iter_mut().filter(|s| s.builtin && is_spell_server(&s.id)) {
+            if user.get(&s.id).and_then(|e| e.get("enabled")).is_some() {
+                continue;
+            }
+            s.enabled = spell_check;
+            s.disabled_by = (!spell_check).then(|| "spell checking is off (setting spell_check)".to_string());
         }
         r
     }
@@ -825,7 +847,38 @@ mod tests {
     }
 
     #[test]
+    fn spell_checkers_follow_the_spell_check_setting() {
+        let ids = |r: &Registry, lang, p: &str| {
+            r.for_doc(lang, Path::new(p)).iter().map(|s| s.id.clone()).collect::<Vec<_>>()
+        };
+        let off = Registry::with_options(&Value::Null, false);
+        assert!(off.errors.is_empty());
+        for id in SPELL_SERVERS {
+            let s = off.get(id).unwrap();
+            assert_eq!(s.role, Role::Companion, "{id}");
+            assert!(!s.enabled && s.disabled_by.as_deref().is_some_and(|w| w.contains("spell_check")), "{id}");
+        }
+        assert_eq!(ids(&off, Some("rust"), "/x/a.rs"), vec!["rust-analyzer"]);
+        let on = Registry::with_options(&Value::Null, true);
+        assert_eq!(ids(&on, Some("rust"), "/x/a.rs"), vec!["rust-analyzer", "harper-ls", "typos-lsp"]);
+        assert_eq!(ids(&on, Some("markdown"), "/x/README.md"), vec!["marksman", "harper-ls", "typos-lsp"]);
+        assert_eq!(ids(&on, None, "/x/notes.txt"), vec!["harper-ls", "typos-lsp"]);
+        let msg = "/x/repo/COMMIT_EDITMSG";
+        let commit = crate::highlight::language_for(msg);
+        assert_eq!(commit, Some("git-commit"));
+        assert_eq!(ids(&on, commit, msg), vec!["harper-ls", "typos-lsp"]);
+        // The user's own `enabled` wins over the setting, both ways.
+        let user = json!({"typos-lsp": {"enabled": false}, "harper-ls": {"enabled": true}});
+        assert_eq!(ids(&Registry::with_options(&user, true), None, "/x/a.txt"), vec!["harper-ls"]);
+        assert_eq!(ids(&Registry::with_options(&user, false), None, "/x/a.txt"), vec!["harper-ls"]);
+        assert!(is_spell_server("harper-ls") && !is_spell_server("ruff"));
+    }
+
+    #[test]
     fn language_ids_use_the_lsp_spelling() {
+        assert_eq!(language_id(None, Some(Path::new("/p/notes.txt"))), "plaintext");
+        assert_eq!(language_id(None, Some(Path::new("/p/LICENSE"))), "plaintext");
+        assert_eq!(language_id(Some("git-commit"), Some(Path::new("/p/COMMIT_EDITMSG"))), "git-commit");
         assert_eq!(language_id(Some("docker"), Some(Path::new("/p/Dockerfile"))), "dockerfile");
         assert_eq!(language_id(Some("make"), Some(Path::new("/p/Makefile"))), "makefile");
         assert_eq!(language_id(Some("csharp"), Some(Path::new("/p/a.cs"))), "csharp");

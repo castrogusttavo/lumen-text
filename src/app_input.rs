@@ -352,7 +352,7 @@ impl App {
         if self.diff_wheel(delta) {
             return self.request_redraw();
         }
-        if self.md_wheel(delta) || self.split_wheel(delta) {
+        if self.img_wheel(delta) || self.md_wheel(delta) || self.split_wheel(delta) {
             return self.request_redraw();
         }
         self.hover = None;
@@ -713,6 +713,7 @@ impl App {
             self.request_redraw();
         }
         self.split_release();
+        self.img_release();
         if self.dragging {
             if let Some(ds) = self.inp.drag.take() {
                 if ds.middle && ds.pending {

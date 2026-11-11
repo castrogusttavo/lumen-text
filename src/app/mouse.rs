@@ -141,6 +141,9 @@ impl App {
             return;
         }
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        if self.img_mouse_down(x, y) {
+            return self.request_redraw();
+        }
         if button == MouseButton::Middle {
             // A user binding for the middle button runs instead; by default a middle drag is a column
             // selection and a click pastes the primary selection on release.
@@ -316,6 +319,9 @@ impl App {
             return CursorIcon::ColResize;
         }
         if let Some(c) = self.md_cursor(x, y) {
+            return c;
+        }
+        if let Some(c) = self.img_cursor(x, y) {
             return c;
         }
         if l.top_btns.iter().any(|(r, _)| r.contains(x, y))
@@ -566,6 +572,9 @@ impl App {
             return self.request_redraw();
         }
         if self.md_mouse_move(x, y) {
+            return;
+        }
+        if self.img_mouse_move(x, y) {
             return;
         }
         if self.dragging_minimap {

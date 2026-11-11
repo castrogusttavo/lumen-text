@@ -3,8 +3,9 @@ use super::*;
 impl Doc {
     // ── drawing ──
 
-    /// Draws into `rect`. Returns true while more frames are needed (animation, tokenizing).
-    pub fn draw(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, o: &DrawOpts) -> bool {
+    /// Draws the text into `rect` (`Doc::draw` in `imgview` picks this or the picture of an image
+    /// tab). Returns true while more frames are needed (animation, tokenizing).
+    pub fn draw_text(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, o: &DrawOpts) -> bool {
         // The minimap takes a strip at the right; everything else lays out in what remains.
         let full = rect;
         let mm_w = if self.minimap && rect.w > 560 { crate::minimap::style().width() } else { 0 };
@@ -679,7 +680,13 @@ impl Doc {
                     let (xa, xb) = (vx(va), vx(vb));
                     let base = ry(r) + lh - 3;
                     for x in xa.max(body.x)..xb.min(body.right()) {
-                        cv.dot(x, base + ((x / 2) % 2), color);
+                        if d.severity <= 2 {
+                            // Errors and warnings: wavy.
+                            cv.dot(x, base + ((x / 2) % 2), color);
+                        } else if info_dot(x - xa) {
+                            // Info (spelling, style): flat dotted, so it never reads as an error.
+                            cv.dot(x, base + 1, color);
+                        }
                     }
                 }
             }
@@ -976,5 +983,21 @@ impl Doc {
         cv.fill_clip(Rect::new(caret_x, caret_y, CURSOR_W, lh), caret_color, body);
 
         pending || self.animating || self.caret_animating
+    }
+}
+
+/// Info-level underline pattern: 2 px dots with 2 px gaps from the start of the range (errors and
+/// warnings are wavy; see the diagnostics loop of [`Doc::draw`]).
+pub(crate) fn info_dot(dx: i32) -> bool {
+    dx.rem_euclid(4) < 2
+}
+
+#[cfg(test)]
+mod underline_tests {
+    #[test]
+    fn info_underline_is_dotted_not_wavy() {
+        let on: Vec<bool> = (0..8).map(super::info_dot).collect();
+        assert_eq!(on, [true, true, false, false, true, true, false, false]);
+        assert!(super::info_dot(-4) && !super::info_dot(-1), "stable left of the range start too");
     }
 }

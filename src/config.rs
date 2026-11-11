@@ -145,6 +145,8 @@ pub struct Config {
     pub inline_diagnostics: String,
     /// Layout toggles, zen mode, explorer order and buffer font features (see [`ViewPrefs`]).
     pub view: ViewPrefs,
+    /// Spell checking through the companion servers harper-ls and typos-lsp (when installed).
+    pub spell_check: bool,
 }
 
 /// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
@@ -325,6 +327,7 @@ impl Default for Config {
             rulers: Vec::new(),
             inline_diagnostics: "current_line".into(),
             view: ViewPrefs::default(),
+            spell_check: false,
         }
     }
 }
@@ -617,6 +620,7 @@ impl Config {
                 .name()
                 .to_string(),
             view: ViewPrefs::from_json(v),
+            spell_check: v["spell_check"].as_bool().unwrap_or(false),
         }
     }
 
@@ -649,6 +653,7 @@ impl Config {
         v["markdown_remote_images"] = json!(self.markdown_remote_images);
         v["ai_notifications"] = json!(self.ai_notifications);
         v["diff_ignore_whitespace"] = json!(self.diff_ignore_whitespace);
+        v["spell_check"] = json!(self.spell_check);
         v["sidebar_width"] = json!(self.sidebar_width);
         v["git_worktree_dir"] = json!(self.git_worktree_dir);
         v["scrollbar_v"] = json!(2);
@@ -789,6 +794,7 @@ mod tests {
                     .collect(),
                 buffer_letter_spacing: 0.5,
             },
+            spell_check: true,
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);
@@ -1027,6 +1033,7 @@ mod tests {
         assert!(!c.buffer_font_ligatures && c.ui_font_ligatures);
         assert!(c.buffer_font_family.is_empty() && c.ui_font_family.is_empty());
         assert!(c.show_line_numbers && c.show_bookmarks && c.show_breakpoints && c.enable_lsp);
+        assert!(!c.spell_check, "spell checking is opt-in");
         assert_eq!(c.scrollbar, "never", "scrollbars are hidden by default");
         // The literals above are the fontcfg constants (the docs extractor reads the literals).
         assert_eq!(c.buffer_font_size, crate::fontcfg::DEFAULT_BUFFER_SIZE);

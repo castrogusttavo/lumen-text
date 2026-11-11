@@ -39,6 +39,7 @@ Lumen speaks the Language Server Protocol to as many servers as you like. TypeSc
 | Svelte, Astro, Vue | `svelteserver`, `astro-ls`, `vue-language-server` | the framework's config file, `package.json` |
 | TS / JS / CSS / HTML | companion `tailwindcss-language-server`, only in a project with a Tailwind config | `tailwind.config.*` |
 | TS / JS | `deno lsp` replaces `tsgo`, only in a project with `deno.json` | `deno.json` |
+| Prose (spell checking, off by default) | companions `harper-ls --stdio` and `typos-lsp`, only with `spell_check` on; see below | `.git` (typos-lsp: also `typos.toml`) |
 
 For a language the **first installed** server of the list is the *primary* one; the others of that language are ignored, so installing `pyright` is enough. A *companion* (`ruff`, `tailwindcss`) runs next to the primary and adds to it.
 
@@ -92,6 +93,21 @@ A key is resolved in this order:
 | `install` | Hint shown when the program is not found. |
 
 A mistake never stops the editor: the offending field is ignored and the first problem is shown in the status bar (for example `language_servers.rust-analyzer.args must be an array of strings`); the rest of the file still applies.
+
+## Spell checking
+
+Two spell checkers are built in as *companions*, **off until you turn on `spell_check`** (Settings → *Spell checking*, or the palette *Language servers: Toggle spell checking*). Like every server they start only when installed:
+
+| Server | What it checks | Install |
+| --- | --- | --- |
+| [harper-ls](https://github.com/Automattic/harper) | Spelling and grammar in comments and strings of code (Rust, TS/JS, Python, Go, C/C++, C#, Java, Kotlin, Swift, Dart, Scala, Haskell, Elixir, Lua, Ruby, PHP, shell, Zig, Nix, TOML, HTML), Markdown, LaTeX, Typst, plain text (`.txt`) and git commit messages | `cargo install harper-ls --locked`, or a release binary in `~/.local/share/lumen-text/lsp/bin` |
+| [typos-lsp](https://github.com/tekumara/typos-lsp) | Common misspellings in identifiers and text (few false positives), the same files plus CSS, YAML, SQL, Vue, Svelte and Astro | a release binary on `PATH` or in `~/.local/share/lumen-text/lsp/bin` |
+
+`tools/install-lsp-servers.sh spell` installs both (pinned versions, checksums verified).
+
+What they find is never shown as an error: whatever severity a spell checker reports, its diagnostics are *info* and get a **dotted** underline (errors and warnings are wavy) and no error / warning count in the bottom bar. `Ctrl+.` on a flagged word lists the fixes ("Replace with: …", typos-lsp's correction) and harper-ls's "Add … to the user / workspace / file dictionary" and "Ignore" commands, which run on the server that offered them.
+
+To keep one of them off while the other runs, switch it off by name: `"language_servers": {"typos-lsp": {"enabled": false}}` (a server's own `enabled` wins over `spell_check`, both ways). harper-ls reads its own options from `settings` under `harper-ls` (dialect, linters...), typos-lsp from a `typos.toml` in the project.
 
 ## Status, restart and log
 

@@ -203,6 +203,17 @@ fn sniff(b: &[u8]) -> Option<Fmt> {
     }
 }
 
+/// Image format of a file from its first bytes: "png", "jpeg", "gif", "webp" or "svg" (image tabs).
+pub fn image_format(head: &[u8]) -> Option<&'static str> {
+    Some(match sniff(head)? {
+        Fmt::Png => "png",
+        Fmt::Jpeg => "jpeg",
+        Fmt::Gif => "gif",
+        Fmt::Webp => "webp",
+        Fmt::Svg => "svg",
+    })
+}
+
 /// Size from the header (`b` is a prefix of the file; SVG needs the whole file).
 fn header_size(b: &[u8]) -> Option<(u32, u32)> {
     let (w, h) = match sniff(b)? {
@@ -482,6 +493,11 @@ pub fn scale_to(src: Pix, tw: u32, th: u32) -> Pix {
     if src.w == tw && src.h == th {
         return src;
     }
+    scaled(&src, tw, th)
+}
+
+/// [`scale_to`] without giving up the source (an image tab keeps its base picture).
+pub fn scaled(src: &Pix, tw: u32, th: u32) -> Pix {
     let (sw, sh) = (src.w as usize, src.h as usize);
     let (tw_, th_) = (tw as usize, th as usize);
     let mut out = vec![0u32; tw_ * th_];

@@ -299,6 +299,10 @@ pub struct Buffer {
     log_on: bool,
     /// Shape the next edit will be recorded with.
     next_shape: Option<EditShape>,
+    /// Edits are ignored (an image tab showing its picture).
+    pub read_only: bool,
+    /// `save` refuses to write: the text is not the file (a binary image open in a tab).
+    pub no_write: bool,
 }
 
 fn is_break(c: char) -> bool {
@@ -327,6 +331,8 @@ impl Buffer {
             log_base: 0,
             log_on: false,
             next_shape: None,
+            read_only: false,
+            no_write: false,
         }
     }
 
@@ -523,7 +529,7 @@ impl Buffer {
     /// Replace chars [start, end) with `text`, recording undo information.
     pub fn replace(&mut self, start: usize, end: usize, text: &str, kind: EditKind, before: Sel) {
         let (start, end) = (start.min(end), start.max(end).min(self.len_chars()));
-        if start == end && text.is_empty() {
+        if (start == end && text.is_empty()) || self.read_only {
             self.next_shape = None;
             return;
         }
@@ -789,6 +795,9 @@ impl Buffer {
         let Some(path) = self.path.clone() else {
             return Err(io::Error::other("buffer has no path"));
         };
+        if self.no_write {
+            return Err(io::Error::other("an image is not saved from its tab"));
+        }
         let tmp = path.with_extension(format!(
             "{}lumen-tmp",
             path.extension().map(|e| format!("{}.", e.to_string_lossy())).unwrap_or_default()
@@ -821,6 +830,25 @@ mod edit_log_tests {
 
     fn rep(b: &mut Buffer, s: usize, e: usize, t: &str) {
         b.replace(s, e, t, EditKind::Other, Sel::caret(0));
+    }
+
+    #[test]
+    fn read_only_ignores_edits_and_no_write_refuses_to_save() {
+        let dir = std::env::temp_dir().join(format!("lumen-buf-ro-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("pic.png");
+        std::fs::write(&p, b"\x89PNG\r\n\x1a\n").unwrap();
+        let mut b = Buffer::from_rope(Rope::new(), Some(p.clone()));
+        b.read_only = true;
+        b.no_write = true;
+        rep(&mut b, 0, 0, "text");
+        assert_eq!((b.len_chars(), b.is_dirty()), (0, false), "the edit was dropped");
+        assert!(b.save().is_err());
+        assert_eq!(std::fs::read(&p).unwrap(), b"\x89PNG\r\n\x1a\n", "the picture is untouched");
+        b.read_only = false;
+        rep(&mut b, 0, 0, "x");
+        assert_eq!(b.len_chars(), 1, "editable again");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

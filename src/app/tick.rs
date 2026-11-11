@@ -24,6 +24,7 @@ impl App {
         self.git_bg_tick(now, &mut want);
         self.fswatch_tick(now, &mut want);
         self.md_tick(now, &mut want);
+        self.img_tick(now, &mut want);
         self.tests_tick(now, &mut want);
         self.build_tick(now, &mut want);
         self.ai_tick(now, &mut want);

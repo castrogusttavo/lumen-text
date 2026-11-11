@@ -274,6 +274,9 @@ impl App {
             return;
         }
         let Some(d) = self.docs.get(i) else { return };
+        if d.img.as_ref().is_some_and(|v| v.kind == crate::imgview::Kind::Raster) {
+            return; // a picture has no undo history
+        }
         let (Some(p), Some(dir)) = (d.path(), crate::undo_store::dir()) else { return };
         if d.buf.is_dirty() && !dirty_too {
             return;

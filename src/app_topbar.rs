@@ -984,6 +984,7 @@ impl App {
         x = self.draw_ai_status(cv, x);
         x = self.draw_fswatch_status(cv, x);
         x = self.draw_projcfg_status(cv, x);
+        x = self.draw_img_status(cv, x);
 
         // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
         // (cursor position, indentation, language: clickable) and the memory figure, in any order.
@@ -991,18 +992,25 @@ impl App {
         let git_label = if changed > 0 { changed.to_string() } else { String::new() };
         let short = self.config.ram_display == "short";
         let memtxt = if v_ram { self.memory_text() } else { String::new() };
-        let doc_texts: Option<(String, String, String)> = self.docs.get(self.active).map(|d| {
-            let (l, col) = d.buf.line_col(d.ed.head());
-            let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
-            let sel =
-                if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
-            (
-                format!("{sel}Ln {}, Col {}", l + 1, vc),
-                if d.ed.indent.contains('\t') { "Tab".to_string() } else { format!("Spaces: {}", d.ed.indent.len()) },
-                d.lang.unwrap_or("text").to_string(),
-            )
-        });
-        let enc_text: Option<String> = self.docs.get(self.active).map(|d| d.buf.encoding.short());
+        // An image tab has no caret, indentation, language or encoding to show (its read-out is on the left).
+        let doc_texts: Option<(String, String, String)> =
+            self.docs.get(self.active).filter(|d| !d.showing_image()).map(|d| {
+                let (l, col) = d.buf.line_col(d.ed.head());
+                let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
+                let sel =
+                    if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
+                (
+                    format!("{sel}Ln {}, Col {}", l + 1, vc),
+                    if d.ed.indent.contains('\t') {
+                        "Tab".to_string()
+                    } else {
+                        format!("Spaces: {}", d.ed.indent.len())
+                    },
+                    d.lang.unwrap_or("text").to_string(),
+                )
+            });
+        let enc_text: Option<String> =
+            self.docs.get(self.active).filter(|d| !d.showing_image()).map(|d| d.buf.encoding.short());
         let mut items: Vec<(StatusBtn, i32)> = Vec::new();
         for id in self.config.status_order.clone() {
             let item = match id.as_str() {
