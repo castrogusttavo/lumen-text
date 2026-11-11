@@ -188,7 +188,11 @@ impl App {
 
     /// "Terminal: Kill" on the active terminal (see [`close_terminal_request_id`](Self::close_terminal_request_id)).
     pub fn close_terminal_request(&mut self) {
-        self.close_terminal_request_id(self.terms.active);
+        let id = self.terms.active;
+        match self.terms.get(id).and_then(|t| t.term.foreground_job()) {
+            Some(job) => self.show_ask(procs_question(&[job], AskAction::CloseTerminal(id))),
+            None => self.close_terminal(),
+        }
     }
 
     /// Kill terminal `id` (command, or the `×` on its tab): asks first when its shell is running a
