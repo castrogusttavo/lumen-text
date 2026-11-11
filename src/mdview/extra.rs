@@ -138,7 +138,7 @@ impl Lay<'_> {
         let h = top + lines.len() as i32 * lh + CODE_PAD_Y;
         let r = Rect::new(x, y, w, h);
         let key = code_key(lang, text);
-        self.op(y, y + h, Op::Code { r, lang: lang.to_string(), lines, lh, top, key, math: false });
+        self.op(y, y + h, Op::Code { r, lang: lang.to_string(), lines, lh, top, key, math: false, err: None });
         self.copy_button(r, key);
         r
     }
@@ -225,12 +225,11 @@ impl Lay<'_> {
         let fallback = [Inl::Text { text: "Details".into(), flags: 0, link: 0 }];
         let summary = if blank(summary) { &fallback[..] } else { summary };
         let lines = self.flow(summary, w - 36 - 12, BODY, false, true);
-        let n = lines.len().max(1) as i32;
-        let head_h = n * LH[BODY] + 2 * pad;
+        let th = self.emit(lines, x + 36, ty, BODY, 0).max(LH[BODY]);
+        let head_h = th + 2 * pad;
         self.op(y, y + head_h, Op::Hover { r: Rect::new(x + 1, y + 1, w - 2, head_h - 1), rad: 7 });
         let name = if open { "ui/chevron_down" } else { "ui/chevron_right" };
         self.op(ty, ty + LH[BODY], Op::Icon { x: x + 13, y: ty + (LH[BODY] - 14) / 2, size: 14, name, col: Col::Dim });
-        self.emit(lines, x + 36, ty, BODY, 0);
         self.hits.push(Hit { x, y, w, h: head_h, act: Act::Toggle(id) });
         let mut y1 = y + head_h;
         if open {
@@ -256,22 +255,22 @@ impl Lay<'_> {
         let heading = (1..=6).contains(&head);
         let si = if heading { (head - 1) as usize } else { BODY };
         let lines = self.flow(inl, w, si, heading, true);
-        let lh = LH[si];
-        let n = lines.len().max(1) as i32;
         if heading {
             self.heads.push((slugify(&plain(inl)), y, false));
         }
-        for (i, line) in lines.into_iter().enumerate() {
+        let mut ly = y;
+        for line in lines {
             let lw = line.last().map_or(0.0, |r| r.x + r.w).round() as i32;
             let ox = match align {
                 1 => ((w - lw) / 2).max(0),
                 2 => (w - lw).max(0),
                 _ => 0,
             };
-            self.emit(vec![line], x + ox, y + i as i32 * lh, si, if heading { F_B } else { 0 });
+            ly += self.emit(vec![line], x + ox, ly, si, if heading { F_B } else { 0 });
         }
-        self.anchor(b, y, y + n * lh);
-        y + n * lh
+        let y1 = ly.max(y + LH[si]);
+        self.anchor(b, y, y1);
+        y1
     }
 
     /// Raw HTML `<table>`: like a GFM table, with cells spanning columns and per-cell alignment.
@@ -388,9 +387,7 @@ impl Lay<'_> {
                 y += 10;
             }
             let lines = self.flow(&it.title, w, BODY, true, true);
-            let n = lines.len().max(1) as i32;
-            self.emit(lines, x, y, BODY, F_B);
-            y += n * LH[BODY];
+            y += self.emit(lines, x, y, BODY, F_B).max(LH[BODY]);
             for d in &it.defs {
                 y = self.blocks(d, x + 24, w - 24, y + 2, St { tight: Some(4), ..st });
             }

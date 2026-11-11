@@ -78,6 +78,8 @@ pub(super) struct Pal {
     pub(super) kbd: Rgba,
     pub(super) kbd_edge: Rgba,
     pub(super) strong: Rgba,
+    /// The offending part of a formula that does not parse.
+    pub(super) err: Rgba,
 }
 
 impl Pal {
@@ -116,6 +118,7 @@ impl Pal {
             kbd: over(0.045),
             kbd_edge: over(0.26),
             strong: over(0.17),
+            err: c.error.with_alpha(255).readable_on(&[bg, code], 3.0),
         }
     }
     /// Chip behind inline math: the page tinted with the accent, as long as `text` reads on it.

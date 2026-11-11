@@ -61,7 +61,8 @@ pub(super) enum Op {
         y: i32,
         done: bool,
     },
-    /// Code block (`math` = a `$$` block: centered, tinted). `key` identifies lang + text for the
+    /// Code block (`math` = the source of a `$$` block that failed to typeset: centered, tinted,
+    /// `err` = (line, byte range) to show in the error color). `key` identifies lang + text for the
     /// highlight cache.
     Code {
         r: Rect,
@@ -71,6 +72,19 @@ pub(super) enum Op {
         top: i32,
         key: u64,
         math: bool,
+        err: Option<(usize, usize, usize)>,
+    },
+    /// A typeset formula: left edge `x`, width `w`, baseline `base`; `row` is the top of the text
+    /// line it sits in (or of its display block); `src` is its TeX source (what a copy yields).
+    Math {
+        x: i32,
+        w: i32,
+        base: i32,
+        row: i32,
+        lay: Rc<math::MathLay>,
+        src: String,
+        flags: Fl,
+        display: bool,
     },
     /// A local image drawn at `r` (logical px); `id` is its [`ImgStore`] id.
     Image {
@@ -248,9 +262,28 @@ pub(super) struct Placed {
 #[derive(Default)]
 pub(super) struct Measure {
     pub(super) maps: Vec<HashMap<String, f32>>,
+    /// Baseline of a line of text below its line top, per size index (0 = not measured yet), for
+    /// the font generation `base_gen`.
+    pub(super) base: [f32; 11],
+    pub(super) base_gen: u32,
 }
 
 impl Measure {
+    /// Baseline of a text line of size index `si`, px below the line's top.
+    pub(super) fn baseline(&mut self, tx: &mut TextCtx, si: usize) -> f32 {
+        let g = crate::fontcfg::generation();
+        if g != self.base_gen {
+            self.base = [0.0; 11];
+            self.base_gen = g;
+        }
+        if self.base[si] == 0.0 {
+            let size = SIZES[si];
+            let off = (LH[si] - (size * 1.4).round() as i32) / 2;
+            self.base[si] = (off as f32 + tx.ui_baseline_sized(size)).max(1.0);
+        }
+        self.base[si]
+    }
+
     /// Width in px with 1/8 px precision (measured at 8x size): per-word integer rounding would
     /// drift by several px over a line.
     pub(super) fn w(&mut self, tx: &mut TextCtx, s: &str, bold: bool, si: usize) -> f32 {
@@ -313,8 +346,26 @@ pub(super) struct Atom {
     pub(super) w: f32,
 }
 
+/// Typeset inline math (one unbreakable piece whose text is the TeX source).
+pub(super) fn is_math(flags: Fl) -> bool {
+    flags & F_MATH != 0 && flags & F_CODE == 0
+}
+
+/// Measures `\text{..}` runs of formulas with the preview's body font.
+pub(super) struct UiMeasure<'a> {
+    pub(super) tx: &'a mut TextCtx,
+}
+
+impl math::TextMeasure for UiMeasure<'_> {
+    fn text(&mut self, s: &str, size: f32, bold: bool) -> math::TextMetrics {
+        let w = self.tx.ui_width_sized(s, bold, size * 8.0) as f32 / 8.0;
+        let bl = self.tx.ui_baseline_sized(size);
+        math::TextMetrics { w, asc: size * 0.75, desc: size * 0.22, bl }
+    }
+}
+
 pub(super) fn push_piece(line: &mut Vec<Run>, x: f32, text: &str, flags: Fl, link: u32, w: f32) {
-    if flags & (F_CODE | F_KBD) == 0
+    if flags & (F_CODE | F_KBD | F_MATH) == 0
         && let Some(l) = line.last_mut()
         && l.flags == flags
         && l.link == link
@@ -374,6 +425,16 @@ impl Flow {
     pub(super) fn split_chunk(&mut self, m: &mut Measure, tx: &mut TextCtx) {
         let atoms = std::mem::take(&mut self.chunk);
         for a in atoms {
+            if is_math(a.flags) {
+                // a formula never breaks: it moves to the next line whole
+                if self.x > 0.0 && self.x + a.w > self.width {
+                    self.lines.push(vec![]);
+                    self.x = 0.0;
+                }
+                push_piece(self.lines.last_mut().unwrap(), self.x, &a.text, a.flags, a.link, a.w);
+                self.x += a.w;
+                continue;
+            }
             let code = a.flags & F_CODE != 0;
             let kbd = a.flags & F_KBD != 0;
             let pad = if code {
@@ -427,6 +488,7 @@ pub(super) struct Lay<'a> {
     pub(super) m: &'a mut Measure,
     pub(super) urls: &'a mut Urls,
     pub(super) imgs: &'a mut ImgStore,
+    pub(super) math: &'a mut math::MathCache,
     /// Footnote label -> number.
     pub(super) fnum: &'a HashMap<String, usize>,
     pub(super) ext: &'a mut Ext,
@@ -466,7 +528,68 @@ pub(super) fn code_lh() -> i32 {
     ((font_size() * 1.7).round() as i32).max(line_h() as i32)
 }
 
+/// Line, and byte range inside it, of the bytes `at` of a multi-line formula source.
+pub(super) fn err_line(text: &str, at: (usize, usize)) -> Option<(usize, usize, usize)> {
+    let a = at.0.min(text.len().saturating_sub(1));
+    let mut off = 0;
+    for (i, l) in text.split('\n').enumerate() {
+        let end = off + l.len();
+        if a <= end {
+            return Some((i, a - off, at.1.clamp(a, end) - off));
+        }
+        off = end + 1;
+    }
+    None
+}
+
 impl Lay<'_> {
+    /// Inline formula `src` typeset for text of size index `si` (`None`: it does not parse).
+    pub(super) fn math_inline(&mut self, src: &str, si: usize) -> Option<Rc<math::MathLay>> {
+        let size = SIZES[si] * INLINE_MATH_SCALE;
+        self.math.get(src, size, false, &mut UiMeasure { tx: &mut *self.tx }).ok()
+    }
+
+    /// Display formula `src` for a column `w` px wide: shrunk (down to [`MIN_MATH_SHRINK`]) when
+    /// it is wider than the column.
+    pub(super) fn math_display(&mut self, src: &str, w: i32) -> Result<Rc<math::MathLay>, math::MathErr> {
+        let size = SIZES[BODY] * DISPLAY_MATH_SCALE;
+        let ml = self.math.get(src, size, true, &mut UiMeasure { tx: &mut *self.tx })?;
+        if ml.w <= w as f32 || ml.w <= 0.0 {
+            return Ok(ml);
+        }
+        let k = (w as f32 / ml.w).max(MIN_MATH_SHRINK);
+        // quarter-pixel sizes keep the cache keys stable across small width changes
+        let small = ((size * k * 4.0).floor() / 4.0).max(1.0);
+        self.math.get(src, small, true, &mut UiMeasure { tx: &mut *self.tx })
+    }
+
+    /// (space added above the text box, total height) of each line: a line grows when inline
+    /// math on it is taller or deeper than the text.
+    pub(super) fn line_mets(&mut self, lines: &[Vec<Run>], si: usize) -> Vec<(i32, i32)> {
+        let lh = LH[si];
+        let mut out = Vec::with_capacity(lines.len());
+        for line in lines {
+            let (mut asc, mut desc) = (0.0f32, 0.0f32);
+            for r in line {
+                if is_math(r.flags)
+                    && let Some(ml) = self.math_inline(&r.text, si)
+                {
+                    asc = asc.max(ml.h);
+                    desc = desc.max(ml.d);
+                }
+            }
+            if asc == 0.0 && desc == 0.0 {
+                out.push((0, lh));
+                continue;
+            }
+            let b = self.m.baseline(self.tx, si);
+            let top = (asc + 2.0 - b).ceil().max(0.0) as i32;
+            let bot = (desc + 2.0 - (lh as f32 - b)).ceil().max(0.0) as i32;
+            out.push((top, lh + top + bot));
+        }
+        out
+    }
+
     pub(super) fn op(&mut self, y0: i32, y1: i32, op: Op) {
         self.ops.push(DrawOp { y0, y1, op });
     }
@@ -511,8 +634,17 @@ impl Lay<'_> {
         for item in inl {
             match item {
                 Inl::Text { text, flags, link } => {
-                    lf = *flags & !(F_CODE | F_KBD | F_MARK);
+                    lf = *flags & !(F_CODE | F_KBD | F_MARK | F_MATH | F_ERR);
                     ll = *link;
+                    if flags & F_MATH != 0 {
+                        let (fl, w) = match self.math_inline(text, si) {
+                            Some(ml) => (*flags & !F_CODE, ml.w),
+                            None => (*flags | F_CODE | F_ERR, code_w(self.tx, text) + 2.0 * CHIP_PAD as f32),
+                        };
+                        f.chunk.push(Atom { text: text.clone(), flags: fl, link: *link, w });
+                        f.chunk_w += w;
+                        continue;
+                    }
                     if flags & F_CODE != 0 {
                         let w = code_w(self.tx, text) + 2.0 * CHIP_PAD as f32;
                         f.chunk.push(Atom { text: text.clone(), flags: *flags, link: *link, w });
@@ -594,21 +726,44 @@ impl Lay<'_> {
         (out, (ow + ell).round() as i32)
     }
 
-    pub(super) fn emit(&mut self, lines: Vec<Vec<Run>>, x: i32, y: i32, si: usize, base: Fl) {
+    /// Emit the lines (text runs and inline formulas) from `y`; returns their total height (a line
+    /// with tall math is taller than `LH[si]`, its text staying on the common baseline).
+    pub(super) fn emit(&mut self, lines: Vec<Vec<Run>>, x: i32, y: i32, si: usize, base: Fl) -> i32 {
         let lh = LH[si];
-        for (i, line) in lines.into_iter().enumerate() {
-            let ly = y + i as i32 * lh;
+        let mets = self.line_mets(&lines, si);
+        let mut ly = y;
+        for (line, (top, total)) in lines.into_iter().zip(mets) {
+            let ty = ly + top;
             for r in line {
                 let rx = (x as f32 + r.x).round() as i32;
                 let rw = ((x as f32 + r.x + r.w).round() as i32 - rx).max(1);
                 if r.link != 0 {
-                    self.links.push(LinkHit { x: rx, y: ly, w: rw, h: lh, link: r.link });
+                    self.links.push(LinkHit { x: rx, y: ly, w: rw, h: total, link: r.link });
+                }
+                if is_math(r.flags)
+                    && let Some(ml) = self.math_inline(&r.text, si)
+                {
+                    let b = ty + self.m.baseline(self.tx, si).round() as i32;
+                    let op = Op::Math {
+                        x: rx,
+                        w: rw,
+                        base: b,
+                        row: ty,
+                        lay: ml,
+                        src: r.text,
+                        flags: r.flags | base,
+                        display: false,
+                    };
+                    self.op(ly, ly + total, op);
+                    continue;
                 }
                 let link = r.link;
                 let op = Op::Text { x: rx, w: rw, text: r.text, flags: r.flags | base, si: si as u8, lh, link };
-                self.op(ly, ly + lh, op);
+                self.op(ty, ty + lh, op);
             }
+            ly += total;
         }
+        ly - y
     }
 
     pub(super) fn blocks(&mut self, bl: &[Block], x: i32, w: i32, mut y: i32, st: St) -> i32 {
@@ -633,19 +788,16 @@ impl Lay<'_> {
                 let si = (*level - 1) as usize;
                 self.ref_anchors(inl, y);
                 let lines = self.flow(inl, w, si, true, true);
-                let n = lines.len().max(1) as i32;
                 self.heads.push((slug.clone(), y, false));
                 let base = F_B | if *level == 6 || st.dim { F_DIM } else { 0 };
-                self.emit(lines, x, y, si, base);
-                let h = n * LH[si];
+                let h = self.emit(lines, x, y, si, base).max(LH[si]);
                 self.anchor(b, y, y + h);
                 y + h
             }
             Kind::Para(inl) => {
                 self.ref_anchors(inl, y);
                 let lines = self.flow(inl, w, BODY, false, true);
-                let h = lines.len().max(1) as i32 * LH[BODY];
-                self.emit(lines, x, y, BODY, if st.dim { F_DIM } else { 0 });
+                let h = self.emit(lines, x, y, BODY, if st.dim { F_DIM } else { 0 }).max(LH[BODY]);
                 self.anchor(b, y, y + h);
                 y + h
             }
@@ -658,22 +810,35 @@ impl Lay<'_> {
                 let h = top + lines.len() as i32 * lh + CODE_PAD_Y;
                 let r = Rect::new(x, y, w, h);
                 let key = fxhash(text.as_bytes(), fxhash(lang.as_bytes(), 3));
-                self.op(y, y + h, Op::Code { r, lang: lang.clone(), lines, lh, top, key, math: false });
+                self.op(y, y + h, Op::Code { r, lang: lang.clone(), lines, lh, top, key, math: false, err: None });
                 self.copy_button(r, key);
                 self.anchor(b, y, y + h);
                 y + h
             }
             Kind::Math(text) => {
+                let err = match self.math_display(text, w) {
+                    Ok(ml) => {
+                        let (asc, desc) = (ml.h.ceil() as i32, ml.d.ceil() as i32);
+                        let h = MATH_PAD_Y + asc + desc + MATH_PAD_Y;
+                        let mw = ml.w.ceil() as i32;
+                        let mx = x + ((w - mw) / 2).max(0);
+                        let flags = if st.dim { F_DIM } else { 0 };
+                        let base = y + MATH_PAD_Y + asc;
+                        let op =
+                            Op::Math { x: mx, w: mw, base, row: y, lay: ml, src: text.clone(), flags, display: true };
+                        self.op(y, y + h, op);
+                        self.anchor(b, y, y + h);
+                        return y + h;
+                    }
+                    Err(e) => err_line(text, e.at),
+                };
                 let lh = code_lh();
                 let lines: Vec<String> =
                     text.split('\n').map(|l| l.trim_end_matches('\r').replace('\t', "    ")).collect();
                 let top = CODE_PAD_Y + 4;
                 let h = top + lines.len() as i32 * lh + top;
-                self.op(
-                    y,
-                    y + h,
-                    Op::Code { r: Rect::new(x, y, w, h), lang: "math".into(), lines, lh, top, key: 0, math: true },
-                );
+                let r = Rect::new(x, y, w, h);
+                self.op(y, y + h, Op::Code { r, lang: "math".into(), lines, lh, top, key: 0, math: true, err });
                 self.anchor(b, y, y + h);
                 y + h
             }
@@ -802,8 +967,12 @@ impl Lay<'_> {
             let cells: Vec<Vec<Vec<Run>>> = (0..ncols)
                 .map(|c| self.flow(row.get(c).unwrap_or(&empty), colw[c] - 2 * CELL_PAD_X, CELL, ri == 0, true))
                 .collect();
-            let n = cells.iter().map(|l| l.len()).max().unwrap_or(1).max(1) as i32;
-            row_h.push(n * lh + 2 * CELL_PAD_Y);
+            let mut tallest = lh;
+            for lines in &cells {
+                let h: i32 = self.line_mets(lines, CELL).iter().map(|m| m.1).sum();
+                tallest = tallest.max(h);
+            }
+            row_h.push(tallest + 2 * CELL_PAD_Y);
             grid.push(cells);
         }
         let h: i32 = row_h.iter().sum();
@@ -833,15 +1002,15 @@ impl Lay<'_> {
             let mut cx = x;
             for (c, lines) in cells.into_iter().enumerate() {
                 let avail = colw[c] - 2 * CELL_PAD_X;
-                for (li, line) in lines.into_iter().enumerate() {
+                let mut ty = ry + CELL_PAD_Y;
+                for line in lines {
                     let lw = line.last().map_or(0.0, |r| r.x + r.w).round() as i32;
                     let ox = match aligns.get(c) {
                         Some(Alignment::Right) => (avail - lw).max(0),
                         Some(Alignment::Center) => ((avail - lw) / 2).max(0),
                         _ => 0,
                     };
-                    let ty = ry + CELL_PAD_Y + li as i32 * lh;
-                    self.emit(vec![line], cx + CELL_PAD_X + ox, ty, CELL, if ri == 0 { F_B } else { 0 });
+                    ty += self.emit(vec![line], cx + CELL_PAD_X + ox, ty, CELL, if ri == 0 { F_B } else { 0 });
                 }
                 cx += colw[c];
             }

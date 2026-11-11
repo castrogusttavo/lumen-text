@@ -44,6 +44,7 @@ pub const MAX_PLAYING: usize = 4;
 pub const REMOTE_MAX: u64 = 15 << 20;
 /// The remote image cache is trimmed (least recently used first) to this size.
 pub const REMOTE_CACHE_BYTES: u64 = 50 << 20;
+#[cfg_attr(test, allow(dead_code))]
 const REMOTE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Downloads running at once.
 const FETCHERS: usize = 4;

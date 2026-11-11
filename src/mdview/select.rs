@@ -29,19 +29,29 @@ pub(super) struct SelAt {
 }
 
 fn selectable(op: &Op) -> bool {
-    matches!(op, Op::Text { .. } | Op::Code { .. })
+    matches!(op, Op::Text { .. } | Op::Code { .. } | Op::Math { .. })
+}
+
+/// (row top, left edge) an op reads at: a formula's box may start above its text row.
+fn read_key(d: &DrawOp) -> (i32, i32) {
+    match &d.op {
+        Op::Text { x, .. } => (d.y0, *x),
+        Op::Code { r, .. } => (d.y0, r.x),
+        Op::Math { x, row, .. } => (*row, *x),
+        _ => (d.y0, 0),
+    }
+}
+
+/// A formula is selected whole or not at all: is the one at `at` inside the selection?
+pub(super) fn sel_whole(sel: (SelPos, SelPos), at: SelAt) -> bool {
+    piece_range(sel, at.seg, at.rank, 0, 1).is_some()
 }
 
 /// Selectable ops of a segment in reading order: top to bottom, then left to right (ops are stored
 /// by y only, so a list number laid out after its item text still reads first).
 pub(super) fn reading(sl: &SegLay) -> Vec<usize> {
     let mut v: Vec<usize> = (0..sl.ops.len()).filter(|&i| selectable(&sl.ops[i].op)).collect();
-    let x_of = |o: &Op| match o {
-        Op::Text { x, .. } => *x,
-        Op::Code { r, .. } => r.x,
-        _ => 0,
-    };
-    v.sort_by_key(|&i| (sl.ops[i].y0, x_of(&sl.ops[i].op)));
+    v.sort_by_key(|&i| read_key(&sl.ops[i]));
     v
 }
 
@@ -203,9 +213,12 @@ fn pos_in_seg(tx: &mut TextCtx, sid: usize, sl: &SegLay, cx: f64, yl: f64) -> Op
     let mut best: Option<(usize, f64)> = None;
     for (rank, &oi) in rd.iter().enumerate() {
         let d = &sl.ops[oi];
-        if let Op::Text { x, w, .. } = &d.op
-            && yl >= d.y0 as f64
-            && yl < d.y1 as f64
+        let xw = match &d.op {
+            Op::Text { x, w, .. } | Op::Math { x, w, .. } => Some((x, w)),
+            _ => None,
+        };
+        if let Some((x, w)) = xw
+            && (d.y0 as f64..d.y1 as f64).contains(&yl)
         {
             let dist = if cx < *x as f64 {
                 *x as f64 - cx
@@ -219,11 +232,15 @@ fn pos_in_seg(tx: &mut TextCtx, sid: usize, sl: &SegLay, cx: f64, yl: f64) -> Op
             }
         }
     }
-    if let Some((rank, _)) = best
-        && let Op::Text { x, text, flags, si, .. } = &sl.ops[rd[rank]].op
-    {
-        let xs = char_xs(tx, text, *flags, *si);
-        return Some(at(rank, 0, nearest(&xs, (cx - *x as f64) as f32)));
+    if let Some((rank, _)) = best {
+        match &sl.ops[rd[rank]].op {
+            Op::Text { x, text, flags, si, .. } => {
+                let xs = char_xs(tx, text, *flags, *si);
+                return Some(at(rank, 0, nearest(&xs, (cx - *x as f64) as f32)));
+            }
+            Op::Math { x, w, .. } => return Some(at(rank, 0, (cx >= (x + w / 2) as f64) as usize)),
+            _ => {}
+        }
     }
     // Between lines: the start of the next piece below, else the end of the last one.
     if let Some(rank) = rd.iter().position(|&oi| sl.ops[oi].y0 as f64 > yl) {
@@ -236,6 +253,7 @@ fn pos_in_seg(tx: &mut TextCtx, sid: usize, sl: &SegLay, cx: f64, yl: f64) -> Op
             at(rank, li as u32, lines.get(li).map_or(0, |l| l.chars().count()))
         }
         Op::Text { text, .. } => at(rank, 0, text.chars().count()),
+        Op::Math { .. } => at(rank, 0, 1),
         _ => at(rank, 0, 0),
     })
 }
@@ -348,6 +366,15 @@ impl MdView {
                             if out.is_empty() || out.ends_with(['\n', ' ', '\t']) { piece.trim_start() } else { piece };
                         out.push_str(piece);
                         prev = Some((top + d.y0, top + d.y1, x + w));
+                    }
+                    // A formula copies as its TeX source, so it pastes back as Markdown.
+                    Op::Math { x, w, row, src, display, .. } => {
+                        if piece_range(sel, sid, rank, 0, 1).is_none() {
+                            continue;
+                        }
+                        sep(&mut out, prev, top + row, *x);
+                        out.push_str(&if *display { format!("$${src}$$") } else { format!("${src}$") });
+                        prev = Some((top + row, top + d.y1, x + w));
                     }
                     Op::Code { r, lines, lh, top: ctop, .. } => {
                         let mut first = true;

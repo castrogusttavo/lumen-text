@@ -907,7 +907,13 @@ impl<'a> Builder<'a> {
                     if text.ends_with('\n') {
                         text.pop();
                     }
-                    self.push_block(Block { kind: Kind::Code { lang, text }, line: l.0, end: l.1 });
+                    // ```math is display math (as on GitHub)
+                    let kind = if lang.eq_ignore_ascii_case("math") {
+                        Kind::Math(text.trim().to_string())
+                    } else {
+                        Kind::Code { lang, text }
+                    };
+                    self.push_block(Block { kind, line: l.0, end: l.1 });
                 }
             }
             TagEnd::HtmlBlock => {

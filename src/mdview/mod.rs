@@ -31,7 +31,10 @@
 //! links), GitHub alerts (`> [!NOTE]` ...), `<details>` blocks (collapsible, Markdown inside),
 //! Mermaid diagrams (flowchart, sequence, pie and class diagrams drawn natively, see `mermaid`),
 //! emoji shortcodes, superscript / subscript (`<sup>`, `^x^`, `~x~`), definition lists,
-//! math (`$..$` as a chip, `$$..$$` as a block, monospace source text, no LaTeX engine), block quotes, thematic breaks, fenced and indented code blocks (monospace, never wrapped, clipped
+//! TeX math (`$..$` inline on the text baseline, `$$..$$` and ```` ```math ```` fences as a centered display
+//! block, typeset with the embedded STIX Two Math font, see [`math`]; a formula that does not parse falls
+//! back to its monospace source with the offending part in the error color; a selection copies formulas as
+//! their TeX source), block quotes, thematic breaks, fenced and indented code blocks (monospace, never wrapped, clipped
 //! horizontally, language label, a Copy button on hover, TextMate syntax colors when a highlighter
 //! is given to [`MdView::draw_with`]), GFM tables (content-sized columns capped at ~48ch, wrapping
 //! cells, alignment), hard and soft breaks, and a subset of raw HTML (see `html`: `<b> <i> <u>
@@ -41,7 +44,8 @@
 //! Not supported: metadata blocks, true italic faces, inline images
 //! in the middle of a text line (an image ends the paragraph text before it; consecutive images
 //! share a row), animated GIF/WebP (first frame only), SVG CSS classes / filters / gradients
-//! (a gradient paints its first stop color), LaTeX typesetting, in-app video playback.
+//! (a gradient paints its first stop color), equation numbering, `\\newcommand` / macros, in-app video
+//! playback.
 #![allow(dead_code)]
 
 use crate::mdimg::{ImgStore, Pix, Tex};
@@ -58,6 +62,7 @@ mod extra;
 mod html;
 mod inline;
 mod layout;
+mod math;
 pub(crate) mod mermaid;
 mod paint;
 mod parse;
@@ -123,16 +128,26 @@ const F_S: Fl = 4;
 const F_CODE: Fl = 8;
 const F_LINK: Fl = 16;
 const F_DIM: Fl = 32;
-/// Inline math: drawn as a code chip, tinted with the accent.
+/// Inline math: typeset (or, with `F_CODE`, its source drawn as a chip).
 const F_MATH: Fl = 64;
-/// `<u>` / `<ins>`.
-const F_U: Fl = 128;
+/// Math whose source failed to parse: a chip with the offending part in the error color.
+const F_ERR: Fl = 128;
 /// `<mark>`: highlighted background.
 const F_MARK: Fl = 256;
 /// `<kbd>`: a key cap.
 const F_KBD: Fl = 512;
 const F_SUP: Fl = 1024;
 const F_SUB: Fl = 2048;
+/// `<u>` / `<ins>`.
+const F_U: Fl = 4096;
+/// Display math is set this much larger than body text; inline math matches the text's x-height.
+const DISPLAY_MATH_SCALE: f32 = 1.18;
+const INLINE_MATH_SCALE: f32 = 1.12;
+/// A display formula wider than the column is shrunk to fit, down to this fraction (beyond it,
+/// the formula overflows to the right and is clipped by the pane).
+const MIN_MATH_SHRINK: f32 = 0.6;
+/// Space above and below a display formula.
+const MATH_PAD_Y: i32 = 8;
 
 // ---------------------------------------------------------------------------------------------
 // public view
@@ -178,6 +193,8 @@ pub struct MdView {
     copied: Option<(u64, std::time::Instant)>,
     /// Rasterized diagram shapes per (diagram, device size, theme).
     dia_tex: HashMap<(u64, i32, i32, u64), Rc<Pix>>,
+    /// Typeset formulas by source and size (shared by every segment).
+    math: math::MathCache,
 }
 
 impl Default for MdView {
@@ -337,6 +354,7 @@ impl MdView {
             sel: None,
             copied: None,
             dia_tex: HashMap::new(),
+            math: math::MathCache::default(),
         }
     }
 
@@ -491,6 +509,7 @@ impl MdView {
                     m: &mut self.measure,
                     urls: &mut self.urls,
                     imgs: &mut self.imgs,
+                    math: &mut self.math,
                     fnum: &fnum,
                     ext: &mut self.ext,
                     ops: vec![],
@@ -532,6 +551,7 @@ impl MdView {
                 m: &mut self.measure,
                 urls: &mut self.urls,
                 imgs: &mut self.imgs,
+                math: &mut self.math,
                 fnum: &fnum,
                 ext: &mut self.ext,
                 ops: vec![],
@@ -593,7 +613,8 @@ impl MdView {
             self.hl.clear();
             self.hl_theme = theme_key;
         }
-        let MdView { order, cache, urls: _, imgs, lay, hl: hl_cache, foot, sel, hover, copied, dia_tex, .. } = self;
+        let MdView { order, cache, urls: _, imgs, lay, hl: hl_cache, foot, sel, hover, copied, dia_tex, math, .. } =
+            self;
         let Some(lay) = lay.as_ref() else { return };
         let sc = scroll_px.floor() as i32;
         let (top, bot) = (sc, sc + rect.h);
@@ -683,7 +704,14 @@ impl MdView {
                             let fill = if flags & F_MATH != 0 { pal.math_chip(color) } else { pal.code };
                             round_clip(cv, chip, CODE_RAD, fill, clip);
                             let cl = line_h() as i32;
-                            tx.draw_line(cv, sx + CHIP_PAD, sy + (*lh - cl) / 2, text, color, clip);
+                            let ty = sy + (*lh - cl) / 2;
+                            match math.err(text).filter(|_| flags & F_ERR != 0) {
+                                Some(e) => {
+                                    let pieces = math::err_pieces(text, e.at, color, pal.err);
+                                    tx.draw(cv, sx + CHIP_PAD, ty, &pieces, clip);
+                                }
+                                None => tx.draw_line(cv, sx + CHIP_PAD, ty, text, color, clip),
+                            }
                         } else if flags & (F_SUP | F_SUB) != 0 {
                             let ss = SIZES[SUP];
                             let mid = (*lh - (ss * 1.4).round() as i32) / 2;
@@ -777,7 +805,24 @@ impl MdView {
                             }
                         }
                     }
-                    Op::Code { r, lang, lines, lh, top: ctop, key, math } => {
+                    Op::Math { x, w, base, lay: ml, flags, .. } => {
+                        if let (Some(r), Some(s)) = (rank, sel)
+                            && sel_whole(s, SelAt { seg: sid, rank: r as usize, line: 0 })
+                        {
+                            cv.fill_clip(Rect::new(x + ox, d.y0 + oy, *w, d.y1 - d.y0), pal.sel, clip);
+                        }
+                        let color = if flags & F_LINK != 0 {
+                            pal.accent
+                        } else if flags & F_DIM != 0 {
+                            pal.dim
+                        } else if flags & F_B != 0 {
+                            pal.fg
+                        } else {
+                            pal.text
+                        };
+                        math::paint(cv, tx, ml, (x + ox) as f32, (base + oy) as f32, color, clip);
+                    }
+                    Op::Code { r, lang, lines, lh, top: ctop, key, math, err } => {
                         let sr = tr(*r);
                         let fill = if *math { pal.math_block() } else { pal.code };
                         round_clip(cv, sr, CODE_RAD, fill, clip);
@@ -851,7 +896,13 @@ impl MdView {
                                     let pieces = pieces_of(&shown, runs, pal.text);
                                     tx.draw_styled(cv, lx, ly + text_dy, &pieces, inner);
                                 }
-                                _ => tx.draw_line(cv, lx, ly + text_dy, &shown, pal.text, inner),
+                                _ => match err.filter(|e| e.0 == i) {
+                                    Some((_, a, b)) => {
+                                        let pieces = math::err_pieces(&shown, (a, b), pal.text, pal.err);
+                                        tx.draw(cv, lx, ly + text_dy, &pieces, inner);
+                                    }
+                                    None => tx.draw_line(cv, lx, ly + text_dy, &shown, pal.text, inner),
+                                },
                             }
                         }
                     }
@@ -888,6 +939,75 @@ impl MdView {
             dia_tex.clear();
         }
         imgs.trim();
+    }
+
+    /// The text shown between content y `y0` and `y1` (a selection of whole lines), in reading
+    /// order: prose as shown, code block lines, and the TeX source of formulas (`$..$` inline,
+    /// `$$..$$` for display math), so a copied formula pastes back as Markdown.
+    pub fn text_between(&self, y0: i32, y1: i32) -> String {
+        let Some(lay) = self.lay.as_ref() else { return String::new() };
+        // (row top, x, text)
+        let mut items: Vec<(i32, i32, String)> = vec![];
+        let mut take = |sl: &SegLay, base: i32| {
+            for d in &sl.ops {
+                if d.y1 + base <= y0 || d.y0 + base >= y1 {
+                    continue;
+                }
+                match &d.op {
+                    Op::Text { x, text, flags, .. } if flags & F_MATH != 0 => {
+                        items.push((d.y0 + base, *x, format!("${text}$")))
+                    }
+                    Op::Text { x, text, .. } => items.push((d.y0 + base, *x, text.clone())),
+                    Op::Math { x, row, src, display, .. } => {
+                        let t = if *display { format!("$${src}$$") } else { format!("${src}$") };
+                        items.push((row + base, *x, t));
+                    }
+                    Op::Code { r, lines, math, .. } => {
+                        let body = lines.join("\n");
+                        items.push((d.y0 + base, r.x, if *math { format!("$${body}$$") } else { body }));
+                    }
+                    _ => {}
+                }
+            }
+        };
+        for s in &lay.segs {
+            if let Some(l) = self.seg_lay_of(s) {
+                take(l, s.y0);
+            }
+        }
+        if let Some((l, p)) = self.foot.as_ref() {
+            take(l, p.y0);
+        }
+        items.sort_by_key(|(y, x, _)| (*y, *x));
+        let mut out = String::new();
+        let mut last: Option<i32> = None;
+        for (y, _, t) in items {
+            if last.is_some_and(|l| l != y) {
+                out.push('\n');
+            }
+            out.push_str(&t);
+            last = Some(y);
+        }
+        out
+    }
+
+    /// TeX source of the formula under the pointer (`x`, `y` in canvas coordinates; `rect` and
+    /// `scroll_px` as passed to the last `draw`), for "copy as TeX".
+    pub fn math_at(&self, x: f64, y: f64, rect: Rect, scroll_px: f64) -> Option<String> {
+        if !rect.contains(x, y) {
+            return None;
+        }
+        let lay = self.lay.as_ref()?;
+        let cx = (x - rect.x as f64).floor() as i32;
+        let cy = (y - rect.y as f64 + scroll_px.floor()).floor() as i32;
+        let (sl, base) = self.seg_at_y(lay, cy)?;
+        let ly = cy - base;
+        sl.ops.iter().filter(|d| ly >= d.y0 && ly < d.y1).find_map(|d| match &d.op {
+            Op::Math { x, w, src, .. } if cx >= *x && cx < *x + *w => Some(src.clone()),
+            Op::Code { r, lines, math: true, .. } if cx >= r.x && cx < r.right() => Some(lines.join("\n")),
+            Op::Text { x, w, text, flags, .. } if flags & F_MATH != 0 && cx >= *x && cx < *x + *w => Some(text.clone()),
+            _ => None,
+        })
     }
 
     /// Total height of the laid-out document in px (0 before the first layout).

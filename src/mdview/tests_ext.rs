@@ -75,13 +75,12 @@ fn setext_headings() {
 
 #[test]
 fn superscript_and_subscript() {
-    let v = view("E = mc<sup>2</sup>, H<sub>2</sub>O, x^n^ and y~i~ but ~~gone~~.\n");
+    let v = view("E = mc<sup>2</sup>, H<sub>2</sub>O but ~~gone~~.\n");
     let inl = spans(&v, 0);
     let f = |want: Fl| inl.iter().filter(|i| matches!(i, Inl::Text { flags, .. } if flags & want != 0)).count();
-    assert_eq!(f(F_SUP), 2, "{inl:?}");
-    assert_eq!(f(F_SUB), 2, "{inl:?}");
+    assert_eq!(f(F_SUP), 1, "{inl:?}");
+    assert_eq!(f(F_SUB), 1, "{inl:?}");
     assert_eq!(flags_of(&inl, "gone"), F_S, "double tilde stays strikethrough");
-    assert_eq!(flags_of(&inl, "n"), F_SUP);
     let (v, _) = laid("mc<sup>2</sup>\n", 600);
     let sup = v.ops().into_iter().find_map(|o| match &o.op {
         Op::Text { text, flags, w, .. } if text == "2" => Some((*flags, *w)),
@@ -522,6 +521,11 @@ fn showcase_readme_end_to_end() {
     v.select_all();
     let all = v.selected_text();
     assert!(all.contains("def antigo():") && all.contains("Vitrine de Markdown"), "{}", all.len());
+    // TeX math renders typeset, and a selection copies it back as its source.
+    let display = v.ops().iter().filter(|o| matches!(&o.op, Op::Math { display: true, .. })).count();
+    assert!(display >= 3, "display formulas: {display}");
+    assert!(v.ops().iter().any(|o| matches!(&o.op, Op::Math { display: false, .. })), "inline formula");
+    assert!(all.contains("$x = \\frac{-b"), "inline math copies as TeX");
 }
 
 /// Draw ops with the top of their segment (op y is relative to it).

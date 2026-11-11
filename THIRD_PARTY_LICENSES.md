@@ -290,3 +290,4 @@ Regenerate: `cargo metadata --format-version 1 --offline` and list `name`, `vers
 - **Color themes** (`assets/themes`): from tm-themes (the Shiki theme collection), MIT; each theme keeps its upstream license; see `assets/licenses/tm-themes-LICENSE.txt` and `tm-themes-NOTICE.txt`.
 - **Icons** (`assets/icons/ui`, `file`): rasterized masks of icons from the [Zed](https://github.com/zed-industries/zed) repository; parts derive from Lucide (ISC); see `assets/icons/ZED_ICONS_LICENSES.txt`.
 - **HugeIcons Pro** masks are not part of this repository (see README).
+- **STIX Two Math** (`fonts/STIXTwoMath-Regular.otf`, v2.13 b171, unmodified; embedded compressed into the executable for the Markdown preview's TeX math): Copyright 2001-2021 The STIX Fonts Project Authors, SIL Open Font License 1.1 (Reserved Font Name "TM Math"); see `assets/licenses/STIXTwoMath-OFL.txt`.

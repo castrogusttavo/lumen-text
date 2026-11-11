@@ -534,7 +534,7 @@ impl App {
         } else if !self.overlay.is_none() {
             return;
         }
-        if self.gitpanel_right_click(x, y) {
+        if self.gitpanel_right_click(x, y) || self.md_copy_tex(x, y) {
             return;
         }
         self.hover = None;
