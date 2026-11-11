@@ -502,7 +502,12 @@ impl Config {
             show_line_numbers: v["show_line_numbers"].as_bool().unwrap_or(true),
             show_bookmarks: v["show_bookmarks"].as_bool().unwrap_or(true),
             show_breakpoints: v["show_breakpoints"].as_bool().unwrap_or(true),
-            scrollbar: normalize_scrollbar(v["scrollbar"].as_str()),
+            // "show" was the default before v2 and every save wrote it: an old stored "show" is not a choice.
+            scrollbar: match (v["scrollbar_v"].as_u64(), v["scrollbar"].as_str()) {
+                (Some(2), s) => normalize_scrollbar(s),
+                (_, Some("show")) => normalize_scrollbar(None),
+                (_, s) => normalize_scrollbar(s),
+            },
             enable_lsp: v["enable_lsp"].as_bool().unwrap_or(true),
         }
     }
@@ -527,6 +532,7 @@ impl Config {
         }
         v["explorer_hide_gitignored"] = json!(self.explorer_hide_gitignored);
         v["sidebar_width"] = json!(self.sidebar_width);
+        v["scrollbar_v"] = json!(2);
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -889,9 +895,18 @@ mod tests {
         assert_eq!(c.buffer_font_family, "Fira Code");
         assert_eq!(c.scrollbar, "never", "unknown mode falls back to the default");
         assert!(c.show_line_numbers, "a non-bool keeps the default");
-        let c = load(r#"{"buffer_line_height": "tall", "buffer_font_weight": "bold", "scrollbar": "show"}"#);
+        let c = load(
+            r#"{"buffer_line_height": "tall", "buffer_font_weight": "bold", "scrollbar": "show", "scrollbar_v": 2}"#,
+        );
         assert_eq!((c.buffer_line_height, c.buffer_font_weight), (1.57, 400));
         assert_eq!(c.scrollbar, "show", "an explicit choice is kept");
+        // Before v2 every save wrote the old default "show": migrated once to the new default.
+        assert_eq!(load(r#"{"scrollbar": "show"}"#).scrollbar, "never");
+        assert_eq!(load(r#"{"scrollbar": "auto"}"#).scrollbar, "auto", "a non-default old choice is kept");
+        let mut c = load(r#"{"scrollbar": "show"}"#);
+        c.scrollbar = "show".into();
+        c.save_to(&p).unwrap();
+        assert_eq!(Config::load_from(&p).scrollbar, "show", "chosen again after the migration: kept");
         let c = load(r#"{"buffer_line_height": 1.9}"#);
         assert_eq!(c.buffer_line_height, 1.9);
         std::fs::remove_dir_all(&dir).ok();
