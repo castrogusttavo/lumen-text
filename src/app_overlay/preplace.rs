@@ -636,13 +636,13 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::create_dir_all(dir.join("ignored")).unwrap();
         std::fs::write(dir.join(".gitignore"), "ignored/\n").unwrap();
-        std::fs::write(dir.join("src/a.rs"), "let foo_1 = foo_2;\r\nfoo_3\r\n").unwrap();
-        std::fs::write(dir.join("src/b.rs"), "foo_9\n").unwrap();
-        std::fs::write(dir.join("src/c.rs"), "x foo_4 foo_5\n").unwrap();
-        std::fs::write(dir.join("ignored/i.rs"), "foo_7\n").unwrap();
+        std::fs::write(dir.join("src/a.txt"), "let foo_1 = foo_2;\r\nfoo_3\r\n").unwrap();
+        std::fs::write(dir.join("src/b.txt"), "foo_9\n").unwrap();
+        std::fs::write(dir.join("src/c.txt"), "x foo_4 foo_5\n").unwrap();
+        std::fs::write(dir.join("ignored/i.txt"), "foo_7\n").unwrap();
         let mut app = test_app(&dir);
         // b.rs is open with unsaved changes: its buffer is what gets searched and edited.
-        app.open_path(&dir.join("src/b.rs"), None);
+        app.open_path(&dir.join("src/b.txt"), None);
         let b = app.active;
         app.docs[b].replace_text("foo_8 foo_9\n");
 
@@ -661,13 +661,13 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ("a.rs".into(), 0, 4, "bar1".into()),
-                ("a.rs".into(), 0, 12, "bar2".into()),
-                ("a.rs".into(), 1, 0, "bar3".into()),
-                ("b.rs".into(), 0, 0, "bar8".into()),
-                ("b.rs".into(), 0, 6, "bar9".into()),
-                ("c.rs".into(), 0, 2, "bar4".into()),
-                ("c.rs".into(), 0, 8, "bar5".into()),
+                ("a.txt".into(), 0, 4, "bar1".into()),
+                ("a.txt".into(), 0, 12, "bar2".into()),
+                ("a.txt".into(), 1, 0, "bar3".into()),
+                ("b.txt".into(), 0, 0, "bar8".into()),
+                ("b.txt".into(), 0, 6, "bar9".into()),
+                ("c.txt".into(), 0, 2, "bar4".into()),
+                ("c.txt".into(), 0, 8, "bar5".into()),
             ],
             "every match, the buffer's text for b.rs, nothing from ignored/"
         );
@@ -678,21 +678,21 @@ mod tests {
             let r = p.rep.as_ref().unwrap();
             p.sel = r.hits.iter().position(|h| h.path.ends_with(file) && h.start == start).unwrap();
         };
-        pick(&mut app, "c.rs", 2);
+        pick(&mut app, "c.txt", 2);
         key(&mut app, none, Key::Named(NamedKey::Enter), None);
-        assert_eq!(std::fs::read_to_string(dir.join("src/c.rs")).unwrap(), "x bar4 foo_5\n");
+        assert_eq!(std::fs::read_to_string(dir.join("src/c.txt")).unwrap(), "x bar4 foo_5\n");
         // The other match of that line moved with the edit and still replaces correctly.
-        pick(&mut app, "c.rs", 7);
+        pick(&mut app, "c.txt", 7);
         key(&mut app, none, Key::Named(NamedKey::Enter), None);
-        assert_eq!(std::fs::read_to_string(dir.join("src/c.rs")).unwrap(), "x bar4 bar5\n");
+        assert_eq!(std::fs::read_to_string(dir.join("src/c.txt")).unwrap(), "x bar4 bar5\n");
 
         // Ctrl+Enter: a whole open file, in its buffer, as one undo step; the disk is untouched.
-        pick(&mut app, "b.rs", 0);
+        pick(&mut app, "b.txt", 0);
         key(&mut app, ModifiersState::CONTROL, Key::Named(NamedKey::Enter), None);
         assert_eq!(app.docs[b].buf.to_string(), "bar8 bar9\n");
         assert!(app.docs[b].buf.is_dirty());
-        assert_eq!(std::fs::read_to_string(dir.join("src/b.rs")).unwrap(), "foo_9\n");
-        assert!(rows(&app).iter().all(|r| r.0 != "b.rs"), "its rows are gone");
+        assert_eq!(std::fs::read_to_string(dir.join("src/b.txt")).unwrap(), "foo_9\n");
+        assert!(rows(&app).iter().all(|r| r.0 != "b.txt"), "its rows are gone");
 
         // Ctrl+Alt+Enter asks first; Esc keeps everything.
         let ca = ModifiersState::CONTROL | ModifiersState::ALT;
@@ -701,12 +701,12 @@ mod tests {
         assert_eq!(p.rep.as_ref().unwrap().confirm, Some((3, 1, false)));
         key(&mut app, none, Key::Named(NamedKey::Escape), None);
         assert!(matches!(&app.overlay, Overlay::Picker(p) if p.rep.as_ref().unwrap().confirm.is_none()));
-        assert_eq!(std::fs::read_to_string(dir.join("src/a.rs")).unwrap(), "let foo_1 = foo_2;\r\nfoo_3\r\n");
+        assert_eq!(std::fs::read_to_string(dir.join("src/a.txt")).unwrap(), "let foo_1 = foo_2;\r\nfoo_3\r\n");
         // ...and Enter replaces: the closed file is rewritten keeping its CRLF breaks.
         key(&mut app, ca, Key::Named(NamedKey::Enter), None);
         key(&mut app, none, Key::Named(NamedKey::Enter), None);
-        assert_eq!(std::fs::read_to_string(dir.join("src/a.rs")).unwrap(), "let bar1 = bar2;\r\nbar3\r\n");
-        assert_eq!(std::fs::read_to_string(dir.join("ignored/i.rs")).unwrap(), "foo_7\n", ".gitignore respected");
+        assert_eq!(std::fs::read_to_string(dir.join("src/a.txt")).unwrap(), "let bar1 = bar2;\r\nbar3\r\n");
+        assert_eq!(std::fs::read_to_string(dir.join("ignored/i.txt")).unwrap(), "foo_7\n", ".gitignore respected");
         settle_search(&mut app);
         assert!(rows(&app).is_empty(), "nothing left");
 
