@@ -114,6 +114,20 @@ pub fn defs() -> Vec<SettingDef> {
             "Master switch: off stops every language server (no diagnostics, hover, completion or go to definition) and the status bar says so. On starts them again when needed.",
             Bool,
         ),
+        d(
+            "build_command",
+            "Build",
+            "Build command",
+            "A build command of your own, run by the shell in the project folder (Build panel, Ctrl+Shift+B). It is listed first among the targets and its output is read for compiler problems. Empty: only what is detected (Cargo, npm / pnpm / yarn / bun, Maven, Gradle, .NET, Go, CMake, Make).",
+            Text,
+        ),
+        d(
+            "run_command",
+            "Build",
+            "Run command",
+            "A run command of your own for the Build panel's Run (Ctrl+F5), run by the shell in the project folder.",
+            Text,
+        ),
     ]
 }
 
@@ -124,7 +138,7 @@ pub fn defaults() -> Value {
         "ui_font_family": "", "ui_font_size": 13, "ui_font_weight": 400,
         "ui_line_height": fontcfg::DEFAULT_UI_LH, "ui_font_ligatures": true,
         "show_line_numbers": true, "show_bookmarks": true, "show_breakpoints": true,
-        "scrollbar": "never", "enable_lsp": true,
+        "scrollbar": "never", "enable_lsp": true, "build_command": "", "run_command": "",
     })
 }
 
@@ -137,6 +151,7 @@ pub fn values(c: &Config) -> Value {
         "ui_line_height": c.ui_line_height, "ui_font_ligatures": c.ui_font_ligatures,
         "show_line_numbers": c.show_line_numbers, "show_bookmarks": c.show_bookmarks,
         "show_breakpoints": c.show_breakpoints, "scrollbar": c.scrollbar, "enable_lsp": c.enable_lsp,
+        "build_command": c.build_command, "run_command": c.run_command,
     })
 }
 

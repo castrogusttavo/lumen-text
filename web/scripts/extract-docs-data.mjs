@@ -29,7 +29,7 @@ const estart = ext.indexOf("pub fn defs");
 const sblock =
   ui.slice(sstart, ui.indexOf("\n    ]", sstart)) + "\n" + ext.slice(estart, ext.indexOf("\n    ]\n}", estart));
 const defs = [];
-const re = /d\(\s*"(\w+)",\s*"([^"]+)",\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)",\s*([^;]*?)\),?\s*(?=\n\s*(?:d\(|\/\/|$))/gs;
+const re = /d\(\s*"(\w+)",\s*"([^"]+)",\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)",\s*([^;]*?)\),?\s*(?=$|\n\s*(?:d\(|\/\/|$))/gs;
 for (const m of sblock.matchAll(re)) {
   const kind = m[5].trim();
   const choice = /Choice\(&\[([^\]]*)\]\)/.exec(kind);

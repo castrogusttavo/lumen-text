@@ -599,5 +599,29 @@
    "never"
   ],
   "default": "never"
+ },
+ {
+  "key": "enable_lsp",
+  "section": "Editor display",
+  "label": "Language servers",
+  "help": "Master switch: off stops every language server (no diagnostics, hover, completion or go to definition) and the status bar says so. On starts them again when needed.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "build_command",
+  "section": "Build",
+  "label": "Build command",
+  "help": "A build command of your own, run by the shell in the project folder (Build panel, Ctrl+Shift+B). It is listed first among the targets and its output is read for compiler problems. Empty: only what is detected (Cargo, npm / pnpm / yarn / bun, Maven, Gradle, .NET, Go, CMake, Make).",
+  "kind": "text",
+  "default": ""
+ },
+ {
+  "key": "run_command",
+  "section": "Build",
+  "label": "Run command",
+  "help": "A run command of your own for the Build panel's Run (Ctrl+F5), run by the shell in the project folder.",
+  "kind": "text",
+  "default": ""
  }
 ]

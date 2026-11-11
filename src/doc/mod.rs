@@ -436,6 +436,11 @@ impl Doc {
         self.rebuild_diags();
     }
 
+    /// Does the document hold diagnostics of `server` (see [`Doc::set_ext_diags`])?
+    pub fn has_ext_diags(&self, server: &str) -> bool {
+        self.diags_ext.iter().any(|(n, _)| n == server)
+    }
+
     fn rebuild_diags(&mut self) {
         let mut all = self.diags_ts.clone();
         all.extend(self.diags_lint.iter().cloned());

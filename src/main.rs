@@ -3,6 +3,7 @@
 // the parent console for command-line use.
 #![cfg_attr(all(windows, not(debug_assertions), not(test)), windows_subsystem = "windows")]
 mod app;
+mod app_build;
 mod app_ctxmenu;
 mod app_debug;
 mod app_display;
@@ -33,6 +34,7 @@ mod app_update;
 mod bigfile;
 mod bookmarks;
 mod buffer;
+mod buildrun;
 mod clipboard;
 mod config;
 mod dap;

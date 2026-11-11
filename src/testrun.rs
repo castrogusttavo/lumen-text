@@ -162,7 +162,7 @@ pub fn strip_ansi(s: &str) -> String {
 
 // ───────────── detection ─────────────
 
-fn read(root: &Path, f: &str) -> String {
+pub(crate) fn read(root: &Path, f: &str) -> String {
     std::fs::read_to_string(root.join(f)).unwrap_or_default()
 }
 
@@ -170,7 +170,7 @@ fn on_path(bin: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
 }
 
-fn dir_has(root: &Path, pred: impl Fn(&str) -> bool) -> bool {
+pub(crate) fn dir_has(root: &Path, pred: impl Fn(&str) -> bool) -> bool {
     std::fs::read_dir(root).is_ok_and(|rd| rd.flatten().any(|e| pred(&e.file_name().to_string_lossy())))
 }
 
@@ -310,7 +310,7 @@ pub struct Plan {
     pub cleanup: Vec<PathBuf>,
 }
 
-fn exec_prefix(root: &Path, local: &str, bin: &str) -> String {
+pub(crate) fn exec_prefix(root: &Path, local: &str, bin: &str) -> String {
     if root.join(local).is_file() { format!("./{local}") } else { bin.to_string() }
 }
 

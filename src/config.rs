@@ -74,6 +74,10 @@ pub struct Config {
     pub test_report: String,
     /// Re-run the last tests whenever a file is saved.
     pub test_watch: bool,
+    /// Build panel: commands of your own, run by the shell in the project folder. Listed first among
+    /// the detected targets; empty = detection only.
+    pub build_command: String,
+    pub run_command: String,
     /// Hide what `.gitignore` (and the global ignore file and `.git/info/exclude`) ignores in the explorer;
     /// off shows those entries dimmed.
     pub explorer_hide_gitignored: bool,
@@ -232,6 +236,8 @@ impl Default for Config {
             updates: "auto".into(),
             test_command: String::new(),
             test_report: String::new(),
+            build_command: String::new(),
+            run_command: String::new(),
             test_watch: false,
             explorer_hide_gitignored: true,
             language_servers: Value::Null,
@@ -470,6 +476,8 @@ impl Config {
             test_command: v["test_command"].as_str().unwrap_or("").trim().to_string(),
             test_report: v["test_report"].as_str().unwrap_or("").trim().to_string(),
             test_watch: v["test_watch"].as_bool().unwrap_or(false),
+            build_command: v["build_command"].as_str().unwrap_or("").trim().to_string(),
+            run_command: v["run_command"].as_str().unwrap_or("").trim().to_string(),
             explorer_hide_gitignored: v["explorer_hide_gitignored"].as_bool().unwrap_or(true),
             language_servers: v.get("language_servers").cloned().unwrap_or(Value::Null),
             scroll_speed: v["scroll_speed"].as_f64().map_or(1.0, |f| f as f32).clamp(0.1, 5.0),
@@ -531,6 +539,8 @@ impl Config {
             v["language_servers"] = self.language_servers.clone();
         }
         v["explorer_hide_gitignored"] = json!(self.explorer_hide_gitignored);
+        v["build_command"] = json!(self.build_command);
+        v["run_command"] = json!(self.run_command);
         v["sidebar_width"] = json!(self.sidebar_width);
         v["scrollbar_v"] = json!(2);
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
@@ -606,6 +616,8 @@ mod tests {
             test_command: "make test".into(),
             test_report: "out/junit.xml".into(),
             test_watch: true,
+            build_command: "make -j8".into(),
+            run_command: "./out/app --port 8080".into(),
             explorer_hide_gitignored: false,
             language_servers: json!({"rust": {"command": "ra"}}),
             buffer_font_family: "JetBrains Mono".into(),

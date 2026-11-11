@@ -205,6 +205,36 @@
   "id": "TestRunner"
  },
  {
+  "label": "Build: Build",
+  "shortcut": "Ctrl+Shift+B",
+  "id": "BuildBuild"
+ },
+ {
+  "label": "Build: Run",
+  "shortcut": "Ctrl+F5",
+  "id": "BuildRun"
+ },
+ {
+  "label": "Build: Stop",
+  "shortcut": "",
+  "id": "BuildStop"
+ },
+ {
+  "label": "Build: Clean",
+  "shortcut": "",
+  "id": "BuildClean"
+ },
+ {
+  "label": "Build: Select Target…",
+  "shortcut": "",
+  "id": "BuildSelectTarget"
+ },
+ {
+  "label": "Build: Show Panel",
+  "shortcut": "",
+  "id": "BuildPanel"
+ },
+ {
   "label": "View: Toggle output panel",
   "shortcut": "Ctrl+J",
   "id": "ToggleOutput"

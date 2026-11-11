@@ -258,6 +258,7 @@ impl App {
                 });
             }
         }
+        items.extend(self.build_problem_items());
         if items.is_empty() {
             return self.say("no problems in open files");
         }
@@ -311,6 +312,7 @@ impl App {
         self.pump_lsp();
         self.pump_task();
         self.pump_tests();
+        self.pump_build();
         self.pump_term();
         self.pump_inbox();
         self.pump_eslint();

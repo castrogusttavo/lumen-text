@@ -1850,7 +1850,7 @@ fn spinner(cv: &mut Canvas, cx: i32, cy: i32, r: i32, col: Rgba, bg: Rgba, start
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spinner_t(cv: &mut Canvas, cx: i32, cy: i32, r: i32, col: Rgba, bg: Rgba, t: f32, clip: Rect) {
+pub(crate) fn spinner_t(cv: &mut Canvas, cx: i32, cy: i32, r: i32, col: Rgba, bg: Rgba, t: f32, clip: Rect) {
     let head = ((t * 10.0) as i32).rem_euclid(8);
     for k in 0..8 {
         let a = k as f32 * std::f32::consts::TAU / 8.0;

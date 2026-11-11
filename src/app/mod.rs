@@ -194,6 +194,7 @@ pub struct App {
     pub eslint_rx: std::sync::mpsc::Receiver<(PathBuf, Result<Vec<crate::eslint::Msg>, String>)>,
     pub eslint_busy: std::collections::HashSet<PathBuf>,
     pub tests: crate::app_tests::TestsState,
+    pub build: crate::app_build::BuildState,
     pub dbg: Option<crate::app_debug::Debugger>,
     pub diff: Option<crate::app_gitx::DiffView>,
     /// Git panel docked on the right (Changes / History).
@@ -322,6 +323,7 @@ impl App {
             eslint_rx: mpsc::channel().1,
             eslint_busy: Default::default(),
             tests: crate::app_tests::TestsState::default(),
+            build: crate::app_build::BuildState::default(),
             dbg: None,
             diff: None,
             gitpanel: None,

@@ -61,6 +61,8 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+4", "FocusPane4"),
     ("f5", "DebugStart"),
     ("shift+f5", "DebugStop"),
+    ("ctrl+f5", "BuildRun"),
+    ("ctrl+shift+b", "BuildBuild"),
     ("f9", "ToggleBreakpoint"),
     ("ctrl+f2", "ToggleBookmark"),
     ("ctrl+alt+f2", "NextBookmark"),
@@ -475,6 +477,8 @@ mod tests {
         assert_eq!(k.lookup(true, true, false, &ch("S")), Some("Save"));
         // An exact Ctrl+Shift row wins over the tolerant fallback.
         assert_eq!(k.lookup(true, true, false, &ch("G")), Some("GitPanel"));
+        assert_eq!(k.lookup(true, true, false, &ch("B")), Some("BuildBuild"));
+        assert_eq!(k.lookup(true, false, false, &ch("b")), Some("ToggleSidebar"));
         assert_eq!(k.lookup(true, false, false, &ch("g")), Some("GotoLine"));
         assert_eq!(k.lookup(true, true, false, &ch("Z")), Some("Redo"));
         // Commands outside the list keep their exact combo.
@@ -494,8 +498,13 @@ mod tests {
         let k = Keymap::default();
         let f5 = Key::Named(NamedKey::F5);
         assert_eq!(k.lookup(false, false, false, &f5), Some("DebugStart"));
-        assert_eq!(k.lookup(true, false, false, &f5), Some("DebugStart"), "Ctrl+F5");
+        assert_eq!(
+            k.lookup(true, false, false, &f5),
+            Some("BuildRun"),
+            "Ctrl+F5 has its own row: run without debugging"
+        );
         assert_eq!(k.lookup(false, false, true, &f5), Some("DebugStart"), "Alt+F5");
+        assert_eq!(k.lookup(true, false, false, &Key::Named(NamedKey::F9)), Some("ToggleBreakpoint"), "Ctrl+F9");
         assert_eq!(k.lookup(false, true, false, &f5), Some("DebugStop"), "Shift+F5 keeps its own row");
         assert_eq!(k.lookup(true, true, false, &f5), Some("DebugStop"), "Ctrl+Shift+F5 -> Shift+F5");
         assert_eq!(k.lookup(true, false, false, &Key::Named(NamedKey::F12)), Some("GotoDefinition"));

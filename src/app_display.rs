@@ -162,6 +162,14 @@ impl App {
                 display::set_scrollbar(Scrollbar::from_name(&self.config.scrollbar));
                 display::touch();
             }
+            "build_command" | "run_command" => {
+                let cmd = v.as_str().unwrap_or("").trim().to_string();
+                if key == "build_command" {
+                    self.config.build_command = cmd;
+                } else {
+                    self.config.run_command = cmd;
+                }
+            }
             "enable_lsp" => {
                 let on = b.unwrap_or(true);
                 if on != self.config.enable_lsp {

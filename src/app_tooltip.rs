@@ -445,6 +445,11 @@ impl App {
                 t("Tests", self.shortcut_text("TestAll"), Some("Run tests and browse the results".into()))
             }
             TipKey::PanelTab(PanelTab::Debug) => t("Debug", None, Some("Stack, variables and output".into())),
+            TipKey::PanelTab(PanelTab::Build) => t(
+                "Build & Run",
+                self.shortcut_text("BuildBuild"),
+                Some("Build and run the project, jump to the compiler's problems".into()),
+            ),
             TipKey::Git(h) => self.git_tip_text(h),
             TipKey::Status(k) => match k {
                 StatusBtn::Sidebar => t("Toggle sidebar", self.shortcut_text("ToggleSidebar"), None),
@@ -498,6 +503,7 @@ impl App {
                     let (title, detail) = self.update_indicator_tip();
                     t(&title, None, detail)
                 }
+                StatusBtn::Build => t("Build", self.shortcut_text("BuildBuild"), Some(self.build_status_tip())),
                 StatusBtn::Language => t(
                     "Change language…",
                     None,

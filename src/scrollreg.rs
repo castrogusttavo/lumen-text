@@ -28,6 +28,8 @@ pub enum Reg {
     DebugOut,
     Tests,
     TestsDetail,
+    Build,
+    BuildLog,
     GitChanges,
     GitLog,
     Picker,
@@ -166,6 +168,8 @@ impl App {
             Reg::DebugOut => Some(self.panel.dbg_scroll[2]),
             Reg::Tests => Some(self.tests.scroll),
             Reg::TestsDetail => Some(self.tests.detail_scroll),
+            Reg::Build => Some(self.build_region_value(false)),
+            Reg::BuildLog => Some(self.build_region_value(true)),
             Reg::Terminal => {
                 let t = self.term.as_ref()?;
                 Some((t.grid.history_len() - t.scroll_offset.min(t.grid.history_len())) as f64)
@@ -346,6 +350,8 @@ impl App {
             }
             Reg::Tests => self.tests.scroll = v,
             Reg::TestsDetail => self.tests.detail_scroll = v,
+            Reg::Build => self.build_set_region(false, v, max),
+            Reg::BuildLog => self.build_set_region(true, v, max),
             Reg::DebugStack => self.panel.dbg_scroll[0] = v,
             Reg::DebugVars => self.panel.dbg_scroll[1] = v,
             Reg::DebugOut => {

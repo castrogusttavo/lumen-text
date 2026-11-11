@@ -176,6 +176,14 @@
   "id": "DebugStop"
  },
  {
+  "combo": "ctrl+f5",
+  "id": "BuildRun"
+ },
+ {
+  "combo": "ctrl+shift+b",
+  "id": "BuildBuild"
+ },
+ {
   "combo": "f9",
   "id": "ToggleBreakpoint"
  },

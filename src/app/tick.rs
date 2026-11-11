@@ -22,6 +22,7 @@ impl App {
         self.git_bg_tick(now, &mut want);
         self.md_tick(now, &mut want);
         self.tests_tick(now, &mut want);
+        self.build_tick(now, &mut want);
 
         // Git gutter against the buffer, debounced.
         let active = self.active;

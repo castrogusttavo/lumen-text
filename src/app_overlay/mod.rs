@@ -37,6 +37,8 @@ pub enum Action {
     WorkspaceEdit(Value),
     Run(String),
     TestRunner(crate::testrun::Runner),
+    /// Build panel target (its id, see `buildrun::Target`).
+    BuildTarget(String),
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),

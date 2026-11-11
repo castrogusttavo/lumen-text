@@ -265,6 +265,7 @@ impl App {
                 }
             }
             Action::TestRunner(r) => self.tests_set_runner(r),
+            Action::BuildTarget(id) => self.build_set_target(&id),
             Action::Run(cmd) => {
                 let title = cmd.clone();
                 self.run_task(&cmd, &title)

@@ -38,6 +38,10 @@ impl App {
             self.request_redraw();
             return false;
         }
+        if self.build_key(ev) {
+            self.request_redraw();
+            return false;
+        }
         if self.find.as_ref().is_some_and(|f| f.focused) && self.find_key(ev) {
             self.request_redraw();
             return false;

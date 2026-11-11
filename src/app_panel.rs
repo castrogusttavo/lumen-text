@@ -39,6 +39,7 @@ pub enum PanelTab {
     Terminal,
     Debug,
     Tests,
+    Build,
 }
 
 pub struct Panel {
@@ -325,6 +326,10 @@ impl App {
                     self.tests_open_panel();
                     self.tests_focus();
                 }
+                Some(PanelTab::Build) => {
+                    self.build_open_panel();
+                    self.build_focus();
+                }
                 Some(PanelTab::Terminal) => self.open_terminal(),
                 Some(PanelTab::Output) => {
                     self.panel.tab = PanelTab::Output;
@@ -341,6 +346,11 @@ impl App {
         if self.panel.tab == PanelTab::Tests {
             self.focus = Focus::Editor;
             self.tests_click(x, y);
+            return true;
+        }
+        if self.panel.tab == PanelTab::Build {
+            self.focus = Focus::Editor;
+            self.build_click(x, y);
             return true;
         }
         if self.panel.tab == PanelTab::Terminal {
@@ -411,6 +421,7 @@ impl App {
         for (label, tab) in [
             ("Output", PanelTab::Output),
             ("Tests", PanelTab::Tests),
+            ("Build", PanelTab::Build),
             ("Terminal", PanelTab::Terminal),
             ("Debug", PanelTab::Debug),
         ] {
@@ -440,6 +451,9 @@ impl App {
         }
         if self.panel.tab == PanelTab::Tests {
             return self.draw_tests(cv, body);
+        }
+        if self.panel.tab == PanelTab::Build {
+            return self.draw_build(cv, body);
         }
 
         let state = match (&self.panel.running, self.panel.exit) {

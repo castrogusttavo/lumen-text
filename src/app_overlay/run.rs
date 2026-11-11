@@ -67,6 +67,7 @@ impl App {
             Cmd::StopTask => {
                 self.stop_task();
                 self.tests_stop();
+                self.build_stop();
             }
             Cmd::TestFile => self.run_tests(false),
             Cmd::TestAtCursor => self.run_tests(true),
@@ -76,6 +77,12 @@ impl App {
             Cmd::TestDebug => self.tests_debug_cursor(),
             Cmd::TestWatch => self.tests_toggle_watch(),
             Cmd::TestRunner => self.tests_pick_runner(),
+            Cmd::BuildBuild => self.build_build(),
+            Cmd::BuildRun => self.build_run(),
+            Cmd::BuildStop => self.build_stop(),
+            Cmd::BuildClean => self.build_clean(),
+            Cmd::BuildSelectTarget => self.build_pick_target(),
+            Cmd::BuildPanel => self.build_open_panel(),
             Cmd::ToggleOutput => self.toggle_panel(),
             Cmd::NewFile => self.prompt_new_file(false),
             Cmd::NewDir => self.prompt_new_file(true),

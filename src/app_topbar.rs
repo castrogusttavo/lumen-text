@@ -695,6 +695,7 @@ impl App {
         self.nav_fwd.clear();
         self.file_index = None;
         self.tests.reset();
+        self.build.reset();
         self.blame_for = None;
         self.eslint_busy.clear();
         self.git_status.clear();
@@ -777,6 +778,8 @@ pub enum StatusBtn {
     Language,
     /// An update is ready or available (left group, only then).
     Update,
+    /// A build is running, or the last one failed (left group, only then).
+    Build,
 }
 
 /// Is it drawn as an icon button (as opposed to a text read-out)?
@@ -918,6 +921,7 @@ impl App {
             let tint = if self.upd.ready() { c.accent_text } else { dim };
             x = self.status_btn(cv, x, "ui/download", "", tint, self.upd.card.is_some(), StatusBtn::Update);
         }
+        x = self.draw_build_status(cv, x);
 
         // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
         // (cursor position, indentation, language: clickable) and the memory figure, in any order.
@@ -1031,7 +1035,11 @@ impl App {
                         }
                         self.layout.status_btns.push((b, kind));
                     }
-                    StatusBtn::Sidebar | StatusBtn::Search | StatusBtn::Problems | StatusBtn::Update => {}
+                    StatusBtn::Sidebar
+                    | StatusBtn::Search
+                    | StatusBtn::Problems
+                    | StatusBtn::Update
+                    | StatusBtn::Build => {}
                 }
                 ix += w + kinds.get(k + 1).map_or(0, |&n| status_gap(kind, n));
             }
@@ -1104,6 +1112,7 @@ impl App {
             StatusBtn::Indent => self.open_indent_picker(),
             StatusBtn::Language => self.open_language_picker(),
             StatusBtn::Update => self.update_indicator_click(),
+            StatusBtn::Build => self.build_toggle_panel(),
             StatusBtn::Ram => {}
         }
         true

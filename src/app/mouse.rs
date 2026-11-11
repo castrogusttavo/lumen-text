@@ -16,6 +16,7 @@ impl App {
         self.dismiss_tooltip();
         self.chord = None;
         self.tests.focused = false; // a click in the Tests panel gives it back
+        self.build.focused = false; // likewise for the Build panel
         if button == MouseButton::Right {
             return self.right_click();
         }
@@ -285,6 +286,7 @@ impl App {
             || l.crumbs.iter().any(|(r, _)| r.contains(x, y))
             || l.panel_tabs.iter().any(|(r, _)| r.contains(x, y))
             || self.tests_clickable_at(x, y)
+            || self.build_clickable_at(x, y)
             || l.completion_rows.iter().any(|(r, _)| r.contains(x, y))
         {
             return CursorIcon::Pointer;
@@ -368,6 +370,9 @@ impl App {
             return Some(h);
         }
         if let Some(h) = self.tests_hover_target() {
+            return Some(h);
+        }
+        if let Some(h) = self.build_hover_target() {
             return Some(h);
         }
         if self.sidebar_open && l.sidebar.contains(x, y) && y >= (l.sidebar.y + TAB_H) as f64 {
