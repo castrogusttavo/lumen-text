@@ -288,6 +288,9 @@ impl App {
         if l.divider.w > 0 && Rect::new(l.divider.x - 4, l.divider.y, l.divider.w + 8, l.divider.h).contains(x, y) {
             return CursorIcon::ColResize;
         }
+        if let Some(c) = self.md_cursor(x, y) {
+            return c;
+        }
         if l.top_btns.iter().any(|(r, _)| r.contains(x, y))
             || l.status_btns.iter().any(|(r, _)| r.contains(x, y))
             || l.tabs.iter().any(|(r, _, _)| r.contains(x, y))
@@ -526,6 +529,9 @@ impl App {
         }
         if self.split_drag(x, y) {
             return self.request_redraw();
+        }
+        if self.md_mouse_move(x, y) {
+            return;
         }
         if self.dragging_minimap {
             if let Some(d) = self.docs.get_mut(self.active) {

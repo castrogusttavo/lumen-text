@@ -17,6 +17,11 @@ pub(super) enum Col {
     Widget,
     Input,
     Bg,
+    Text,
+    Faint,
+    /// GitHub alert color (0 note, 1 tip, 2 important, 3 warning, 4 caution) and its soft tint.
+    Alert(u8),
+    AlertBg(u8),
 }
 
 #[derive(Debug)]
@@ -25,9 +30,11 @@ pub(super) enum Op {
         x: i32,
         w: i32,
         text: String,
-        flags: u8,
+        flags: Fl,
         si: u8,
         lh: i32,
+        /// Link id (0 = none), for the hover highlight.
+        link: u32,
     },
     Fill {
         r: Rect,
@@ -54,7 +61,8 @@ pub(super) enum Op {
         y: i32,
         done: bool,
     },
-    /// Code block (`math` = a `$$` block: centered, tinted). `key` identifies lang + text for the
+    /// Code block (`math` = the source of a `$$` block that failed to typeset: centered, tinted,
+    /// `err` = (line, byte range) to show in the error color). `key` identifies lang + text for the
     /// highlight cache.
     Code {
         r: Rect,
@@ -64,11 +72,59 @@ pub(super) enum Op {
         top: i32,
         key: u64,
         math: bool,
+        err: Option<(usize, usize, usize)>,
+    },
+    /// A typeset formula: left edge `x`, width `w`, baseline `base`; `row` is the top of the text
+    /// line it sits in (or of its display block); `src` is its TeX source (what a copy yields).
+    Math {
+        x: i32,
+        w: i32,
+        base: i32,
+        row: i32,
+        lay: Rc<math::MathLay>,
+        src: String,
+        flags: Fl,
+        display: bool,
     },
     /// A local image drawn at `r` (logical px); `id` is its [`ImgStore`] id.
     Image {
         r: Rect,
         id: u32,
+    },
+    /// UI text in a palette color (alert titles, captions, notes).
+    Label {
+        x: i32,
+        w: i32,
+        text: String,
+        col: Col,
+        si: u8,
+        lh: i32,
+        bold: bool,
+    },
+    /// An icon from the bundled set (`ui/...`) in a `size` px box.
+    Icon {
+        x: i32,
+        y: i32,
+        size: i32,
+        name: &'static str,
+        col: Col,
+    },
+    /// A tint drawn only while the pointer is inside `r` (a clickable row).
+    Hover {
+        r: Rect,
+        rad: i32,
+    },
+    /// A button drawn while the pointer is inside `area` (the block it belongs to).
+    Button {
+        r: Rect,
+        area: Rect,
+        kind: Btn,
+    },
+    /// A Mermaid diagram scaled into `r`.
+    Diagram {
+        r: Rect,
+        key: u64,
+        dia: Rc<mermaid::Diagram>,
     },
 }
 
@@ -121,6 +177,10 @@ pub(super) struct SegLay {
     pub(super) anchors: Vec<Anchor>,
     pub(super) links: Vec<LinkHit>,
     pub(super) checks: Vec<CheckHit>,
+    /// Buttons and toggles (details summaries, Copy, Mermaid code / diagram).
+    pub(super) hits: Vec<Hit>,
+    /// Blocks whose buttons show on hover, with a key identifying them.
+    pub(super) areas: Vec<(Rect, u64)>,
     /// `(name, y, exact)`: headings carry their base slug (deduplicated when flattened), footnotes
     /// an exact `fn-label`.
     pub(super) heads: Vec<(String, i32, bool)>,
@@ -202,9 +262,28 @@ pub(super) struct Placed {
 #[derive(Default)]
 pub(super) struct Measure {
     pub(super) maps: Vec<HashMap<String, f32>>,
+    /// Baseline of a line of text below its line top, per size index (0 = not measured yet), for
+    /// the font generation `base_gen`.
+    pub(super) base: [f32; 11],
+    pub(super) base_gen: u32,
 }
 
 impl Measure {
+    /// Baseline of a text line of size index `si`, px below the line's top.
+    pub(super) fn baseline(&mut self, tx: &mut TextCtx, si: usize) -> f32 {
+        let g = crate::fontcfg::generation();
+        if g != self.base_gen {
+            self.base = [0.0; 11];
+            self.base_gen = g;
+        }
+        if self.base[si] == 0.0 {
+            let size = SIZES[si];
+            let off = (LH[si] - (size * 1.4).round() as i32) / 2;
+            self.base[si] = (off as f32 + tx.ui_baseline_sized(size)).max(1.0);
+        }
+        self.base[si]
+    }
+
     /// Width in px with 1/8 px precision (measured at 8x size): per-word integer rounding would
     /// drift by several px over a line.
     pub(super) fn w(&mut self, tx: &mut TextCtx, s: &str, bold: bool, si: usize) -> f32 {
@@ -256,19 +335,37 @@ pub(super) struct Run {
     pub(super) x: f32,
     pub(super) w: f32,
     pub(super) text: String,
-    pub(super) flags: u8,
+    pub(super) flags: Fl,
     pub(super) link: u32,
 }
 
 pub(super) struct Atom {
     pub(super) text: String,
-    pub(super) flags: u8,
+    pub(super) flags: Fl,
     pub(super) link: u32,
     pub(super) w: f32,
 }
 
-pub(super) fn push_piece(line: &mut Vec<Run>, x: f32, text: &str, flags: u8, link: u32, w: f32) {
-    if flags & F_CODE == 0
+/// Typeset inline math (one unbreakable piece whose text is the TeX source).
+pub(super) fn is_math(flags: Fl) -> bool {
+    flags & F_MATH != 0 && flags & F_CODE == 0
+}
+
+/// Measures `\text{..}` runs of formulas with the preview's body font.
+pub(super) struct UiMeasure<'a> {
+    pub(super) tx: &'a mut TextCtx,
+}
+
+impl math::TextMeasure for UiMeasure<'_> {
+    fn text(&mut self, s: &str, size: f32, bold: bool) -> math::TextMetrics {
+        let w = self.tx.ui_width_sized(s, bold, size * 8.0) as f32 / 8.0;
+        let bl = self.tx.ui_baseline_sized(size);
+        math::TextMetrics { w, asc: size * 0.75, desc: size * 0.22, bl }
+    }
+}
+
+pub(super) fn push_piece(line: &mut Vec<Run>, x: f32, text: &str, flags: Fl, link: u32, w: f32) {
+    if flags & (F_CODE | F_KBD | F_MATH) == 0
         && let Some(l) = line.last_mut()
         && l.flags == flags
         && l.link == link
@@ -286,7 +383,7 @@ pub(super) struct Flow {
     pub(super) x: f32,
     pub(super) chunk: Vec<Atom>,
     pub(super) chunk_w: f32,
-    pub(super) space: Option<(u8, u32, f32)>,
+    pub(super) space: Option<(Fl, u32, f32)>,
     pub(super) width: f32,
     pub(super) wrap: bool,
     pub(super) si: usize,
@@ -328,15 +425,33 @@ impl Flow {
     pub(super) fn split_chunk(&mut self, m: &mut Measure, tx: &mut TextCtx) {
         let atoms = std::mem::take(&mut self.chunk);
         for a in atoms {
+            if is_math(a.flags) {
+                // a formula never breaks: it moves to the next line whole
+                if self.x > 0.0 && self.x + a.w > self.width {
+                    self.lines.push(vec![]);
+                    self.x = 0.0;
+                }
+                push_piece(self.lines.last_mut().unwrap(), self.x, &a.text, a.flags, a.link, a.w);
+                self.x += a.w;
+                continue;
+            }
             let code = a.flags & F_CODE != 0;
-            let pad = if code { CHIP_PAD as f32 } else { 0.0 };
-            let bold = self.bold_base || a.flags & F_B != 0;
+            let kbd = a.flags & F_KBD != 0;
+            let pad = if code {
+                CHIP_PAD as f32
+            } else if kbd {
+                KBD_PAD as f32
+            } else {
+                0.0
+            };
+            let bold = (self.bold_base || a.flags & F_B != 0) && !kbd;
+            let csi = run_si(a.flags, self.si);
             let (mut buf, mut bw) = (String::new(), 0.0f32);
             for ch in a.text.chars() {
                 let cw = if code {
                     cell_count(ch) as f32 * tx.cell_w
                 } else {
-                    m.w(tx, ch.encode_utf8(&mut [0; 4]), bold, self.si)
+                    m.w(tx, ch.encode_utf8(&mut [0; 4]), bold, csi)
                 };
                 if self.x + 2.0 * pad + bw + cw > self.width && (bw > 0.0 || self.x > 0.0) {
                     if bw > 0.0 {
@@ -373,19 +488,23 @@ pub(super) struct Lay<'a> {
     pub(super) m: &'a mut Measure,
     pub(super) urls: &'a mut Urls,
     pub(super) imgs: &'a mut ImgStore,
+    pub(super) math: &'a mut math::MathCache,
     /// Footnote label -> number.
     pub(super) fnum: &'a HashMap<String, usize>,
+    pub(super) ext: &'a mut Ext,
     pub(super) ops: Vec<DrawOp>,
     pub(super) anchors: Vec<Anchor>,
     pub(super) links: Vec<LinkHit>,
     pub(super) checks: Vec<CheckHit>,
     pub(super) heads: Vec<(String, i32, bool)>,
+    pub(super) hits: Vec<Hit>,
+    pub(super) areas: Vec<(Rect, u64)>,
 }
 
 /// Space a block wants above it: headings open a section (the block gap plus ~1rem).
 pub(super) fn before(b: &Block) -> i32 {
     match &b.kind {
-        Kind::Heading { level, .. } => {
+        Kind::Heading { level, .. } | Kind::HtmlPara { head: level @ 1..=6, .. } => {
             if *level <= 2 {
                 BLOCK_GAP + 16
             } else {
@@ -399,7 +518,7 @@ pub(super) fn before(b: &Block) -> i32 {
 /// Space a block wants below it: a heading stays close to the text it introduces.
 pub(super) fn after(b: &Block) -> i32 {
     match &b.kind {
-        Kind::Heading { .. } => 8,
+        Kind::Heading { .. } | Kind::HtmlPara { head: 1..=6, .. } => 8,
         _ => BLOCK_GAP,
     }
 }
@@ -409,7 +528,68 @@ pub(super) fn code_lh() -> i32 {
     ((font_size() * 1.7).round() as i32).max(line_h() as i32)
 }
 
+/// Line, and byte range inside it, of the bytes `at` of a multi-line formula source.
+pub(super) fn err_line(text: &str, at: (usize, usize)) -> Option<(usize, usize, usize)> {
+    let a = at.0.min(text.len().saturating_sub(1));
+    let mut off = 0;
+    for (i, l) in text.split('\n').enumerate() {
+        let end = off + l.len();
+        if a <= end {
+            return Some((i, a - off, at.1.clamp(a, end) - off));
+        }
+        off = end + 1;
+    }
+    None
+}
+
 impl Lay<'_> {
+    /// Inline formula `src` typeset for text of size index `si` (`None`: it does not parse).
+    pub(super) fn math_inline(&mut self, src: &str, si: usize) -> Option<Rc<math::MathLay>> {
+        let size = SIZES[si] * INLINE_MATH_SCALE;
+        self.math.get(src, size, false, &mut UiMeasure { tx: &mut *self.tx }).ok()
+    }
+
+    /// Display formula `src` for a column `w` px wide: shrunk (down to [`MIN_MATH_SHRINK`]) when
+    /// it is wider than the column.
+    pub(super) fn math_display(&mut self, src: &str, w: i32) -> Result<Rc<math::MathLay>, math::MathErr> {
+        let size = SIZES[BODY] * DISPLAY_MATH_SCALE;
+        let ml = self.math.get(src, size, true, &mut UiMeasure { tx: &mut *self.tx })?;
+        if ml.w <= w as f32 || ml.w <= 0.0 {
+            return Ok(ml);
+        }
+        let k = (w as f32 / ml.w).max(MIN_MATH_SHRINK);
+        // quarter-pixel sizes keep the cache keys stable across small width changes
+        let small = ((size * k * 4.0).floor() / 4.0).max(1.0);
+        self.math.get(src, small, true, &mut UiMeasure { tx: &mut *self.tx })
+    }
+
+    /// (space added above the text box, total height) of each line: a line grows when inline
+    /// math on it is taller or deeper than the text.
+    pub(super) fn line_mets(&mut self, lines: &[Vec<Run>], si: usize) -> Vec<(i32, i32)> {
+        let lh = LH[si];
+        let mut out = Vec::with_capacity(lines.len());
+        for line in lines {
+            let (mut asc, mut desc) = (0.0f32, 0.0f32);
+            for r in line {
+                if is_math(r.flags)
+                    && let Some(ml) = self.math_inline(&r.text, si)
+                {
+                    asc = asc.max(ml.h);
+                    desc = desc.max(ml.d);
+                }
+            }
+            if asc == 0.0 && desc == 0.0 {
+                out.push((0, lh));
+                continue;
+            }
+            let b = self.m.baseline(self.tx, si);
+            let top = (asc + 2.0 - b).ceil().max(0.0) as i32;
+            let bot = (desc + 2.0 - (lh as f32 - b)).ceil().max(0.0) as i32;
+            out.push((top, lh + top + bot));
+        }
+        out
+    }
+
     pub(super) fn op(&mut self, y0: i32, y1: i32, op: Op) {
         self.ops.push(DrawOp { y0, y1, op });
     }
@@ -450,19 +630,38 @@ impl Lay<'_> {
             si,
             bold_base,
         };
-        let (mut lf, mut ll) = (0u8, 0u32);
+        let (mut lf, mut ll): (Fl, u32) = (0, 0);
         for item in inl {
             match item {
                 Inl::Text { text, flags, link } => {
-                    lf = *flags & !F_CODE;
+                    lf = *flags & !(F_CODE | F_KBD | F_MARK | F_MATH | F_ERR);
                     ll = *link;
+                    if flags & F_MATH != 0 {
+                        let (fl, w) = match self.math_inline(text, si) {
+                            Some(ml) => (*flags & !F_CODE, ml.w),
+                            None => (*flags | F_CODE | F_ERR, code_w(self.tx, text) + 2.0 * CHIP_PAD as f32),
+                        };
+                        f.chunk.push(Atom { text: text.clone(), flags: fl, link: *link, w });
+                        f.chunk_w += w;
+                        continue;
+                    }
                     if flags & F_CODE != 0 {
                         let w = code_w(self.tx, text) + 2.0 * CHIP_PAD as f32;
                         f.chunk.push(Atom { text: text.clone(), flags: *flags, link: *link, w });
                         f.chunk_w += w;
                         continue;
                     }
+                    if flags & F_KBD != 0 {
+                        let t = text.trim();
+                        if !t.is_empty() {
+                            let w = self.m.w(self.tx, t, false, SMALL) + 2.0 * KBD_PAD as f32;
+                            f.chunk.push(Atom { text: t.to_string(), flags: *flags, link: *link, w });
+                            f.chunk_w += w;
+                        }
+                        continue;
+                    }
                     let bold = bold_base || flags & F_B != 0;
+                    let si = run_si(*flags, si);
                     let mut rest = text.as_str();
                     while !rest.is_empty() {
                         let is_sp = rest.starts_with(char::is_whitespace);
@@ -471,7 +670,7 @@ impl Lay<'_> {
                         rest = r;
                         if is_sp {
                             f.flush(self.m, self.tx);
-                            f.space = Some((*flags & !F_CODE, *link, self.m.w(self.tx, " ", bold, si)));
+                            f.space = Some((*flags & !(F_CODE | F_MARK), *link, self.m.w(self.tx, " ", bold, si)));
                         } else {
                             let w = self.m.w(self.tx, tok, bold, si);
                             f.chunk.push(Atom { text: tok.to_string(), flags: *flags, link: *link, w });
@@ -480,10 +679,11 @@ impl Lay<'_> {
                     }
                 }
                 Inl::FootRef(label) => {
-                    let text = format!("[{}]", self.fnum.get(label).copied().unwrap_or(0));
+                    // A superscript number, like GitHub.
+                    let text = self.fnum.get(label).copied().unwrap_or(0).to_string();
                     let link = self.urls.id(&format!("#fn-{label}"));
-                    let w = self.m.w(self.tx, &text, bold_base, si);
-                    f.chunk.push(Atom { text, flags: F_LINK, link, w });
+                    let w = self.m.w(self.tx, &text, bold_base, SUP) + 2.0;
+                    f.chunk.push(Atom { text, flags: F_LINK | F_SUP, link, w });
                     f.chunk_w += w;
                 }
                 Inl::Soft => {
@@ -526,19 +726,44 @@ impl Lay<'_> {
         (out, (ow + ell).round() as i32)
     }
 
-    pub(super) fn emit(&mut self, lines: Vec<Vec<Run>>, x: i32, y: i32, si: usize, base: u8) {
+    /// Emit the lines (text runs and inline formulas) from `y`; returns their total height (a line
+    /// with tall math is taller than `LH[si]`, its text staying on the common baseline).
+    pub(super) fn emit(&mut self, lines: Vec<Vec<Run>>, x: i32, y: i32, si: usize, base: Fl) -> i32 {
         let lh = LH[si];
-        for (i, line) in lines.into_iter().enumerate() {
-            let ly = y + i as i32 * lh;
+        let mets = self.line_mets(&lines, si);
+        let mut ly = y;
+        for (line, (top, total)) in lines.into_iter().zip(mets) {
+            let ty = ly + top;
             for r in line {
                 let rx = (x as f32 + r.x).round() as i32;
                 let rw = ((x as f32 + r.x + r.w).round() as i32 - rx).max(1);
                 if r.link != 0 {
-                    self.links.push(LinkHit { x: rx, y: ly, w: rw, h: lh, link: r.link });
+                    self.links.push(LinkHit { x: rx, y: ly, w: rw, h: total, link: r.link });
                 }
-                self.op(ly, ly + lh, Op::Text { x: rx, w: rw, text: r.text, flags: r.flags | base, si: si as u8, lh });
+                if is_math(r.flags)
+                    && let Some(ml) = self.math_inline(&r.text, si)
+                {
+                    let b = ty + self.m.baseline(self.tx, si).round() as i32;
+                    let op = Op::Math {
+                        x: rx,
+                        w: rw,
+                        base: b,
+                        row: ty,
+                        lay: ml,
+                        src: r.text,
+                        flags: r.flags | base,
+                        display: false,
+                    };
+                    self.op(ly, ly + total, op);
+                    continue;
+                }
+                let link = r.link;
+                let op = Op::Text { x: rx, w: rw, text: r.text, flags: r.flags | base, si: si as u8, lh, link };
+                self.op(ty, ty + lh, op);
             }
+            ly += total;
         }
+        ly - y
     }
 
     pub(super) fn blocks(&mut self, bl: &[Block], x: i32, w: i32, mut y: i32, st: St) -> i32 {
@@ -563,22 +788,20 @@ impl Lay<'_> {
                 let si = (*level - 1) as usize;
                 self.ref_anchors(inl, y);
                 let lines = self.flow(inl, w, si, true, true);
-                let n = lines.len().max(1) as i32;
                 self.heads.push((slug.clone(), y, false));
                 let base = F_B | if *level == 6 || st.dim { F_DIM } else { 0 };
-                self.emit(lines, x, y, si, base);
-                let h = n * LH[si];
+                let h = self.emit(lines, x, y, si, base).max(LH[si]);
                 self.anchor(b, y, y + h);
                 y + h
             }
             Kind::Para(inl) => {
                 self.ref_anchors(inl, y);
                 let lines = self.flow(inl, w, BODY, false, true);
-                let h = lines.len().max(1) as i32 * LH[BODY];
-                self.emit(lines, x, y, BODY, if st.dim { F_DIM } else { 0 });
+                let h = self.emit(lines, x, y, BODY, if st.dim { F_DIM } else { 0 }).max(LH[BODY]);
                 self.anchor(b, y, y + h);
                 y + h
             }
+            Kind::Code { lang, text } if lang.eq_ignore_ascii_case("mermaid") => self.mermaid(b, text, x, w, y),
             Kind::Code { lang, text } => {
                 let lh = code_lh();
                 let lines: Vec<String> =
@@ -587,21 +810,35 @@ impl Lay<'_> {
                 let h = top + lines.len() as i32 * lh + CODE_PAD_Y;
                 let r = Rect::new(x, y, w, h);
                 let key = fxhash(text.as_bytes(), fxhash(lang.as_bytes(), 3));
-                self.op(y, y + h, Op::Code { r, lang: lang.clone(), lines, lh, top, key, math: false });
+                self.op(y, y + h, Op::Code { r, lang: lang.clone(), lines, lh, top, key, math: false, err: None });
+                self.copy_button(r, key);
                 self.anchor(b, y, y + h);
                 y + h
             }
             Kind::Math(text) => {
+                let err = match self.math_display(text, w) {
+                    Ok(ml) => {
+                        let (asc, desc) = (ml.h.ceil() as i32, ml.d.ceil() as i32);
+                        let h = MATH_PAD_Y + asc + desc + MATH_PAD_Y;
+                        let mw = ml.w.ceil() as i32;
+                        let mx = x + ((w - mw) / 2).max(0);
+                        let flags = if st.dim { F_DIM } else { 0 };
+                        let base = y + MATH_PAD_Y + asc;
+                        let op =
+                            Op::Math { x: mx, w: mw, base, row: y, lay: ml, src: text.clone(), flags, display: true };
+                        self.op(y, y + h, op);
+                        self.anchor(b, y, y + h);
+                        return y + h;
+                    }
+                    Err(e) => err_line(text, e.at),
+                };
                 let lh = code_lh();
                 let lines: Vec<String> =
                     text.split('\n').map(|l| l.trim_end_matches('\r').replace('\t', "    ")).collect();
                 let top = CODE_PAD_Y + 4;
                 let h = top + lines.len() as i32 * lh + top;
-                self.op(
-                    y,
-                    y + h,
-                    Op::Code { r: Rect::new(x, y, w, h), lang: "math".into(), lines, lh, top, key: 0, math: true },
-                );
+                let r = Rect::new(x, y, w, h);
+                self.op(y, y + h, Op::Code { r, lang: "math".into(), lines, lh, top, key: 0, math: true, err });
                 self.anchor(b, y, y + h);
                 y + h
             }
@@ -625,6 +862,11 @@ impl Lay<'_> {
             Kind::List { start, items, loose } => self.list(*start, items, *loose, x, w, y, st),
             Kind::Table { aligns, head, rows } => self.table(b, aligns, head, rows, x, w, y),
             Kind::Images(imgs) => self.images(b, imgs, x, w, y),
+            Kind::Alert(k, bl) => self.alert(*k, bl, x, w, y, st),
+            Kind::Details { id, summary, blocks, open } => self.details(b, (*id, *open), summary, blocks, x, w, y, st),
+            Kind::HtmlPara { align, inl, head } => self.html_para(b, (*align, *head), inl, x, w, y),
+            Kind::HtmlTable(rows) => self.html_table(b, rows, x, w, y),
+            Kind::DefList(items) => self.def_list(b, items, x, w, y, st),
         }
     }
 
@@ -674,6 +916,7 @@ impl Lay<'_> {
                         flags: f,
                         si: BODY as u8,
                         lh: LH[BODY],
+                        link: 0,
                     },
                 );
             } else {
@@ -724,8 +967,12 @@ impl Lay<'_> {
             let cells: Vec<Vec<Vec<Run>>> = (0..ncols)
                 .map(|c| self.flow(row.get(c).unwrap_or(&empty), colw[c] - 2 * CELL_PAD_X, CELL, ri == 0, true))
                 .collect();
-            let n = cells.iter().map(|l| l.len()).max().unwrap_or(1).max(1) as i32;
-            row_h.push(n * lh + 2 * CELL_PAD_Y);
+            let mut tallest = lh;
+            for lines in &cells {
+                let h: i32 = self.line_mets(lines, CELL).iter().map(|m| m.1).sum();
+                tallest = tallest.max(h);
+            }
+            row_h.push(tallest + 2 * CELL_PAD_Y);
             grid.push(cells);
         }
         let h: i32 = row_h.iter().sum();
@@ -755,15 +1002,15 @@ impl Lay<'_> {
             let mut cx = x;
             for (c, lines) in cells.into_iter().enumerate() {
                 let avail = colw[c] - 2 * CELL_PAD_X;
-                for (li, line) in lines.into_iter().enumerate() {
+                let mut ty = ry + CELL_PAD_Y;
+                for line in lines {
                     let lw = line.last().map_or(0.0, |r| r.x + r.w).round() as i32;
                     let ox = match aligns.get(c) {
                         Some(Alignment::Right) => (avail - lw).max(0),
                         Some(Alignment::Center) => ((avail - lw) / 2).max(0),
                         _ => 0,
                     };
-                    let ty = ry + CELL_PAD_Y + li as i32 * lh;
-                    self.emit(vec![line], cx + CELL_PAD_X + ox, ty, CELL, if ri == 0 { F_B } else { 0 });
+                    ty += self.emit(vec![line], cx + CELL_PAD_X + ox, ty, CELL, if ri == 0 { F_B } else { 0 });
                 }
                 cx += colw[c];
             }
@@ -773,91 +1020,20 @@ impl Lay<'_> {
         y + h
     }
 
-    pub(super) fn images(&mut self, b: &Block, imgs: &[Img], x: i32, w: i32, y: i32) -> i32 {
-        const H: i32 = 46;
-        const GAP: i32 = 8;
-        let (mut cx, mut cy, mut row_h) = (0, y, 0);
-        for im in imgs {
-            let real = self.imgs.resolve(&im.url).and_then(|id| self.imgs.size(id).map(|s| (id, s)));
-            if let Some((id, (nw, nh))) = real {
-                let (nw, nh) = (nw as i32, nh as i32);
-                let (mut dw, mut dh) = match im.size {
-                    (Some(a), Some(b)) => (a, b),
-                    (Some(a), None) => (a, (nh as f32 * a as f32 / nw as f32).round() as i32),
-                    (None, Some(b)) => ((nw as f32 * b as f32 / nh as f32).round() as i32, b),
-                    _ => (nw, nh),
-                };
-                if dw > w {
-                    dh = (dh as f32 * w as f32 / dw as f32).round() as i32;
-                    dw = w;
-                }
-                if dh > 720 {
-                    dw = (dw as f32 * 720.0 / dh as f32).round() as i32;
-                    dh = 720;
-                }
-                let (dw, dh) = (dw.max(1), dh.max(1));
-                if cx > 0 && cx + dw > w {
-                    cx = 0;
-                    cy += row_h + GAP;
-                    row_h = 0;
-                }
-                let r = Rect::new(x + cx, cy, dw, dh);
-                self.op(cy, cy + dh, Op::Image { r, id });
-                if im.link != 0 {
-                    self.links.push(LinkHit { x: r.x, y: cy, w: dw, h: dh, link: im.link });
-                }
-                cx += dw + GAP;
-                row_h = row_h.max(dh);
-                continue;
-            }
-            let label = if !im.alt.trim().is_empty() {
-                im.alt.trim().to_string()
-            } else {
-                im.url.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or("image").to_string()
-            };
-            let lw = self.m.w(self.tx, &label, false, SMALL).ceil() as i32;
-            let uw = self.m.w(self.tx, &im.url, false, TINY).ceil() as i32;
-            let bw = (lw.max(uw) + 56).clamp(170, w);
-            if cx > 0 && cx + bw > w {
-                cx = 0;
-                cy += row_h + GAP;
-                row_h = 0;
-            }
-            let r = Rect::new(x + cx, cy, bw, H);
-            self.op(cy, cy + H, Op::Card { r, rad: 6, fill: Col::Widget, border: Col::Border });
-            self.fill(Rect::new(r.x + 10, cy + 13, 20, 20), Col::AccentSoft, 5);
-            self.fill(Rect::new(r.x + 15, cy + 18, 10, 10), Col::Accent, 2);
-            let tw = bw - 44 - 10;
-            let (alt, aw) = self.fit(&label, SMALL, false, tw);
-            let (url, uw2) = self.fit(&im.url, TINY, false, tw);
-            self.op(
-                cy + 5,
-                cy + 5 + LH[SMALL],
-                Op::Text { x: r.x + 40, w: aw, text: alt, flags: 0, si: SMALL as u8, lh: LH[SMALL] },
-            );
-            if !url.is_empty() {
-                self.op(
-                    cy + 24,
-                    cy + 24 + LH[TINY],
-                    Op::Text { x: r.x + 40, w: uw2, text: url, flags: F_DIM, si: TINY as u8, lh: LH[TINY] },
-                );
-            }
-            if im.link != 0 {
-                self.links.push(LinkHit { x: r.x, y: cy, w: bw, h: H, link: im.link });
-            }
-            cx += bw + GAP;
-            row_h = row_h.max(H);
-        }
-        let y1 = cy + row_h;
-        self.anchor(b, y, y1);
-        y1
-    }
-
     /// The footnotes collected at the end of the document: a rule, then `n.` and the definition's
     /// blocks for each label, in reference order. Registers `fn-label` anchors.
     pub(super) fn foot_section(&mut self, defs: &[(usize, &str, &[Block])], x: i32, w: i32, y: i32) -> i32 {
         self.fill(Rect::new(x, y, w, 1), Col::Border, 0);
-        let mut y = y + 14;
+        let title = "Footnotes";
+        let tw = self.m.w(self.tx, title, true, SMALL).ceil() as i32;
+        let ty = y + 14;
+        let col = Col::Dim;
+        self.op(
+            ty,
+            ty + LH[SMALL],
+            Op::Label { x, w: tw, text: title.into(), col, si: SMALL as u8, lh: LH[SMALL], bold: true },
+        );
+        let mut y = ty + LH[SMALL] + 8;
         for (n, label, blocks) in defs {
             let num = format!("{n}.");
             let lw = self.m.w(self.tx, &num, false, BODY).ceil() as i32;
@@ -880,11 +1056,9 @@ impl Lay<'_> {
             if blocks.is_empty() {
                 ey = iy + LH[BODY];
             }
-            self.op(
-                iy,
-                iy + LH[BODY],
-                Op::Text { x: x + indent - 8 - lw, w: lw, text: num, flags: F_DIM, si: BODY as u8, lh: LH[BODY] },
-            );
+            let (si, lh) = (BODY as u8, LH[BODY]);
+            let op = Op::Text { x: x + indent - 8 - lw, w: lw, text: num, flags: F_DIM, si, lh, link: 0 };
+            self.op(iy, iy + LH[BODY], op);
             y = ey + 6;
         }
         y

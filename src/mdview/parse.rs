@@ -50,7 +50,7 @@ pub(super) enum Inl {
     /// `link` is 0 for none, else index + 1 into `MdView::urls`.
     Text {
         text: String,
-        flags: u8,
+        flags: Fl,
         link: u32,
     },
     Soft,
@@ -66,6 +66,27 @@ pub(super) struct Img {
     pub(super) link: u32,
     /// `width` / `height` attributes of a raw HTML `<img>`, in px.
     pub(super) size: (Option<i32>, Option<i32>),
+    /// A video (`<video>`, or a link / bare URL to a video file): drawn as a card that opens it.
+    pub(super) video: bool,
+}
+
+/// A cell of a raw HTML `<table>`.
+#[derive(Clone, Debug)]
+pub(super) struct HCell {
+    pub(super) inl: Vec<Inl>,
+    /// `colspan` (at least 1).
+    pub(super) span: u16,
+    /// 0 left, 1 center, 2 right.
+    pub(super) align: u8,
+    /// `<th>`.
+    pub(super) head: bool,
+}
+
+/// One term of a definition list with its definitions.
+#[derive(Clone, Debug)]
+pub(super) struct DefItem {
+    pub(super) title: Vec<Inl>,
+    pub(super) defs: Vec<Vec<Block>>,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +129,25 @@ pub(super) enum Kind {
         label: String,
         blocks: Vec<Block>,
     },
+    /// GitHub alert (`> [!NOTE]`): 0 note, 1 tip, 2 important, 3 warning, 4 caution.
+    Alert(u8, Vec<Block>),
+    /// `<details>`: `id` keys its open / closed state, `open` is the `open` attribute.
+    Details {
+        id: u64,
+        summary: Vec<Inl>,
+        blocks: Vec<Block>,
+        open: bool,
+    },
+    /// Text of a raw HTML block: `align` 0 left / 1 center / 2 right, `head` 1..=6 for `<hN>`.
+    HtmlPara {
+        align: u8,
+        inl: Vec<Inl>,
+        head: u8,
+    },
+    /// Raw HTML `<table>` (rows of cells with `colspan`).
+    HtmlTable(Vec<Vec<HCell>>),
+    /// `Term` / `: definition`.
+    DefList(Vec<DefItem>),
 }
 
 /// A block with its 0-based source line range (inclusive).
@@ -248,6 +288,8 @@ pub(super) fn split(text: &str) -> Split {
     let mut blank_pending = false;
     let mut fence: Option<(u8, usize)> = None;
     let mut raw: Option<&'static str> = None;
+    // Open `<details>` elements: their content (blank lines included) stays in one segment.
+    let mut details = 0usize;
     let (mut off, mut ln) = (0usize, 0usize);
     let close =
         |c: Cur, segs: &mut Vec<SegSpan>| segs.push(SegSpan { b0: c.b0, b1: c.b1, l0: c.l0, nl: c.l1 - c.l0 + 1 });
@@ -270,7 +312,7 @@ pub(super) fn split(text: &str) -> Split {
                 (c.b1, c.l1) = (off + len, ln);
             }
         } else if blank {
-            blank_pending = cur.is_some();
+            blank_pending = cur.is_some() && details == 0;
         } else {
             // Fast path: a plain line that continues the current segment (most lines).
             if !blank_pending && let Some(c) = cur.as_mut() {
@@ -302,6 +344,8 @@ pub(super) fn split(text: &str) -> Split {
                 fence = Some(f);
             } else if cols <= 3 && rest.starts_with('<') {
                 let l = rest.to_ascii_lowercase();
+                let (opens, closes) = (l.matches("<details").count(), l.matches("</details").count());
+                details = (details + opens).saturating_sub(closes).min(16);
                 raw = if l.starts_with("<!--") && !l.contains("-->") {
                     Some("-->")
                 } else {
@@ -376,10 +420,22 @@ impl LineIndex {
 
 pub(super) enum Cont {
     Root(Vec<Block>),
-    Quote { blocks: Vec<Block>, l: (usize, usize) },
+    Quote { blocks: Vec<Block>, l: (usize, usize), alert: Option<u8> },
     Item { blocks: Vec<Block>, task: Option<bool>, task_off: usize },
     Foot { blocks: Vec<Block>, label: String, l: (usize, usize) },
     List { start: Option<u64>, items: Vec<LItem>, loose: bool, l: (usize, usize) },
+    Details { id: u64, summary: Vec<Inl>, blocks: Vec<Block>, l: (usize, usize), open: bool },
+    DefList { items: Vec<DefItem>, l: (usize, usize) },
+    DefDef { blocks: Vec<Block> },
+}
+
+/// The block a finished `>` quote becomes: an alert when it had a `[!KIND]` marker.
+pub(super) fn quote_block(blocks: Vec<Block>, l: (usize, usize), alert: Option<u8>) -> Block {
+    let kind = match alert {
+        Some(k) => Kind::Alert(k, blocks),
+        None => Kind::Quote(blocks),
+    };
+    Block { kind, line: l.0, end: l.1 }
 }
 
 pub(super) enum Seg {
@@ -393,6 +449,8 @@ pub(super) enum IK {
     Para,
     Head(u8),
     Cell,
+    /// The term of a definition list.
+    DefTitle,
 }
 
 pub(super) struct InlCtx {
@@ -430,6 +488,8 @@ pub(super) struct Builder<'a> {
     pub(super) table: Option<TableB>,
     pub(super) html: Option<(String, (usize, usize))>,
     pub(super) image: Option<(String, String, u32)>,
+    /// Open inline styles from raw HTML tags and `^sup^` / `~sub~`: (tag, flag, pushed a link).
+    pub(super) hstack: Vec<(String, Fl, bool)>,
 }
 
 pub(super) fn blank(spans: &[Inl]) -> bool {
@@ -453,8 +513,8 @@ pub(super) fn plain(spans: &[Inl]) -> String {
 }
 
 impl<'a> Builder<'a> {
-    pub(super) fn flags(&self) -> (u8, u32) {
-        let mut f = 0;
+    pub(super) fn flags(&self) -> (Fl, u32) {
+        let mut f = self.hstack.iter().fold(0, |a, h| a | h.1);
         if self.strong > 0 {
             f |= F_B;
         }
@@ -474,10 +534,21 @@ impl<'a> Builder<'a> {
     pub(super) fn push_block(&mut self, b: Block) {
         match self.stack.last_mut() {
             Some(Cont::Root(v)) => v.push(b),
-            Some(Cont::Quote { blocks, .. }) | Some(Cont::Item { blocks, .. }) | Some(Cont::Foot { blocks, .. }) => {
-                blocks.push(b)
-            }
+            Some(Cont::Quote { blocks, .. })
+            | Some(Cont::Item { blocks, .. })
+            | Some(Cont::Foot { blocks, .. })
+            | Some(Cont::Details { blocks, .. })
+            | Some(Cont::DefDef { blocks }) => blocks.push(b),
             _ => {}
+        }
+    }
+
+    /// Close the `<details>` left open inside a Markdown container that is ending.
+    pub(super) fn unwind_details(&mut self) {
+        while let Some(Cont::Details { .. }) = self.stack.last() {
+            if let Some(Cont::Details { id, summary, blocks, l, open }) = self.stack.pop() {
+                self.push_block(Block { kind: Kind::Details { id, summary, blocks, open }, line: l.0, end: l.1 });
+            }
         }
     }
 
@@ -485,7 +556,7 @@ impl<'a> Builder<'a> {
         self.inl = Some(InlCtx { kind, spans: vec![], segs: vec![], start, end, implicit });
     }
 
-    pub(super) fn push_span(&mut self, text: &str, extra: u8) {
+    pub(super) fn push_span(&mut self, text: &str, extra: Fl) {
         let (flags, link) = self.flags();
         let flags = flags | extra;
         let Some(ic) = self.inl.as_mut() else { return };
@@ -530,9 +601,22 @@ impl<'a> Builder<'a> {
     }
 
     pub(super) fn finish_inline(&mut self) {
+        self.end_inline_html();
         let Some(mut ic) = self.inl.take() else { return };
         let l = self.idx.range(&(ic.start..ic.end));
+        // Emoji shortcodes and bare URLs, once the text events of the paragraph are merged.
+        ic.spans = super::inline::rewrite(std::mem::take(&mut ic.spans), self.urls);
+        for s in ic.segs.iter_mut() {
+            if let Seg::Spans(v) = s {
+                *v = super::inline::rewrite(std::mem::take(v), self.urls);
+            }
+        }
         match ic.kind {
+            IK::DefTitle => {
+                if let Some(Cont::DefList { items, .. }) = self.stack.last_mut() {
+                    items.push(DefItem { title: ic.spans, defs: vec![] });
+                }
+            }
             IK::Cell => {
                 if let Some(t) = self.table.as_mut() {
                     t.cur.push(std::mem::take(&mut ic.spans));
@@ -563,6 +647,11 @@ impl<'a> Builder<'a> {
                             if blank(&s) {
                                 continue;
                             }
+                            // A paragraph that is just a link to a video file becomes a video card.
+                            if let Some(v) = super::inline::lone_video(&s, self.urls) {
+                                imgs.push(v);
+                                continue;
+                            }
                             if !imgs.is_empty() {
                                 out.push(mk(Kind::Images(std::mem::take(&mut imgs))));
                             }
@@ -582,49 +671,6 @@ impl<'a> Builder<'a> {
 
     pub(super) fn url_index(&mut self, url: &str) -> u32 {
         self.urls.id(url)
-    }
-
-    pub(super) fn html_block(&mut self, raw: &str, l: (usize, usize)) {
-        let mut s = raw.to_string();
-        while let Some(a) = s.find("<!--") {
-            let e = s[a..].find("-->").map_or(s.len(), |e| a + e + 3);
-            s.replace_range(a..e, "");
-        }
-        let lower = s.to_ascii_lowercase();
-        let href = lower.find("<a ").and_then(|i| {
-            let end = s[i..].find('>').map_or(s.len(), |e| i + e);
-            attr(&s[i..end], "href")
-        });
-        let link = href.map_or(0, |h| self.url_index(&h));
-        let mut imgs = vec![];
-        let mut from = 0;
-        while let Some(i) = lower[from..].find("<img") {
-            let i = from + i;
-            let end = s[i..].find('>').map_or(s.len(), |e| i + e + 1);
-            let tag = &s[i..end];
-            let dim = |n: &str| {
-                attr(tag, n)
-                    .and_then(|v| v.trim().trim_end_matches("px").trim().parse::<f32>().ok())
-                    .filter(|v| *v >= 1.0)
-                    .map(|v| v as i32)
-            };
-            imgs.push(Img {
-                alt: attr(tag, "alt").unwrap_or_default(),
-                url: attr(tag, "src").unwrap_or_default(),
-                link,
-                size: (dim("width"), dim("height")),
-            });
-            from = end;
-        }
-        let text = strip_tags(&s);
-        let b = |kind| Block { kind, line: l.0, end: l.1 };
-        if !imgs.is_empty() {
-            self.push_block(b(Kind::Images(imgs)));
-        }
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !text.is_empty() {
-            self.push_block(b(Kind::Para(vec![Inl::Text { text, flags: F_DIM, link: 0 }])));
-        }
     }
 
     pub(super) fn event(&mut self, ev: Event, range: std::ops::Range<usize>) {
@@ -711,14 +757,7 @@ impl<'a> Builder<'a> {
                     s.push_str(&h);
                 }
             }
-            Event::InlineHtml(h) => {
-                let t = h.trim().to_ascii_lowercase();
-                if t.starts_with("<br")
-                    && let Some(ic) = self.inl.as_mut()
-                {
-                    ic.spans.push(Inl::Hard);
-                }
-            }
+            Event::InlineHtml(h) => self.inline_html(&h, &range),
             Event::Rule => {
                 self.close_implicit();
                 let l = self.idx.range(&range);
@@ -751,10 +790,31 @@ impl<'a> Builder<'a> {
                 self.close_implicit();
                 self.start_inline(IK::Head(level as u8), range.start, range.end, false);
             }
-            Tag::BlockQuote(_) => {
+            Tag::BlockQuote(kind) => {
                 self.close_implicit();
-                self.stack.push(Cont::Quote { blocks: vec![], l });
+                let alert = kind.map(|k| match k {
+                    pulldown_cmark::BlockQuoteKind::Note => 0,
+                    pulldown_cmark::BlockQuoteKind::Tip => 1,
+                    pulldown_cmark::BlockQuoteKind::Important => 2,
+                    pulldown_cmark::BlockQuoteKind::Warning => 3,
+                    pulldown_cmark::BlockQuoteKind::Caution => 4,
+                });
+                self.stack.push(Cont::Quote { blocks: vec![], l, alert });
             }
+            Tag::DefinitionList => {
+                self.close_implicit();
+                self.stack.push(Cont::DefList { items: vec![], l });
+            }
+            Tag::DefinitionListTitle => {
+                self.close_implicit();
+                self.start_inline(IK::DefTitle, range.start, range.end, false);
+            }
+            Tag::DefinitionListDefinition => {
+                self.close_implicit();
+                self.stack.push(Cont::DefDef { blocks: vec![] });
+            }
+            Tag::Superscript => self.hstack.push(("^sup".into(), F_SUP, false)),
+            Tag::Subscript => self.hstack.push(("^sub".into(), F_SUB, false)),
             Tag::CodeBlock(kind) => {
                 self.close_implicit();
                 let lang = match kind {
@@ -794,8 +854,13 @@ impl<'a> Builder<'a> {
             Tag::Emphasis => self.em += 1,
             Tag::Strong => self.strong += 1,
             Tag::Strikethrough => self.strike += 1,
-            Tag::Link { dest_url, .. } => {
-                let i = self.url_index(&dest_url);
+            Tag::Link { link_type, dest_url, .. } => {
+                // `<a@b.c>` comes without its scheme.
+                let i = if link_type == LinkType::Email && !dest_url.contains(':') {
+                    self.url_index(&format!("mailto:{dest_url}"))
+                } else {
+                    self.url_index(&dest_url)
+                };
                 self.links.push(i);
             }
             Tag::Image { dest_url, .. } => {
@@ -811,16 +876,44 @@ impl<'a> Builder<'a> {
             TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::TableCell => self.finish_inline(),
             TagEnd::BlockQuote(_) => {
                 self.close_implicit();
-                if let Some(Cont::Quote { blocks, l }) = self.stack.pop() {
-                    self.push_block(Block { kind: Kind::Quote(blocks), line: l.0, end: l.1 });
+                self.unwind_details();
+                if let Some(Cont::Quote { blocks, l, alert }) = self.stack.pop() {
+                    self.push_block(quote_block(blocks, l, alert));
                 }
             }
+            TagEnd::DefinitionListTitle => self.finish_inline(),
+            TagEnd::DefinitionListDefinition => {
+                self.close_implicit();
+                self.unwind_details();
+                if let Some(Cont::DefDef { blocks }) = self.stack.pop()
+                    && let Some(Cont::DefList { items, .. }) = self.stack.last_mut()
+                {
+                    match items.last_mut() {
+                        Some(it) => it.defs.push(blocks),
+                        None => items.push(DefItem { title: vec![], defs: vec![blocks] }),
+                    }
+                }
+            }
+            TagEnd::DefinitionList => {
+                self.close_implicit();
+                if let Some(Cont::DefList { items, l }) = self.stack.pop() {
+                    self.push_block(Block { kind: Kind::DefList(items), line: l.0, end: l.1 });
+                }
+            }
+            TagEnd::Superscript => self.pop_style("^sup"),
+            TagEnd::Subscript => self.pop_style("^sub"),
             TagEnd::CodeBlock => {
                 if let Some((lang, mut text, l)) = self.code.take() {
                     if text.ends_with('\n') {
                         text.pop();
                     }
-                    self.push_block(Block { kind: Kind::Code { lang, text }, line: l.0, end: l.1 });
+                    // ```math is display math (as on GitHub)
+                    let kind = if lang.eq_ignore_ascii_case("math") {
+                        Kind::Math(text.trim().to_string())
+                    } else {
+                        Kind::Code { lang, text }
+                    };
+                    self.push_block(Block { kind, line: l.0, end: l.1 });
                 }
             }
             TagEnd::HtmlBlock => {
@@ -830,12 +923,14 @@ impl<'a> Builder<'a> {
             }
             TagEnd::List(_) => {
                 self.close_implicit();
+                self.unwind_details();
                 if let Some(Cont::List { start, items, loose, l }) = self.stack.pop() {
                     self.push_block(Block { kind: Kind::List { start, items, loose }, line: l.0, end: l.1 });
                 }
             }
             TagEnd::Item => {
                 self.close_implicit();
+                self.unwind_details();
                 if let Some(Cont::Item { blocks, task, task_off }) = self.stack.pop()
                     && let Some(Cont::List { items, .. }) = self.stack.last_mut()
                 {
@@ -844,6 +939,7 @@ impl<'a> Builder<'a> {
             }
             TagEnd::FootnoteDefinition => {
                 self.close_implicit();
+                self.unwind_details();
                 if let Some(Cont::Foot { blocks, label, l }) = self.stack.pop() {
                     self.push_block(Block { kind: Kind::FootDef { label, blocks }, line: l.0, end: l.1 });
                 }
@@ -876,19 +972,8 @@ impl<'a> Builder<'a> {
             }
             TagEnd::Image => {
                 if let Some((alt, url, link)) = self.image.take() {
-                    let in_para = self.inl.as_ref().is_some_and(|i| i.kind == IK::Para);
-                    if in_para {
-                        if let Some(ic) = self.inl.as_mut() {
-                            if !ic.spans.is_empty() {
-                                let s = std::mem::take(&mut ic.spans);
-                                ic.segs.push(Seg::Spans(s));
-                            }
-                            ic.segs.push(Seg::Img(Img { alt, url, link, size: (None, None) }));
-                        }
-                    } else {
-                        let label = if alt.is_empty() { "image".to_string() } else { alt };
-                        self.push_span(&format!("[{label}]"), 0);
-                    }
+                    let video = super::inline::is_video(&url);
+                    self.push_img(Img { alt, url, link, size: (None, None), video });
                 }
             }
             _ => {}

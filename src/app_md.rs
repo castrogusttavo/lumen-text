@@ -8,9 +8,9 @@
 //! the bottom", because the editor can't scroll its last line to the top of the view.
 
 use crate::{
-    app::{App, Focus},
+    app::{App, Focus, KeyIn},
     doc::Doc,
-    mdview::MdView,
+    mdview::{Act, MdView},
     ui::{Canvas, Rect, line_h},
 };
 use std::{
@@ -18,7 +18,11 @@ use std::{
     path::{Path, PathBuf},
     sync::OnceLock,
 };
-use winit::event::{MouseButton, MouseScrollDelta};
+use winit::{
+    event::{MouseButton, MouseScrollDelta},
+    keyboard::{Key, NamedKey},
+    window::CursorIcon,
+};
 
 /// Per-document reader state.
 pub struct MdState {
@@ -36,6 +40,12 @@ pub struct MdState {
     pub dragging: bool,
     /// Last time the image files were checked for edits on disk.
     img_check: std::time::Instant,
+    /// A text selection is being dragged.
+    pub selecting: bool,
+    /// The last click went to the preview: Ctrl+C / Ctrl+A act on its selection.
+    pub sel_focus: bool,
+    /// What the pointer was over at the last move (redraw when it changes).
+    hover_sig: u64,
 }
 
 impl MdState {
@@ -50,6 +60,9 @@ impl MdState {
             anchor: None,
             dragging: false,
             img_check: std::time::Instant::now(),
+            selecting: false,
+            sel_focus: false,
+            hover_sig: 0,
         }
     }
 }
@@ -276,7 +289,7 @@ impl App {
             redraw |= st.view.refresh_images();
         }
         want(st.img_check + std::time::Duration::from_secs(1));
-        if let Some(due) = st.view.anim_due() {
+        for due in [st.view.anim_due(), st.view.ui_due()].into_iter().flatten() {
             if due <= now {
                 redraw = true;
             } else {
@@ -345,14 +358,22 @@ impl App {
         true
     }
 
-    /// Mouse release: ends a divider drag and keeps the ratio in config.json.
+    /// Mouse release: ends a divider drag (keeping the ratio in config.json) or a text selection
+    /// (whose text becomes the primary selection).
     pub fn md_release(&mut self) {
         let mut was = false;
+        let mut picked = String::new();
         for st in self.docs.iter_mut().filter_map(|d| d.md.as_mut()) {
             was |= std::mem::replace(&mut st.dragging, false);
+            if std::mem::replace(&mut st.selecting, false) && st.view.has_selection() {
+                picked = st.view.selected_text();
+            }
         }
         if was {
             self.config.save();
+        }
+        if !picked.is_empty() {
+            self.clip.set_primary(&picked);
         }
     }
 
@@ -375,6 +396,9 @@ impl App {
             st.ver = d.version;
         }
         st.view.set_base_dir(base.as_deref());
+        st.view.set_remote_images(self.config.markdown_remote_images);
+        let (mx, my) = self.mouse;
+        st.view.set_hover(r.contains(mx, my).then_some((mx, my)));
         st.view.ensure_layout(&mut self.tx, r.w);
         let max_scroll = (st.view.content_height() - r.h).max(0) as f64;
 
@@ -442,6 +466,72 @@ impl App {
         true
     }
 
+    /// Pointer over the preview: hand on links, checkboxes and buttons, I-beam over the rest.
+    pub fn md_cursor(&self, x: f64, y: f64) -> Option<CursorIcon> {
+        let r = self.layout.md;
+        if r.w <= 0 || !r.contains(x, y) {
+            return None;
+        }
+        let st = self.docs.get(self.active)?.md.as_ref()?;
+        if st.selecting {
+            return Some(CursorIcon::Text);
+        }
+        Some(if st.view.clickable_at(x, y, st.rect, st.scroll) { CursorIcon::Pointer } else { CursorIcon::Text })
+    }
+
+    /// Mouse move: extends a selection being dragged, and asks for a redraw when the pointer moves
+    /// onto another link / button / block with hover buttons. True when it took the move.
+    pub fn md_mouse_move(&mut self, x: f64, y: f64) -> bool {
+        let r = self.layout.md;
+        if r.w <= 0 {
+            return false;
+        }
+        let tx = &mut self.tx;
+        let Some(st) = self.docs.get_mut(self.active).and_then(|d| d.md.as_mut()) else { return false };
+        if st.selecting {
+            let yy = y.clamp(r.y as f64, (r.bottom() - 1) as f64);
+            st.view.sel_extend(tx, x, yy, st.rect, st.scroll);
+            self.request_redraw();
+            return true;
+        }
+        let sig = if r.contains(x, y) { st.view.hover_sig(x, y, st.rect, st.scroll) } else { 0 };
+        if sig != st.hover_sig {
+            st.hover_sig = sig;
+            self.request_redraw();
+        }
+        false
+    }
+
+    /// Keys for the preview's selection (after a click in it): Ctrl+C copies, Ctrl+A selects all,
+    /// Escape clears. False when the key is not for the preview.
+    pub fn md_key(&mut self, ev: &KeyIn) -> bool {
+        let ctrl = self.mods.control_key();
+        let Some(st) = self.docs.get_mut(self.active).and_then(|d| d.md.as_mut()) else { return false };
+        if !st.sel_focus || self.layout.md.w <= 0 {
+            return false;
+        }
+        let is = |k: &Key, c: &str| matches!(k, Key::Character(s) if s.eq_ignore_ascii_case(c));
+        if ctrl && is(&ev.key, "c") && st.view.has_selection() {
+            let text = st.view.selected_text();
+            if !text.is_empty() {
+                self.clip.set(&text);
+                self.say("Copied");
+            }
+            return true;
+        }
+        if ctrl && is(&ev.key, "a") {
+            st.view.select_all();
+            self.request_redraw();
+            return true;
+        }
+        if matches!(ev.key, Key::Named(NamedKey::Escape)) && st.view.has_selection() {
+            st.view.clear_selection();
+            self.request_redraw();
+            return true;
+        }
+        false
+    }
+
     /// Click inside the preview: follows links. False when the click is not on the preview.
     pub fn md_mouse_down(&mut self, x: f64, y: f64, button: MouseButton) -> bool {
         let dv = self.layout.divider;
@@ -456,6 +546,10 @@ impl App {
         }
         let r = self.layout.md;
         if r.w <= 0 || !r.contains(x, y) {
+            // A click elsewhere takes the keyboard away from the preview's selection.
+            if let Some(st) = self.docs.get_mut(self.active).and_then(|d| d.md.as_mut()) {
+                st.sel_focus = false;
+            }
             return false;
         }
         self.focus = Focus::Editor;
@@ -464,13 +558,57 @@ impl App {
         }
         let Some(d) = self.docs.get(self.active) else { return true };
         let Some(st) = d.md.as_ref() else { return true };
+        if let Some(act) = st.view.hit_at(x, y, st.rect, st.scroll) {
+            self.md_act(act);
+            return true;
+        }
         if let Some(off) = st.view.check_at(x, y, st.rect, st.scroll) {
             self.md_toggle_task(off);
             return true;
         }
-        let Some(url) = st.view.link_at(x, y, st.rect, st.scroll) else { return true };
-        let base = d.path().and_then(Path::parent).map(Path::to_path_buf);
-        self.md_follow(classify_link(&url, base.as_deref()));
+        if let Some(url) = st.view.link_at(x, y, st.rect, st.scroll) {
+            let base = d.path().and_then(Path::parent).map(Path::to_path_buf);
+            self.md_follow(classify_link(&url, base.as_deref()));
+            return true;
+        }
+        // Plain text: start a selection.
+        let tx = &mut self.tx;
+        if let Some(st) = self.docs.get_mut(self.active).and_then(|d| d.md.as_mut()) {
+            st.view.sel_begin(tx, x, y, st.rect, st.scroll);
+            st.selecting = true;
+            st.sel_focus = true;
+        }
+        true
+    }
+
+    /// A preview button was clicked.
+    pub fn md_act(&mut self, act: Act) {
+        let Some(st) = self.docs.get_mut(self.active).and_then(|d| d.md.as_mut()) else { return };
+        match act {
+            Act::Toggle(id) => st.view.toggle_details(id),
+            Act::Code(key) => st.view.toggle_code(key),
+            Act::Copy(key) => {
+                if let Some(text) = st.view.code_text(key) {
+                    st.view.mark_copied(key);
+                    self.clip.set(&text);
+                    self.say("Code copied");
+                }
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// Right click in the preview on a rendered formula: copy its TeX source. True when there was
+    /// one under the pointer.
+    pub fn md_copy_tex(&mut self, x: f64, y: f64) -> bool {
+        let r = self.layout.md;
+        if r.w <= 0 || !r.contains(x, y) {
+            return false;
+        }
+        let st = self.docs.get(self.active).and_then(|d| d.md.as_ref());
+        let Some(tex) = st.and_then(|st| st.view.math_at(x, y, st.rect, st.scroll)) else { return false };
+        self.clip.set(&tex);
+        self.toast("TeX source copied", true);
         true
     }
 

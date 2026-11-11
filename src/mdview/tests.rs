@@ -79,6 +79,11 @@ fn kinds(v: &MdView) -> Vec<&'static str> {
             Kind::Images(_) => "img",
             Kind::Math(_) => "math",
             Kind::FootDef { .. } => "foot",
+            Kind::Alert(..) => "alert",
+            Kind::Details { .. } => "details",
+            Kind::HtmlPara { .. } => "hpara",
+            Kind::HtmlTable(_) => "htable",
+            Kind::DefList(_) => "dl",
         })
         .collect()
 }
@@ -979,8 +984,21 @@ fn footnotes_are_numbered_by_first_reference_and_collected_at_the_end() {
         .filter_map(|o| if let Op::Text { text, .. } = &o.op { Some(text.clone()) } else { None })
         .collect();
     let all = texts.join("|");
-    assert!(all.contains("[1]") && all.contains("[2]"), "{all}");
+    // References are superscript numbers that link to their definition.
+    let sups: Vec<String> = v
+        .ops()
+        .iter()
+        .filter_map(|o| match &o.op {
+            Op::Text { text, flags, .. } if flags & F_SUP != 0 && flags & F_LINK != 0 => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sups, ["1", "2", "1"], "{all}");
     assert!(all.contains("[^zz]"), "an undefined reference stays literal: {all}");
+    assert!(
+        v.ops().iter().any(|o| matches!(&o.op, Op::Label { text, .. } if text == "Footnotes")),
+        "the section has a title"
+    );
     let pos = |s: &str| texts.iter().position(|t| t.contains(s)).unwrap_or_else(|| panic!("{s} not in {all}"));
     assert!(pos("Beta note") < pos("Alpha note"), "definitions follow the numbering: {all}");
     assert!(pos("Tail") < pos("Beta note"), "footnotes come after the body: {all}");
@@ -1051,7 +1069,171 @@ fn math_inline_and_display() {
     let Kind::Math(m) = &bl[1].kind else { panic!() };
     assert_eq!(m, "\\int_0^1 x\\,dx");
     let (v, _) = laid(src, 800);
-    assert!(v.ops().iter().any(|o| matches!(&o.op, Op::Code { math: true, .. })));
+    assert!(v.ops().iter().any(|o| matches!(&o.op, Op::Math { display: true, .. })), "the display formula is typeset");
+}
+
+const MATH_DOC: &str = "Energy $E = mc^2$ and $\\sqrt{x^2+y^2}$ here.\n\n\
+$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$\n\n\
+$$\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}$$\n\n\
+Broken $\\frac{a$ stays source.\n\n\
+Unknown $x + \\foo$ command.\n";
+
+#[test]
+fn math_is_typeset_inline_and_in_display_blocks() {
+    let (v, mut tx) = laid(MATH_DOC, 800);
+    let maths: Vec<(&str, bool)> = v
+        .ops()
+        .iter()
+        .filter_map(|o| if let Op::Math { src, display, .. } = &o.op { Some((src.as_str(), *display)) } else { None })
+        .collect();
+    assert_eq!(
+        maths,
+        [
+            ("E = mc^2", false),
+            ("\\sqrt{x^2+y^2}", false),
+            ("\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}", true),
+            ("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", true),
+        ]
+    );
+    // `$\frac{a$` has an unbalanced brace, so (like GitHub) it is not even math: plain text
+    let texts: String = v
+        .ops()
+        .iter()
+        .filter_map(|o| if let Op::Text { text, .. } = &o.op { Some(text.as_str()) } else { None })
+        .collect();
+    assert!(texts.contains("$\\frac{a$"), "{texts}");
+    // a formula that does not typeset falls back to its source in a chip, marked as an error
+    let (text, flags) = v
+        .ops()
+        .iter()
+        .find_map(|o| match &o.op {
+            Op::Text { text, flags, .. } if flags & F_MATH != 0 => Some((text.clone(), *flags)),
+            _ => None,
+        })
+        .expect("a fallback chip");
+    assert_eq!(text, "x + \\foo");
+    assert!(flags & F_CODE != 0 && flags & F_ERR != 0);
+    assert_eq!(v.math.err("x + \\foo").map(|e| e.at), Some((4, 8)), "the unknown command is blamed");
+    // the same failures inside display math keep the source block, with the error located
+    let (v2, _) = laid("$$\na = 1\n\\foo{b}\n$$\n", 800);
+    let err =
+        v2.ops().iter().find_map(|o| if let Op::Code { math: true, err, .. } = &o.op { Some(*err) } else { None });
+    assert_eq!(err, Some(Some((1, 0, 4))), "line 1, the unknown command");
+    // display formulas are centered in the column, with the formula's own size
+    let lay = v.lay.as_ref().unwrap();
+    let mid_col = lay.col_x + lay.col_w / 2;
+    for o in v.ops() {
+        if let Op::Math { x, w, base, display: true, lay: ml, .. } = &o.op {
+            assert!((x + w / 2 - mid_col).abs() <= 2, "centered: {x} + {w} vs {mid_col}");
+            assert!(o.y0 < base - ml.h as i32 && o.y1 > base + ml.d as i32 - 1, "the block holds the formula");
+        }
+    }
+    // it paints: formula pixels in the text color appear inside the display block
+    let t = theme();
+    let (w, h) = (800, 700);
+    let mut px = vec![0u32; (w * h) as usize];
+    let mut v = v;
+    let mut cv = Canvas { px: &mut px, w, h };
+    v.draw(&mut cv, &mut tx, &t, Rect::new(0, 0, w, h), 0.0);
+    let bg = px[5];
+    let lay = v.lay.as_ref().unwrap();
+    let seg = lay.segs[1];
+    let sl = v.seg_lay_of(&seg).unwrap();
+    let Some((x, wd, y0, y1)) = sl.ops.iter().find_map(|d| match &d.op {
+        Op::Math { x, w, .. } => Some((*x, *w, d.y0 + seg.y0, d.y1 + seg.y0)),
+        _ => None,
+    }) else {
+        panic!("no display formula in the second segment")
+    };
+    let inked = (y0..y1)
+        .flat_map(|yy| (x..x + wd).map(move |xx| (xx, yy)))
+        .filter(|&(xx, yy)| px[(yy * w + xx) as usize] != bg)
+        .count();
+    assert!(inked > 100, "the formula is drawn ({inked} px)");
+}
+
+#[test]
+fn math_fenced_code_blocks_are_display_math() {
+    let src = "Gauss:\n\n```math\n\\nabla \\cdot \\mathbf{E} = \\frac{\\rho}{\\varepsilon_0}\n```\n\n```Math\n\\foo\n```\n\n```rust\nlet x = 1;\n```\n";
+    let (v, _) = laid(src, 800);
+    assert_eq!(kinds(&v), ["p", "math", "math", "code"]);
+    let maths: Vec<(&str, bool)> = v
+        .ops()
+        .iter()
+        .filter_map(|o| if let Op::Math { src, display, .. } = &o.op { Some((src.as_str(), *display)) } else { None })
+        .collect();
+    assert_eq!(maths, [("\\nabla \\cdot \\mathbf{E} = \\frac{\\rho}{\\varepsilon_0}", true)]);
+    // a formula that does not typeset keeps the source block, with the error located
+    let code: Vec<(bool, Option<(usize, usize, usize)>)> = v
+        .ops()
+        .iter()
+        .filter_map(|o| if let Op::Code { math, err, .. } = &o.op { Some((*math, *err)) } else { None })
+        .collect();
+    assert_eq!(code, [(true, Some((0, 0, 4))), (false, None)]);
+}
+
+#[test]
+fn tall_inline_math_grows_its_line_and_keeps_the_baseline() {
+    let plain = laid("x and y\n", 800).0.content_height();
+    let tall = "x $\\dfrac{\\dfrac{a}{b}}{\\dfrac{c}{d}}$ y\n";
+    let (v, _) = laid(tall, 800);
+    assert!(v.content_height() > plain + 10, "{} vs {plain}", v.content_height());
+    let ops = v.ops();
+    let text_y = ops
+        .iter()
+        .find_map(|o| matches!(&o.op, Op::Text { text, .. } if text.starts_with('x')).then_some(o.y0))
+        .unwrap();
+    let (base, top) = ops
+        .iter()
+        .find_map(|o| if let Op::Math { base, row, .. } = &o.op { Some((*base, *row)) } else { None })
+        .unwrap();
+    assert_eq!(top, text_y, "the text moved down with the line's extra height");
+    let bl = v.measure.base[BODY].round() as i32;
+    assert_eq!(base, text_y + bl, "the formula sits on the text baseline");
+    // a short formula leaves the line alone
+    let (v, _) = laid("x $a+b$ y\n", 800);
+    assert_eq!(v.content_height(), plain);
+}
+
+#[test]
+fn copying_rendered_math_yields_its_tex() {
+    let src = "Mass $E = mc^2$ energy.\n\n$$\\int_0^1 x\\,dx$$\n\nAfter.\n";
+    let (v, _) = laid(src, 800);
+    let all = v.text_between(0, v.content_height());
+    assert_eq!(all, "Mass $E = mc^2$ energy.\n$$\\int_0^1 x\\,dx$$\nAfter.");
+    // only the lines in the range
+    let lay = v.lay.as_ref().unwrap();
+    let first = lay.segs[0];
+    assert_eq!(v.text_between(first.y0, first.y1), "Mass $E = mc^2$ energy.");
+    // pointing at a formula gives its TeX (right click -> copy)
+    let rect = Rect::new(0, 0, 800, 600);
+    let mut seen = 0;
+    for s in &lay.segs {
+        let sl = v.seg_lay_of(s).unwrap();
+        for d in &sl.ops {
+            if let Op::Math { x, w, base, src, .. } = &d.op {
+                let got = v.math_at((x + w / 2) as f64, (s.y0 + base - 2) as f64, rect, 0.0);
+                assert_eq!(got.as_deref(), Some(src.as_str()));
+                seen += 1;
+            }
+        }
+    }
+    assert_eq!(seen, 2);
+    assert_eq!(v.math_at(3.0, 3.0, rect, 0.0), None);
+}
+
+#[test]
+fn wide_display_math_shrinks_to_the_column() {
+    let wide = format!("$${}$$\n", (0..16).map(|i| format!("x_{{{i}}}")).collect::<Vec<_>>().join(" + "));
+    let (v, _) = laid(&wide, 300);
+    let lay = v.lay.as_ref().unwrap();
+    let (x, w) =
+        v.ops().iter().find_map(|o| if let Op::Math { x, w, .. } = &o.op { Some((*x, *w)) } else { None }).unwrap();
+    assert!(x >= lay.col_x, "starts in the column");
+    // shrunk (possibly down to the floor, then clipped by the pane)
+    let (v2, _) = laid(&wide, 4000);
+    let w2 = v2.ops().iter().find_map(|o| if let Op::Math { w, .. } = &o.op { Some(*w) } else { None }).unwrap();
+    assert!(w < w2, "{w} < {w2}");
 }
 
 #[test]

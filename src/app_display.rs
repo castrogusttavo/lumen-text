@@ -162,6 +162,8 @@ impl App {
                 display::set_scrollbar(Scrollbar::from_name(&self.config.scrollbar));
                 display::touch();
             }
+            // Read by the Markdown reader on its next draw.
+            "markdown_remote_images" => self.config.markdown_remote_images = b.unwrap_or(true),
             "build_command" | "run_command" => {
                 let cmd = v.as_str().unwrap_or("").trim().to_string();
                 if key == "build_command" {

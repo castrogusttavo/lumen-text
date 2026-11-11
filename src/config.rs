@@ -78,6 +78,8 @@ pub struct Config {
     /// the detected targets; empty = detection only.
     pub build_command: String,
     pub run_command: String,
+    /// Markdown preview: download `http(s)` images (off keeps a placeholder card, for privacy).
+    pub markdown_remote_images: bool,
     /// Hide what `.gitignore` (and the global ignore file and `.git/info/exclude`) ignores in the explorer;
     /// off shows those entries dimmed.
     pub explorer_hide_gitignored: bool,
@@ -238,6 +240,7 @@ impl Default for Config {
             test_report: String::new(),
             build_command: String::new(),
             run_command: String::new(),
+            markdown_remote_images: true,
             test_watch: false,
             explorer_hide_gitignored: true,
             language_servers: Value::Null,
@@ -478,6 +481,7 @@ impl Config {
             test_watch: v["test_watch"].as_bool().unwrap_or(false),
             build_command: v["build_command"].as_str().unwrap_or("").trim().to_string(),
             run_command: v["run_command"].as_str().unwrap_or("").trim().to_string(),
+            markdown_remote_images: v["markdown_remote_images"].as_bool().unwrap_or(true),
             explorer_hide_gitignored: v["explorer_hide_gitignored"].as_bool().unwrap_or(true),
             language_servers: v.get("language_servers").cloned().unwrap_or(Value::Null),
             scroll_speed: v["scroll_speed"].as_f64().map_or(1.0, |f| f as f32).clamp(0.1, 5.0),
@@ -541,6 +545,7 @@ impl Config {
         v["explorer_hide_gitignored"] = json!(self.explorer_hide_gitignored);
         v["build_command"] = json!(self.build_command);
         v["run_command"] = json!(self.run_command);
+        v["markdown_remote_images"] = json!(self.markdown_remote_images);
         v["sidebar_width"] = json!(self.sidebar_width);
         v["scrollbar_v"] = json!(2);
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
@@ -618,6 +623,7 @@ mod tests {
             test_watch: true,
             build_command: "make -j8".into(),
             run_command: "./out/app --port 8080".into(),
+            markdown_remote_images: false,
             explorer_hide_gitignored: false,
             language_servers: json!({"rust": {"command": "ra"}}),
             buffer_font_family: "JetBrains Mono".into(),

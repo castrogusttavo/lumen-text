@@ -65,6 +65,21 @@ pub(super) struct Pal {
     pub(super) widget: Rgba,
     pub(super) input: Rgba,
     pub(super) bg: Rgba,
+    /// Text selection (accent, translucent).
+    pub(super) sel: Rgba,
+    /// A link under the pointer.
+    pub(super) accent_hot: Rgba,
+    /// `<mark>` background (translucent) and the text on it.
+    pub(super) mark: Rgba,
+    pub(super) on_mark: Rgba,
+    /// Tint of a clickable row under the pointer (translucent).
+    pub(super) hover: Rgba,
+    /// `<kbd>` face, its bottom edge, and the stronger hairline of buttons / key caps.
+    pub(super) kbd: Rgba,
+    pub(super) kbd_edge: Rgba,
+    pub(super) strong: Rgba,
+    /// The offending part of a formula that does not parse.
+    pub(super) err: Rgba,
 }
 
 impl Pal {
@@ -95,6 +110,15 @@ impl Pal {
             widget: c.widget_bg.with_alpha(255),
             input: c.input_bg.with_alpha(255),
             bg,
+            sel: c.accent.with_alpha(80),
+            accent_hot: c.accent.with_alpha(255).mix(fg, 0.3),
+            mark: if bg.luminance() < 0.4 { Rgba(187, 128, 9, 110) } else { Rgba(255, 214, 51, 120) },
+            on_mark: fg,
+            hover: fg.with_alpha(12),
+            kbd: over(0.045),
+            kbd_edge: over(0.26),
+            strong: over(0.17),
+            err: c.error.with_alpha(255).readable_on(&[bg, code], 3.0),
         }
     }
     /// Chip behind inline math: the page tinted with the accent, as long as `text` reads on it.
@@ -121,7 +145,175 @@ impl Pal {
             Col::Widget => self.widget,
             Col::Input => self.input,
             Col::Bg => self.bg,
+            Col::Text => self.text,
+            Col::Faint => self.faint,
+            Col::Alert(k) => super::alert::color(k, self.bg),
+            Col::AlertBg(k) => self.bg.mix(super::alert::color(k, self.bg), 0.075),
         }
+    }
+}
+
+/// A `<kbd>` key cap around `text`, centered in the run box `r`.
+pub(super) fn paint_kbd(cv: &mut Canvas, tx: &mut TextCtx, pal: &Pal, r: Rect, text: &str, clip: Rect) {
+    let size = SIZES[SMALL];
+    let lh = (size * 1.4).round() as i32;
+    let h = (lh + 4).min(r.h - 2).max(4);
+    let cap = Rect::new(r.x + 1, r.y + (r.h - h) / 2, (r.w - 2).max(2), h);
+    // The heavier bottom edge peeks out under the face, like a real key.
+    round_clip(cv, Rect::new(cap.x, cap.y + 1, cap.w, cap.h), 5, pal.kbd_edge, clip);
+    card_clip(cv, cap, 5, pal.kbd, pal.strong, clip);
+    let tw = tx.ui_width_sized(text, false, size);
+    tx.draw_ui_sized(cv, cap.x + (cap.w - tw) / 2, cap.y + (h - lh) / 2, text, pal.fg, clip, false, size);
+}
+
+/// A hover button (Copy / Code / Diagram) in `r`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_button(
+    cv: &mut Canvas,
+    tx: &mut TextCtx,
+    pal: &Pal,
+    r: Rect,
+    kind: Btn,
+    done: bool,
+    over: bool,
+    clip: Rect,
+) {
+    let (icon, label) = match kind {
+        Btn::Copy(_) if done => ("ui/check", "Copied"),
+        Btn::Copy(_) => ("ui/copy", "Copy"),
+        Btn::ShowCode => ("ui/code", "Code"),
+        Btn::ShowDiagram => ("ui/eye", "Diagram"),
+    };
+    let fill = if over { pal.bg.mix(pal.fg, 0.11) } else { pal.bg.mix(pal.fg, 0.06) };
+    card_clip(cv, r, 6, fill, pal.strong, clip);
+    let col = if done { pal.accent } else { pal.text };
+    let inner = clip.intersect(&r);
+    tx.icon(cv, icon, r.x + 8, r.y + (r.h - 14) / 2, 14, col, inner);
+    let lh = (SIZES[TINY] * 1.4).round() as i32;
+    tx.draw_ui_sized(cv, r.x + 27, r.y + (r.h - lh) / 2, label, col, inner, false, SIZES[TINY]);
+}
+
+/// The `<text>` of an SVG image (not part of its pixels), drawn with the UI font over it.
+pub(super) fn paint_svg_texts(cv: &mut Canvas, tx: &mut TextCtx, imgs: &mut ImgStore, id: u32, sr: Rect, clip: Rect) {
+    let Some(ts) = imgs.svg_texts(id) else { return };
+    let Some((nw, _)) = imgs.size(id) else { return };
+    let k = sr.w as f32 / nw.max(1) as f32;
+    let clip = clip.intersect(&sr);
+    for t in ts.iter() {
+        let size = t.size * k;
+        if !(4.0..=200.0).contains(&size) || t.color[3] == 0 {
+            continue;
+        }
+        let w = tx.ui_width_sized(&t.text, t.bold, size) as f32;
+        let x = sr.x as f32 + t.x * k
+            - match t.anchor {
+                0 => w / 2.0,
+                1 => w,
+                _ => 0.0,
+            };
+        // SVG places the baseline; the UI text is drawn from the top of its line box.
+        let y = sr.y as f32 + t.y * k - size * 1.05;
+        let c = Rgba(t.color[0], t.color[1], t.color[2], t.color[3]);
+        tx.draw_ui_sized(cv, x.round() as i32, y.round() as i32, &t.text, c, clip, t.bold, size);
+    }
+}
+
+/// Theme color of a diagram paint.
+pub(super) fn dia_color(pal: &Pal, p: mermaid::Paint) -> Rgba {
+    use mermaid::Paint as P;
+    let accent = pal.accent;
+    match p {
+        P::Node => pal.bg.mix(accent, 0.13),
+        P::NodeBorder => pal.bg.mix(accent, 0.62),
+        P::Line => pal.bg.mix(pal.fg, 0.55),
+        P::Text => pal.fg,
+        P::Muted => pal.dim,
+        P::Cluster => pal.bg.mix(pal.fg, 0.035),
+        P::ClusterBorder => pal.bg.mix(pal.fg, 0.2),
+        P::Note => pal.bg.mix(Rgba(0xe3, 0xb3, 0x41, 255), 0.18),
+        P::NoteBorder => pal.bg.mix(Rgba(0xe3, 0xb3, 0x41, 255), 0.6),
+        P::LabelBg => pal.bg,
+        P::Series(i) => series(pal.bg, i),
+        P::OnSeries(i) => {
+            let c = series(pal.bg, i);
+            let (w, b) = (Rgba(255, 255, 255, 255), Rgba(20, 20, 24, 255));
+            if w.contrast(c) >= b.contrast(c) { w } else { b }
+        }
+    }
+}
+
+/// Pie / series palette: distinct hues that read on both page colors.
+fn series(bg: Rgba, i: u8) -> Rgba {
+    const DARK: [Rgba; 8] = [
+        Rgba(0x4c, 0x8e, 0xf7, 255),
+        Rgba(0x3f, 0xb9, 0x50, 255),
+        Rgba(0xe3, 0xa0, 0x08, 255),
+        Rgba(0xab, 0x7d, 0xf8, 255),
+        Rgba(0xf7, 0x78, 0x5e, 255),
+        Rgba(0x2b, 0xb3, 0xb3, 255),
+        Rgba(0xe8, 0x6f, 0xb4, 255),
+        Rgba(0x9a, 0xa5, 0xb1, 255),
+    ];
+    const LIGHT: [Rgba; 8] = [
+        Rgba(0x21, 0x6e, 0xe0, 255),
+        Rgba(0x1f, 0x88, 0x3d, 255),
+        Rgba(0xbf, 0x87, 0x00, 255),
+        Rgba(0x82, 0x50, 0xdf, 255),
+        Rgba(0xcf, 0x4a, 0x2f, 255),
+        Rgba(0x10, 0x8a, 0x8a, 255),
+        Rgba(0xbf, 0x3d, 0x8c, 255),
+        Rgba(0x6e, 0x77, 0x81, 255),
+    ];
+    let pal = if bg.luminance() < 0.4 { DARK } else { LIGHT };
+    pal[i as usize % pal.len()]
+}
+
+/// A Mermaid diagram: its shapes rasterized once per size and theme, its labels drawn as UI text.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_diagram(
+    cv: &mut Canvas,
+    tx: &mut TextCtx,
+    pal: &Pal,
+    cache: &mut HashMap<(u64, i32, i32, u64), Rc<Pix>>,
+    theme_key: u64,
+    key: u64,
+    dia: &mermaid::Diagram,
+    sr: Rect,
+    clip: Rect,
+) {
+    let dev = cv.to_dev(sr);
+    if dev.w <= 0 || dev.h <= 0 {
+        return;
+    }
+    let ck = (key, dev.w, dev.h, theme_key);
+    let pix = match cache.get(&ck) {
+        Some(p) => p.clone(),
+        None => {
+            let Some(p) = mermaid::render::raster(dia, dev.w as u32, dev.h as u32, &|c| dia_color(pal, c)) else {
+                return;
+            };
+            let p = Rc::new(p);
+            cache.insert(ck, p.clone());
+            p
+        }
+    };
+    let dclip = cv.to_dev(clip);
+    crate::mdimg::blit(cv, dev.x, dev.y, &pix, dclip);
+    let k = sr.w as f32 / dia.w.max(1.0);
+    for l in &dia.labels {
+        let size = l.size * k;
+        if size < 4.0 || l.text.is_empty() {
+            continue;
+        }
+        let w = tx.ui_width_sized(&l.text, l.bold, size) as f32;
+        let x = sr.x as f32 + l.x * k
+            - match l.anchor {
+                0 => w / 2.0,
+                1 => w,
+                _ => 0.0,
+            };
+        let y = sr.y as f32 + l.y * k - (size * 1.4).round() / 2.0;
+        tx.draw_ui_sized(cv, x.round() as i32, y.round() as i32, &l.text, dia_color(pal, l.col), clip, l.bold, size);
     }
 }
 

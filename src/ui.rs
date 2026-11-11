@@ -1376,6 +1376,21 @@ impl TextCtx {
         b.shape_until_scroll(&mut self.fonts, false);
         (b.layout_runs().next().map_or(0.0, |r| r.line_w) / s).round() as i32
     }
+
+    /// Baseline of UI text drawn by [`draw_ui_sized`](Self::draw_ui_sized) at `size`: logical px
+    /// below the `y` passed to it (inline math sits on it).
+    pub fn ui_baseline_sized(&mut self, size: f32) -> f32 {
+        let lh = (size * 1.4).round();
+        let fam = self.ui_family.clone();
+        let a = ui_attrs(&fam, self.ui_weight, self.ui_ligs, false);
+        let s = scale();
+        let mut b = TextBuf::new(&mut self.fonts, Metrics::new(size * s, lh * s));
+        b.set_size(Some(4000.0 * s), Some(lh * 2.0 * s));
+        b.set_wrap(Wrap::None);
+        b.set_text("x", &a, Shaping::Advanced, None);
+        b.shape_until_scroll(&mut self.fonts, false);
+        b.layout_runs().next().map_or(size * 1.1, |r| r.line_y / s)
+    }
 }
 
 /// `base` with the piece's color and BOLD / ITALIC / UNDERLINE flags applied.
