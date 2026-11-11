@@ -270,6 +270,12 @@ impl App {
             Cmd::ColumnSelectRight => self.column_select(0, 1),
             Cmd::JumpTo => self.jump_start(),
             Cmd::RefreshExplorer => self.refresh_explorer(),
+            Cmd::ProjectReplace => self.open_project_replace(),
+            Cmd::MacroRecord => self.macro_toggle_record(),
+            Cmd::MacroReplay => self.macro_replay(1),
+            Cmd::MacroReplayTimes => self.macro_ask_times(),
+            Cmd::MacroSave => self.macro_ask_name(),
+            Cmd::MacroRunSaved => self.macro_pick_saved(),
             Cmd::Quit => {
                 if self.try_quit() {
                     std::process::exit(0);
@@ -299,6 +305,12 @@ impl App {
 
     /// Run the command a keybinding names (`"none"` does nothing; an unknown id says so).
     pub fn run_bound(&mut self, id: &str) -> bool {
+        // `"ctrl+alt+1": "macro:wrap"` runs the macro saved as "wrap" in macros.json.
+        if let Some(name) = id.strip_prefix(crate::macros::BIND_PREFIX) {
+            self.macro_run_saved(name);
+            self.request_redraw();
+            return false;
+        }
         match Cmd::from_id(id) {
             Some(c) => self.run_key_cmd(c),
             None => {

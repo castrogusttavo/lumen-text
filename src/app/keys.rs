@@ -9,6 +9,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, ev: &KeyIn) -> bool {
+        // A macro being recorded sees every key first (see `macros`).
+        self.macro_record(ev);
+        self.handle_key_inner(ev)
+    }
+
+    fn handle_key_inner(&mut self, ev: &KeyIn) -> bool {
         self.compute_layout();
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();

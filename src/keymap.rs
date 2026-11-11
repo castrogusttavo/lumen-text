@@ -80,6 +80,9 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+shift+alt+left", "ColumnSelectLeft"),
     ("ctrl+shift+alt+right", "ColumnSelectRight"),
     ("alt+j", "JumpTo"),
+    ("ctrl+shift+h", "ProjectReplace"),
+    ("ctrl+shift+r", "MacroRecord"),
+    ("ctrl+alt+r", "MacroReplay"),
     // Chords: `Ctrl+K` then a letter.
     ("ctrl+k r", "RepeatTask"),
     ("ctrl+k x", "StopTask"),
@@ -483,11 +486,12 @@ mod tests {
         assert_eq!(k.lookup(true, true, false, &ch("W")), Some("CloseTab"));
         assert_eq!(k.lookup(true, true, false, &ch("Q")), Some("Quit"));
         assert_eq!(k.lookup(true, true, false, &ch("J")), Some("ToggleOutput"));
-        assert_eq!(k.lookup(true, true, false, &ch("H")), Some("Replace"));
         assert_eq!(k.lookup(true, true, false, &ch("S")), Some("Save"));
         // An exact Ctrl+Shift row wins over the tolerant fallback.
         assert_eq!(k.lookup(true, true, false, &ch("G")), Some("GitPanel"));
         assert_eq!(k.lookup(true, true, false, &ch("B")), Some("BuildBuild"));
+        assert_eq!(k.lookup(true, true, false, &ch("H")), Some("ProjectReplace"));
+        assert_eq!(k.lookup(true, false, false, &ch("h")), Some("Replace"));
         assert_eq!(k.lookup(true, false, false, &ch("b")), Some("ToggleSidebar"));
         assert_eq!(k.lookup(true, false, false, &ch("g")), Some("GotoLine"));
         assert_eq!(k.lookup(true, true, false, &ch("Z")), Some("Redo"));

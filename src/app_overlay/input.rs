@@ -24,6 +24,11 @@ impl App {
             self.fontpicker_key(ev);
             return false;
         }
+        // Project search: replace row, whole-word toggle, "replace all" question.
+        if self.project_search_key(ev) {
+            self.request_redraw();
+            return false;
+        }
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let alt = self.mods.alt_key();
@@ -236,6 +241,8 @@ impl App {
                 PromptKind::Git(ask) => self.git_prompt_answer(ask, p.field.text),
                 PromptKind::SaveAs { doc, rest, then } => self.save_as_answer(doc, rest, then, p.field.text),
                 PromptKind::RenameTerminal { id } => self.rename_terminal(id, &p.field.text),
+                PromptKind::MacroCount => self.macro_replay_answer(&p.field.text),
+                PromptKind::MacroName => self.macro_save_answer(&p.field.text),
             },
             Overlay::None => {}
         }
@@ -281,6 +288,7 @@ impl App {
             Action::LocalHist(path, Some(file)) => self.hist_show(&path, &file),
             Action::LocalHist(path, None) => self.hist_list(&path),
             Action::Git(p) => self.git_pick(p),
+            Action::Macro(name) => self.macro_run_saved(&name),
             Action::UndoBranch(n) => {
                 if let Some(d) = self.docs.get_mut(self.active)
                     && let Some(sel) = d.buf.redo_branch(n)
@@ -325,10 +333,14 @@ impl App {
             return true;
         }
         let r = self.picker_rect();
+        let extra = match &self.overlay {
+            Overlay::Picker(p) if p.rep.is_some() => preplace::REP_H,
+            _ => 0,
+        };
         if x < r.x as f64
             || x > r.right() as f64
             || y < r.y as f64
-            || y > (r.y + INPUT_H + PICKER_ROWS as i32 * ROW + 12) as f64
+            || y > (r.y + INPUT_H + extra + PICKER_ROWS as i32 * ROW + 12) as f64
         {
             self.overlay = Overlay::None;
             self.restore_theme_preview();

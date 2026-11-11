@@ -966,6 +966,7 @@ impl App {
             self.tx.draw_ui(cv, pill.right() + 8, y, hint, dim, Rect::new(pill.right(), r.y, hw + 16, r.h), false);
             x = pill.right() + 8 + hw + 14;
         }
+        x = self.draw_macro_status(cv, x);
         if self.upd.indicator().is_some() {
             let tint = if self.upd.ready() { c.accent_text } else { dim };
             x = self.status_btn(cv, x, "ui/download", "", tint, self.upd.card.is_some(), StatusBtn::Update);
