@@ -279,7 +279,7 @@ A second `lumen-text` invocation hands its files to the window whose project con
 last focused window); `lumen-text other-folder/` raises the window that has that folder open, or opens a
 new window when none has; `lumen-text --new-window [folder]` always opens a new one. Each window is its
 own process (language servers included). `Ctrl+Q` closes every window and they all come back on the next
-start; closing one window with its close button forgets it. The tool tips and palette are the reference
+start; closing one window with its close button forgets it (unless hot exit kept unsaved tabs of it). The tool tips and palette are the reference
 for everything not listed below.
 
 ## Keyboard shortcuts
