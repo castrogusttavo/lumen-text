@@ -221,7 +221,7 @@ fn binary_error() -> io::Error {
 pub fn read_file(path: &Path, forced: Option<TextEncoding>) -> io::Result<(Rope, TextEncoding)> {
     let mut f = File::open(path)?;
     let mut head = Vec::with_capacity(SNIFF);
-    f.by_ref().take(SNIFF as u64).read_to_end(&mut head)?;
+    Read::by_ref(&mut f).take(SNIFF as u64).read_to_end(&mut head)?;
     let enc = match forced {
         Some(e) => e,
         None => match sniff(&head) {
