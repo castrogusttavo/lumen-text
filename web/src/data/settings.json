@@ -609,6 +609,14 @@
   "default": true
  },
  {
+  "key": "markdown_remote_images",
+  "section": "Editor display",
+  "label": "Markdown remote images",
+  "help": "Lets the Markdown reader download http(s) images (badges, screenshots) into a local cache. Off keeps a placeholder card instead, so opening a README contacts no server.",
+  "kind": "bool",
+  "default": true
+ },
+ {
   "key": "build_command",
   "section": "Build",
   "label": "Build command",

@@ -115,6 +115,13 @@ pub fn defs() -> Vec<SettingDef> {
             Bool,
         ),
         d(
+            "markdown_remote_images",
+            "Editor display",
+            "Markdown remote images",
+            "Lets the Markdown reader download http(s) images (badges, screenshots) into a local cache. Off keeps a placeholder card instead, so opening a README contacts no server.",
+            Bool,
+        ),
+        d(
             "build_command",
             "Build",
             "Build command",
@@ -139,6 +146,7 @@ pub fn defaults() -> Value {
         "ui_line_height": fontcfg::DEFAULT_UI_LH, "ui_font_ligatures": true,
         "show_line_numbers": true, "show_bookmarks": true, "show_breakpoints": true,
         "scrollbar": "never", "enable_lsp": true, "build_command": "", "run_command": "",
+        "markdown_remote_images": true,
     })
 }
 
@@ -152,6 +160,7 @@ pub fn values(c: &Config) -> Value {
         "show_line_numbers": c.show_line_numbers, "show_bookmarks": c.show_bookmarks,
         "show_breakpoints": c.show_breakpoints, "scrollbar": c.scrollbar, "enable_lsp": c.enable_lsp,
         "build_command": c.build_command, "run_command": c.run_command,
+        "markdown_remote_images": c.markdown_remote_images,
     })
 }
 

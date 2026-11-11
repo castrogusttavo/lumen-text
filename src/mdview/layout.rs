@@ -17,6 +17,11 @@ pub(super) enum Col {
     Widget,
     Input,
     Bg,
+    Text,
+    Faint,
+    /// GitHub alert color (0 note, 1 tip, 2 important, 3 warning, 4 caution) and its soft tint.
+    Alert(u8),
+    AlertBg(u8),
 }
 
 #[derive(Debug)]
@@ -25,9 +30,11 @@ pub(super) enum Op {
         x: i32,
         w: i32,
         text: String,
-        flags: u8,
+        flags: Fl,
         si: u8,
         lh: i32,
+        /// Link id (0 = none), for the hover highlight.
+        link: u32,
     },
     Fill {
         r: Rect,
@@ -69,6 +76,41 @@ pub(super) enum Op {
     Image {
         r: Rect,
         id: u32,
+    },
+    /// UI text in a palette color (alert titles, captions, notes).
+    Label {
+        x: i32,
+        w: i32,
+        text: String,
+        col: Col,
+        si: u8,
+        lh: i32,
+        bold: bool,
+    },
+    /// An icon from the bundled set (`ui/...`) in a `size` px box.
+    Icon {
+        x: i32,
+        y: i32,
+        size: i32,
+        name: &'static str,
+        col: Col,
+    },
+    /// A tint drawn only while the pointer is inside `r` (a clickable row).
+    Hover {
+        r: Rect,
+        rad: i32,
+    },
+    /// A button drawn while the pointer is inside `area` (the block it belongs to).
+    Button {
+        r: Rect,
+        area: Rect,
+        kind: Btn,
+    },
+    /// A Mermaid diagram scaled into `r`.
+    Diagram {
+        r: Rect,
+        key: u64,
+        dia: Rc<mermaid::Diagram>,
     },
 }
 
@@ -121,6 +163,10 @@ pub(super) struct SegLay {
     pub(super) anchors: Vec<Anchor>,
     pub(super) links: Vec<LinkHit>,
     pub(super) checks: Vec<CheckHit>,
+    /// Buttons and toggles (details summaries, Copy, Mermaid code / diagram).
+    pub(super) hits: Vec<Hit>,
+    /// Blocks whose buttons show on hover, with a key identifying them.
+    pub(super) areas: Vec<(Rect, u64)>,
     /// `(name, y, exact)`: headings carry their base slug (deduplicated when flattened), footnotes
     /// an exact `fn-label`.
     pub(super) heads: Vec<(String, i32, bool)>,
@@ -256,19 +302,19 @@ pub(super) struct Run {
     pub(super) x: f32,
     pub(super) w: f32,
     pub(super) text: String,
-    pub(super) flags: u8,
+    pub(super) flags: Fl,
     pub(super) link: u32,
 }
 
 pub(super) struct Atom {
     pub(super) text: String,
-    pub(super) flags: u8,
+    pub(super) flags: Fl,
     pub(super) link: u32,
     pub(super) w: f32,
 }
 
-pub(super) fn push_piece(line: &mut Vec<Run>, x: f32, text: &str, flags: u8, link: u32, w: f32) {
-    if flags & F_CODE == 0
+pub(super) fn push_piece(line: &mut Vec<Run>, x: f32, text: &str, flags: Fl, link: u32, w: f32) {
+    if flags & (F_CODE | F_KBD) == 0
         && let Some(l) = line.last_mut()
         && l.flags == flags
         && l.link == link
@@ -286,7 +332,7 @@ pub(super) struct Flow {
     pub(super) x: f32,
     pub(super) chunk: Vec<Atom>,
     pub(super) chunk_w: f32,
-    pub(super) space: Option<(u8, u32, f32)>,
+    pub(super) space: Option<(Fl, u32, f32)>,
     pub(super) width: f32,
     pub(super) wrap: bool,
     pub(super) si: usize,
@@ -329,14 +375,22 @@ impl Flow {
         let atoms = std::mem::take(&mut self.chunk);
         for a in atoms {
             let code = a.flags & F_CODE != 0;
-            let pad = if code { CHIP_PAD as f32 } else { 0.0 };
-            let bold = self.bold_base || a.flags & F_B != 0;
+            let kbd = a.flags & F_KBD != 0;
+            let pad = if code {
+                CHIP_PAD as f32
+            } else if kbd {
+                KBD_PAD as f32
+            } else {
+                0.0
+            };
+            let bold = (self.bold_base || a.flags & F_B != 0) && !kbd;
+            let csi = run_si(a.flags, self.si);
             let (mut buf, mut bw) = (String::new(), 0.0f32);
             for ch in a.text.chars() {
                 let cw = if code {
                     cell_count(ch) as f32 * tx.cell_w
                 } else {
-                    m.w(tx, ch.encode_utf8(&mut [0; 4]), bold, self.si)
+                    m.w(tx, ch.encode_utf8(&mut [0; 4]), bold, csi)
                 };
                 if self.x + 2.0 * pad + bw + cw > self.width && (bw > 0.0 || self.x > 0.0) {
                     if bw > 0.0 {
@@ -375,17 +429,20 @@ pub(super) struct Lay<'a> {
     pub(super) imgs: &'a mut ImgStore,
     /// Footnote label -> number.
     pub(super) fnum: &'a HashMap<String, usize>,
+    pub(super) ext: &'a mut Ext,
     pub(super) ops: Vec<DrawOp>,
     pub(super) anchors: Vec<Anchor>,
     pub(super) links: Vec<LinkHit>,
     pub(super) checks: Vec<CheckHit>,
     pub(super) heads: Vec<(String, i32, bool)>,
+    pub(super) hits: Vec<Hit>,
+    pub(super) areas: Vec<(Rect, u64)>,
 }
 
 /// Space a block wants above it: headings open a section (the block gap plus ~1rem).
 pub(super) fn before(b: &Block) -> i32 {
     match &b.kind {
-        Kind::Heading { level, .. } => {
+        Kind::Heading { level, .. } | Kind::HtmlPara { head: level @ 1..=6, .. } => {
             if *level <= 2 {
                 BLOCK_GAP + 16
             } else {
@@ -399,7 +456,7 @@ pub(super) fn before(b: &Block) -> i32 {
 /// Space a block wants below it: a heading stays close to the text it introduces.
 pub(super) fn after(b: &Block) -> i32 {
     match &b.kind {
-        Kind::Heading { .. } => 8,
+        Kind::Heading { .. } | Kind::HtmlPara { head: 1..=6, .. } => 8,
         _ => BLOCK_GAP,
     }
 }
@@ -450,11 +507,11 @@ impl Lay<'_> {
             si,
             bold_base,
         };
-        let (mut lf, mut ll) = (0u8, 0u32);
+        let (mut lf, mut ll): (Fl, u32) = (0, 0);
         for item in inl {
             match item {
                 Inl::Text { text, flags, link } => {
-                    lf = *flags & !F_CODE;
+                    lf = *flags & !(F_CODE | F_KBD | F_MARK);
                     ll = *link;
                     if flags & F_CODE != 0 {
                         let w = code_w(self.tx, text) + 2.0 * CHIP_PAD as f32;
@@ -462,7 +519,17 @@ impl Lay<'_> {
                         f.chunk_w += w;
                         continue;
                     }
+                    if flags & F_KBD != 0 {
+                        let t = text.trim();
+                        if !t.is_empty() {
+                            let w = self.m.w(self.tx, t, false, SMALL) + 2.0 * KBD_PAD as f32;
+                            f.chunk.push(Atom { text: t.to_string(), flags: *flags, link: *link, w });
+                            f.chunk_w += w;
+                        }
+                        continue;
+                    }
                     let bold = bold_base || flags & F_B != 0;
+                    let si = run_si(*flags, si);
                     let mut rest = text.as_str();
                     while !rest.is_empty() {
                         let is_sp = rest.starts_with(char::is_whitespace);
@@ -471,7 +538,7 @@ impl Lay<'_> {
                         rest = r;
                         if is_sp {
                             f.flush(self.m, self.tx);
-                            f.space = Some((*flags & !F_CODE, *link, self.m.w(self.tx, " ", bold, si)));
+                            f.space = Some((*flags & !(F_CODE | F_MARK), *link, self.m.w(self.tx, " ", bold, si)));
                         } else {
                             let w = self.m.w(self.tx, tok, bold, si);
                             f.chunk.push(Atom { text: tok.to_string(), flags: *flags, link: *link, w });
@@ -480,10 +547,11 @@ impl Lay<'_> {
                     }
                 }
                 Inl::FootRef(label) => {
-                    let text = format!("[{}]", self.fnum.get(label).copied().unwrap_or(0));
+                    // A superscript number, like GitHub.
+                    let text = self.fnum.get(label).copied().unwrap_or(0).to_string();
                     let link = self.urls.id(&format!("#fn-{label}"));
-                    let w = self.m.w(self.tx, &text, bold_base, si);
-                    f.chunk.push(Atom { text, flags: F_LINK, link, w });
+                    let w = self.m.w(self.tx, &text, bold_base, SUP) + 2.0;
+                    f.chunk.push(Atom { text, flags: F_LINK | F_SUP, link, w });
                     f.chunk_w += w;
                 }
                 Inl::Soft => {
@@ -526,7 +594,7 @@ impl Lay<'_> {
         (out, (ow + ell).round() as i32)
     }
 
-    pub(super) fn emit(&mut self, lines: Vec<Vec<Run>>, x: i32, y: i32, si: usize, base: u8) {
+    pub(super) fn emit(&mut self, lines: Vec<Vec<Run>>, x: i32, y: i32, si: usize, base: Fl) {
         let lh = LH[si];
         for (i, line) in lines.into_iter().enumerate() {
             let ly = y + i as i32 * lh;
@@ -536,7 +604,9 @@ impl Lay<'_> {
                 if r.link != 0 {
                     self.links.push(LinkHit { x: rx, y: ly, w: rw, h: lh, link: r.link });
                 }
-                self.op(ly, ly + lh, Op::Text { x: rx, w: rw, text: r.text, flags: r.flags | base, si: si as u8, lh });
+                let link = r.link;
+                let op = Op::Text { x: rx, w: rw, text: r.text, flags: r.flags | base, si: si as u8, lh, link };
+                self.op(ly, ly + lh, op);
             }
         }
     }
@@ -579,6 +649,7 @@ impl Lay<'_> {
                 self.anchor(b, y, y + h);
                 y + h
             }
+            Kind::Code { lang, text } if lang.eq_ignore_ascii_case("mermaid") => self.mermaid(b, text, x, w, y),
             Kind::Code { lang, text } => {
                 let lh = code_lh();
                 let lines: Vec<String> =
@@ -588,6 +659,7 @@ impl Lay<'_> {
                 let r = Rect::new(x, y, w, h);
                 let key = fxhash(text.as_bytes(), fxhash(lang.as_bytes(), 3));
                 self.op(y, y + h, Op::Code { r, lang: lang.clone(), lines, lh, top, key, math: false });
+                self.copy_button(r, key);
                 self.anchor(b, y, y + h);
                 y + h
             }
@@ -625,6 +697,11 @@ impl Lay<'_> {
             Kind::List { start, items, loose } => self.list(*start, items, *loose, x, w, y, st),
             Kind::Table { aligns, head, rows } => self.table(b, aligns, head, rows, x, w, y),
             Kind::Images(imgs) => self.images(b, imgs, x, w, y),
+            Kind::Alert(k, bl) => self.alert(*k, bl, x, w, y, st),
+            Kind::Details { id, summary, blocks, open } => self.details(b, (*id, *open), summary, blocks, x, w, y, st),
+            Kind::HtmlPara { align, inl, head } => self.html_para(b, (*align, *head), inl, x, w, y),
+            Kind::HtmlTable(rows) => self.html_table(b, rows, x, w, y),
+            Kind::DefList(items) => self.def_list(b, items, x, w, y, st),
         }
     }
 
@@ -674,6 +751,7 @@ impl Lay<'_> {
                         flags: f,
                         si: BODY as u8,
                         lh: LH[BODY],
+                        link: 0,
                     },
                 );
             } else {
@@ -773,91 +851,20 @@ impl Lay<'_> {
         y + h
     }
 
-    pub(super) fn images(&mut self, b: &Block, imgs: &[Img], x: i32, w: i32, y: i32) -> i32 {
-        const H: i32 = 46;
-        const GAP: i32 = 8;
-        let (mut cx, mut cy, mut row_h) = (0, y, 0);
-        for im in imgs {
-            let real = self.imgs.resolve(&im.url).and_then(|id| self.imgs.size(id).map(|s| (id, s)));
-            if let Some((id, (nw, nh))) = real {
-                let (nw, nh) = (nw as i32, nh as i32);
-                let (mut dw, mut dh) = match im.size {
-                    (Some(a), Some(b)) => (a, b),
-                    (Some(a), None) => (a, (nh as f32 * a as f32 / nw as f32).round() as i32),
-                    (None, Some(b)) => ((nw as f32 * b as f32 / nh as f32).round() as i32, b),
-                    _ => (nw, nh),
-                };
-                if dw > w {
-                    dh = (dh as f32 * w as f32 / dw as f32).round() as i32;
-                    dw = w;
-                }
-                if dh > 720 {
-                    dw = (dw as f32 * 720.0 / dh as f32).round() as i32;
-                    dh = 720;
-                }
-                let (dw, dh) = (dw.max(1), dh.max(1));
-                if cx > 0 && cx + dw > w {
-                    cx = 0;
-                    cy += row_h + GAP;
-                    row_h = 0;
-                }
-                let r = Rect::new(x + cx, cy, dw, dh);
-                self.op(cy, cy + dh, Op::Image { r, id });
-                if im.link != 0 {
-                    self.links.push(LinkHit { x: r.x, y: cy, w: dw, h: dh, link: im.link });
-                }
-                cx += dw + GAP;
-                row_h = row_h.max(dh);
-                continue;
-            }
-            let label = if !im.alt.trim().is_empty() {
-                im.alt.trim().to_string()
-            } else {
-                im.url.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or("image").to_string()
-            };
-            let lw = self.m.w(self.tx, &label, false, SMALL).ceil() as i32;
-            let uw = self.m.w(self.tx, &im.url, false, TINY).ceil() as i32;
-            let bw = (lw.max(uw) + 56).clamp(170, w);
-            if cx > 0 && cx + bw > w {
-                cx = 0;
-                cy += row_h + GAP;
-                row_h = 0;
-            }
-            let r = Rect::new(x + cx, cy, bw, H);
-            self.op(cy, cy + H, Op::Card { r, rad: 6, fill: Col::Widget, border: Col::Border });
-            self.fill(Rect::new(r.x + 10, cy + 13, 20, 20), Col::AccentSoft, 5);
-            self.fill(Rect::new(r.x + 15, cy + 18, 10, 10), Col::Accent, 2);
-            let tw = bw - 44 - 10;
-            let (alt, aw) = self.fit(&label, SMALL, false, tw);
-            let (url, uw2) = self.fit(&im.url, TINY, false, tw);
-            self.op(
-                cy + 5,
-                cy + 5 + LH[SMALL],
-                Op::Text { x: r.x + 40, w: aw, text: alt, flags: 0, si: SMALL as u8, lh: LH[SMALL] },
-            );
-            if !url.is_empty() {
-                self.op(
-                    cy + 24,
-                    cy + 24 + LH[TINY],
-                    Op::Text { x: r.x + 40, w: uw2, text: url, flags: F_DIM, si: TINY as u8, lh: LH[TINY] },
-                );
-            }
-            if im.link != 0 {
-                self.links.push(LinkHit { x: r.x, y: cy, w: bw, h: H, link: im.link });
-            }
-            cx += bw + GAP;
-            row_h = row_h.max(H);
-        }
-        let y1 = cy + row_h;
-        self.anchor(b, y, y1);
-        y1
-    }
-
     /// The footnotes collected at the end of the document: a rule, then `n.` and the definition's
     /// blocks for each label, in reference order. Registers `fn-label` anchors.
     pub(super) fn foot_section(&mut self, defs: &[(usize, &str, &[Block])], x: i32, w: i32, y: i32) -> i32 {
         self.fill(Rect::new(x, y, w, 1), Col::Border, 0);
-        let mut y = y + 14;
+        let title = "Footnotes";
+        let tw = self.m.w(self.tx, title, true, SMALL).ceil() as i32;
+        let ty = y + 14;
+        let col = Col::Dim;
+        self.op(
+            ty,
+            ty + LH[SMALL],
+            Op::Label { x, w: tw, text: title.into(), col, si: SMALL as u8, lh: LH[SMALL], bold: true },
+        );
+        let mut y = ty + LH[SMALL] + 8;
         for (n, label, blocks) in defs {
             let num = format!("{n}.");
             let lw = self.m.w(self.tx, &num, false, BODY).ceil() as i32;
@@ -880,11 +887,9 @@ impl Lay<'_> {
             if blocks.is_empty() {
                 ey = iy + LH[BODY];
             }
-            self.op(
-                iy,
-                iy + LH[BODY],
-                Op::Text { x: x + indent - 8 - lw, w: lw, text: num, flags: F_DIM, si: BODY as u8, lh: LH[BODY] },
-            );
+            let (si, lh) = (BODY as u8, LH[BODY]);
+            let op = Op::Text { x: x + indent - 8 - lw, w: lw, text: num, flags: F_DIM, si, lh, link: 0 };
+            self.op(iy, iy + LH[BODY], op);
             y = ey + 6;
         }
         y

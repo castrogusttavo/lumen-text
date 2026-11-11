@@ -79,6 +79,11 @@ fn kinds(v: &MdView) -> Vec<&'static str> {
             Kind::Images(_) => "img",
             Kind::Math(_) => "math",
             Kind::FootDef { .. } => "foot",
+            Kind::Alert(..) => "alert",
+            Kind::Details { .. } => "details",
+            Kind::HtmlPara { .. } => "hpara",
+            Kind::HtmlTable(_) => "htable",
+            Kind::DefList(_) => "dl",
         })
         .collect()
 }
@@ -979,8 +984,21 @@ fn footnotes_are_numbered_by_first_reference_and_collected_at_the_end() {
         .filter_map(|o| if let Op::Text { text, .. } = &o.op { Some(text.clone()) } else { None })
         .collect();
     let all = texts.join("|");
-    assert!(all.contains("[1]") && all.contains("[2]"), "{all}");
+    // References are superscript numbers that link to their definition.
+    let sups: Vec<String> = v
+        .ops()
+        .iter()
+        .filter_map(|o| match &o.op {
+            Op::Text { text, flags, .. } if flags & F_SUP != 0 && flags & F_LINK != 0 => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sups, ["1", "2", "1"], "{all}");
     assert!(all.contains("[^zz]"), "an undefined reference stays literal: {all}");
+    assert!(
+        v.ops().iter().any(|o| matches!(&o.op, Op::Label { text, .. } if text == "Footnotes")),
+        "the section has a title"
+    );
     let pos = |s: &str| texts.iter().position(|t| t.contains(s)).unwrap_or_else(|| panic!("{s} not in {all}"));
     assert!(pos("Beta note") < pos("Alpha note"), "definitions follow the numbering: {all}");
     assert!(pos("Tail") < pos("Beta note"), "footnotes come after the body: {all}");

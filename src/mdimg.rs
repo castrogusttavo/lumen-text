@@ -1,4 +1,4 @@
-//! Images of the Markdown preview: local files only (png, jpg, gif, webp, svg).
+//! Images of the Markdown preview: local files and remote `http(s)` URLs (png, jpg, gif, webp, svg).
 //!
 //! * [`probe`] reads just enough of a file to know its size (layout needs the size, not the pixels).
 //! * Pixels are decoded on a worker thread ([`ImgStore::texture`] answers `Pending` meanwhile and the
@@ -7,12 +7,18 @@
 //! * Decoders are small crates with their default features off (`png`, `zune-jpeg`, `gif`,
 //!   `image-webp`); SVG goes through a minimal renderer on top of `tiny-skia` (see [`svg`]).
 //!
-//! Remote URLs (`http:`, `https:`, `data:`) and absolute paths are never loaded: the preview keeps
-//! its placeholder card for them.
+//! * Remote `http(s)` images (unless turned off, see [`ImgStore::set_remote`]) are downloaded on a
+//!   worker thread with the system `curl` (like the updater: timeouts, redirects, at most
+//!   [`REMOTE_MAX`] bytes) into an on-disk cache (`<cache>/lumen-text/md-images`, file name = hash of
+//!   the URL, least recently used files dropped past [`REMOTE_CACHE_BYTES`]); the cached file is
+//!   then treated like a local one. SVG `<text>` is not rasterized: [`ImgStore::svg_texts`] hands it
+//!   to the preview, which draws it with the UI font over the picture (badges).
+//!
+//! `data:` URLs and absolute paths are never loaded: the preview keeps its placeholder card.
 
 use crate::ui::{Canvas, Rect};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io::{Cursor, Read},
     path::{Path, PathBuf},
     rc::Rc,
@@ -34,6 +40,109 @@ pub const ANIM_BYTES: usize = 16 << 20;
 pub const ANIM_FRAMES: usize = 300;
 /// Animations that play at once; the other visible ones stay on their first frame (and get the badge).
 pub const MAX_PLAYING: usize = 4;
+/// Largest remote image downloaded.
+pub const REMOTE_MAX: u64 = 15 << 20;
+/// The remote image cache is trimmed (least recently used first) to this size.
+pub const REMOTE_CACHE_BYTES: u64 = 50 << 20;
+const REMOTE_TIMEOUT: Duration = Duration::from_secs(20);
+/// Downloads running at once.
+const FETCHERS: usize = 4;
+
+/// Downloads `url` into the file `dest`. Swapped out in tests (no network there).
+pub type FetchFn = fn(&str, &Path) -> Result<(), String>;
+
+#[cfg(not(test))]
+fn default_fetch(url: &str, dest: &Path) -> Result<(), String> {
+    crate::update::download(url, dest, REMOTE_MAX, REMOTE_TIMEOUT, false, None).map(|_| ())
+}
+
+#[cfg(test)]
+fn default_fetch(_url: &str, _dest: &Path) -> Result<(), String> {
+    Err("no network in tests".into())
+}
+
+/// `http://` / `https://` URL.
+pub fn is_remote(url: &str) -> bool {
+    let u = url.trim().as_bytes();
+    let pre = |p: &str| u.len() > p.len() && u[..p.len()].eq_ignore_ascii_case(p.as_bytes());
+    pre("https://") || pre("http://")
+}
+
+/// Cache file name of a remote URL (64-bit FNV-1a of the URL, in hex).
+pub fn cache_key(url: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in url.trim().bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Where downloaded images are kept.
+pub fn remote_cache_dir() -> PathBuf {
+    crate::paths::cache_home().unwrap_or_else(std::env::temp_dir).join("lumen-text").join("md-images")
+}
+
+/// Drop the least recently used files of the cache directory until it holds at most `cap` bytes.
+pub fn prune_cache(dir: &Path, cap: u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<(SystemTime, u64, PathBuf)> = rd
+        .flatten()
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            m.is_file().then(|| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len(), e.path()))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    files.sort();
+    for (_, len, p) in files {
+        if total <= cap {
+            break;
+        }
+        if std::fs::remove_file(&p).is_ok() {
+            total = total.saturating_sub(len);
+        }
+    }
+}
+
+/// Download `url` to the cache file `dest` (through a temporary file, checked to be an image).
+fn fetch_into(fetch: FetchFn, url: &str, dest: &Path, dir: &Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let tmp = dest.with_extension(format!("part{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let ok = fetch(url, &tmp).is_ok()
+        && std::fs::metadata(&tmp).is_ok_and(|m| m.len() > 0 && m.len() <= REMOTE_MAX)
+        && read_prefix(&tmp, 4096).is_some_and(|b| sniff(&b).is_some())
+        && std::fs::rename(&tmp, dest).is_ok();
+    let _ = std::fs::remove_file(&tmp);
+    if ok {
+        prune_cache(dir, REMOTE_CACHE_BYTES);
+    }
+    ok
+}
+
+/// Why an image is not drawn (the preview's placeholder card says it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImgState {
+    /// A local file that does not exist (or no document folder to resolve it against).
+    Missing,
+    /// A remote image being downloaded.
+    Loading,
+    /// The download failed.
+    Failed,
+    /// Remote images are turned off.
+    Off,
+    /// The file is there but is not an image we can read.
+    Bad,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fetch {
+    Running,
+    Failed,
+}
 
 /// Straight-alpha pixels, `0xAARRGGBB`.
 #[derive(Clone, Debug)]
@@ -567,6 +676,23 @@ pub struct ImgStore {
     anim_due: Option<Instant>,
     /// Animations that played in the current frame.
     playing: usize,
+    /// Fetch `http(s)` images.
+    remote_on: bool,
+    cache_dir: PathBuf,
+    fetch_fn: FetchFn,
+    /// Remote image id -> its URL.
+    urls: HashMap<u32, String>,
+    fetch: HashMap<u32, Fetch>,
+    fetch_q: VecDeque<u32>,
+    fetch_running: usize,
+    ftx: Sender<(u32, bool)>,
+    frx: Receiver<(u32, bool)>,
+    /// A download finished since [`ImgStore::take_fetched`] was last asked.
+    fetched: bool,
+    /// Cache files whose access time was refreshed this session.
+    touched: HashSet<u32>,
+    /// `<text>` of SVG images, per id.
+    svg_texts: HashMap<u32, std::rc::Rc<Vec<svg::SvgText>>>,
 }
 
 impl Default for ImgStore {
@@ -575,7 +701,7 @@ impl Default for ImgStore {
     }
 }
 
-fn percent_decode(s: &str) -> String {
+pub fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -599,7 +725,20 @@ fn percent_decode(s: &str) -> String {
 impl ImgStore {
     pub fn new() -> Self {
         let (tx, rx) = channel();
+        let (ftx, frx) = channel();
         ImgStore {
+            remote_on: true,
+            cache_dir: remote_cache_dir(),
+            fetch_fn: default_fetch,
+            urls: HashMap::new(),
+            fetch: HashMap::new(),
+            fetch_q: VecDeque::new(),
+            fetch_running: 0,
+            ftx,
+            frx,
+            fetched: false,
+            touched: HashSet::new(),
+            svg_texts: HashMap::new(),
             base: None,
             paths: vec![],
             ids: HashMap::new(),
@@ -627,10 +766,45 @@ impl ImgStore {
         true
     }
 
-    /// Id of the local file `url` names (relative to the base directory), `None` for remote URLs,
-    /// absolute paths and anything that does not name a file.
+    /// Fetch remote images or not. True when it changed (the layout has to be redone).
+    pub fn set_remote(&mut self, on: bool) -> bool {
+        std::mem::replace(&mut self.remote_on, on) != on
+    }
+
+    /// Download remote images with `f` into `dir` instead of curl and the user cache (tests).
+    pub fn set_fetcher(&mut self, f: FetchFn, dir: PathBuf) {
+        self.fetch_fn = f;
+        self.cache_dir = dir;
+    }
+
+    /// The file a local image `url` names (relative to the document folder).
+    pub fn local_path(&self, url: &str) -> Option<PathBuf> {
+        let url = url.trim();
+        if url.is_empty() || is_remote(url) || (url.contains(':') && !url.starts_with('.')) {
+            return None;
+        }
+        let path = url.split(['?', '#']).next().unwrap_or("");
+        let p = Path::new(path);
+        if p.is_absolute() {
+            return Some(p.to_path_buf());
+        }
+        Some(self.base.as_ref()?.join(percent_decode(path)))
+    }
+
+    /// Id of the image `url` names: a local file relative to the base directory, or (when remote
+    /// images are on) the cache file of an `http(s)` URL. `None` for other URLs, absolute paths and
+    /// anything that does not name a file.
     pub fn resolve(&mut self, url: &str) -> Option<u32> {
         let url = url.trim();
+        if is_remote(url) {
+            if !self.remote_on {
+                return None;
+            }
+            let full = self.cache_dir.join(cache_key(url));
+            let id = self.intern(full);
+            self.urls.entry(id).or_insert_with(|| url.to_string());
+            return Some(id);
+        }
         if url.is_empty() || url.starts_with('/') || url.starts_with('#') || url.starts_with('\\') {
             return None;
         }
@@ -642,7 +816,11 @@ impl ImgStore {
         }
         let path = url.split(['?', '#']).next().unwrap_or("");
         let full = self.base.as_ref()?.join(percent_decode(path));
-        Some(match self.ids.get(&full) {
+        Some(self.intern(full))
+    }
+
+    fn intern(&mut self, full: PathBuf) -> u32 {
+        match self.ids.get(&full) {
             Some(&i) => i,
             None => {
                 let i = self.paths.len() as u32;
@@ -650,18 +828,120 @@ impl ImgStore {
                 self.ids.insert(full, i);
                 i
             }
-        })
+        }
     }
 
-    /// Natural size of image `id` (header probe, cached; `None` when missing or unreadable).
+    /// Natural size of image `id` (header probe, cached; `None` when missing or unreadable). A
+    /// remote image that is not in the cache yet starts downloading and has no size until it lands.
     pub fn size(&mut self, id: u32) -> Option<(u32, u32)> {
         if let Some(s) = self.sizes.get(&id) {
             return *s;
         }
-        let s = self.paths.get(id as usize).and_then(|p| probe(p));
+        let path = self.paths.get(id as usize).cloned()?;
+        if self.urls.contains_key(&id) {
+            if !path.is_file() {
+                if !self.fetch.contains_key(&id) {
+                    self.fetch.insert(id, Fetch::Running);
+                    self.fetch_q.push_back(id);
+                    self.start_fetches();
+                }
+                return None;
+            }
+            if self.touched.insert(id) {
+                // Recently used: the cache trims the oldest files first.
+                let _ =
+                    std::fs::File::options().write(true).open(&path).and_then(|f| f.set_modified(SystemTime::now()));
+            }
+        }
+        let s = probe(&path);
+        if s.is_some()
+            && read_prefix(&path, 4096).is_some_and(|b| sniff(&b) == Some(Fmt::Svg))
+            && let Some(b) = read_prefix(&path, 2 << 20)
+        {
+            let t = svg::texts(&b);
+            if !t.is_empty() {
+                self.svg_texts.insert(id, std::rc::Rc::new(t));
+            }
+        }
         self.sizes.insert(id, s);
-        self.stamps.insert(id, self.paths.get(id as usize).and_then(|p| stamp_of(p)));
+        self.stamps.insert(id, stamp_of(&path));
         s
+    }
+
+    /// The `<text>` of SVG image `id` (positions in its natural pixels), drawn by the preview.
+    pub fn svg_texts(&self, id: u32) -> Option<std::rc::Rc<Vec<svg::SvgText>>> {
+        self.svg_texts.get(&id).cloned()
+    }
+
+    /// Why the image `url` is not drawn.
+    pub fn state_of(&mut self, url: &str) -> ImgState {
+        if !is_remote(url) {
+            return match self.resolve(url) {
+                Some(id) if self.paths.get(id as usize).is_some_and(|p| p.is_file()) => ImgState::Bad,
+                _ => ImgState::Missing,
+            };
+        }
+        if !self.remote_on {
+            return ImgState::Off;
+        }
+        let Some(id) = self.resolve(url) else { return ImgState::Failed };
+        match self.fetch.get(&id) {
+            Some(Fetch::Running) => ImgState::Loading,
+            Some(Fetch::Failed) => ImgState::Failed,
+            None => {
+                if self.size(id).is_some() {
+                    ImgState::Bad
+                } else if self.fetch.get(&id) == Some(&Fetch::Running) {
+                    ImgState::Loading
+                } else {
+                    ImgState::Failed
+                }
+            }
+        }
+    }
+
+    fn start_fetches(&mut self) {
+        while self.fetch_running < FETCHERS {
+            let Some(id) = self.fetch_q.pop_front() else { break };
+            let (Some(url), Some(dest)) = (self.urls.get(&id).cloned(), self.paths.get(id as usize).cloned()) else {
+                continue;
+            };
+            let (tx, f, dir) = (self.ftx.clone(), self.fetch_fn, self.cache_dir.clone());
+            self.fetch_running += 1;
+            let spawned = std::thread::Builder::new().name("md-fetch".into()).spawn(move || {
+                let ok = std::panic::catch_unwind(|| fetch_into(f, &url, &dest, &dir)).unwrap_or(false);
+                let _ = tx.send((id, ok));
+            });
+            if spawned.is_err() {
+                self.fetch_running -= 1;
+                self.fetch.insert(id, Fetch::Failed);
+            }
+        }
+    }
+
+    /// Collect finished downloads. True when one arrived.
+    pub fn poll_fetches(&mut self) -> bool {
+        let mut any = false;
+        while let Ok((id, ok)) = self.frx.try_recv() {
+            self.fetch_running = self.fetch_running.saturating_sub(1);
+            if ok {
+                self.fetch.remove(&id);
+            } else {
+                self.fetch.insert(id, Fetch::Failed);
+            }
+            self.sizes.remove(&id);
+            any = true;
+        }
+        if any {
+            self.fetched = true;
+            self.start_fetches();
+        }
+        any
+    }
+
+    /// A download finished since the last call: sizes changed, the layout has to be redone.
+    pub fn take_fetched(&mut self) -> bool {
+        std::mem::replace(&mut self.fetched, false)
     }
 
     /// Forget what is cached about images whose file changed since it was probed (size, decoded
@@ -676,6 +956,7 @@ impl ImgStore {
         for id in &stale {
             self.sizes.remove(id);
             self.stamps.remove(id);
+            self.svg_texts.remove(id);
             *self.gens.entry(*id).or_insert(0) += 1;
             let keys: Vec<Key> = self.tex.keys().filter(|k| k.0 == *id).copied().collect();
             for k in keys {
@@ -757,9 +1038,9 @@ impl ImgStore {
         }
     }
 
-    /// Collect finished decodes. True when something new arrived (a redraw is due).
+    /// Collect finished decodes (and downloads). True when something new arrived (a redraw is due).
     pub fn poll(&mut self) -> bool {
-        let mut any = false;
+        let mut any = self.poll_fetches();
         while let Ok((key, gen_, out)) = self.rx.try_recv() {
             self.inflight = self.inflight.saturating_sub(1);
             if gen_ != self.gens.get(&key.0).copied().unwrap_or(0) || !matches!(self.tex.get(&key), Some(Slot::Pending))
@@ -784,9 +1065,9 @@ impl ImgStore {
         any
     }
 
-    /// Decodes are running or queued: keep redrawing.
+    /// Decodes or downloads are running or queued: keep redrawing.
     pub fn pending(&self) -> bool {
-        self.inflight > 0 || !self.jobs.is_empty()
+        self.inflight > 0 || !self.jobs.is_empty() || self.fetch_running > 0 || !self.fetch_q.is_empty()
     }
 
     /// Drop the least recently drawn textures while over [`CACHE_BYTES`].
@@ -811,13 +1092,262 @@ impl ImgStore {
 }
 
 // ---------------------------------------------------------------------------------------------
-// SVG: shapes, paths, solid fills and strokes, transforms, viewBox. No text, CSS classes, filters,
-// masks, clip paths or real gradients (a gradient paints its first stop color).
+// SVG: shapes, paths, solid fills and strokes, transforms, viewBox, clip paths, embedded
+// `data:` images. Text is extracted ([`svg::texts`]) for the preview to draw with the UI font. No
+// CSS classes, filters, masks or real gradients (a gradient paints its first stop color).
 
 pub mod svg {
     use super::{Pix, argb};
     use std::collections::HashMap;
-    use tiny_skia::{Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
+    use std::rc::Rc;
+    use tiny_skia::{
+        Color, FillRule, LineCap, LineJoin, Mask, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform,
+    };
+
+    /// A `<text>` element: baseline position and size in the image's natural pixels.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct SvgText {
+        pub x: f32,
+        pub y: f32,
+        pub size: f32,
+        pub text: String,
+        pub color: [u8; 4],
+        /// -1 start, 0 middle, 1 end.
+        pub anchor: i8,
+        pub bold: bool,
+    }
+
+    #[derive(Clone)]
+    struct TSt {
+        ts: Transform,
+        size: f32,
+        fill: Option<[u8; 4]>,
+        op: f32,
+        anchor: i8,
+        bold: bool,
+    }
+
+    /// The text of an SVG (shields.io badges, labels), skipping blurred shadow copies.
+    pub fn texts(b: &[u8]) -> Vec<SvgText> {
+        let mut out = vec![];
+        let Ok(text) = std::str::from_utf8(b) else { return out };
+        let Ok(doc) = roxmltree::Document::parse_with_options(
+            text,
+            roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() },
+        ) else {
+            return out;
+        };
+        let root = doc.root_element();
+        let Some((nw, nh)) = size(b) else { return out };
+        let vb = view_box(&root).unwrap_or([0.0, 0.0, nw as f32, nh as f32]);
+        let ts = Transform::from_scale(nw as f32 / vb[2], nh as f32 / vb[3]).pre_translate(-vb[0], -vb[1]);
+        let st = TSt { ts, size: 16.0, fill: Some([0, 0, 0, 255]), op: 1.0, anchor: -1, bold: false };
+        walk_text(root, &st, &mut out, 0);
+        out
+    }
+
+    fn walk_text(n: roxmltree::Node, parent: &TSt, out: &mut Vec<SvgText>, depth: u32) {
+        if !n.is_element() || depth > 24 || out.len() > 200 {
+            return;
+        }
+        let tag = n.tag_name().name();
+        if matches!(
+            tag,
+            "defs"
+                | "clipPath"
+                | "mask"
+                | "symbol"
+                | "title"
+                | "desc"
+                | "metadata"
+                | "style"
+                | "linearGradient"
+                | "radialGradient"
+                | "pattern"
+                | "filter"
+                | "marker"
+                | "script"
+                | "foreignObject"
+        ) || prop(&n, "display").as_deref() == Some("none")
+        {
+            return;
+        }
+        let mut st = parent.clone();
+        if let Some(t) = n.attribute("transform") {
+            st.ts = st.ts.pre_concat(transform(t));
+        }
+        if let Some(v) = prop(&n, "font-size").and_then(|v| length(&v)) {
+            st.size = v;
+        }
+        if let Some(c) = prop(&n, "fill").and_then(|v| color(&v, [0, 0, 0, 255])) {
+            st.fill = c;
+        }
+        let f = |name: &str| prop(&n, name).and_then(|v| v.parse::<f32>().ok()).map(|v| v.clamp(0.0, 1.0));
+        if let Some(v) = f("fill-opacity") {
+            st.op = v;
+        }
+        if let Some(v) = f("opacity") {
+            st.op *= v;
+        }
+        match prop(&n, "text-anchor").as_deref() {
+            Some("middle") => st.anchor = 0,
+            Some("end") => st.anchor = 1,
+            Some("start") => st.anchor = -1,
+            _ => {}
+        }
+        if let Some(w) = prop(&n, "font-weight") {
+            st.bold = w == "bold" || w == "bolder" || w.parse::<u32>().is_ok_and(|v| v >= 600);
+        }
+        if tag == "text" {
+            if n.attribute("filter").is_some() {
+                return;
+            }
+            let raw: String = n.descendants().filter(|d| d.is_text()).filter_map(|d| d.text()).collect();
+            let text = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+            let Some(fill) = st.fill.filter(|_| !text.is_empty()) else { return };
+            let first = |name: &str| {
+                n.attribute(name).and_then(|v| {
+                    v.split(|c: char| c == ',' || c.is_whitespace()).find(|s| !s.is_empty()).and_then(length)
+                })
+            };
+            let (x, y) = (first("x").unwrap_or(0.0), first("y").unwrap_or(0.0));
+            let t = st.ts;
+            let (px, py) = (t.sx * x + t.kx * y + t.tx, t.ky * x + t.sy * y + t.ty);
+            let k = (t.ky * t.ky + t.sy * t.sy).sqrt();
+            let a = (fill[3] as f32 * st.op).round().clamp(0.0, 255.0) as u8;
+            out.push(SvgText {
+                x: px,
+                y: py,
+                size: st.size * k,
+                text,
+                color: [fill[0], fill[1], fill[2], a],
+                anchor: st.anchor,
+                bold: st.bold,
+            });
+            return;
+        }
+        for c in n.children() {
+            walk_text(c, &st, out, depth + 1);
+        }
+    }
+
+    /// Path of a basic shape element (rect, circle, ellipse, polygon, polyline, path).
+    fn shape_path(n: &roxmltree::Node) -> Option<tiny_skia::Path> {
+        match n.tag_name().name() {
+            "rect" => {
+                let (w, h) = (num(n, "width"), num(n, "height"));
+                let (mut rx, mut ry) = (num(n, "rx"), num(n, "ry"));
+                if n.attribute("rx").is_none() {
+                    rx = ry;
+                }
+                if n.attribute("ry").is_none() {
+                    ry = rx;
+                }
+                (w > 0.0 && h > 0.0).then(|| rect_path(num(n, "x"), num(n, "y"), w, h, rx, ry)).flatten()
+            }
+            "circle" => PathBuilder::from_circle(num(n, "cx"), num(n, "cy"), num(n, "r")),
+            "ellipse" => {
+                let (cx, cy, rx, ry) = (num(n, "cx"), num(n, "cy"), num(n, "rx"), num(n, "ry"));
+                tiny_skia::Rect::from_xywh(cx - rx, cy - ry, rx * 2.0, ry * 2.0).and_then(PathBuilder::from_oval)
+            }
+            "polygon" | "polyline" => n.attribute("points").and_then(|s| points(s, n.tag_name().name() == "polygon")),
+            "path" => n.attribute("d").and_then(path_data),
+            _ => None,
+        }
+    }
+
+    /// Coverage mask of a `<clipPath>` for a pixmap of `w` x `h`.
+    fn clip_mask(cp: roxmltree::Node, ts: Transform, w: u32, h: u32) -> Option<Mask> {
+        let mut m = Mask::new(w, h)?;
+        let mut any = false;
+        for c in cp.children().filter(|c| c.is_element()) {
+            let Some(p) = shape_path(&c) else { continue };
+            let t = c.attribute("transform").map_or(ts, |s| ts.pre_concat(transform(s)));
+            m.fill_path(&p, FillRule::Winding, true, t);
+            any = true;
+        }
+        any.then_some(m)
+    }
+
+    /// Standard base64 (padding and whitespace tolerated).
+    fn base64(s: &str) -> Option<Vec<u8>> {
+        let val = |c: u8| -> Option<u32> {
+            let v: u8 = match c {
+                b'A'..=b'Z' => c - b'A',
+                b'a'..=b'z' => c - b'a' + 26,
+                b'0'..=b'9' => c - b'0' + 52,
+                b'+' | b'-' => 62,
+                b'/' | b'_' => 63,
+                _ => return None,
+            };
+            Some(v as u32)
+        };
+        let mut out = Vec::with_capacity(s.len() * 3 / 4);
+        let (mut acc, mut bits) = (0u32, 0u32);
+        for c in s.bytes() {
+            if c == b'=' {
+                break;
+            }
+            if c.is_ascii_whitespace() {
+                continue;
+            }
+            acc = (acc << 6) | val(c)?;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((acc >> bits) as u8);
+                acc &= (1 << bits) - 1;
+            }
+        }
+        Some(out)
+    }
+
+    fn pixmap_of(p: &Pix) -> Option<Pixmap> {
+        let mut data = Vec::with_capacity(p.px.len() * 4);
+        for &c in &p.px {
+            let a = c >> 24;
+            let pm = |v: u32| ((v * a + 127) / 255) as u8;
+            data.extend_from_slice(&[pm((c >> 16) & 255), pm((c >> 8) & 255), pm(c & 255), a as u8]);
+        }
+        Pixmap::from_vec(data, tiny_skia::IntSize::from_wh(p.w, p.h)?)
+    }
+
+    /// An `<image>` with an embedded `data:` SVG / PNG (badge logos).
+    fn draw_image(n: &roxmltree::Node, st: &St, pm: &mut Pixmap, depth: u32) {
+        let href = n.attribute("href").or_else(|| n.attributes().find(|a| a.name() == "href").map(|a| a.value()));
+        let Some(href) = href else { return };
+        let Some((head, data)) = href.split_once(',') else { return };
+        if !head.starts_with("data:") || !head.ends_with(";base64") || depth > 2 {
+            return;
+        }
+        let (w, h) = (num(n, "width"), num(n, "height"));
+        let (x, y) = (num(n, "x"), num(n, "y"));
+        let t = st.ts;
+        let (dx, dy) = (t.sx * x + t.kx * y + t.tx, t.ky * x + t.sy * y + t.ty);
+        let (dw, dh) = ((w * t.sx.abs()).round() as u32, (h * t.sy.abs()).round() as u32);
+        if dw == 0 || dh == 0 || dw > 4096 || dh > 4096 {
+            return;
+        }
+        let Some(bytes) = base64(data) else { return };
+        let img = if head.contains("svg") {
+            render_depth(&bytes, dw, dh, depth + 1)
+        } else if head.contains("png") {
+            super::decode_png(&bytes).map(|p| super::scale_to(p, dw, dh))
+        } else {
+            None
+        };
+        if let Some(p) = img.as_ref().and_then(pixmap_of) {
+            let paint = PixmapPaint { opacity: st.opacity, ..Default::default() };
+            pm.draw_pixmap(
+                dx.round() as i32,
+                dy.round() as i32,
+                p.as_ref(),
+                &paint,
+                Transform::identity(),
+                st.clip.as_deref(),
+            );
+        }
+    }
 
     /// `width` / `height` / `viewBox` of the root, in px.
     pub fn size(b: &[u8]) -> Option<(u32, u32)> {
@@ -890,6 +1420,7 @@ pub mod svg {
         stroke_op: f32,
         color: [u8; 4],
         ts: Transform,
+        clip: Option<Rc<Mask>>,
     }
 
     const NAMED: &[(&str, [u8; 3])] = &[
@@ -971,6 +1502,8 @@ pub mod svg {
     struct Ctx<'a, 'b> {
         ids: HashMap<&'a str, roxmltree::Node<'a, 'b>>,
         depth: u32,
+        /// Nesting of embedded `data:` SVGs.
+        nest: u32,
     }
 
     /// Value of presentation property `name`: the `style` attribute wins over the attribute.
@@ -1092,13 +1625,14 @@ pub mod svg {
     }
 
     fn draw_path(pm: &mut Pixmap, path: &tiny_skia::Path, st: &St) {
+        let mask = st.clip.as_deref();
         if let Some(c) = st.fill {
             let rule = if st.even_odd { FillRule::EvenOdd } else { FillRule::Winding };
-            pm.fill_path(path, &paint_of(c, st.fill_op * st.opacity), rule, st.ts, None);
+            pm.fill_path(path, &paint_of(c, st.fill_op * st.opacity), rule, st.ts, mask);
         }
         if let (Some(c), true) = (st.stroke, st.sw > 0.0) {
             let stroke = Stroke { width: st.sw, line_cap: st.cap, line_join: st.join, ..Default::default() };
-            pm.stroke_path(path, &paint_of(c, st.stroke_op * st.opacity), &stroke, st.ts, None);
+            pm.stroke_path(path, &paint_of(c, st.stroke_op * st.opacity), &stroke, st.ts, mask);
         }
     }
 
@@ -1164,7 +1698,6 @@ pub mod svg {
                 | "filter"
                 | "marker"
                 | "text"
-                | "image"
                 | "script"
                 | "foreignObject"
         ) {
@@ -1175,7 +1708,17 @@ pub mod svg {
         }
         let mut st = parent.clone();
         apply_props(&n, &mut st, cx);
+        if let Some(id) = prop(&n, "clip-path")
+            .as_deref()
+            .and_then(|v| v.trim().strip_prefix("url(#"))
+            .and_then(|r| r.split(')').next())
+            && let Some(cp) = cx.ids.get(id).copied()
+            && let Some(m) = clip_mask(cp, st.ts, pm.width(), pm.height())
+        {
+            st.clip = Some(Rc::new(m));
+        }
         match tag {
+            "image" => draw_image(&n, &st, pm, cx.nest),
             "svg" | "g" | "a" | "switch" => {
                 cx.depth += 1;
                 for c in n.children() {
@@ -1479,6 +2022,10 @@ pub mod svg {
 
     /// Rasterize at exactly `tw` x `th` pixels.
     pub fn render(b: &[u8], tw: u32, th: u32) -> Option<Pix> {
+        render_depth(b, tw, th, 0)
+    }
+
+    fn render_depth(b: &[u8], tw: u32, th: u32, nest: u32) -> Option<Pix> {
         let text = std::str::from_utf8(b).ok()?;
         let doc = roxmltree::Document::parse_with_options(
             text,
@@ -1492,7 +2039,7 @@ pub mod svg {
         let ts = Transform::from_scale(tw as f32 / vb[2], th as f32 / vb[3]).pre_translate(-vb[0], -vb[1]);
         let ids: HashMap<&str, roxmltree::Node> =
             doc.descendants().filter(|n| n.is_element()).filter_map(|n| n.attribute("id").map(|i| (i, n))).collect();
-        let mut cx = Ctx { ids, depth: 0 };
+        let mut cx = Ctx { ids, depth: 0, nest };
         let base = St {
             fill: Some([0, 0, 0, 255]),
             stroke: None,
@@ -1505,6 +2052,7 @@ pub mod svg {
             stroke_op: 1.0,
             color: [0, 0, 0, 255],
             ts,
+            clip: None,
         };
         walk(root, &base, &mut pm, &mut cx);
         let px = pm
@@ -1639,6 +2187,7 @@ mod tests {
     #[test]
     fn resolve_only_accepts_local_relative_paths() {
         let mut s = ImgStore::new();
+        s.set_remote(false);
         assert_eq!(s.resolve("a.png"), None, "no base directory yet");
         s.set_base(Some(&dir()));
         assert!(s.resolve("a.png").is_some());

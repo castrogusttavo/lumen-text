@@ -22,38 +22,57 @@
 //! **bold** (semibold face), *emphasis* (the UI family has no italic face: emphasis is slanted
 //! synthetically by cosmic-text; if that ever fails it falls back to the text colour mixed toward
 //! the accent), ~~strikethrough~~ (line through), `inline code` (monospace
-//! chip), links (accent + underline, hit-testable with [`MdView::link_at`]), images (local
-//! files are decoded: png, jpg, gif, webp, svg, see `mdimg`; remote URLs keep a bordered placeholder
-//! with alt text and URL), bullet / ordered / nested / task lists (a click on a checkbox toggles the
-//! source, see [`MdView::check_at`]), footnotes (numbered by first reference, collected at the end),
+//! chip), links (accent + underline, hit-testable with [`MdView::link_at`]; bare URLs and e-mail
+//! addresses are linked too), images (local files and, unless turned off, `http(s)` URLs fetched
+//! in the background into an on-disk cache: png, jpg, gif, webp, svg, see `mdimg`; a missing image
+//! keeps a card with its alt text), videos (a card that opens them externally), bullet / ordered /
+//! nested / task lists (a click on a checkbox toggles the source, see [`MdView::check_at`]),
+//! footnotes (superscript references numbered by first reference, collected at the end with back
+//! links), GitHub alerts (`> [!NOTE]` ...), `<details>` blocks (collapsible, Markdown inside),
+//! Mermaid diagrams (flowchart, sequence, pie and class diagrams drawn natively, see `mermaid`),
+//! emoji shortcodes, superscript / subscript (`<sup>`, `^x^`, `~x~`), definition lists,
 //! math (`$..$` as a chip, `$$..$$` as a block, monospace source text, no LaTeX engine), block quotes, thematic breaks, fenced and indented code blocks (monospace, never wrapped, clipped
-//! horizontally, language label, TextMate syntax colors when a highlighter is given to
-//! [`MdView::draw_with`]), GFM tables (content-sized columns capped at ~48ch, wrapping cells, alignment),
-//! hard and soft breaks, and `<img>` / `<br>` / `<a href>` found in raw HTML (other tags are
-//! stripped; HTML comments are dropped).
-//! Not supported: definition lists, metadata blocks, admonition quotes, true italic faces, inline images
+//! horizontally, language label, a Copy button on hover, TextMate syntax colors when a highlighter
+//! is given to [`MdView::draw_with`]), GFM tables (content-sized columns capped at ~48ch, wrapping
+//! cells, alignment), hard and soft breaks, and a subset of raw HTML (see `html`: `<b> <i> <u>
+//! <ins> <mark> <kbd> <sup> <sub> <s> <br> <img> <video> <a>`, aligned `<p>` / `<div>` / `<hN>`,
+//! simple `<table>` with `colspan`; other tags are stripped and comments dropped).
+//! Text can be selected with the mouse and copied ([`MdView::selected_text`]).
+//! Not supported: metadata blocks, true italic faces, inline images
 //! in the middle of a text line (an image ends the paragraph text before it; consecutive images
-//! share a row), animated GIF/WebP (first frame only), SVG text / CSS classes / filters / gradients
-//! (a gradient paints its first stop color), LaTeX typesetting.
+//! share a row), animated GIF/WebP (first frame only), SVG CSS classes / filters / gradients
+//! (a gradient paints its first stop color), LaTeX typesetting, in-app video playback.
 #![allow(dead_code)]
 
-use crate::mdimg::{ImgStore, Tex};
+use crate::mdimg::{ImgStore, Pix, Tex};
 use crate::theme::{Rgba, Theme};
 use crate::ui::{Canvas, Rect, TextCtx, font_size, line_h};
-use pulldown_cmark::{Alignment, BrokenLink, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, BrokenLink, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 
+mod alert;
+mod emoji_table;
+mod extra;
+mod html;
+mod inline;
 mod layout;
+pub(crate) mod mermaid;
 mod paint;
 mod parse;
+mod select;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_ext;
 
+pub use extra::Act;
+use extra::*;
 use layout::*;
 use paint::*;
 pub use parse::*;
+use select::*;
 
 // ---------------------------------------------------------------------------------------------
 // constants
@@ -63,14 +82,18 @@ const PAD: i32 = 24;
 const MAX_COL: i32 = 736;
 /// UI font sizes in use: H1..H6 (0..5), body, table cells, small, tiny. A modular scale over a 16 px
 /// body (H1 1.6x, H2 1.4x, H3 1.2x, H4..H6 at body size and told apart by weight / color).
-const SIZES: [f32; 10] = [25.6, 22.4, 19.2, 16.0, 16.0, 16.0, 16.0, 16.0, 13.0, 11.0];
+const SIZES: [f32; 11] = [25.6, 22.4, 19.2, 16.0, 16.0, 16.0, 16.0, 16.0, 13.0, 11.0, 11.5];
 /// Line box height (px) per size index: headings ~1.35, body 1.8 (airy prose), table cells 1.4.
-const LH: [i32; 10] = [35, 30, 26, 26, 26, 26, 29, 22, 20, 16];
+const LH: [i32; 11] = [35, 30, 26, 26, 26, 26, 29, 22, 20, 16, 16];
 const BODY: usize = 6;
 /// Table cells: body size on a tighter line.
 const CELL: usize = 7;
 const SMALL: usize = 8;
 const TINY: usize = 9;
+/// Superscript / subscript text (~72% of the body).
+const SUP: usize = 10;
+/// Horizontal padding inside a `<kbd>` key cap.
+const KBD_PAD: i32 = 6;
 /// Table cell padding (horizontal, vertical).
 const CELL_PAD_X: i32 = 13;
 const CELL_PAD_Y: i32 = 8;
@@ -92,14 +115,24 @@ const QUOTE_INDENT: i32 = 20;
 /// Task checkbox side.
 const CHECK: i32 = 18;
 
-const F_B: u8 = 1;
-const F_I: u8 = 2;
-const F_S: u8 = 4;
-const F_CODE: u8 = 8;
-const F_LINK: u8 = 16;
-const F_DIM: u8 = 32;
+/// Inline style flags of a text run.
+type Fl = u16;
+const F_B: Fl = 1;
+const F_I: Fl = 2;
+const F_S: Fl = 4;
+const F_CODE: Fl = 8;
+const F_LINK: Fl = 16;
+const F_DIM: Fl = 32;
 /// Inline math: drawn as a code chip, tinted with the accent.
-const F_MATH: u8 = 64;
+const F_MATH: Fl = 64;
+/// `<u>` / `<ins>`.
+const F_U: Fl = 128;
+/// `<mark>`: highlighted background.
+const F_MARK: Fl = 256;
+/// `<kbd>`: a key cap.
+const F_KBD: Fl = 512;
+const F_SUP: Fl = 1024;
+const F_SUB: Fl = 2048;
 
 // ---------------------------------------------------------------------------------------------
 // public view
@@ -135,6 +168,16 @@ pub struct MdView {
     foot: Option<(SegLay, Placed)>,
     hl: HashMap<u64, Option<Rc<HlLines>>>,
     hl_theme: u64,
+    /// Toggle state and caches of the interactive blocks (details, Mermaid).
+    ext: Ext,
+    /// Pointer position (canvas coordinates) while it is over the preview.
+    hover: Option<(f64, f64)>,
+    /// Text selection: (anchor, head), valid for the layout it was made on.
+    sel: Option<(SelPos, SelPos)>,
+    /// Code block whose Copy button was just used, and when.
+    copied: Option<(u64, std::time::Instant)>,
+    /// Rasterized diagram shapes per (diagram, device size, theme).
+    dia_tex: HashMap<(u64, i32, i32, u64), Rc<Pix>>,
 }
 
 impl Default for MdView {
@@ -148,6 +191,8 @@ fn parse_seg(text: &str, ctx: &Ctx, urls: &mut Urls) -> (Vec<Block>, Vec<String>
     let idx = LineIndex::new(text);
     let mut opts =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_MATH;
+    opts |=
+        Options::ENABLE_GFM | Options::ENABLE_DEFINITION_LIST | Options::ENABLE_SUPERSCRIPT | Options::ENABLE_SUBSCRIPT;
     if !ctx.foot.is_empty() {
         opts |= Options::ENABLE_OLD_FOOTNOTES;
     }
@@ -166,6 +211,7 @@ fn parse_seg(text: &str, ctx: &Ctx, urls: &mut Urls) -> (Vec<Block>, Vec<String>
         table: None,
         html: None,
         image: None,
+        hstack: vec![],
     };
     let refs = &ctx.refs;
     let cb = move |bl: BrokenLink| {
@@ -176,11 +222,15 @@ fn parse_seg(text: &str, ctx: &Ctx, urls: &mut Urls) -> (Vec<Block>, Vec<String>
     }
     b.close_implicit();
     while b.stack.len() > 1 {
-        // unbalanced input cannot happen with pulldown-cmark, but never lose content
+        // unbalanced input cannot happen with pulldown-cmark (an unclosed `<details>` can), but
+        // never lose content
         match b.stack.pop() {
-            Some(Cont::Quote { blocks, l }) => b.push_block(Block { kind: Kind::Quote(blocks), line: l.0, end: l.1 }),
+            Some(Cont::Quote { blocks, l, alert }) => b.push_block(quote_block(blocks, l, alert)),
             Some(Cont::Foot { blocks, label, l }) => {
                 b.push_block(Block { kind: Kind::FootDef { label, blocks }, line: l.0, end: l.1 })
+            }
+            Some(Cont::Details { id, summary, blocks, l, open }) => {
+                b.push_block(Block { kind: Kind::Details { id, summary, blocks, open }, line: l.0, end: l.1 })
             }
             _ => {}
         }
@@ -212,6 +262,8 @@ fn seg_lay(key: SegKey, lay: Lay, y_end: i32, blocks: &[Block]) -> SegLay {
         anchors: lay.anchors,
         links,
         checks,
+        hits: lay.hits,
+        areas: lay.areas,
         heads: lay.heads,
         max_link_h,
         first_before: shown.first().map_or(0, |b| before(b)),
@@ -280,6 +332,11 @@ impl MdView {
             foot: None,
             hl: HashMap::new(),
             hl_theme: 0,
+            ext: Ext::default(),
+            hover: None,
+            sel: None,
+            copied: None,
+            dia_tex: HashMap::new(),
         }
     }
 
@@ -397,6 +454,11 @@ impl MdView {
     /// text / width / code font size is already there). `draw` calls this itself. Only segments
     /// whose cached layout does not match are laid out again.
     pub fn ensure_layout(&mut self, tx: &mut TextCtx, width: i32) {
+        // Remote images that finished downloading since the last layout: their size is known now.
+        self.imgs.poll_fetches();
+        if self.imgs.take_fetched() {
+            self.base_gen += 1;
+        }
         let key = (
             width,
             font_size().to_bits(),
@@ -430,11 +492,14 @@ impl MdView {
                     urls: &mut self.urls,
                     imgs: &mut self.imgs,
                     fnum: &fnum,
+                    ext: &mut self.ext,
                     ops: vec![],
                     anchors: vec![],
                     links: vec![],
                     checks: vec![],
                     heads: vec![],
+                    hits: vec![],
+                    areas: vec![],
                 };
                 let y_end = lay.blocks(&sd.blocks, col_x, col_w, 0, St { dim: false, depth: 0, tight: None });
                 sd.lay = Some(seg_lay(skey, lay, y_end, &sd.blocks));
@@ -468,11 +533,14 @@ impl MdView {
                 urls: &mut self.urls,
                 imgs: &mut self.imgs,
                 fnum: &fnum,
+                ext: &mut self.ext,
                 ops: vec![],
                 anchors: vec![],
                 links: vec![],
                 checks: vec![],
                 heads: vec![],
+                hits: vec![],
+                areas: vec![],
             };
             let y_end = lay.foot_section(&list, col_x, col_w, 0);
             let sl = seg_lay((width, key.1, key.2, 0, base_gen), lay, y_end, &[]);
@@ -481,6 +549,8 @@ impl MdView {
         }
         let height = y.max(PAD) + PAD;
         self.lay = Some(Layout { key, height, segs, col_x, col_w });
+        // Selections point into the old ops.
+        self.sel = None;
         self.layouts += 1;
         self.last_layout_ms = t0.elapsed().as_secs_f64() * 1000.0;
     }
@@ -523,45 +593,63 @@ impl MdView {
             self.hl.clear();
             self.hl_theme = theme_key;
         }
-        let MdView { order, cache, urls: _, imgs, lay, hl: hl_cache, foot, .. } = self;
+        let MdView { order, cache, urls: _, imgs, lay, hl: hl_cache, foot, sel, hover, copied, dia_tex, .. } = self;
         let Some(lay) = lay.as_ref() else { return };
         let sc = scroll_px.floor() as i32;
         let (top, bot) = (sc, sc + rect.h);
         let clip = rect;
         let ox = rect.x;
         let first = order.partition_point(|p| p.y1 <= top);
-        let mut segs: Vec<(&SegLay, i32)> = vec![];
-        for p in &order[first..] {
+        let mut segs: Vec<(usize, &SegLay, i32)> = vec![];
+        for (ix, p) in order.iter().enumerate().skip(first) {
             if p.y0 >= bot {
                 break;
             }
             if let Some(l) = cache.get(&p.key).and_then(|d| d.lay.as_ref()) {
-                segs.push((l, p.y0));
+                segs.push((ix, l, p.y0));
             }
         }
         if let Some((l, p)) = foot.as_ref()
             && p.y0 < bot
             && p.y1 > top
         {
-            segs.push((l, p.y0));
+            segs.push((FOOT, l, p.y0));
         }
         let _ = lay;
-        for (sl, base) in segs {
+        let sel = sel.map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
+        let hover = *hover;
+        let hover_link = hover.map_or(0, |(hx, hy)| {
+            segs.iter()
+                .find_map(|(_, sl, base)| {
+                    let (cx, cy) = ((hx - ox as f64) as i32, (hy - rect.y as f64) as i32 + sc - base);
+                    sl.links.iter().find(|l| cx >= l.x && cx < l.x + l.w && cy >= l.y && cy < l.y + l.h).map(|l| l.link)
+                })
+                .unwrap_or(0)
+        });
+        for (sid, sl, base) in segs {
             let (ltop, lbot) = (top - base, bot - base);
             let start = sl.pmax.partition_point(|&m| m <= ltop);
             let oy = rect.y - sc + base;
             let tr = |r: Rect| Rect::new(r.x + ox, r.y + oy, r.w, r.h);
-            for d in &sl.ops[start..] {
+            // Reading-order rank of every op, when the selection reaches into this segment.
+            let ranks = sel.filter(|(a, b)| sid >= a.seg && sid <= b.seg).map(|_| ranks_of(sl));
+            for (k, d) in sl.ops[start..].iter().enumerate() {
                 if d.y0 >= lbot {
                     break;
                 }
                 if d.y1 <= ltop {
                     continue;
                 }
+                let oi = start + k;
+                let rank = ranks.as_ref().and_then(|r| r.get(oi).copied()).filter(|r| *r != u32::MAX);
                 match &d.op {
-                    Op::Text { x, w, text, flags, si, lh } => {
+                    Op::Text { x, w, text, flags, si, lh, link } => {
                         let size = SIZES[*si as usize];
                         let (sx, sy) = (x + ox, d.y0 + oy);
+                        if let (Some(r), Some(s)) = (rank, sel) {
+                            let at = SelAt { seg: sid, rank: r as usize, line: 0 };
+                            sel_text_bg(cv, tx, s, at, Rect::new(sx, sy, *w, *lh), text, *flags, *si, pal.sel, clip);
+                        }
                         // Prose reads in the softer text color; headings, bold and table headers in
                         // the full foreground; list numbers and footnote marks muted.
                         let base_col = if flags & F_DIM != 0 {
@@ -578,16 +666,33 @@ impl MdView {
                         if flags & F_I != 0 && !slant {
                             color = color.mix(pal.accent, 0.45);
                         }
+                        let hot = *link != 0 && *link == hover_link;
                         if flags & F_LINK != 0 {
-                            color = pal.accent;
+                            color = if hot { pal.accent_hot } else { pal.accent };
                         }
-                        if flags & F_CODE != 0 {
+                        if flags & F_MARK != 0 {
+                            let mh = (size * 1.45).round() as i32;
+                            round_clip(cv, Rect::new(sx - 1, sy + (*lh - mh) / 2, *w + 2, mh), 3, pal.mark, clip);
+                            color = pal.on_mark;
+                        }
+                        if flags & F_KBD != 0 {
+                            paint_kbd(cv, tx, &pal, Rect::new(sx, sy, *w, *lh), text, clip);
+                        } else if flags & F_CODE != 0 {
                             let ch = (*lh - 2).min(line_h() as i32 + 2);
                             let chip = Rect::new(sx, sy + (*lh - ch) / 2, *w, ch);
                             let fill = if flags & F_MATH != 0 { pal.math_chip(color) } else { pal.code };
                             round_clip(cv, chip, CODE_RAD, fill, clip);
                             let cl = line_h() as i32;
                             tx.draw_line(cv, sx + CHIP_PAD, sy + (*lh - cl) / 2, text, color, clip);
+                        } else if flags & (F_SUP | F_SUB) != 0 {
+                            let ss = SIZES[SUP];
+                            let mid = (*lh - (ss * 1.4).round() as i32) / 2;
+                            let off = if flags & F_SUP != 0 {
+                                mid - (size * 0.34).round() as i32
+                            } else {
+                                mid + (size * 0.24).round() as i32
+                            };
+                            tx.draw_ui_sized_i(cv, sx, sy + off, text, color, clip, flags & F_B != 0, slant, ss);
                         } else {
                             let off = (*lh - (size * 1.4).round() as i32) / 2;
                             tx.draw_ui_sized_i(cv, sx, sy + off, text, color, clip, flags & F_B != 0, slant, size);
@@ -595,9 +700,11 @@ impl MdView {
                         if flags & F_S != 0 {
                             cv.fill_clip(Rect::new(sx, sy + *lh / 2 + 1, *w, 1), color, clip);
                         }
-                        if flags & F_LINK != 0 && flags & F_CODE == 0 {
+                        let link_line = flags & F_LINK != 0 && flags & (F_CODE | F_SUP | F_SUB) == 0;
+                        if link_line || flags & F_U != 0 {
                             let uy = sy + *lh / 2 + (size * 0.4).round() as i32 + 2;
-                            cv.fill_clip(Rect::new(sx, uy, *w, 1), color.with_alpha(170), clip);
+                            let a = if hot || !link_line { 255 } else { 150 };
+                            cv.fill_clip(Rect::new(sx, uy, *w, 1), color.with_alpha(a), clip);
                         }
                     }
                     Op::Fill { r, col, rad } => round_clip(cv, tr(*r), *rad, pal.get(*col), clip),
@@ -633,6 +740,7 @@ impl MdView {
                             Tex::Ready(p) => {
                                 let dclip = cv.to_dev(clip);
                                 crate::mdimg::blit(cv, dev.x, dev.y, &p, dclip);
+                                paint_svg_texts(cv, tx, imgs, *id, sr, clip);
                             }
                             Tex::Badged(p) => {
                                 let dclip = cv.to_dev(clip);
@@ -677,9 +785,10 @@ impl MdView {
                             round_clip(cv, Rect::new(sr.x, sr.y + 6, 3, sr.h - 12), 1, pal.accent, clip);
                         }
                         let max_chars = ((sr.w as f32) / tx.cell_w.max(1.0)) as usize + 2;
+                        let hovered = hover.is_some_and(|(hx, hy)| sr.contains(hx, hy));
                         // The language sits faintly in the top-right corner, only when the first line
-                        // leaves room for it.
-                        if !lang.is_empty() && !*math {
+                        // leaves room for it (the Copy button takes its place on hover).
+                        if !lang.is_empty() && !*math && !hovered {
                             let lw = tx.ui_width_sized(lang, false, SIZES[TINY]);
                             let first_w = lines
                                 .first()
@@ -710,6 +819,19 @@ impl MdView {
                             if ly >= clip.bottom() {
                                 break;
                             }
+                            if let (Some(r), Some(s)) = (rank, sel) {
+                                let at = SelAt { seg: sid, rank: r as usize, line: i };
+                                sel_code_bg(
+                                    cv,
+                                    tx,
+                                    s,
+                                    at,
+                                    Rect::new(sr.x + CODE_PAD_X, ly, 0, *lh),
+                                    line,
+                                    pal.sel,
+                                    inner,
+                                );
+                            }
                             if line.is_empty() {
                                 continue;
                             }
@@ -733,8 +855,37 @@ impl MdView {
                             }
                         }
                     }
+                    Op::Label { x, text, col, si, lh, bold, .. } => {
+                        let size = SIZES[*si as usize];
+                        let off = (*lh - (size * 1.4).round() as i32) / 2;
+                        tx.draw_ui_sized(cv, x + ox, d.y0 + oy + off, text, pal.get(*col), clip, *bold, size);
+                    }
+                    Op::Icon { x, y, size, name, col } => {
+                        tx.icon(cv, name, x + ox, y + oy, *size, pal.get(*col), clip);
+                    }
+                    Op::Hover { r, rad } => {
+                        let sr = tr(*r);
+                        if hover.is_some_and(|(hx, hy)| sr.contains(hx, hy)) {
+                            round_clip(cv, sr, *rad, pal.hover, clip);
+                        }
+                    }
+                    Op::Button { r, area, kind } => {
+                        let (sr, sa) = (tr(*r), tr(*area));
+                        if hover.is_some_and(|(hx, hy)| sa.contains(hx, hy)) {
+                            let done = matches!(kind, Btn::Copy(k) if copied.is_some_and(|(c, t)| c == *k && t.elapsed().as_millis() < COPIED_MS));
+                            let over = hover.is_some_and(|(hx, hy)| sr.contains(hx, hy));
+                            paint_button(cv, tx, &pal, sr, *kind, done, over, clip);
+                        }
+                    }
+                    Op::Diagram { r, key, dia } => {
+                        let sr = tr(*r);
+                        paint_diagram(cv, tx, &pal, dia_tex, theme_key, *key, dia, sr, clip);
+                    }
                 }
             }
+        }
+        if dia_tex.len() > 48 {
+            dia_tex.clear();
         }
         imgs.trim();
     }
