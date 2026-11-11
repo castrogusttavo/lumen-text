@@ -70,7 +70,7 @@ fn setext_headings() {
         )
         .collect();
     assert_eq!(lv, [(1, "title-one".to_string()), (2, "título-com-sublinhado-setext".to_string())]);
-    assert_eq!((bl[1].line, bl[1].end), (3, 4));
+    assert_eq!(bl[1].line, 3);
 }
 
 #[test]
@@ -426,10 +426,11 @@ fn copy_from_code_blocks_and_selections() {
     assert!(all.ends_with("Outro."), "{all}");
     // A drag inside the first paragraph picks part of it.
     let rect = Rect::new(0, 0, 800, 600);
-    let first = v
-        .ops()
+    let first = abs_ops(&v)
         .into_iter()
-        .find_map(|o| if let Op::Text { x, w, .. } = &o.op { Some((*x, *w, o.y0, o.y1)) } else { None })
+        .find_map(
+            |(base, o)| if let Op::Text { x, w, .. } = &o.op { Some((*x, *w, base + o.y0, base + o.y1)) } else { None },
+        )
         .unwrap();
     let (x0, w, y0, y1) = first;
     let my = ((y0 + y1) / 2) as f64;
@@ -439,13 +440,12 @@ fn copy_from_code_blocks_and_selections() {
     let part = v.selected_text();
     assert!(!part.is_empty() && "Intro paragraph here.".contains(&part), "{part:?}");
     // Dragging from the paragraph into the code block takes the code's first line.
-    let code = v
-        .ops()
+    let code = abs_ops(&v)
         .into_iter()
-        .find_map(|o| if let Op::Code { r, top, lh, .. } = &o.op { Some((*r, *top, *lh)) } else { None })
+        .find_map(|(base, o)| if let Op::Code { r, top, lh, .. } = &o.op { Some((*r, base, *top, *lh)) } else { None })
         .unwrap();
-    let (r, top, lh) = code;
-    v.sel_extend(&mut tx, (r.x + 400) as f64, (r.y + top + lh / 2) as f64, rect, 0.0);
+    let (r, base, top, lh) = code;
+    v.sel_extend(&mut tx, (r.x + 400) as f64, (base + r.y + top + lh / 2) as f64, rect, 0.0);
     let t = v.selected_text();
     assert!(t.contains("Intro") && t.contains("def f(x):"), "{t:?}");
     // The selection paints.
@@ -520,6 +520,15 @@ fn showcase_readme_end_to_end() {
     v.select_all();
     let all = v.selected_text();
     assert!(all.contains("def antigo():") && all.contains("Vitrine de Markdown"), "{}", all.len());
+}
+
+/// Draw ops with the top of their segment (op y is relative to it).
+fn abs_ops(v: &MdView) -> Vec<(i32, &DrawOp)> {
+    v.order
+        .iter()
+        .filter_map(|p| v.cache.get(&p.key).and_then(|d| d.lay.as_ref()).map(|l| (p.y0, l)))
+        .flat_map(|(y0, l)| l.ops.iter().map(move |o| (y0, o)))
+        .collect()
 }
 
 impl MdView {

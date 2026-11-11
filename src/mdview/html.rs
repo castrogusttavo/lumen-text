@@ -382,13 +382,24 @@ impl Builder<'_> {
                         ic.spans.push(Inl::Hard);
                     }
                 }
-                ("img", false) => {
+                ("img" | "video", false) => {
                     if self.inl.is_none() {
                         self.start_inline(IK::Para, range.start, range.end, true);
                     }
                     let link = self.links.last().copied().unwrap_or(0);
-                    let img = img_of(&t, link);
+                    let mut img = img_of(&t, link);
+                    img.video |= t.name == "video";
                     self.push_img(img);
+                }
+                ("source", false) => {
+                    // `<video><source src=..></video>` written inline: the source of the video card.
+                    if let Some(ic) = self.inl.as_mut()
+                        && let Some(Seg::Img(v)) = ic.segs.last_mut()
+                        && v.video
+                        && v.url.is_empty()
+                    {
+                        v.url = t.attr("src").unwrap_or_default();
+                    }
                 }
                 (name, true) => self.pop_style(name),
                 (_, false) if t.self_close => {}
