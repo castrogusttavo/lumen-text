@@ -877,6 +877,9 @@ mod tests {
                 buffer_letter_spacing: 0.5,
             },
             spell_check: true,
+            problems_scope: "project".into(),
+            formatter: [("python".to_string(), "lsp:ruff".to_string())].into(),
+            code_actions_on_save: [("*".to_string(), vec!["source.fixAll".to_string()])].into(),
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

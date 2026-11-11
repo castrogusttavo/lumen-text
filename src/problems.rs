@@ -178,10 +178,12 @@ impl ProjectDiags {
         self.files.iter().map(|(p, e)| (p, e.iter().flat_map(|(_, v)| v.iter())))
     }
 
+    #[cfg(test)]
     pub fn total(&self) -> usize {
         self.total
     }
 
+    #[cfg(test)]
     pub fn file_count(&self) -> usize {
         self.files.len()
     }
