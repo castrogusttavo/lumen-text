@@ -339,6 +339,7 @@ fn remote_images_are_fetched_cached_and_can_be_turned_off() {
     let mut tx = TextCtx::new(None);
     let mut v = view(src);
     v.imgs.set_fetcher(stub_fetch, cache.clone());
+    v.set_remote_images(true);
     v.ensure_layout(&mut tx, 800);
     assert!(labels(&v).iter().any(|l| l.starts_with("Loading")), "{:?}", labels(&v));
     settle(&mut v, &mut tx, 800, 400);
@@ -352,6 +353,7 @@ fn remote_images_are_fetched_cached_and_can_be_turned_off() {
     // Off: nothing is fetched, both show a card saying so.
     let mut v2 = view(src);
     v2.imgs.set_fetcher(stub_fetch, cache.join("off"));
+    v2.set_remote_images(true);
     v2.set_remote_images(false);
     v2.ensure_layout(&mut tx, 800);
     assert!(!v2.pending());

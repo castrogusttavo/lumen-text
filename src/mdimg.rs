@@ -727,7 +727,8 @@ impl ImgStore {
         let (tx, rx) = channel();
         let (ftx, frx) = channel();
         ImgStore {
-            remote_on: true,
+            // Tests opt in (no network there, and a failed download would re-lay out mid-test).
+            remote_on: !cfg!(test),
             cache_dir: remote_cache_dir(),
             fetch_fn: default_fetch,
             urls: HashMap::new(),
