@@ -327,7 +327,8 @@ impl App {
     /// the new process doesn't hand its files over to this dying one).
     pub fn update_restart(&mut self) {
         let Some((_, exe)) = self.upd.installed.clone() else { return };
-        if self.docs.iter().any(|d| d.buf.is_dirty()) {
+        // With hot exit the unsaved buffers come back after the restart.
+        if self.restart_needs_save() {
             self.say("Save your files before restarting to update");
             return self.request_redraw();
         }

@@ -179,7 +179,18 @@ fn sections_in_order_and_visible_by_section() {
     let mut p = page_with(json!({}));
     assert_eq!(
         p.sections(),
-        vec!["General", "Editor", "Appearance", "TypeScript", "Git", "Status bar", "Fonts", "Editor display", "Build"]
+        vec![
+            "General",
+            "Editor",
+            "Appearance",
+            "TypeScript",
+            "Git",
+            "Status bar",
+            "Fonts",
+            "Editor display",
+            "Build",
+            "Files"
+        ]
     );
     assert_eq!(p.visible().len(), 2);
     p.set_section(3);

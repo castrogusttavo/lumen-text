@@ -425,15 +425,23 @@ impl App {
     }
 
     pub fn try_quit(&mut self) -> bool {
+        // Hot exit: unsaved buffers are kept on disk and reopened next time, so there is nothing to ask.
+        let hot = self.config.hot_exit && self.hot_exit_store();
         let dirty: Vec<&str> = self.docs.iter().filter(|d| d.buf.is_dirty()).map(|d| d.name.as_str()).collect();
-        if !dirty.is_empty() && !self.quit_armed {
+        if !hot && !dirty.is_empty() && !self.quit_armed {
             self.quit_armed = true;
             let list = dirty.join(", ");
             self.say(format!("Unsaved: {list} — Ctrl+S saves, Ctrl+Q again discards"));
             self.request_redraw();
             return false;
         }
+        if !hot {
+            self.backup_discard_all();
+        }
         mem::report("exit");
+        for i in 0..self.docs.len() {
+            self.undo_persist(i, hot);
+        }
         self.save_session();
         self.stop_task();
         for l in &mut self.lsps {

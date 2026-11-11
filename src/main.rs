@@ -4,6 +4,7 @@
 #![cfg_attr(all(windows, not(debug_assertions), not(test)), windows_subsystem = "windows")]
 mod app;
 mod app_aipanel;
+mod app_backup;
 mod app_build;
 mod app_ctxmenu;
 mod app_debug;
@@ -34,6 +35,7 @@ mod app_tooltip;
 mod app_topbar;
 mod app_unsaved;
 mod app_update;
+mod backup;
 mod bigfile;
 mod bookmarks;
 mod buffer;
@@ -101,6 +103,7 @@ mod textmate;
 mod theme;
 mod tree;
 mod ui;
+mod undo_store;
 mod update;
 mod watcher;
 mod winconsole;

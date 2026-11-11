@@ -135,6 +135,20 @@ pub fn defs() -> Vec<SettingDef> {
             "A run command of your own for the Build panel's Run (Ctrl+F5), run by the shell in the project folder.",
             Text,
         ),
+        d(
+            "hot_exit",
+            "Files",
+            "Hot exit",
+            "Quitting keeps unsaved changes (untitled tabs too) and reopens them next time instead of asking to save. Unsaved changes are also backed up a few seconds after each edit, so a crash loses almost nothing. Off asks before quitting, as before.",
+            Bool,
+        ),
+        d(
+            "persistent_undo",
+            "Files",
+            "Persistent undo",
+            "Keeps each file's undo history after it is closed (and across restarts), as long as the file was not changed elsewhere. Up to 2 MB per file; the oldest histories are dropped first.",
+            Bool,
+        ),
     ]
 }
 
@@ -146,7 +160,7 @@ pub fn defaults() -> Value {
         "ui_line_height": fontcfg::DEFAULT_UI_LH, "ui_font_ligatures": true,
         "show_line_numbers": true, "show_bookmarks": true, "show_breakpoints": true,
         "scrollbar": "never", "enable_lsp": true, "build_command": "", "run_command": "",
-        "markdown_remote_images": true,
+        "markdown_remote_images": true, "hot_exit": true, "persistent_undo": true,
     })
 }
 
@@ -161,6 +175,7 @@ pub fn values(c: &Config) -> Value {
         "show_breakpoints": c.show_breakpoints, "scrollbar": c.scrollbar, "enable_lsp": c.enable_lsp,
         "build_command": c.build_command, "run_command": c.run_command,
         "markdown_remote_images": c.markdown_remote_images,
+        "hot_exit": c.hot_exit, "persistent_undo": c.persistent_undo,
     })
 }
 

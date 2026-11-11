@@ -493,6 +493,8 @@ pub(crate) mod testkit {
         let theme = crate::theme::Theme::load(&assets.join("themes").join("github-dark-default.json")).expect("theme");
         // Settings written by the code under test land here, not in the user's config.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.join(".config")) };
+        // Session, backups and undo histories too.
+        unsafe { std::env::set_var("XDG_STATE_HOME", dir.join(".state")) };
         let seed = dir.join("seed.txt");
         std::fs::write(&seed, "seed\n").unwrap();
         let wake: crate::lsp::Wake = std::sync::Arc::new(|| {});

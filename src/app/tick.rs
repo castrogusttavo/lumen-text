@@ -17,6 +17,7 @@ impl App {
         }
         want(self.last_trim + Duration::from_secs(4));
         self.check_disk(now, &mut want);
+        self.backup_tick(now, &mut want);
         self.gitpanel_tick(now, &mut want);
         self.update_tick(now, &mut want);
         self.git_bg_tick(now, &mut want);

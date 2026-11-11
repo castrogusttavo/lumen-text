@@ -8,6 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod undo_file;
+pub use undo_file::SavedAt;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Sel {
     pub anchor: usize,
