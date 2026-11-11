@@ -20,6 +20,7 @@ pub enum Runner {
     Cargo,
     Vitest,
     Jest,
+    Playwright,
     NodeTest,
     Bun,
     Deno,
@@ -42,6 +43,7 @@ impl Runner {
             Runner::Cargo => "cargo test",
             Runner::Vitest => "vitest",
             Runner::Jest => "jest",
+            Runner::Playwright => "playwright",
             Runner::NodeTest => "node --test",
             Runner::Bun => "bun test",
             Runner::Deno => "deno test",
@@ -62,7 +64,7 @@ impl Runner {
         match self {
             Runner::Custom => &[],
             Runner::Nextest | Runner::Cargo => &["rs"],
-            Runner::Vitest | Runner::Jest | Runner::NodeTest | Runner::Bun | Runner::Deno => {
+            Runner::Vitest | Runner::Jest | Runner::Playwright | Runner::NodeTest | Runner::Bun | Runner::Deno => {
                 &["js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts"]
             }
             Runner::Go => &["go"],
@@ -209,6 +211,9 @@ pub fn detect(root: &Path, custom: bool) -> Vec<Runner> {
         if jest {
             v.push(Runner::Jest);
         }
+        if pkg.contains("\"@playwright/test\"") {
+            v.push(Runner::Playwright);
+        }
         if pkg.contains("node --test") {
             v.push(Runner::NodeTest);
         }
@@ -308,6 +313,8 @@ pub struct Plan {
     pub report_dirs: &'static [&'static str],
     /// Temp files / directories to delete once the report was read.
     pub cleanup: Vec<PathBuf>,
+    /// A package.json script whose results cannot be parsed: only its output and exit code count.
+    pub log_only: bool,
 }
 
 pub(crate) fn exec_prefix(root: &Path, local: &str, bin: &str) -> String {
@@ -340,8 +347,37 @@ fn rust_module_of(rel: &str) -> Option<String> {
 }
 
 pub fn plan(runner: Runner, root: &Path, scope: &Scope, report: &Path, custom: (&str, &str)) -> Plan {
+    plan_with(runner, root, scope, report, custom, None)
+}
+
+/// [`plan`], run the way a package.json script runs the tool when `inv` is given (its environment,
+/// the commands chained before it, its own arguments and its package manager).
+pub fn plan_with(
+    runner: Runner,
+    root: &Path,
+    scope: &Scope,
+    report: &Path,
+    custom: (&str, &str),
+    inv: Option<&Invocation>,
+) -> Plan {
     let rp = shell_quote(&report.to_string_lossy());
-    let mut p = Plan { runner, cmd: String::new(), stream: None, report: None, report_dirs: &[], cleanup: Vec::new() };
+    let mut p = Plan {
+        runner,
+        cmd: String::new(),
+        stream: None,
+        report: None,
+        report_dirs: &[],
+        cleanup: Vec::new(),
+        log_only: false,
+    };
+    let js_exec = |root: &Path, bin: &str| match inv.and_then(|i| i.pm) {
+        Some(pm) => format!("{} {bin}", pm.exec()),
+        None => js_exec(root, bin),
+    };
+    let scoped_to_file = matches!(scope, Scope::File(_) | Scope::Test { file: Some(_), .. });
+    let named = matches!(scope, Scope::Test { .. }) || matches!(scope, Scope::Failed(cs) if !cs.is_empty());
+    // The script's own arguments: its file filters give way to a file scope, its name filter to ours.
+    let user = |named: bool| inv.map(|i| i.user_args(scoped_to_file, named)).unwrap_or_default();
     let file_arg = |s: &Scope| -> Option<String> {
         match s {
             Scope::File(f) => Some(shell_quote(f)),
@@ -418,6 +454,7 @@ pub fn plan(runner: Runner, root: &Path, scope: &Scope, report: &Path, custom: (
                 c.push(' ');
                 c.push_str(&f);
             }
+            c.push_str(&user(named));
             match scope {
                 Scope::Test { name, case, .. } => {
                     let n = case.map(leaf_title).unwrap_or_else(|| (*name).to_string());
@@ -430,15 +467,38 @@ pub fn plan(runner: Runner, root: &Path, scope: &Scope, report: &Path, custom: (
                 _ => {}
             }
             if vitest {
-                c.push_str(&format!(" --reporter=default --reporter=json --outputFile.json={rp}"));
+                // The script's own reporters stay (vitest takes several); ours adds the JSON report.
+                let own = inv.is_some_and(|i| i.args.iter().any(|a| a.role == Role::Reporter));
+                let default = if own { "" } else { " --reporter=default" };
+                c.push_str(&format!("{default} --reporter=json --outputFile.json={rp}"));
             } else {
                 c.push_str(&format!(" --json --outputFile={rp}"));
             }
             p.cmd = c;
             p.report = Some((report.to_path_buf(), Format::JestJson));
         }
+        Runner::Playwright => {
+            let mut c = format!("PLAYWRIGHT_JUNIT_OUTPUT_NAME={rp} {} test", js_exec(root, "playwright"));
+            if let Some(f) = file_arg(scope) {
+                c.push(' ');
+                c.push_str(&f);
+            }
+            c.push_str(&user(matches!(scope, Scope::Test { .. })));
+            match scope {
+                Scope::Test { name, case, .. } => {
+                    let n = case.map(leaf_title).unwrap_or_else(|| (*name).to_string());
+                    c.push_str(&format!(" -g {}", shell_quote(&regex::escape(&n))));
+                }
+                Scope::Failed(cs) if !cs.is_empty() => c.push_str(" --last-failed"),
+                _ => {}
+            }
+            c.push_str(" --reporter=list,junit");
+            p.cmd = c;
+            p.report = Some((report.to_path_buf(), Format::Junit));
+        }
         Runner::NodeTest => {
             let mut c = String::from("node --test");
+            c.push_str(&user(named));
             if let Scope::Test { name, case, .. } = scope {
                 let n = case.map(leaf_title).unwrap_or_else(|| (*name).to_string());
                 c.push_str(&format!(" --test-name-pattern={}", shell_quote(&regex::escape(&n))));
@@ -455,6 +515,7 @@ pub fn plan(runner: Runner, root: &Path, scope: &Scope, report: &Path, custom: (
         }
         Runner::Bun => {
             let mut c = String::from("bun test");
+            c.push_str(&user(named));
             if let Some(f) = file_arg(scope) {
                 c.push(' ');
                 c.push_str(&f);
@@ -468,7 +529,7 @@ pub fn plan(runner: Runner, root: &Path, scope: &Scope, report: &Path, custom: (
             p.report = Some((report.to_path_buf(), Format::Junit));
         }
         Runner::Deno => {
-            let mut c = format!("deno test --junit-path={rp}");
+            let mut c = format!("deno test{} --junit-path={rp}", user(named));
             if let Some(f) = file_arg(scope) {
                 c.push(' ');
                 c.push_str(&f);
@@ -684,6 +745,9 @@ pub fn plan(runner: Runner, root: &Path, scope: &Scope, report: &Path, custom: (
             p.report = Some((report.to_path_buf(), Format::Junit));
         }
     }
+    if let Some(i) = inv {
+        p.cmd = i.wrap(&p.cmd);
+    }
     if let Some((r, _)) = &p.report {
         p.cleanup.push(r.clone());
     }
@@ -711,6 +775,588 @@ impl Plan {
         for p in &self.cleanup {
             let _ = if p.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) };
         }
+    }
+}
+
+// ───────────── package.json test scripts ─────────────
+
+/// What an argument of a script's test command is to a scoped run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Role {
+    Opt,
+    /// A file / pattern filter: dropped when the run is scoped to a file.
+    Positional,
+    /// The script's own test name filter: dropped when the run filters by name itself.
+    NameFilter,
+    /// A reporter the script asked for (vitest keeps it next to the JSON one).
+    Reporter,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arg {
+    /// As written in package.json (flag and value, quotes kept).
+    pub raw: String,
+    pub role: Role,
+}
+
+/// How a package.json script runs its test tool, so a run of the panel can do the same.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Invocation {
+    /// `VAR=value` set before the tool (`cross-env` ones included).
+    pub env: Vec<String>,
+    /// Commands chained before the tool with `&&`, run as written.
+    pub pre: Vec<String>,
+    /// The tool's arguments, watch / UI modes and the report options the panel sets removed.
+    pub args: Vec<Arg>,
+    /// Package manager of the script's package (`None`: the one of the folder the plan runs in).
+    pub pm: Option<Pm>,
+}
+
+impl Invocation {
+    fn user_args(&self, scoped_to_file: bool, named: bool) -> String {
+        self.args
+            .iter()
+            .filter(|a| match a.role {
+                Role::Positional => !scoped_to_file,
+                Role::NameFilter => !named,
+                Role::Opt | Role::Reporter => true,
+            })
+            .map(|a| format!(" {}", a.raw))
+            .collect()
+    }
+
+    fn wrap(&self, cmd: &str) -> String {
+        let mut s = String::new();
+        for p in &self.pre {
+            s.push_str(p);
+            s.push_str(" && ");
+        }
+        for e in &self.env {
+            s.push_str(e);
+            s.push(' ');
+        }
+        s.push_str(cmd);
+        s
+    }
+}
+
+/// One word of a script command: its value (quotes removed) and how it was written.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Word {
+    val: String,
+    raw: String,
+}
+
+/// The `&&`-chained simple commands of a script, word by word. `None` when it uses any other shell
+/// syntax (pipes, `;`, `||`, redirections, substitutions, subshells, background jobs, comments).
+fn split_script(cmd: &str) -> Option<Vec<Vec<Word>>> {
+    fn flush(segs: &mut [Vec<Word>], w: &mut Word, open: &mut bool) {
+        if *open {
+            if let Some(s) = segs.last_mut() {
+                s.push(std::mem::take(w));
+            }
+            *open = false;
+        }
+    }
+    let mut segs: Vec<Vec<Word>> = vec![Vec::new()];
+    let mut w = Word::default();
+    let mut open = false;
+    let mut it = cmd.chars();
+    while let Some(c) = it.next() {
+        match c {
+            '\'' => {
+                open = true;
+                w.raw.push(c);
+                loop {
+                    let ch = it.next()?;
+                    w.raw.push(ch);
+                    if ch == '\'' {
+                        break;
+                    }
+                    w.val.push(ch);
+                }
+            }
+            '"' => {
+                open = true;
+                w.raw.push(c);
+                loop {
+                    let ch = it.next()?;
+                    w.raw.push(ch);
+                    match ch {
+                        '"' => break,
+                        '$' | '`' => return None,
+                        '\\' => {
+                            let n = it.next()?;
+                            w.raw.push(n);
+                            if !matches!(n, '"' | '\\') {
+                                w.val.push('\\');
+                            }
+                            w.val.push(n);
+                        }
+                        _ => w.val.push(ch),
+                    }
+                }
+            }
+            '\\' => {
+                let n = it.next()?;
+                open = true;
+                w.raw.push(c);
+                w.raw.push(n);
+                w.val.push(n);
+            }
+            '&' => {
+                if it.next() != Some('&') {
+                    return None;
+                }
+                flush(&mut segs, &mut w, &mut open);
+                if segs.last().is_some_and(|s| s.is_empty()) {
+                    return None;
+                }
+                segs.push(Vec::new());
+            }
+            '#' if !open => return None,
+            '$' | '`' | '|' | ';' | '<' | '>' | '(' | ')' => return None,
+            c if c.is_whitespace() => flush(&mut segs, &mut w, &mut open),
+            c => {
+                open = true;
+                w.raw.push(c);
+                w.val.push(c);
+            }
+        }
+    }
+    flush(&mut segs, &mut w, &mut open);
+    if segs.iter().any(|s| s.is_empty()) { None } else { Some(segs) }
+}
+
+/// `NAME=value`.
+fn is_assign(s: &str) -> bool {
+    s.split_once('=').is_some_and(|(n, _)| {
+        n.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// `./node_modules/.bin/vitest` -> `vitest`.
+fn bin_name(s: &str) -> &str {
+    s.rsplit('/').next().unwrap_or(s)
+}
+
+/// The test tool one simple command runs, past its env assignments and launchers (`npx`,
+/// `pnpm exec`, `yarn`, `bunx`, `cross-env`): the runner, the env and the tool's arguments.
+fn tool_of(seg: &[Word]) -> Option<(Runner, Vec<String>, Vec<Word>)> {
+    let at = |i: usize| seg.get(i).map(|w| w.val.as_str());
+    let tool_word = |s: &str| matches!(bin_name(s), "vitest" | "jest" | "playwright");
+    let mut env = Vec::new();
+    let mut i = 0;
+    loop {
+        while at(i).is_some_and(is_assign) {
+            env.push(seg[i].raw.clone());
+            i += 1;
+        }
+        match at(i)? {
+            "cross-env" | "cross-env-shell" => i += 1,
+            "npx" | "bunx" | "pnpx" => {
+                i += 1;
+                while at(i).is_some_and(|s| s.starts_with('-')) {
+                    i += 1;
+                }
+            }
+            "pnpm" | "npm" | "yarn" | "bun" if matches!(at(i + 1), Some("exec" | "x" | "dlx")) => {
+                i += 2;
+                while at(i).is_some_and(|s| s.starts_with('-')) {
+                    i += 1;
+                }
+            }
+            "pnpm" | "yarn" if at(i + 1).is_some_and(tool_word) => i += 1,
+            _ => break,
+        }
+    }
+    let rest = |k: usize| seg.get(i + k..).unwrap_or_default().to_vec();
+    let (runner, args) = match (bin_name(at(i)?), at(i + 1)) {
+        ("vitest", _) => (Runner::Vitest, rest(1)),
+        ("jest", _) => (Runner::Jest, rest(1)),
+        ("playwright", Some("test")) => (Runner::Playwright, rest(2)),
+        ("bun", Some("test")) => (Runner::Bun, rest(2)),
+        ("deno", Some("test")) => (Runner::Deno, rest(2)),
+        ("node", _) if rest(1).iter().any(|w| w.val == "--test") => {
+            (Runner::NodeTest, rest(1).into_iter().filter(|w| w.val != "--test").collect())
+        }
+        _ => return None,
+    };
+    Some((runner, env, args))
+}
+
+/// Per tool: which flags take a value, which are dropped, which filter by name or pick a reporter.
+struct ArgSpec {
+    /// The value is the next word (unless written `--flag=value`).
+    takes: &'static [&'static str],
+    /// Every following word that is not a flag is a value.
+    variadic: &'static [&'static str],
+    /// Watch / UI modes and the panel's own report options.
+    drop: &'static [&'static str],
+    drop_takes: &'static [&'static str],
+    name: &'static [&'static str],
+    reporter: &'static [&'static str],
+}
+
+fn arg_spec(r: Runner) -> Option<ArgSpec> {
+    let none: &'static [&'static str] = &[];
+    Some(match r {
+        Runner::Vitest => ArgSpec {
+            takes: &[
+                "--project",
+                "-c",
+                "--config",
+                "--dir",
+                "-r",
+                "--root",
+                "--environment",
+                "--pool",
+                "--shard",
+                "--mode",
+                "--exclude",
+                "--maxWorkers",
+                "--minWorkers",
+                "--testTimeout",
+                "--hookTimeout",
+                "--retry",
+                "--bail",
+            ],
+            variadic: none,
+            drop: &["--watch", "-w", "--run", "--ui", "--open"],
+            drop_takes: &["--outputFile", "--outputFile.json"],
+            name: &["-t", "--testNamePattern"],
+            reporter: &["--reporter"],
+        },
+        Runner::Jest => ArgSpec {
+            takes: &[
+                "-c",
+                "--config",
+                "--testPathPattern",
+                "--testPathPatterns",
+                "--reporters",
+                "-w",
+                "--maxWorkers",
+                "--shard",
+                "--rootDir",
+                "--testTimeout",
+                "--coverageDirectory",
+                "--coverageProvider",
+                "--env",
+                "--testEnvironment",
+                "--testRegex",
+                "--changedSince",
+                "--seed",
+            ],
+            variadic: &["--selectProjects", "--projects", "--roots", "--testPathIgnorePatterns", "--coverageReporters"],
+            drop: &["--watch", "--watchAll", "--json"],
+            drop_takes: &["--outputFile"],
+            name: &["-t", "--testNamePattern"],
+            reporter: none,
+        },
+        Runner::Playwright => ArgSpec {
+            takes: &[
+                "--project",
+                "-c",
+                "--config",
+                "-j",
+                "--workers",
+                "--retries",
+                "--repeat-each",
+                "--shard",
+                "--timeout",
+                "--output",
+                "--trace",
+                "--global-timeout",
+                "--grep-invert",
+                "--max-failures",
+                "--tsconfig",
+            ],
+            variadic: none,
+            drop: &["--ui", "--last-failed", "--list"],
+            drop_takes: &["--reporter", "--ui-host", "--ui-port"],
+            name: &["-g", "--grep"],
+            reporter: none,
+        },
+        Runner::NodeTest => ArgSpec {
+            takes: &[
+                "--import",
+                "--require",
+                "-r",
+                "--loader",
+                "--experimental-loader",
+                "--test-concurrency",
+                "--test-timeout",
+                "--conditions",
+                "-C",
+            ],
+            variadic: none,
+            drop: &["--watch"],
+            drop_takes: &["--test-reporter", "--test-reporter-destination"],
+            name: &["--test-name-pattern"],
+            reporter: none,
+        },
+        Runner::Bun => ArgSpec {
+            takes: &["--timeout", "--preload", "--rerun-each", "--coverage-reporter", "--coverage-dir"],
+            variadic: none,
+            drop: &["--watch"],
+            drop_takes: &["--reporter", "--reporter-outfile"],
+            name: &["-t", "--test-name-pattern"],
+            reporter: none,
+        },
+        Runner::Deno => ArgSpec {
+            takes: &["-c", "--config", "--import-map", "--location", "--seed"],
+            variadic: none,
+            drop: &["--watch"],
+            drop_takes: &["--junit-path", "--reporter"],
+            name: &["--filter"],
+            reporter: none,
+        },
+        _ => return None,
+    })
+}
+
+/// Sort the tool's words into [`Arg`]s; `None` when they ask for something that is not a test run
+/// (`vitest bench`, `vitest list`...).
+fn sort_args(r: Runner, words: &[Word]) -> Option<Vec<Arg>> {
+    let s = arg_spec(r)?;
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut first = true;
+    while i < words.len() {
+        let w = &words[i];
+        let v = w.val.as_str();
+        i += 1;
+        if v == "--" {
+            out.extend(words[i..].iter().map(|w| Arg { raw: w.raw.clone(), role: Role::Positional }));
+            break;
+        }
+        if !v.starts_with('-') || v == "-" {
+            if r == Runner::Vitest && first {
+                first = false;
+                match v {
+                    "run" | "watch" | "dev" => continue,
+                    "bench" | "list" | "init" | "related" | "typecheck" => return None,
+                    _ => {}
+                }
+            }
+            first = false;
+            out.push(Arg { raw: w.raw.clone(), role: Role::Positional });
+            continue;
+        }
+        let (flag, inline) = match v.split_once('=') {
+            Some((f, val)) => (f, Some(val)),
+            None => (v, None),
+        };
+        // vitest's dotted options (`--coverage.reporter html`) take a value.
+        let dotted = r == Runner::Vitest && flag.starts_with("--") && flag.contains('.');
+        let takes = [s.takes, s.drop_takes, s.name, s.reporter].iter().any(|l| l.contains(&flag)) || dotted;
+        let mut raw = w.raw.clone();
+        let mut value = inline.map(str::to_string);
+        if inline.is_none()
+            && takes
+            && let Some(n) = words.get(i)
+        {
+            raw = format!("{raw} {}", n.raw);
+            value = Some(n.val.clone());
+            i += 1;
+        }
+        if inline.is_none() && s.variadic.contains(&flag) {
+            while let Some(n) = words.get(i).filter(|n| !n.val.starts_with('-')) {
+                raw = format!("{raw} {}", n.raw);
+                i += 1;
+            }
+        }
+        if s.drop.contains(&flag) || s.drop_takes.contains(&flag) {
+            continue;
+        }
+        let role = if s.name.contains(&flag) {
+            Role::NameFilter
+        } else if s.reporter.contains(&flag) {
+            if value.as_deref() == Some("json") {
+                continue;
+            }
+            Role::Reporter
+        } else {
+            Role::Opt
+        };
+        out.push(Arg { raw, role });
+    }
+    Some(out)
+}
+
+/// How a package.json script command runs a test tool, when it is one recognizable invocation
+/// (optionally after `&&`-chained setup commands). `None`: the script can only be run as it is.
+pub fn classify(cmd: &str) -> Option<(Runner, Invocation)> {
+    let mut segs = split_script(cmd.trim())?;
+    let last = segs.pop()?;
+    if segs.iter().any(|s| tool_of(s).is_some()) {
+        return None;
+    }
+    let (runner, env, words) = tool_of(&last)?;
+    let args = sort_args(runner, &words)?;
+    let pre = segs.iter().map(|s| s.iter().map(|w| w.raw.as_str()).collect::<Vec<_>>().join(" ")).collect();
+    Some((runner, Invocation { env, pre, args, pm: None }))
+}
+
+/// The script another script only forwards to (`pnpm test:unit`, `npm run test:unit`).
+fn alias_of(cmd: &str) -> Option<String> {
+    let segs = split_script(cmd.trim())?;
+    let [seg] = segs.as_slice() else { return None };
+    let v: Vec<&str> = seg.iter().map(|w| w.val.as_str()).collect();
+    match v.as_slice() {
+        ["npm" | "pnpm" | "yarn" | "bun", "run" | "run-script", s] => Some(s.to_string()),
+        ["npm" | "pnpm" | "yarn" | "bun", "test"] => Some("test".into()),
+        ["pnpm" | "yarn", s] => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+/// A test script of the project's package.json files, the way the Tests panel can run it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptTarget {
+    /// Stable across sessions (remembered per project): `script:<package folder>:<name>`.
+    pub id: String,
+    pub name: String,
+    /// The script's command, as written.
+    pub command: String,
+    /// Its package's folder (where it runs) and that folder relative to the project.
+    pub dir: PathBuf,
+    pub rel: String,
+    pub pm: Pm,
+    /// The test tool it runs with full results; `None`: log only (its output and exit code).
+    pub run: Option<(Runner, Invocation)>,
+}
+
+impl ScriptTarget {
+    pub fn runner(&self) -> Option<Runner> {
+        self.run.as_ref().map(|(r, _)| *r)
+    }
+}
+
+const LOCKS: &[&str] = &["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock"];
+
+fn pkg_subdirs(dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|e| e.path())
+                .filter(|p| {
+                    let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    !n.starts_with('.') && n != "node_modules" && p.join("package.json").is_file()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// Folders with a package.json: the root, its workspace packages (`dir/*` or plain folders, from
+/// package.json `workspaces` or pnpm-workspace.yaml), else the subfolders one level down.
+pub fn package_dirs(root: &Path) -> Vec<PathBuf> {
+    let pkg = read(root, "package.json");
+    let mut v = Vec::new();
+    if !pkg.is_empty() {
+        v.push(root.to_path_buf());
+    }
+    let mut globs: Vec<String> = Vec::new();
+    if let Ok(j) = serde_json::from_str::<Value>(&pkg) {
+        let ws = if j["workspaces"].is_array() { &j["workspaces"] } else { &j["workspaces"]["packages"] };
+        globs.extend(ws.as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)));
+    }
+    let mut in_packages = false;
+    for l in read(root, "pnpm-workspace.yaml").lines() {
+        let t = l.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if !l.starts_with([' ', '\t', '-']) {
+            in_packages = t.starts_with("packages:");
+            continue;
+        }
+        if in_packages && let Some(g) = t.strip_prefix('-') {
+            globs.push(g.trim().trim_matches(['\'', '"']).to_string());
+        }
+    }
+    for g in &globs {
+        let g = g.trim_end_matches('/');
+        if g.starts_with('!') {
+            continue;
+        }
+        if let Some(base) = g.strip_suffix("/**").or_else(|| g.strip_suffix("/*")) {
+            if !base.contains('*') {
+                v.extend(pkg_subdirs(&root.join(base)));
+            }
+        } else if !g.contains('*') && root.join(g).join("package.json").is_file() {
+            v.push(root.join(g));
+        }
+    }
+    if pkg.is_empty() {
+        v.extend(pkg_subdirs(root).into_iter().take(4));
+    }
+    let mut seen = HashSet::new();
+    v.retain(|d| seen.insert(d.clone()));
+    v.truncate(16);
+    v
+}
+
+/// The test scripts of the project: named `*test*` or running a test tool, root package first.
+pub fn script_targets(root: &Path) -> Vec<ScriptTarget> {
+    let mut out = Vec::new();
+    for dir in package_dirs(root) {
+        let Ok(j) = serde_json::from_str::<Value>(&read(&dir, "package.json")) else { continue };
+        let Some(scripts) = j["scripts"].as_object() else { continue };
+        // A package of a workspace uses the lockfile (and so the package manager) of the root.
+        let pm =
+            if dir == root || LOCKS.iter().any(|f| dir.join(f).exists()) { Pm::detect(&dir) } else { Pm::detect(root) };
+        let rel = dir.strip_prefix(root).unwrap_or(&dir).to_string_lossy().replace('\\', "/");
+        let mut names: Vec<&String> = scripts.keys().collect();
+        names.sort();
+        for name in names {
+            let Some(cmd) = scripts[name].as_str() else { continue };
+            let hook = ["pre", "post"].iter().any(|p| name.strip_prefix(*p).is_some_and(|n| scripts.contains_key(n)));
+            if hook {
+                continue;
+            }
+            // A script that only forwards to another one runs like that one (one level).
+            let run = classify(cmd).or_else(|| {
+                let to = alias_of(cmd).filter(|n| n != name)?;
+                classify(scripts.get(&to)?.as_str()?)
+            });
+            if run.is_none() && !name.to_lowercase().contains("test") {
+                continue;
+            }
+            let run = run.map(|(r, inv)| (r, Invocation { pm: Some(pm), ..inv }));
+            out.push(ScriptTarget {
+                id: format!("script:{rel}:{name}"),
+                name: name.clone(),
+                command: cmd.to_string(),
+                dir: dir.clone(),
+                rel: rel.clone(),
+                pm,
+                run,
+            });
+        }
+    }
+    out
+}
+
+/// The plan of a run of script target `t`: through its tool with full results, or (log only) the
+/// script itself.
+pub fn plan_script(t: &ScriptTarget, scope: &Scope, report: &Path) -> Plan {
+    match &t.run {
+        Some((r, inv)) => plan_with(*r, &t.dir, scope, report, ("", ""), Some(inv)),
+        None => Plan {
+            runner: Runner::Custom,
+            cmd: t.pm.run(&t.name),
+            stream: None,
+            report: None,
+            report_dirs: &[],
+            cleanup: Vec::new(),
+            log_only: true,
+        },
     }
 }
 
@@ -1285,6 +1931,23 @@ fn fill_file(root: &Path, runner: Runner, c: &mut Case) {
     if c.class.is_empty() {
         return;
     }
+    if runner == Runner::Playwright {
+        // The JUnit class is the spec file, relative to the config's test folder.
+        let class = c.class.trim_start_matches("./");
+        let found = if root.join(class).is_file() {
+            Some(class.to_string())
+        } else {
+            let tail = format!("/{class}");
+            walk_files(root)
+                .find(|p| p.to_string_lossy().replace('\\', "/").ends_with(&tail))
+                .map(|p| p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned())
+        };
+        if let Some(f) = found {
+            c.group = f.clone();
+            c.file = Some(f);
+        }
+        return;
+    }
     if runner == Runner::Pytest {
         let parts: Vec<&str> = c.class.split('.').collect();
         for k in (1..=parts.len()).rev() {
@@ -1751,5 +2414,230 @@ mod tests {
         assert_eq!(leaf_of("com.acme.Foo.method"), "method");
         assert_eq!(leaf_of("test_x[param-1]"), "test_x");
         assert_eq!(strip_ansi("\u{1b}[31mred\u{1b}[0m\r"), "red");
+    }
+
+    type Classified = Option<(Runner, Vec<String>, Vec<String>)>;
+
+    fn classified(cmd: &str) -> Classified {
+        classify(cmd).map(|(r, i)| (r, i.env, i.args.into_iter().map(|a| a.raw).collect()))
+    }
+
+    fn expect(r: Runner, env: &[&str], args: &[&str]) -> Classified {
+        Some((r, env.iter().map(|s| s.to_string()).collect(), args.iter().map(|s| s.to_string()).collect()))
+    }
+
+    #[test]
+    fn script_commands_are_classified() {
+        // The test scripts of a real project (nexo).
+        assert_eq!(classified("vitest"), expect(Runner::Vitest, &[], &[]));
+        assert_eq!(classified("vitest --project unit"), expect(Runner::Vitest, &[], &["--project unit"]));
+        assert_eq!(classified("vitest --project unit --watch"), expect(Runner::Vitest, &[], &["--project unit"]));
+        assert_eq!(
+            classified("vitest --project unit --coverage"),
+            expect(Runner::Vitest, &[], &["--project unit", "--coverage"])
+        );
+        assert_eq!(classified("vitest --run"), expect(Runner::Vitest, &[], &[]));
+        assert_eq!(
+            classified("vitest --run --coverage --project unit --project integration"),
+            expect(Runner::Vitest, &[], &["--coverage", "--project unit", "--project integration"])
+        );
+        assert_eq!(
+            classified("COVERAGE_SCOPE=frontend vitest --run --coverage --project component"),
+            expect(Runner::Vitest, &["COVERAGE_SCOPE=frontend"], &["--coverage", "--project component"])
+        );
+        assert_eq!(
+            classified("playwright test --project=chromium"),
+            expect(Runner::Playwright, &[], &["--project=chromium"])
+        );
+        assert_eq!(classified("e2e/visual/run-in-docker.sh"), None);
+        assert_eq!(classified("e2e/visual/run-in-docker.sh --update-snapshots"), None);
+        assert_eq!(classified("stryker run"), None);
+        // Launchers, env and watch flags.
+        assert_eq!(classified("npx jest --watchAll"), expect(Runner::Jest, &[], &[]));
+        assert_eq!(classified("cross-env CI=1 jest"), expect(Runner::Jest, &["CI=1"], &[]));
+        assert_eq!(classified("pnpm exec vitest"), expect(Runner::Vitest, &[], &[]));
+        assert_eq!(classified("yarn vitest run"), expect(Runner::Vitest, &[], &[]));
+        assert_eq!(classified("npm exec -- jest --watch -i"), expect(Runner::Jest, &[], &["-i"]));
+        assert_eq!(classified("vitest watch --project unit"), expect(Runner::Vitest, &[], &["--project unit"]));
+        assert_eq!(classified("./node_modules/.bin/vitest -w"), expect(Runner::Vitest, &[], &[]));
+        assert_eq!(classified("node --test --watch test/"), expect(Runner::NodeTest, &[], &["test/"]));
+        assert_eq!(classified("bun test --watch"), expect(Runner::Bun, &[], &[]));
+        assert_eq!(classified("deno test -A"), expect(Runner::Deno, &[], &["-A"]));
+        assert_eq!(
+            classified("jest --selectProjects api web --watchAll"),
+            expect(Runner::Jest, &[], &["--selectProjects api web"])
+        );
+        // Not a single test run: log only.
+        assert_eq!(classified("vitest bench"), None);
+        assert_eq!(classified("mocha"), None);
+        assert_eq!(classified("vitest --run | tee out.txt"), None);
+        assert_eq!(classified("vitest --project a && vitest --project b"), None);
+        assert_eq!(classified("vitest; echo done"), None);
+        assert_eq!(classified("ESBUILD_BINARY_PATH=$(node x.mjs) vitest"), None);
+        assert_eq!(classified("vitest 'unclosed"), None);
+        // Setup chained before the tool runs as written.
+        let (r, i) = classify("prisma generate && NODE_ENV=test vitest --run").unwrap();
+        assert_eq!(
+            (r, i.pre, i.env),
+            (Runner::Vitest, vec!["prisma generate".to_string()], vec!["NODE_ENV=test".to_string()])
+        );
+        // Roles: the script's reporters stay (not a second JSON one), our report options go.
+        let (_, i) =
+            classify("vitest --reporter=verbose --reporter json --outputFile=out.json -t 'adds it' src/a").unwrap();
+        let roles: Vec<(&str, Role)> = i.args.iter().map(|a| (a.raw.as_str(), a.role)).collect();
+        assert_eq!(
+            roles,
+            vec![
+                ("--reporter=verbose", Role::Reporter),
+                ("-t 'adds it'", Role::NameFilter),
+                ("src/a", Role::Positional)
+            ]
+        );
+    }
+
+    const NEXO: &str = r#"{
+      "scripts": {
+        "dev": "pnpm infra && node scripts/next-banner.mjs dev",
+        "build": "prisma generate && next build",
+        "email": "ESBUILD_BINARY_PATH=$(node scripts/resolve-esbuild-binary.mjs) npx email dev",
+        "test": "vitest",
+        "test:unit": "vitest --project unit",
+        "test:browser": "playwright test --project=chromium",
+        "test:visual": "e2e/visual/run-in-docker.sh",
+        "test:mutation": "stryker run",
+        "test:unit:watch": "vitest --project unit --watch",
+        "test:all": "vitest --run",
+        "test:coverage": "vitest --run --coverage --project unit --project integration",
+        "test:coverage:component": "COVERAGE_SCOPE=frontend vitest --run --coverage --project component"
+      },
+      "devDependencies": { "@playwright/test": "^1.63.0", "vitest": "^5.0.5" }
+    }"#;
+
+    #[test]
+    fn script_targets_run_like_their_scripts() {
+        let d = tmp("scripts");
+        std::fs::write(d.join("package.json"), NEXO).unwrap();
+        std::fs::write(d.join("pnpm-lock.yaml"), "").unwrap();
+        assert!(detect(&d, false).contains(&Runner::Playwright));
+        let ts = script_targets(&d);
+        let names: Vec<&str> = ts.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "test",
+                "test:all",
+                "test:browser",
+                "test:coverage",
+                "test:coverage:component",
+                "test:mutation",
+                "test:unit",
+                "test:unit:watch",
+                "test:visual"
+            ]
+        );
+        let t = |n: &str| ts.iter().find(|t| t.name == n).unwrap();
+        assert_eq!((t("test:unit").id.as_str(), t("test:unit").dir.as_path()), ("script::test:unit", d.as_path()));
+        assert_eq!(t("test:unit").runner(), Some(Runner::Vitest));
+        assert_eq!(t("test:browser").runner(), Some(Runner::Playwright));
+        assert_eq!((t("test:visual").runner(), t("test:mutation").runner()), (None, None));
+
+        let rp = d.join("r.json");
+        let q = shell_quote(&rp.to_string_lossy());
+        let failed = [Case { name: "math › breaks".into(), id: "x".into(), ..Default::default() }];
+        let one = Scope::Test { file: Some("src/a.test.ts"), name: "adds it", case: None };
+        let p = |n: &str, s: &Scope| plan_script(t(n), s, &rp).cmd;
+        let rep = format!("--reporter=default --reporter=json --outputFile.json={q}");
+        let unit = format!("pnpm exec vitest run --project unit {rep}");
+        assert_eq!(p("test:unit", &Scope::All), unit);
+        assert_eq!(p("test:unit:watch", &Scope::All), unit, "the panel's Watch re-runs on save instead");
+        assert_eq!(
+            p("test:unit", &Scope::File("src/a.test.ts")),
+            format!("pnpm exec vitest run 'src/a.test.ts' --project unit {rep}")
+        );
+        assert_eq!(
+            p("test:unit", &one),
+            format!("pnpm exec vitest run 'src/a.test.ts' --project unit -t 'adds it' {rep}")
+        );
+        assert_eq!(
+            p("test:unit", &Scope::Failed(&failed)),
+            format!("pnpm exec vitest run --project unit -t '(breaks)' {rep}")
+        );
+        assert_eq!(p("test:all", &Scope::All), format!("pnpm exec vitest run {rep}"));
+        assert_eq!(
+            p("test:coverage", &Scope::All),
+            format!("pnpm exec vitest run --coverage --project unit --project integration {rep}")
+        );
+        assert_eq!(
+            p("test:coverage:component", &Scope::File("src/b.test.tsx")),
+            format!(
+                "COVERAGE_SCOPE=frontend pnpm exec vitest run 'src/b.test.tsx' --coverage --project component {rep}"
+            )
+        );
+        let pw = format!("PLAYWRIGHT_JUNIT_OUTPUT_NAME={q} pnpm exec playwright test");
+        assert_eq!(p("test:browser", &Scope::All), format!("{pw} --project=chromium --reporter=list,junit"));
+        assert_eq!(
+            p("test:browser", &Scope::File("e2e/a.spec.ts")),
+            format!("{pw} 'e2e/a.spec.ts' --project=chromium --reporter=list,junit")
+        );
+        let one_pw = Scope::Test { file: Some("e2e/a.spec.ts"), name: "adds it", case: None };
+        assert_eq!(
+            p("test:browser", &one_pw),
+            format!("{pw} 'e2e/a.spec.ts' --project=chromium -g 'adds it' --reporter=list,junit")
+        );
+        assert_eq!(
+            p("test:browser", &Scope::Failed(&failed)),
+            format!("{pw} --project=chromium --last-failed --reporter=list,junit")
+        );
+        let structured = plan_script(t("test:unit"), &Scope::All, &rp);
+        assert_eq!((structured.log_only, structured.report.map(|r| r.1)), (false, Some(Format::JestJson)));
+        let lo = plan_script(t("test:visual"), &Scope::All, &rp);
+        assert_eq!((lo.cmd.as_str(), lo.log_only, lo.report.is_none()), ("pnpm run test:visual", true, true));
+        assert_eq!(plan_script(t("test:mutation"), &Scope::All, &rp).cmd, "pnpm run test:mutation");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn workspace_packages_and_forwarding_scripts() {
+        let d = tmp("workspace");
+        std::fs::write(
+            d.join("package.json"),
+            r#"{"workspaces":["packages/*"],"scripts":{"test":"npm run test:unit","test:unit":"vitest","lint":"eslint .","check:e2e":"playwright test"}}"#,
+        )
+        .unwrap();
+        std::fs::write(d.join("package-lock.json"), "{}").unwrap();
+        std::fs::create_dir_all(d.join("packages/api")).unwrap();
+        std::fs::write(
+            d.join("packages/api/package.json"),
+            r#"{"scripts":{"test":"npx jest --watchAll","test:ci":"cross-env CI=1 jest","start":"node ."}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(d.join("node_modules/x")).unwrap();
+        std::fs::write(d.join("node_modules/x/package.json"), r#"{"scripts":{"test":"vitest"}}"#).unwrap();
+        assert_eq!(package_dirs(&d), vec![d.clone(), d.join("packages/api")]);
+        let ts = script_targets(&d);
+        let ids: Vec<&str> = ts.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "script::check:e2e",
+                "script::test",
+                "script::test:unit",
+                "script:packages/api:test",
+                "script:packages/api:test:ci"
+            ]
+        );
+        let t = |id: &str| ts.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(t("script::test").runner(), Some(Runner::Vitest), "forwards to test:unit");
+        assert_eq!(t("script::check:e2e").runner(), Some(Runner::Playwright), "runs a test tool");
+        let api = t("script:packages/api:test");
+        assert_eq!((api.dir.clone(), api.rel.as_str(), api.pm), (d.join("packages/api"), "packages/api", Pm::Npm));
+        let rp = d.join("r.json");
+        let q = shell_quote(&rp.to_string_lossy());
+        assert_eq!(plan_script(api, &Scope::All, &rp).cmd, format!("npx jest --json --outputFile={q}"));
+        assert_eq!(
+            plan_script(t("script:packages/api:test:ci"), &Scope::File("src/a.test.js"), &rp).cmd,
+            format!("CI=1 npx jest 'src/a.test.js' --json --outputFile={q}")
+        );
+        std::fs::remove_dir_all(&d).ok();
     }
 }

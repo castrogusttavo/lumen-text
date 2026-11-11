@@ -202,7 +202,7 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Tests: Open panel", "", Cmd::TestsPanel),
     ("Tests: Debug test at cursor", "Ctrl+K D", Cmd::TestDebug),
     ("Tests: Toggle watch (re-run on save)", "", Cmd::TestWatch),
-    ("Tests: Choose runner…", "", Cmd::TestRunner),
+    ("Tests: Choose target…", "", Cmd::TestRunner),
     ("Build: Build", "Ctrl+Shift+B", Cmd::BuildBuild),
     ("Build: Run", "Ctrl+F5", Cmd::BuildRun),
     ("Build: Stop", "", Cmd::BuildStop),
