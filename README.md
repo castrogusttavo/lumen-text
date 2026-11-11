@@ -41,6 +41,7 @@ and no GPU driver:
 - Tabs, quick open (fuzzy), session restore, live reload when files change on disk (inotify)
 - **Local history**, independent of git: a snapshot on every save and right before a buffer is reloaded because another program (a formatter, `git checkout`, the AI agent) rewrote the file. *File: Local history* (also in the tab and explorer context menus) lists them ("3 minutes ago · Saved", date, size), opens a side-by-side diff of the snapshot against the buffer and restores it as one undoable edit (`r` or *Restore this version*); *File: Local history (deleted files)* brings back files that no longer exist. Stored in `$XDG_STATE_HOME/lumen-text/history` (default `~/.local/state`): identical snapshots are skipped, files over 5 MB are not kept, 50 snapshots per file and 200 MB in total (oldest pruned first)
 - Never lose anything: **hot exit** (quitting keeps unsaved tabs, untitled ones too, and reopens them next time, no save prompt), **crash recovery** (unsaved buffers are backed up a few seconds after each edit; a backup whose file changed on disk meanwhile is still restored, with a notice) and **persistent undo** (a file's undo tree survives closing it and restarting while its text is unchanged)
+- Always up to date: a `git checkout` / `commit` / `pull` typed in a terminal refreshes the branch, gutter marks and status (the repository's `.git` is watched); on NFS, SMB, FUSE/sshfs, 9p (WSL), FAT/exFAT or when the inotify watch limit is reached, the open files and expanded folders are polled instead (status bar: *Polling (NFS)*); regaining the window focus re-checks what changed; *File: Refresh explorer and git status* (palette, or the button in the explorer header) re-reads everything
 - Fonts: separate **interface** and **buffer** (code, terminal, diffs) fonts with a searchable picker of the installed families, weight, size, line height and ligatures, all live
 - Display options: line numbers, bookmarks (`Ctrl+F2`), breakpoint dots, scrollbars (show / auto-hide / never) and a master switch for the language servers
 - Smooth Zed-style scrolling, drag selection by word/line, Wayland and X11 clipboard, IME, fractional hi-DPI scaling
@@ -322,6 +323,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `ram_display` | `"long"` | `"long"` (numbers) or `"short"` (a chip icon) |
 | `local_history` / `local_history_max_entries` | `true` / `50` | Keep a snapshot of a file on every save and before a reload from disk (*File: Local history*); snapshots kept per file, 1 to 1000 |
 | `explorer_hide_gitignored` | `true` | Hide what `.gitignore`, the global ignore file and `.git/info/exclude` ignore; `false` shows those entries dimmed |
+| `watcher_poll_ms` | `2000` | Interval of the polling fallback used where inotify cannot be trusted (NFS, SMB, FUSE, 9p, FAT/exFAT, watch limit reached): only open files and expanded folders are checked (250 to 60000) |
 | `status_items` | `{}` | Map of bottom-bar item id to `true`/`false` (`search`, `problems`, `terminal`, `debug`, `git`, `ram`, `position`, `indent`, `language`) |
 | `status_order` | position, indent, language, terminal, debug, git, ram | Order of the right-hand bottom-bar items |
 | `status_left_order` | sidebar, search, problems | Order of the left-hand bottom-bar items |
@@ -331,7 +333,8 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `git_panel_width` / `md_split` | `0` / `0.5` | Panel width in px (0 = automatic); Markdown source share (0.2 to 0.8) |
 
 Environment variables: `LUMEN_THEME` (path to a theme file), `LUMEN_ASSETS` (assets directory),
-`LUMEN_TSGO` (path to a `tsgo` binary), `LUMEN_AUTOIMPORT=1`, `LUMEN_DEBUG=1`, `LUMEN_GIT_POLL_MS` (interval of the background ahead/behind refresh, default 60000).
+`LUMEN_TSGO` (path to a `tsgo` binary), `LUMEN_AUTOIMPORT=1`, `LUMEN_DEBUG=1`, `LUMEN_GIT_POLL_MS` (interval of the background ahead/behind refresh, default 60000),
+`LUMEN_FORCE_POLL=1` (treat every folder as a network mount, to try the polling fallback on a local disk).
 Assets are searched in `$LUMEN_ASSETS`, then `<exe dir>/../share/lumen-text/assets`, then `~/.local/share/lumen-text/assets`.
 
 ### `keybindings.json`
@@ -383,6 +386,7 @@ src/
   worktree.rs, app_worktree.rs  git worktrees: list, add/remove/prune (on the git worker), open here / in a new window
   mdview/, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)
   search.rs, fuzzy.rs, snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs
+  fstype.rs, poller.rs, app_fswatch.rs  untrusted file systems (statfs), polling fallback, .git watching and refresh on focus
   script.rs                headless mode for tests and screenshots
 assets/   grammars, themes, language-manifest.json, icons, licenses
 packaging/  tarball, deb, rpm, Arch, AppImage, Flatpak scripts

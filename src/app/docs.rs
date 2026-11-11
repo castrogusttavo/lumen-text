@@ -109,27 +109,39 @@ impl App {
     }
 
     /// Watch the project root, every expanded folder of the tree, and the folders of open files.
+    /// Also the repository's git dir, and polling where inotify cannot be trusted (`fswatch_sync`).
     pub fn watch_dirs(&mut self) {
-        let Some(w) = self.watcher.as_mut() else { return };
-        let _ = w.watch_dir(&self.root);
-        for r in &self.tree.rows {
-            if r.is_dir && r.expanded {
-                let _ = w.watch_dir(&r.path);
+        // Folders inotify refused (watch limit): polled instead.
+        let mut refused: Vec<PathBuf> = Vec::new();
+        if let Some(w) = self.watcher.as_mut() {
+            let mut watch = |p: &Path| {
+                if let Err(e) = w.watch_dir(p)
+                    && crate::watcher::is_limit_error(&e)
+                {
+                    refused.push(p.to_path_buf());
+                }
+            };
+            watch(self.root.as_path());
+            for r in &self.tree.rows {
+                if r.is_dir && r.expanded {
+                    watch(r.path.as_path());
+                }
+            }
+            for d in &self.docs {
+                if let Some(p) = d.path().and_then(Path::parent) {
+                    watch(p);
+                }
+            }
+            // A running language server needs to hear about every source file changing on disk, also in
+            // folders that are collapsed in the tree.
+            for l in &self.lsps {
+                if (l.name == "tsgo" || l.is_generic()) && !self.lsp_watched.contains(&l.root) {
+                    self.lsp_watched.push(l.root.clone());
+                    crate::watcher::watch_tree(w, &l.root, 4000);
+                }
             }
         }
-        for d in &self.docs {
-            if let Some(p) = d.path().and_then(Path::parent) {
-                let _ = w.watch_dir(p);
-            }
-        }
-        // A running language server needs to hear about every source file changing on disk, also in
-        // folders that are collapsed in the tree.
-        for l in &self.lsps {
-            if (l.name == "tsgo" || l.is_generic()) && !self.lsp_watched.contains(&l.root) {
-                self.lsp_watched.push(l.root.clone());
-                crate::watcher::watch_tree(w, &l.root, 4000);
-            }
-        }
+        self.fswatch_sync(refused);
     }
 
     /// React to file-system events: reload changed files right away and refresh the tree.
@@ -140,21 +152,18 @@ impl App {
                 evs.push(e);
             }
         }
+        // The poller's events join; `.git` events leave (they schedule a git check instead).
+        self.fswatch_drain(&mut evs);
         if evs.is_empty() {
             return;
         }
         self.lsp_fs_events(&evs);
         self.last_disk_check = Instant::now() - Duration::from_secs(60);
-        if self.last_tree_refresh.elapsed() > Duration::from_millis(400) {
-            self.last_tree_refresh = Instant::now();
-            if evs.iter().any(|e| crate::ignore_filter::IgnoreFilter::is_ignore_file(&e.path)) {
-                self.tree.invalidate_ignore();
-            }
-            self.tree.rebuild();
-            self.file_index = None;
-            self.refresh_git_status();
-            self.watch_dirs();
+        if evs.iter().any(|e| crate::ignore_filter::IgnoreFilter::is_ignore_file(&e.path)) {
+            self.tree.invalidate_ignore();
         }
+        // Now, or at the end of the throttle window (never dropped).
+        self.fswatch_schedule_tree();
         self.request_redraw();
     }
 

@@ -118,6 +118,13 @@ A test checks that ids exist, combos are unique and the palette text agrees. Cho
 
 **A setting.** Add a field to `Config` in `src/config.rs` with its default in `Default`, parse it in `load_from` (validate and clamp), write it in `save_to`, extend the round-trip test, and add a row in `src/settingsui.rs` so it shows in the settings modal. Document it in the README table.
 
+**Something that reacts to disk changes.** Every change arrives as a `watcher::FsEvent` in `App::pump_watcher`, from inotify or, on
+file systems inotify cannot be trusted on (`fstype.rs`: NFS, SMB, FUSE, 9p, FAT/exFAT, watch limit), from the poller (`poller.rs`, open
+files and expanded folders only). Events under the repository's git dir never reach the tree or the language servers: `app_fswatch.rs`
+debounces them and compares a cheap `GitSig` before refreshing the branch, gutter base and status. Never run a `git` command that
+writes `.git/index` on every refresh (use `--no-optional-locks`), or the watcher loops. Tests run real `git` in temp repos
+(`app_fswatch::tests`); `LUMEN_FORCE_POLL=1` tries the polling fallback on a local disk.
+
 **A theme.** Bundled themes are VS Code JSON in `assets/themes/` and listed through `assets/language-manifest.json`; the test suite loads every theme and checks WCAG AA text pairs, so run `cargo test --release theme`.
 Users can add themes without code in `~/.config/lumen-text/themes/` (see README). Zed conversion lives in `src/zedtheme.rs`.
 

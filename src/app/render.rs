@@ -311,6 +311,7 @@ impl App {
             r,
             true,
         );
+        self.draw_explorer_refresh(cv);
         if self.sidebar_mode == SidebarMode::Outline {
             self.draw_outline(cv);
             return self.draw_sidebar_bar(cv);

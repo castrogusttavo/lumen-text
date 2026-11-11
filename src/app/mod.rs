@@ -247,6 +247,8 @@ pub struct App {
     pub upd: crate::app_update::UpdateUi,
     /// Backups of unsaved buffers (hot exit, crash recovery).
     pub backup: crate::backup::BackupState,
+    /// `.git` watching, the polling fallback and refresh on focus (see `app_fswatch`).
+    pub fswatch: crate::app_fswatch::FsWatch,
 }
 
 impl App {
@@ -372,6 +374,7 @@ impl App {
             actions_items: Vec::new(),
             upd: crate::app_update::UpdateUi::new(),
             backup: Default::default(),
+            fswatch: Default::default(),
         };
         app.refresh_git_status();
         app.watcher = crate::watcher::Watcher::new(app.wake()).ok();
@@ -519,12 +522,15 @@ impl ApplicationHandler<UserEvent> for App {
                 self.preedit = text;
                 self.request_redraw();
             }
-            WindowEvent::Focused(false) => self.git_bg_focus(false),
+            WindowEvent::Focused(false) => {
+                self.git_bg_focus(false);
+                self.fswatch_blur();
+            }
             WindowEvent::Focused(true) => {
                 self.git_bg_focus(true);
                 self.follow_system_theme();
-                self.last_disk_check = Instant::now() - Duration::from_secs(10);
-                self.refresh_git_status();
+                // Open files' mtimes, the git dir and the expanded folders: refresh what moved.
+                self.fswatch_focus();
                 self.request_redraw();
             }
             WindowEvent::ModifiersChanged(m) => self.mods = map_mods(m.state()),

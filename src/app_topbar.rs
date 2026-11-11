@@ -972,6 +972,7 @@ impl App {
         }
         x = self.draw_build_status(cv, x);
         x = self.draw_ai_status(cv, x);
+        x = self.draw_fswatch_status(cv, x);
 
         // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
         // (cursor position, indentation, language: clickable) and the memory figure, in any order.
