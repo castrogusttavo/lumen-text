@@ -160,6 +160,7 @@ impl App {
             Ok(()) => {
                 let abs = top.join(&c.path);
                 if let Some(k) = self.docs.iter().position(|d| d.path() == Some(abs.as_path())) {
+                    self.hist_snapshot(k, crate::localhist::Source::Reload);
                     let _ = self.docs[k].reload_from_disk();
                     self.docs[k].git_stale = true;
                 }

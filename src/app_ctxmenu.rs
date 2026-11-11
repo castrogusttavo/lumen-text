@@ -322,6 +322,8 @@ pub enum Act {
     CloseAll,
     TogglePin,
     Markdown,
+    /// Snapshots of the file kept by the local history (see `app_localhist`).
+    LocalHistory,
     // Commit rows (see `app_gitpanel::actions`).
     CherryPick,
     CopyHash,
@@ -409,6 +411,7 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
                 delete(),
                 sep(),
                 item(Act::CopyPath, "Copy Path", "hugeicons/link", ""),
+                item(Act::LocalHistory, "Local History", "ui/clock", ""),
             ];
             if f.split {
                 v.push(item(Act::OpenSide, "Open to the Side", "ui/split", ""));
@@ -441,6 +444,7 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
             ];
             if f.has_path {
                 v.push(item(Act::CopyPath, "Copy Path", "hugeicons/link", ""));
+                v.push(item(Act::LocalHistory, "Local History", "ui/clock", ""));
             }
             if let Some(open) = f.md {
                 v.push(item(
@@ -933,6 +937,11 @@ impl App {
                     self.toggle_md_reader();
                 }
             }
+            Act::LocalHistory => {
+                if let Some(p) = path {
+                    self.hist_list(&p);
+                }
+            }
             Act::CherryPick | Act::CopyHash | Act::BranchHere | Act::TagHere | Act::UndoCommit | Act::Run(_) => {}
         }
     }
@@ -1295,12 +1304,27 @@ mod tests {
         assert!(labels(&entries_for(&folder, &with_clip)).contains(&"Paste"));
         let file = Target::File("/p/a.ts".into());
         let l = labels(&entries_for(&file, &f));
-        assert_eq!(l, ["Cut", "Copy", "-", "Duplicate", "Rename", "-", "Move to Trash", "Delete", "-", "Copy Path"]);
+        assert_eq!(
+            l,
+            [
+                "Cut",
+                "Copy",
+                "-",
+                "Duplicate",
+                "Rename",
+                "-",
+                "Move to Trash",
+                "Delete",
+                "-",
+                "Copy Path",
+                "Local History"
+            ]
+        );
         assert!(!l.contains(&"Open to the Side") && !l.contains(&"Paste"));
         assert!(labels(&entries_for(&file, &Flags { split: true, ..f })).contains(&"Open to the Side"));
         let tab = Target::Tab(0);
         let l = labels(&entries_for(&tab, &Flags { has_path: true, ..f }));
-        assert_eq!(l, ["Close", "Close Others", "Close All", "-", "Pin Tab", "-", "Copy Path"]);
+        assert_eq!(l, ["Close", "Close Others", "Close All", "-", "Pin Tab", "-", "Copy Path", "Local History"]);
         let l = labels(&entries_for(&tab, &Flags { has_path: true, pinned: true, md: Some(false), ..f }));
         assert!(l.contains(&"Unpin Tab") && l.contains(&"Open Markdown Preview"));
         assert!(labels(&entries_for(&tab, &Flags { md: Some(true), ..f })).contains(&"Close Markdown Preview"));

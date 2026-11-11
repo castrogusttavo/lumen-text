@@ -107,6 +107,10 @@ pub struct Config {
     pub scrollbar: String,
     /// Master switch for every language server (see `App::lsp_enabled`).
     pub enable_lsp: bool,
+    /// Local history: a snapshot of a file on every save and before a reload from disk (see
+    /// `localhist`), at most `local_history_max_entries` per file (1..=1000).
+    pub local_history: bool,
+    pub local_history_max_entries: usize,
 }
 
 /// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
@@ -259,6 +263,8 @@ impl Default for Config {
             show_breakpoints: true,
             scrollbar: "never".into(),
             enable_lsp: true,
+            local_history: true,
+            local_history_max_entries: crate::localhist::DEFAULT_MAX_ENTRIES,
         }
     }
 }
@@ -521,6 +527,10 @@ impl Config {
                 (_, s) => normalize_scrollbar(s),
             },
             enable_lsp: v["enable_lsp"].as_bool().unwrap_or(true),
+            local_history: v["local_history"].as_bool().unwrap_or(true),
+            local_history_max_entries: v["local_history_max_entries"]
+                .as_u64()
+                .map_or(crate::localhist::DEFAULT_MAX_ENTRIES, |n| n.clamp(1, 1000) as usize),
         }
     }
 
@@ -548,6 +558,8 @@ impl Config {
         v["markdown_remote_images"] = json!(self.markdown_remote_images);
         v["sidebar_width"] = json!(self.sidebar_width);
         v["scrollbar_v"] = json!(2);
+        v["local_history"] = json!(self.local_history);
+        v["local_history_max_entries"] = json!(self.local_history_max_entries);
         std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
@@ -641,6 +653,8 @@ mod tests {
             show_breakpoints: false,
             scrollbar: "auto".into(),
             enable_lsp: false,
+            local_history: false,
+            local_history_max_entries: 7,
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

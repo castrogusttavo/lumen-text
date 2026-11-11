@@ -110,6 +110,7 @@ impl App {
         match run_git(&self.root, &["checkout", "--", &arg]) {
             Ok(_) => {
                 if let Some(i) = self.docs.iter().position(|d| d.path() == Some(path)) {
+                    self.hist_snapshot(i, crate::localhist::Source::Reload);
                     let _ = self.docs[i].reload_from_disk();
                 }
                 self.refresh_git_status();

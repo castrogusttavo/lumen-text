@@ -200,6 +200,8 @@ pub struct App {
     pub build: crate::app_build::BuildState,
     pub dbg: Option<crate::app_debug::Debugger>,
     pub diff: Option<crate::app_gitx::DiffView>,
+    /// Local history folder (`localhist`); None in unit tests unless a test sets a temp folder.
+    pub hist_root: Option<PathBuf>,
     /// Git panel docked on the right (Changes / History).
     pub gitpanel: Option<Box<crate::app_gitpanel::GitPanel>>,
     pub split: Option<Box<crate::app_split::Split>>,
@@ -331,6 +333,7 @@ impl App {
             build: crate::app_build::BuildState::default(),
             dbg: None,
             diff: None,
+            hist_root: if cfg!(test) { None } else { crate::localhist::default_root() },
             gitpanel: None,
             split: None,
             breakpoints: Default::default(),
