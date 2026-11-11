@@ -34,23 +34,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
             libfontconfig1-dev libclang-dev libonig-dev rpm
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: platforms-${{ matrix.name }}
       - name: Format and clippy (Linux)
         if: runner.os == 'Linux'
         run: |
           cargo fmt --check
-          cargo clippy --release -- -D warnings
+          cargo clippy --release --locked -- -D warnings
       - name: Git defaults for the tests (no CRLF conversion on Windows)
         run: git config --global core.autocrlf false
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: Test
-        run: cargo test --release
+        run: cargo test --release --locked
       - name: Package (tar.gz, deb, rpm, AppImage) and smoke test (Linux)
         if: runner.os == 'Linux'
         shell: bash

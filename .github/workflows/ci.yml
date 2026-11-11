@@ -25,16 +25,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
             libfontconfig1-dev libclang-dev libonig-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Format
         run: cargo fmt --check
       - name: Clippy
-        run: cargo clippy --release -- -D warnings
+        run: cargo clippy --release --locked -- -D warnings
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: Release binary size budget
         shell: bash
         run: |
@@ -43,7 +43,7 @@ jobs:
           echo "lumen-text release binary: $((size / 1024)) KiB (budget $((budget / 1024)) KiB)"
           [ "$size" -le "$budget" ] || { echo "binary size over budget" >&2; exit 1; }
       - name: Test (the real-tsgo test skips itself when tsgo is absent)
-        run: cargo test --release
+        run: cargo test --release --locked
 
   perf:
     name: Performance regression tests
@@ -57,17 +57,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
             libfontconfig1-dev libclang-dev libonig-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build the binary (the startup tests time the real executable)
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: Run performance tests
         shell: bash
         run: |
           set -o pipefail
-          cargo test --release perf -- --nocapture --test-threads=1 2>&1 | tee perf.log
+          cargo test --release --locked perf -- --nocapture --test-threads=1 2>&1 | tee perf.log
           # Process-wide PSS needs a quiet process, so this one is #[ignore]d in the normal test run.
-          cargo test --release memory_budget -- --ignored --nocapture --test-threads=1 2>&1 | tee -a perf.log
+          cargo test --release --locked memory_budget -- --ignored --nocapture --test-threads=1 2>&1 | tee -a perf.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -87,8 +87,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
             libfontconfig1-dev libclang-dev libonig-dev clangd
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Toolchains the servers run on (or need to analyse their language).
       - uses: actions/setup-node@v4
         with:
@@ -104,7 +104,7 @@ jobs:
         with:
           go-version: stable
           cache: false
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: '3.4'
       - name: Install the language servers (pinned versions)
@@ -117,7 +117,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --release lsp_matrix -- --ignored --nocapture --test-threads=1 2>&1 | tee lsp-matrix.log
+          cargo test --release --locked lsp_matrix -- --ignored --nocapture --test-threads=1 2>&1 | tee lsp-matrix.log
       - name: Summary
         if: always()
         shell: bash
@@ -183,8 +183,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev \
             libfontconfig1-dev libclang-dev libonig-dev rpm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-${{ matrix.arch }}
       - name: HugeIcons Pro masks (only when the maintainer's token is available)
@@ -207,7 +207,7 @@ jobs:
         env:
           LUMEN_VERSION: ${{ env.VERSION }}
         run: |
-          cargo build --release
+          cargo build --release --locked
           got="$(target/release/lumen-text --version)"
           echo "$got"
           [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
@@ -268,8 +268,8 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-windows
       - name: HugeIcons Pro masks (only when the maintainer's token is available)
@@ -293,7 +293,7 @@ jobs:
         env:
           LUMEN_VERSION: ${{ env.VERSION }}
         run: |
-          cargo build --release
+          cargo build --release --locked
           got="$(target/release/lumen-text.exe --version)"
           echo "$got"
           [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
@@ -330,8 +330,8 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-macos-${{ matrix.arch }}
       - name: HugeIcons Pro masks (only when the maintainer's token is available)
@@ -356,7 +356,7 @@ jobs:
         env:
           LUMEN_VERSION: ${{ env.VERSION }}
         run: |
-          cargo build --release
+          cargo build --release --locked
           got="$(target/release/lumen-text --version)"
           echo "$got"
           [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
@@ -461,10 +461,10 @@ jobs:
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
           platforms='{}'
           add() { # add <platform key> <file name>: signed files carry their base64 .minisig, the rest an empty signature
-            [ -f "dist/$2" ] || return 0
-            sig=""
-            [ -f "dist/$2.minisig" ] && sig="$(base64 -w0 "dist/$2.minisig")"
-            platforms="$(jq -c --arg k "$1" --arg u "${base}/$2" --arg s "$sig" '. + {($k): {url: $u, signature: $s}}' <<<"$platforms")"
+            local key="$1" file="$2" sig=""
+            [ -f "dist/$file" ] || return 0
+            [ -f "dist/$file.minisig" ] && sig="$(base64 -w0 "dist/$file.minisig")"
+            platforms="$(jq -c --arg k "$key" --arg u "${base}/$file" --arg s "$sig" '. + {($k): {url: $u, signature: $s}}' <<<"$platforms")"
           }
           for pair in "x86_64 amd64 x86_64" "aarch64 arm64 aarch64"; do
             set -- $pair; arch="$1"; deb="$2"; rpm="$3"
