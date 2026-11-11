@@ -307,7 +307,10 @@ impl App {
                     self.panel.tab = PanelTab::Debug;
                     self.focus = Focus::Editor;
                 }
-                Some(PanelTab::Tests) => self.tests_open_panel(),
+                Some(PanelTab::Tests) => {
+                    self.tests_open_panel();
+                    self.tests_focus();
+                }
                 Some(PanelTab::Terminal) => self.open_terminal(),
                 Some(PanelTab::Output) => {
                     self.panel.tab = PanelTab::Output;
@@ -389,22 +392,26 @@ impl App {
         let body = Rect::new(r.x, r.y + PANEL_HEADER + 1, r.w, (r.h - PANEL_HEADER - 1).max(0));
         let head = Rect::new(r.x, r.y + 1, r.w, PANEL_HEADER - 1);
         let ty = r.y + (PANEL_HEADER - 18) / 2 + 1;
-        let mut x = r.x + 14;
+        // Pill tabs, like the git panel's: the active one tinted, the others dim (hover tint is the app's).
+        let mut x = r.x + 8;
         for (label, tab) in [
             ("Output", PanelTab::Output),
             ("Tests", PanelTab::Tests),
             ("Terminal", PanelTab::Terminal),
             ("Debug", PanelTab::Debug),
         ] {
-            let w = self.tx.ui_width(label, true);
+            let w = self.tx.ui_width(label, true) + 20;
             let active = self.panel.tab == tab;
-            self.tx.draw_ui(cv, x, ty, label, if active { fg } else { dim }, head, active);
+            let pill = Rect::new(x, r.y + 4, w, PANEL_HEADER - 7);
             if active {
-                cv.fill(Rect::new(x - 2, r.y + PANEL_HEADER - 2, w + 4, 2), c.accent);
+                cv.fill_round(pill, 8, c.tab_active_fg.with_alpha(0x1e));
             }
-            self.layout.panel_tabs.push((Rect::new(x - 8, r.y, w + 16, PANEL_HEADER), tab));
-            x += w + 22;
+            let tw = self.tx.ui_width(label, active);
+            self.tx.draw_ui(cv, x + (w - tw) / 2, ty, label, if active { c.tab_active_fg } else { dim }, head, active);
+            self.layout.panel_tabs.push((pill, tab));
+            x += w + 4;
         }
+        x += 14;
         let hint = "Ctrl+J closes";
         let hw = self.tx.ui_width(hint, false);
         self.tx.draw_ui(cv, r.right() - hw - 14, ty, hint, dim, head, false);

@@ -15,6 +15,7 @@ impl App {
         self.hover = None;
         self.dismiss_tooltip();
         self.chord = None;
+        self.tests.focused = false; // a click in the Tests panel gives it back
         if button == MouseButton::Right {
             return self.right_click();
         }

@@ -2,7 +2,8 @@
 //! failures, re-run what broke and debug a single test. Parsing lives in `testrun.rs`.
 
 use crate::{
-    app::App,
+    app::{App, Focus, KeyIn},
+    app_gitpanel::fit,
     app_overlay::{Action, Item},
     app_panel::PanelTab,
     scrollreg::Reg,
@@ -16,12 +17,24 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime},
 };
+use winit::keyboard::{Key, NamedKey};
 
-const TOOLBAR_H: i32 = 38;
+const TOOLBAR_H: i32 = 40;
 const PROG_H: i32 = 3;
-const FILTER_H: i32 = 28;
-const ROW_H: i32 = 26;
-const DETAIL_HEAD: i32 = 88;
+const FILTER_H: i32 = 32;
+/// Height of a test row; a group row adds `GROUP_GAP` of air above it (no separator lines).
+const ROW_H: i32 = 30;
+const GROUP_GAP: i32 = 4;
+const GROUP_H: i32 = ROW_H + GROUP_GAP;
+/// Padding above the first and below the last row of the list.
+const LIST_PAD: i32 = 2;
+const DETAIL_HEAD: i32 = 100;
+/// Buttons, chips and the detail badge: same height and corner radius as the git panel's pills.
+const BTN_H: i32 = 26;
+const CHIP_H: i32 = 24;
+const RAD: i32 = 8;
+/// Secondary text (folders, describe prefixes, durations, meta).
+const SMALL: f32 = 12.0;
 const MIN_PANEL_H: i32 = 340;
 const MAX_RAW: usize = 6000;
 const BAR_W: i32 = 11;
@@ -109,6 +122,13 @@ pub struct TestsState {
     pub watch_due: Option<Instant>,
     dbg_json: Vec<String>,
     last_click: Option<(String, Instant)>,
+    /// The list has the keyboard (set by a click in the panel, dropped by any other click or
+    /// by a key the list does not use).
+    pub focused: bool,
+    /// Keyboard cursor parked on a group row; `None` means it is on the selected test.
+    pub cur_group: Option<String>,
+    /// Height of the list viewport at the last draw (for keeping the cursor in view).
+    list_view: i32,
 }
 
 impl Default for TestsState {
@@ -142,6 +162,9 @@ impl Default for TestsState {
             watch_due: None,
             dbg_json: Vec::new(),
             last_click: None,
+            focused: false,
+            cur_group: None,
+            list_view: 0,
         }
     }
 }
@@ -291,25 +314,119 @@ pub fn wrap_line(s: &str, cols: usize) -> Vec<String> {
     chars.chunks(cols).map(|c| c.iter().collect()).collect()
 }
 
-fn fit(tx: &mut TextCtx, s: &str, max: i32, bold: bool) -> String {
-    if max <= 0 {
-        return String::new();
+pub fn row_h(r: &Row) -> i32 {
+    match r {
+        Row::Group { .. } => GROUP_H,
+        Row::Case(_) => ROW_H,
     }
-    if tx.ui_width(s, bold) <= max {
-        return s.to_string();
+}
+
+/// Top of every row from the start of the list's content, and the content's total height.
+pub fn row_tops(rows: &[Row]) -> (Vec<i32>, i32) {
+    let mut y = LIST_PAD;
+    let tops = rows
+        .iter()
+        .map(|r| {
+            let t = y;
+            y += row_h(r);
+            t
+        })
+        .collect();
+    (tops, y + LIST_PAD)
+}
+
+/// Scroll offset that brings `[top, top + h)` into a `view` px viewport, moving as little as possible.
+pub fn scroll_to_show(scroll: f64, top: i32, h: i32, view: i32) -> f64 {
+    if view <= 0 {
+        return scroll;
     }
-    let chars: Vec<char> = s.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let t: String = chars[..mid].iter().collect::<String>() + "…";
-        if tx.ui_width(&t, bold) <= max {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
+    if (top as f64) < scroll {
+        top as f64
+    } else if (top + h) as f64 > scroll + view as f64 {
+        (top + h - view).max(0) as f64
+    } else {
+        scroll
     }
-    chars[..lo].iter().collect::<String>() + "…"
+}
+
+/// Keyboard moves inside the list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Nav {
+    Up,
+    Down,
+    PageUp(usize),
+    PageDown(usize),
+    Home,
+    End,
+    Left,
+    Right,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum NavOut {
+    /// Put the cursor on row `k`.
+    To(usize),
+    Fold(String),
+    Unfold(String),
+    Stay,
+}
+
+/// What a navigation key does with the cursor at row `at` (`None`: nothing selected yet).
+/// Left on a test climbs to its group, Left on an open group folds it, Right unfolds a folded
+/// group and steps into an open one.
+pub fn nav(rows: &[Row], cases: &[Case], collapsed: &HashSet<String>, at: Option<usize>, n: Nav) -> NavOut {
+    if rows.is_empty() {
+        return NavOut::Stay;
+    }
+    let last = rows.len() - 1;
+    let Some(k) = at.filter(|&k| k <= last) else {
+        return match n {
+            Nav::End => NavOut::To(last),
+            Nav::Left | Nav::Right => NavOut::Stay,
+            _ => NavOut::To(0),
+        };
+    };
+    let to = |j: usize| if j == k { NavOut::Stay } else { NavOut::To(j) };
+    match n {
+        Nav::Up => to(k.saturating_sub(1)),
+        Nav::Down => to((k + 1).min(last)),
+        Nav::PageUp(p) => to(k.saturating_sub(p.max(1))),
+        Nav::PageDown(p) => to((k + p.max(1)).min(last)),
+        Nav::Home => to(0),
+        Nav::End => to(last),
+        Nav::Left => match &rows[k] {
+            Row::Group { key, .. } if !collapsed.contains(key) => NavOut::Fold(key.clone()),
+            Row::Group { .. } => NavOut::Stay,
+            Row::Case(i) => {
+                let g = &cases[*i].group;
+                rows[..k]
+                    .iter()
+                    .rposition(|r| matches!(r, Row::Group { key, .. } if key == g))
+                    .map_or(NavOut::Stay, NavOut::To)
+            }
+        },
+        Nav::Right => match &rows[k] {
+            Row::Group { key, .. } if collapsed.contains(key) => NavOut::Unfold(key.clone()),
+            Row::Group { .. } if matches!(rows.get(k + 1), Some(Row::Case(_))) => NavOut::To(k + 1),
+            _ => NavOut::Stay,
+        },
+    }
+}
+
+/// Row of the keyboard cursor: the group it is parked on, else the selected test.
+pub fn cursor_row(rows: &[Row], cases: &[Case], cur_group: Option<&str>, sel: Option<&str>) -> Option<usize> {
+    if let Some(g) = cur_group
+        && let Some(k) = rows.iter().position(|r| matches!(r, Row::Group { key, .. } if key == g))
+    {
+        return Some(k);
+    }
+    let sel = sel?;
+    rows.iter().position(|r| matches!(r, Row::Case(i) if cases[*i].id == sel))
+}
+
+/// Width of `s` drawn at `size` px (the cached measure is at the UI size; widths scale linearly).
+fn sized_w(tx: &mut TextCtx, s: &str, bold: bool, size: f32) -> i32 {
+    (tx.ui_width(s, bold) as f32 * size / crate::ui::ui_size()).ceil() as i32
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -845,16 +962,30 @@ impl App {
         self.overlay.is_none() && self.tests_hit_at(x, y).is_some()
     }
 
+    /// Hover tint for everything clickable in the panel (rows, chips, buttons), in the same shape
+    /// as the thing drawn. The row that already carries the selection gets none, like the git panel.
     pub fn tests_hover_target(&self) -> Option<(Rect, i32)> {
         if !self.overlay.is_none() || !self.panel.open || self.panel.tab != PanelTab::Tests {
             return None;
         }
         let (x, y) = self.mouse;
         let (r, h) = self.tests.hits.iter().rev().find(|(r, _)| r.contains(x, y))?;
-        matches!(h, Hit::Case(_) | Hit::Group(_)).then_some((*r, 6))
+        match h {
+            Hit::Link(..) => None,
+            Hit::Filter(f) if self.tests.filter == *f => None,
+            Hit::Case(id) if self.tests.sel.as_deref() == Some(id.as_str()) => None,
+            Hit::Group(k) if self.tests.focused && self.tests.cur_group.as_deref() == Some(k.as_str()) => None,
+            _ => Some((*r, RAD)),
+        }
+    }
+
+    /// Is the pointer over `r` (for brightening labels; the tint itself is the app's hover rect)?
+    fn t_hv(&self, r: Rect) -> bool {
+        self.overlay.is_none() && r.contains(self.mouse.0, self.mouse.1)
     }
 
     pub fn tests_click(&mut self, x: f64, y: f64) {
+        self.tests.focused = true;
         let Some(hit) = self.tests_hit_at(x, y).cloned() else { return };
         match hit {
             Hit::RunAll => self.tests_run_all(),
@@ -877,8 +1008,9 @@ impl App {
             }
             Hit::Group(k) => {
                 if !self.tests.collapsed.remove(&k) {
-                    self.tests.collapsed.insert(k);
+                    self.tests.collapsed.insert(k.clone());
                 }
+                self.tests.cur_group = Some(k);
             }
             Hit::Case(id) => {
                 let double = self
@@ -887,11 +1019,7 @@ impl App {
                     .as_ref()
                     .is_some_and(|(i, t)| *i == id && t.elapsed() < Duration::from_millis(400));
                 self.tests.last_click = Some((id.clone(), Instant::now()));
-                if self.tests.sel.as_deref() != Some(id.as_str()) {
-                    self.tests.detail_scroll = 0.0;
-                }
-                self.tests.sel = Some(id.clone());
-                self.tests.show_output = false;
+                self.tests_select(&id);
                 if double {
                     self.tests_open_case(&id);
                 }
@@ -912,6 +1040,121 @@ impl App {
         }
     }
 
+    /// Select test `id` (the detail pane follows) and park the keyboard cursor on it.
+    fn tests_select(&mut self, id: &str) {
+        if self.tests.sel.as_deref() != Some(id) {
+            self.tests.detail_scroll = 0.0;
+        }
+        self.tests.sel = Some(id.to_string());
+        self.tests.cur_group = None;
+        self.tests.show_output = false;
+    }
+
+    /// Give the list the keyboard (clicking the Tests tab, or the panel itself).
+    pub fn tests_focus(&mut self) {
+        self.tests.focused = true;
+    }
+
+    /// Keys while the list has the focus: arrows move the cursor (Left/Right fold and unfold
+    /// groups), Enter opens the test (or folds the group), Space runs it, Esc gives the
+    /// keyboard back. Anything else hands the focus back to the editor unconsumed.
+    pub fn tests_key(&mut self, ev: &KeyIn) -> bool {
+        if !self.tests.focused {
+            return false;
+        }
+        if !self.panel.open || self.panel.tab != PanelTab::Tests || self.focus != Focus::Editor {
+            self.tests.focused = false;
+            return false;
+        }
+        let Key::Named(k) = &ev.key else {
+            self.tests.focused = false;
+            return false;
+        };
+        let (ctrl, alt) = (self.mods.control_key(), self.mods.alt_key());
+        if matches!(
+            k,
+            NamedKey::Shift
+                | NamedKey::Control
+                | NamedKey::Alt
+                | NamedKey::AltGraph
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::CapsLock
+        ) {
+            return true;
+        }
+        if ctrl || alt {
+            self.tests.focused = false;
+            return false;
+        }
+        let running = self.tests.proc.is_some();
+        let rows = build_rows(&self.tests.cases, self.tests.filter, &self.tests.collapsed, !running);
+        let at = cursor_row(&rows, &self.tests.cases, self.tests.cur_group.as_deref(), self.tests.sel.as_deref());
+        let page = ((self.tests.list_view / ROW_H).max(2) - 1) as usize;
+        let n = match k {
+            NamedKey::ArrowUp => Nav::Up,
+            NamedKey::ArrowDown => Nav::Down,
+            NamedKey::PageUp => Nav::PageUp(page),
+            NamedKey::PageDown => Nav::PageDown(page),
+            NamedKey::Home => Nav::Home,
+            NamedKey::End => Nav::End,
+            NamedKey::ArrowLeft => Nav::Left,
+            NamedKey::ArrowRight => Nav::Right,
+            NamedKey::Escape => {
+                self.tests.focused = false;
+                return true;
+            }
+            NamedKey::Enter | NamedKey::Space => {
+                match at.map(|k| &rows[k]) {
+                    Some(Row::Group { key, .. }) => {
+                        let key = key.clone();
+                        if !self.tests.collapsed.remove(&key) {
+                            self.tests.collapsed.insert(key);
+                        }
+                    }
+                    Some(Row::Case(i)) => {
+                        let id = self.tests.cases[*i].id.clone();
+                        if *k == NamedKey::Enter {
+                            self.tests_open_case(&id);
+                        } else if !running {
+                            self.tests_run_case(&id);
+                        }
+                    }
+                    None => {}
+                }
+                return true;
+            }
+            _ => {
+                self.tests.focused = false;
+                return false;
+            }
+        };
+        match nav(&rows, &self.tests.cases, &self.tests.collapsed, at, n) {
+            NavOut::To(j) => {
+                match &rows[j] {
+                    Row::Group { key, .. } => self.tests.cur_group = Some(key.clone()),
+                    Row::Case(i) => {
+                        let id = self.tests.cases[*i].id.clone();
+                        self.tests_select(&id);
+                    }
+                }
+                let (tops, _) = row_tops(&rows);
+                let view = self.tests.list_view;
+                self.tests.scroll = scroll_to_show(self.tests.scroll, tops[j], row_h(&rows[j]), view);
+            }
+            NavOut::Fold(g) => {
+                self.tests.collapsed.insert(g.clone());
+                self.tests.cur_group = Some(g);
+            }
+            NavOut::Unfold(g) => {
+                self.tests.collapsed.remove(&g);
+                self.tests.cur_group = Some(g);
+            }
+            NavOut::Stay => {}
+        }
+        true
+    }
+
     fn tests_open_case(&mut self, id: &str) {
         let Some(c) = self.tests.case(id).cloned() else { return };
         let runner = self.tests.runner.unwrap_or(Runner::Cargo);
@@ -925,13 +1168,14 @@ impl App {
 
     // ───────────── drawing ─────────────
 
+    /// A pill button in the git panel's style (tinted fill, 8 px corners, no hairline); returns
+    /// its width. Disabled buttons are drawn faded and get no hit (so no hover either).
     #[allow(clippy::too_many_arguments)]
     fn t_button(
         &mut self,
         cv: &mut Canvas,
         x: i32,
         y: i32,
-        h: i32,
         label: &str,
         icon: Option<&str>,
         style: Btn,
@@ -940,50 +1184,32 @@ impl App {
         clip: Rect,
     ) -> i32 {
         let c = self.theme.chrome;
-        let tw = self.tx.ui_width(label, true);
-        let w = 20 + tw + if icon.is_some() { 20 } else { 0 };
-        let r = Rect::new(x, y, w, h);
-        let (text, ic) = match style {
-            Btn::Primary => {
-                cv.fill_round_clip(r, 6, c.accent, clip);
-                (c.on_accent, c.on_accent)
-            }
-            Btn::Secondary => {
-                cv.card(r, 6, c.widget_bg, c.border);
-                (self.theme.foreground, c.accent_text)
-            }
-            Btn::Danger => {
-                cv.card(
-                    r,
-                    6,
-                    c.error.with_alpha(28).over(self.theme.background),
-                    c.error.with_alpha(120).over(self.theme.background),
-                );
-                (c.error, c.error)
-            }
-            Btn::Toggle(on) => {
-                if on {
-                    cv.card(
-                        r,
-                        6,
-                        c.accent.with_alpha(40).over(self.theme.background),
-                        c.accent.with_alpha(130).over(self.theme.background),
-                    );
-                    (c.accent_text, c.accent_text)
-                } else {
-                    cv.card(r, 6, c.widget_bg, c.border);
-                    (c.tab_inactive_fg, c.tab_inactive_fg)
-                }
+        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
+        let bold = style == Btn::Primary;
+        let tw = self.tx.ui_width(label, bold);
+        let w = 24 + tw + if icon.is_some() { 20 } else { 0 };
+        let r = Rect::new(x, y, w, BTN_H);
+        let hov = enabled && self.t_hv(r);
+        let (fill, text, ic) = match style {
+            // The hover tint itself is the app's hover veil (see `tests_hover_target`); only labels brighten here.
+            Btn::Primary if enabled => (c.accent, c.on_accent, c.on_accent),
+            Btn::Primary => (c.accent.with_alpha(0x48), strong.with_alpha(0xa0), strong.with_alpha(0xa0)),
+            Btn::Danger => (c.error.with_alpha(0x33), c.error, c.error),
+            Btn::Toggle(true) => (c.accent.with_alpha(0x30), c.accent_text, c.accent_text),
+            Btn::Toggle(false) | Btn::Secondary => {
+                let col = if hov || (enabled && style == Btn::Secondary) { strong } else { dim };
+                let ic = if style == Btn::Secondary && enabled { c.accent_text } else { col };
+                (strong.with_alpha(0x0e), col, ic)
             }
         };
-        let (text, ic) =
-            if enabled { (text, ic) } else { (c.tab_inactive_fg.with_alpha(110), c.tab_inactive_fg.with_alpha(110)) };
-        let mut tx_ = x + 10;
+        let (text, ic) = if enabled { (text, ic) } else { (text.with_alpha(0x80), ic.with_alpha(0x80)) };
+        cv.fill_round_clip(r, RAD, fill, clip);
+        let mut tx_ = x + 12;
         if let Some(i) = icon {
-            self.tx.icon(cv, i, tx_, y + (h - 14) / 2, 14, ic, clip);
+            self.tx.icon(cv, i, tx_, y + (BTN_H - 14) / 2, 14, ic, clip);
             tx_ += 20;
         }
-        self.tx.draw_ui(cv, tx_, y + (h - 18) / 2, label, text, clip, true);
+        self.tx.draw_ui(cv, tx_, y + (BTN_H - 18) / 2, label, text, clip, bold);
         if enabled {
             self.tests.hits.push((r, hit));
         }
@@ -996,48 +1222,38 @@ impl App {
         let c = self.theme.chrome;
         let counts = Counts::of(&self.tests.cases);
         let running = self.tests.proc.is_some();
-        let (fg, dim) = (self.theme.foreground, c.tab_inactive_fg);
+        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
         let bg = self.theme.background;
 
         // ── toolbar ──
-        let ty = body.y + (TOOLBAR_H - 24) / 2;
+        let ty = body.y + (TOOLBAR_H - BTN_H) / 2;
         let mut x = body.x + 10;
         let has_runner = self.tests.runner.is_some();
         let debug_build = matches!(self.tests.mode, Mode::DebugBuild(_));
         if running {
-            x += self.t_button(cv, x, ty, 24, "Stop", Some("ui/stop"), Btn::Danger, true, Hit::Stop, body) + 8;
+            x += self.t_button(cv, x, ty, "Stop", Some("ui/stop"), Btn::Danger, true, Hit::Stop, body) + 6;
         } else {
             let label = if self.tests.cases.is_empty() { "Run all" } else { "Run again" };
-            x += self.t_button(
-                cv,
-                x,
-                ty,
-                24,
-                label,
-                Some("ui/play_filled"),
-                Btn::Primary,
-                has_runner,
-                Hit::RunAll,
-                body,
-            ) + 8;
+            x += self.t_button(cv, x, ty, label, Some("ui/play_filled"), Btn::Primary, has_runner, Hit::RunAll, body)
+                + 6;
         }
+        let any_failed = self.tests.cases.iter().any(|c| c.status == Status::Failed && c.id != RUN_FAILED);
         x += self.t_button(
             cv,
             x,
             ty,
-            24,
             "Failed",
             Some("ui/history_rerun"),
             Btn::Secondary,
-            !running && self.tests.cases.iter().any(|c| c.status == Status::Failed && c.id != RUN_FAILED),
+            !running && any_failed,
             Hit::RunFailed,
             body,
-        ) + 8;
+        ) + 6;
         let watch_on = self.config.test_watch;
-        x += self.t_button(cv, x, ty, 24, "Watch", Some("ui/eye"), Btn::Toggle(watch_on), true, Hit::Watch, body) + 8;
+        x += self.t_button(cv, x, ty, "Watch", Some("ui/eye"), Btn::Toggle(watch_on), true, Hit::Watch, body) + 6;
         let rl = self.tests.runner.map(|r| r.label()).unwrap_or("no runner");
         let multi = self.tests.detected.len() > 1;
-        x += self.t_button(cv, x, ty, 24, rl, Some("ui/chevron_down"), Btn::Secondary, multi, Hit::Runner, body) + 12;
+        x += self.t_button(cv, x, ty, rl, Some("ui/chevron_down"), Btn::Secondary, multi, Hit::Runner, body) + 12;
 
         // Right side: live status.
         let mut pieces: Vec<(String, Rgba)> = Vec::new();
@@ -1104,41 +1320,49 @@ impl App {
             }
         }
 
-        // ── filter bar ──
+        // ── filter bar: chips like the git panel's tabs, then Collapse / Expand all ──
         let fb = Rect::new(body.x, pb.bottom(), body.w, FILTER_H);
         cv.fill(Rect::new(fb.x, fb.bottom() - 1, fb.w, 1), c.border);
-        let mut fx = fb.x + 10;
+        let cy = fb.y + (FILTER_H - 1 - CHIP_H) / 2;
+        let mut fx = fb.x + 8;
         for (label, f, n) in [
             ("All", Filter::All, counts.total()),
             ("Failed", Filter::Failed, counts.failed),
             ("Passed", Filter::Passed, counts.passed),
             ("Skipped", Filter::Skipped, counts.skipped),
         ] {
-            let text = format!("{label} {n}");
-            let w = self.tx.ui_width(&text, true) + 16;
-            let r = Rect::new(fx, fb.y + 4, w, FILTER_H - 9);
+            let text = format!("{label}  {n}");
+            // Measured bold so the chip keeps its width when it becomes the active one.
+            let w = self.tx.ui_width(&text, true) + 20;
+            let r = Rect::new(fx, cy, w, CHIP_H);
             let active = self.tests.filter == f;
             if active {
-                cv.fill_round_clip(r, 5, c.list_active_bg, fb);
+                cv.fill_round_clip(r, RAD, strong.with_alpha(0x1e), fb);
             }
-            let col = if active {
-                fg
+            let col = if active || self.t_hv(r) {
+                strong
             } else if f == Filter::Failed && n > 0 {
                 c.error
             } else {
                 dim
             };
-            self.tx.draw_ui(cv, r.x + 8, r.y + (r.h - 18) / 2, &text, col, fb, active);
+            let tw = self.tx.ui_width(&text, active);
+            self.tx.draw_ui(cv, r.x + (w - tw) / 2, r.y + (CHIP_H - 18) / 2, &text, col, fb, active);
             self.tests.hits.push((r, Hit::Filter(f)));
             fx += w + 4;
         }
         if counts.total() > 0 {
             let all_folded = self.tests.cases.iter().all(|c| self.tests.collapsed.contains(&c.group));
-            let label = if all_folded { "Expand all" } else { "Collapse all" };
-            let w = self.tx.ui_width(label, false) + 16;
-            let r = Rect::new(fb.right() - w - 8, fb.y + 4, w, FILTER_H - 9);
-            self.tx.draw_ui(cv, r.x + 8, r.y + (r.h - 18) / 2, label, dim, fb, false);
-            self.tests.hits.push((r, Hit::Fold(!all_folded)));
+            let (label, icon) =
+                if all_folded { ("Expand all", "ui/chevron_up_down") } else { ("Collapse all", "ui/chevron_down_up") };
+            let w = self.tx.ui_width(label, false) + 18 + 20;
+            let r = Rect::new(fb.right() - w - 8, cy, w, CHIP_H);
+            if r.x > fx + 8 {
+                let col = if self.t_hv(r) { strong } else { dim };
+                self.tx.icon(cv, icon, r.x + 9, r.y + (CHIP_H - 14) / 2, 14, col, fb);
+                self.tx.draw_ui(cv, r.x + 29, r.y + (CHIP_H - 18) / 2, label, col, fb, false);
+                self.tests.hits.push((r, Hit::Fold(!all_folded)));
+            }
         }
 
         // ── content ──
@@ -1146,21 +1370,48 @@ impl App {
         if content.h < 30 {
             return;
         }
+        if self.tests.cases.is_empty() {
+            // Nothing to list: the empty state takes the whole width (no list/detail divider).
+            self.draw_tests_empty(cv, content, running);
+            return;
+        }
         let lw = if content.w >= 720 { (content.w as f32 * 0.56) as i32 } else { content.w / 2 };
         let list = Rect::new(content.x, content.y, lw, content.h);
         let detail = Rect::new(content.x + lw, content.y, content.w - lw, content.h);
         cv.fill(Rect::new(detail.x, detail.y, 1, detail.h), c.border);
-        if self.tests.cases.is_empty() {
-            self.draw_tests_empty(cv, content, running);
-            return;
-        }
         self.draw_tests_list(cv, list);
         self.draw_tests_detail(cv, Rect::new(detail.x + 1, detail.y, detail.w - 1, detail.h));
     }
 
+    /// Centered empty state: an icon, a title and up to a few dim lines, like an onboarding card.
+    fn t_empty_state(
+        &mut self,
+        cv: &mut Canvas,
+        area: Rect,
+        icon: &str,
+        icon_col: Rgba,
+        title: &str,
+        lines: &[(String, Rgba)],
+    ) {
+        let strong = self.theme.chrome.tab_active_fg;
+        let block = 28 + 12 + 22 + lines.len() as i32 * 20;
+        let mut y = area.y + ((area.h - block) / 2).clamp(16, 40);
+        self.tx.icon(cv, icon, area.x + (area.w - 28) / 2, y, 28, icon_col, area);
+        y += 28 + 12;
+        let w = self.tx.ui_width(title, true);
+        self.tx.draw_ui(cv, area.x + (area.w - w) / 2, y, title, strong, area, true);
+        y += 24;
+        for (s, col) in lines {
+            let s = fit(&mut self.tx, s, area.w - 32, false);
+            let w = self.tx.ui_width(&s, false);
+            self.tx.draw_ui(cv, area.x + (area.w - w) / 2, y, &s, *col, area, false);
+            y += 20;
+        }
+    }
+
     fn draw_tests_empty(&mut self, cv: &mut Canvas, area: Rect, running: bool) {
         let c = self.theme.chrome;
-        let (fg, dim, bg) = (self.theme.foreground, c.tab_inactive_fg, self.theme.background);
+        let (dim, bg) = (c.tab_inactive_fg, self.theme.background);
         if running {
             // Placeholder rows that breathe while the first results are on their way.
             let t = self.tests.started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
@@ -1168,163 +1419,171 @@ impl App {
                 let a = (0.5 + 0.5 * (t * 3.0 - k as f32 * 0.5).sin()) * 0.55 + 0.25;
                 let col = c.border.with_alpha((a * 130.0) as u8).over(bg);
                 let w = [0.5, 0.36, 0.62, 0.44, 0.55, 0.3, 0.48][k as usize % 7];
-                let y = area.y + 8 + k * ROW_H;
-                cv.fill_round_clip(Rect::new(area.x + 14, y + 8, 10, 10), 5, col, area);
-                cv.fill_round_clip(Rect::new(area.x + 34, y + 9, (area.w as f32 * w * 0.6) as i32, 8), 4, col, area);
+                let y = area.y + LIST_PAD + 4 + k * ROW_H;
+                cv.fill_round_clip(Rect::new(area.x + 32, y + 8, 14, 14), 7, col, area);
+                cv.fill_round_clip(Rect::new(area.x + 56, y + 11, (area.w as f32 * w * 0.6) as i32, 8), 4, col, area);
             }
             let msg = if matches!(self.tests.mode, Mode::DebugBuild(_)) {
                 "Building the test binary…"
             } else {
                 "Waiting for the first results…"
             };
-            let w = self.tx.ui_width(msg, false);
-            self.tx.draw_ui(cv, area.x + (area.w - w) / 2, area.y + area.h / 2 - 9, msg, dim, area, false);
+            let w = self.tx.ui_width(msg, false) + 32;
+            let pill = Rect::new(area.x + (area.w - w) / 2, area.y + area.h / 2 - 14, w, 28);
+            cv.fill_round_clip(pill, RAD, c.input_bg.with_alpha(0xe0).over(bg), area);
+            self.tx.draw_ui(cv, pill.x + 16, pill.y + 5, msg, dim, area, false);
             return;
         }
-        let mut y = area.y + 22;
-        let line = |tx: &mut TextCtx, cv: &mut Canvas, s: &str, col: Rgba, bold: bool, y: &mut i32| {
-            let w = tx.ui_width(s, bold);
-            tx.draw_ui(cv, area.x + (area.w - w) / 2, *y, s, col, area, bold);
-            *y += 24;
-        };
         if let Some(r) = self.tests.runner {
-            line(&mut self.tx, cv, "No results yet", fg, true, &mut y);
-            let s = format!("Runs with {} — press Run all or Ctrl+K A", r.label());
-            line(&mut self.tx, cv, &s, dim, false, &mut y);
+            let mut lines = vec![(format!("Runs with {} — press Run all or Ctrl+K A", r.label()), dim)];
             if let Some(e) = self.tests.exit.filter(|e| *e != 0) {
-                line(
-                    &mut self.tx,
-                    cv,
-                    &format!("The last run ended with code {e}; see the Output tab for details"),
-                    c.error,
-                    false,
-                    &mut y,
-                );
+                lines.push((format!("The last run ended with code {e}; see the Output tab for details"), c.error));
             }
             if self.tests.detected.len() > 1 {
                 let names: Vec<&str> = self.tests.detected.iter().map(|r| r.label()).collect();
-                line(&mut self.tx, cv, &format!("Also found: {}", names.join(", ")), dim, false, &mut y);
+                lines.push((format!("Also found: {}", names.join(", ")), dim));
             }
+            self.t_empty_state(cv, area, "ui/list_todo", c.accent_text, "No results yet", &lines);
         } else {
-            line(&mut self.tx, cv, "No test runner found", fg, true, &mut y);
-            line(
-                &mut self.tx,
-                cv,
-                "Supported: cargo / nextest, vitest, jest, node --test, bun, deno, go, pytest,",
-                dim,
-                false,
-                &mut y,
-            );
-            line(&mut self.tx, cv, "phpunit / pest, rspec, maven, gradle, dotnet, ctest", dim, false, &mut y);
-            line(
-                &mut self.tx,
-                cv,
-                "Anything else: set test_command and test_report (a JUnit XML file) in the settings",
-                dim,
-                false,
-                &mut y,
-            );
+            let lines = [
+                ("Supported: cargo / nextest, vitest, jest, node --test, bun, deno, go, pytest,".to_string(), dim),
+                ("phpunit / pest, rspec, maven, gradle, dotnet, ctest".to_string(), dim),
+                ("Anything else: set test_command and test_report (a JUnit XML file) in the settings".to_string(), dim),
+            ];
+            self.t_empty_state(cv, area, "ui/flame", dim, "No test runner found", &lines);
         }
     }
 
     fn draw_tests_list(&mut self, cv: &mut Canvas, list: Rect) {
         let c = self.theme.chrome;
-        let (fg, dim, bg) = (self.theme.foreground, c.tab_inactive_fg, self.theme.background);
+        let (strong, dim, bg) = (c.tab_active_fg, c.tab_inactive_fg, self.theme.background);
         let running = self.tests.proc.is_some();
         let rows = build_rows(&self.tests.cases, self.tests.filter, &self.tests.collapsed, !running);
-        let total = (rows.len() as i32 * ROW_H + 8) as f64;
+        let (tops, content_h) = row_tops(&rows);
+        let total = content_h as f64;
         let visible = list.h as f64;
+        self.tests.list_view = list.h;
         let max = (total - visible).max(0.0);
         self.tests.scroll = self.tests.scroll.clamp(0.0, max);
         let scroll = self.tests.scroll;
-        let first = (scroll / ROW_H as f64).floor().max(0.0) as usize;
-        let off = -((scroll as i32) % ROW_H);
         let max_ms = self.tests.cases.iter().filter_map(|c| c.ms).fold(1.0_f64, f64::max);
-        let inner_w = list.w - BAR_W - 4;
+        let inner_w = list.w - BAR_W - 8;
         let t = self.tests.started.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
+        let focused = self.tests.focused;
+        let cur = cursor_row(&rows, &self.tests.cases, self.tests.cur_group.as_deref(), self.tests.sel.as_deref());
         if rows.is_empty() {
-            let msg = "Nothing matches this filter";
-            let w = self.tx.ui_width(msg, false);
-            self.tx.draw_ui(cv, list.x + (list.w - w) / 2, list.y + 24, msg, dim, list, false);
+            self.t_empty_state(cv, list, "ui/filter_funnel", dim, "Nothing matches this filter", &[]);
         }
-        for (k, row) in rows.iter().enumerate().skip(first).take((list.h / ROW_H + 2) as usize) {
-            let y = list.y + 4 + off + (k - first) as i32 * ROW_H;
-            let rr = Rect::new(list.x + 4, y, inner_w, ROW_H);
-            let ty = y + (ROW_H - 18) / 2;
-            let vis = rr.intersect(&list);
+        for (k, row) in rows.iter().enumerate() {
+            let y = list.y + tops[k] - scroll as i32;
+            if y + row_h(row) < list.y {
+                continue;
+            }
+            if y > list.bottom() {
+                break;
+            }
+            let is_cur = focused && cur == Some(k);
             match row {
                 Row::Group { key, pass, fail, skip, run, total, ms } => {
+                    let r = Rect::new(list.x + 6, y + GROUP_GAP, inner_w, ROW_H);
+                    let vis = r.intersect(&list);
+                    let gy = r.y;
+                    if is_cur && self.tests.cur_group.is_some() {
+                        cv.fill_round_clip(r, RAD, strong.with_alpha(0x1e), list);
+                    }
                     let folded = self.tests.collapsed.contains(key);
                     let icon = if folded { "ui/chevron_right" } else { "ui/chevron_down" };
-                    self.tx.icon(cv, icon, rr.x + 6, y + (ROW_H - 12) / 2, 12, dim, list);
+                    self.tx.icon(cv, icon, r.x + 6, gy + (ROW_H - 16) / 2, 16, dim, list);
                     let (name, dir) = group_label(&self.root, key);
-                    // Right side first: counts, so the label knows how much room it has.
-                    let mut rx = rr.right() - 8;
-                    let put = |tx: &mut TextCtx, cv: &mut Canvas, s: String, col: Rgba, rx: &mut i32| {
-                        let w = tx.ui_width(&s, true);
-                        *rx -= w;
-                        tx.draw_ui(cv, *rx, ty, &s, col, list, true);
-                        *rx -= 10;
-                    };
+                    // Right side first (duration, then counts), so the label knows how much room it has.
+                    let mut rx = r.right() - 10;
+                    if *run == 0 && *ms > 0.0 {
+                        let s = fmt_ms(*ms);
+                        rx -= sized_w(&mut self.tx, &s, false, SMALL);
+                        self.tx.draw_ui_sized(cv, rx, gy + 7, &s, dim, list, false, SMALL);
+                        rx -= 14;
+                    }
                     if *run > 0 {
-                        spinner(cv, rx - 6, y + ROW_H / 2, 5, c.accent_text, bg, self.tests.started, list);
+                        spinner(cv, rx - 6, gy + ROW_H / 2, 5, c.accent_text, bg, self.tests.started, list);
                         rx -= 22;
                     }
-                    if *fail > 0 {
-                        put(&mut self.tx, cv, format!("✗ {fail}"), c.error, &mut rx);
-                    }
-                    if *skip > 0 {
-                        put(&mut self.tx, cv, format!("– {skip}"), c.warning, &mut rx);
-                    }
-                    if *pass > 0 {
-                        put(&mut self.tx, cv, format!("✓ {pass}"), c.git_added, &mut rx);
+                    for (n, icon, col) in
+                        [(*fail, "ui/close", c.error), (*skip, "ui/dash", c.warning), (*pass, "ui/check", c.git_added)]
+                    {
+                        if n == 0 {
+                            continue;
+                        }
+                        let s = n.to_string();
+                        rx -= self.tx.ui_width(&s, false);
+                        self.tx.draw_ui(cv, rx, gy + (ROW_H - 18) / 2, &s, col, list, false);
+                        rx -= 3 + 14;
+                        self.tx.icon(cv, icon, rx, gy + (ROW_H - 14) / 2, 14, col, list);
+                        rx -= 10;
                     }
                     if *run == 0 && *pass + *fail + *skip < *total {
-                        put(&mut self.tx, cv, format!("{} pending", total - pass - fail - skip), dim, &mut rx);
+                        let s = format!("{} pending", total - pass - fail - skip);
+                        rx -= sized_w(&mut self.tx, &s, false, SMALL);
+                        self.tx.draw_ui_sized(cv, rx, gy + 7, &s, dim, list, false, SMALL);
+                        rx -= 10;
                     }
-                    let _ = ms;
-                    let room = rx - (rr.x + 24);
+                    let nx = r.x + 28;
+                    let room = rx - nx;
                     let name_s = fit(&mut self.tx, &name, room, true);
                     let nw = self.tx.ui_width(&name_s, true);
-                    self.tx.draw_ui(cv, rr.x + 24, ty, &name_s, fg, list, true);
+                    self.tx.draw_ui(cv, nx, gy + (ROW_H - 18) / 2, &name_s, strong, list, true);
                     if !dir.is_empty() && room - nw > 40 {
-                        let d = fit(&mut self.tx, &dir, room - nw - 12, false);
-                        self.tx.draw_ui(cv, rr.x + 24 + nw + 8, ty, &d, dim.with_alpha(170), list, false);
+                        let d = fit(&mut self.tx, &dir, room - nw - 10, false);
+                        self.tx.draw_ui_sized(cv, nx + nw + 8, gy + 8, &d, dim, list, false, SMALL);
                     }
-                    cv.fill_clip(Rect::new(rr.x, y + ROW_H - 1, rr.w, 1), c.border.with_alpha(70), list);
+                    if is_cur && self.tests.cur_group.is_some() && vis == r {
+                        cv.ring(r, RAD, c.accent.with_alpha(0x90));
+                    }
                     if vis.h > 0 {
                         self.tests.hits.push((vis, Hit::Group(key.clone())));
                     }
                 }
                 Row::Case(i) => {
                     let case = self.tests.cases[*i].clone();
+                    let r = Rect::new(list.x + 6, y, inner_w, ROW_H);
+                    let vis = r.intersect(&list);
                     let selected = self.tests.sel.as_deref() == Some(case.id.as_str());
                     if selected {
-                        cv.fill_round_clip(Rect::new(rr.x, y + 1, rr.w, ROW_H - 2), 6, c.list_active_bg, list);
+                        cv.fill_round_clip(r, RAD, strong.with_alpha(0x1e), list);
                         cv.fill_round_clip(
-                            Rect::new(rr.x, y + 5, 2, ROW_H - 10),
+                            Rect::new(r.x + 3, y + 8, 2, ROW_H - 16),
                             1,
                             status_color(&c, case.status),
                             list,
                         );
+                        if is_cur && vis == r {
+                            cv.ring(r, RAD, c.accent.with_alpha(0x90));
+                        }
                     }
-                    let ix = rr.x + 22;
-                    let iy = y + (ROW_H - 14) / 2;
+                    let ix = r.x + 26;
+                    let iy = y + (ROW_H - 16) / 2;
                     match case.status {
-                        Status::Passed => self.tx.icon(cv, "ui/check", ix, iy, 14, c.git_added, list),
-                        Status::Failed => self.tx.icon(cv, "ui/close", ix, iy, 14, c.error, list),
-                        Status::Skipped => self.tx.icon(cv, "ui/dash", ix, iy, 14, c.warning, list),
-                        Status::Pending => self.tx.icon(cv, "ui/circle", ix + 2, iy + 2, 10, dim.with_alpha(150), list),
-                        Status::Running => spinner_t(cv, ix + 7, iy + 7, 5, c.accent_text, bg, t, list),
+                        Status::Passed => self.tx.icon(cv, "ui/check", ix, iy, 16, c.git_added, list),
+                        Status::Failed => self.tx.icon(cv, "ui/close", ix, iy, 16, c.error, list),
+                        Status::Skipped => self.tx.icon(cv, "ui/dash", ix, iy, 16, c.warning, list),
+                        Status::Pending => self.tx.icon(cv, "ui/circle", ix + 3, iy + 3, 10, dim.with_alpha(150), list),
+                        Status::Running => spinner_t(cv, ix + 8, iy + 8, 5, c.accent_text, bg, t, list),
                     }
                     // Duration + a small bar relative to the slowest test.
-                    let mut rx = rr.right() - 10;
+                    let mut rx = r.right() - 10;
                     if let Some(ms) = case.ms.filter(|_| case.status != Status::Running) {
                         let s = fmt_ms(ms);
-                        let w = self.tx.ui_width(&s, false);
-                        rx -= w;
+                        rx -= sized_w(&mut self.tx, &s, false, SMALL);
                         let slow = ms >= 1000.0;
-                        self.tx.draw_ui(cv, rx, ty, &s, if slow { c.warning } else { dim }, list, false);
+                        self.tx.draw_ui_sized(
+                            cv,
+                            rx,
+                            y + 7,
+                            &s,
+                            if slow { c.warning } else { dim },
+                            list,
+                            false,
+                            SMALL,
+                        );
                         let bw = ((ms / max_ms).sqrt() * 36.0).round() as i32;
                         if bw >= 2 {
                             let col = if slow { c.warning } else { status_color(&c, case.status) };
@@ -1337,25 +1596,28 @@ impl App {
                         }
                         rx -= 56;
                     }
-                    let room = rx - (ix + 24);
+                    let nx = ix + 24;
+                    let room = rx - nx;
                     let (prefix, leaf) = match case.name.rsplit_once(" › ") {
                         Some((p, l)) => (format!("{p} › "), l.to_string()),
                         None => (String::new(), case.name.clone()),
                     };
                     let name_col = match case.status {
                         Status::Skipped | Status::Pending => dim,
-                        Status::Passed => fg.mix(bg, 0.18),
-                        _ => fg,
+                        Status::Passed => strong.mix(bg, 0.18),
+                        _ => strong,
                     };
+                    let ny = y + (ROW_H - 18) / 2;
                     let lw = self.tx.ui_width(&leaf, false);
                     if prefix.is_empty() || lw >= room {
                         let s = fit(&mut self.tx, &case.name, room, false);
-                        self.tx.draw_ui(cv, ix + 24, ty, &s, name_col, list, false);
+                        self.tx.draw_ui(cv, nx, ny, &s, name_col, list, false);
                     } else {
+                        // The describe path is secondary: smaller and dim, the test's own name stands out.
                         let p = fit(&mut self.tx, &prefix, room - lw, false);
-                        let pw = self.tx.ui_width(&p, false);
-                        self.tx.draw_ui(cv, ix + 24, ty, &p, dim.with_alpha(160), list, false);
-                        self.tx.draw_ui(cv, ix + 24 + pw, ty, &leaf, name_col, list, false);
+                        let pw = sized_w(&mut self.tx, &p, false, SMALL);
+                        self.tx.draw_ui_sized(cv, nx, y + 8, &p, dim, list, false, SMALL);
+                        self.tx.draw_ui(cv, nx + pw, ny, &leaf, name_col, list, false);
                     }
                     if vis.h > 0 {
                         self.tests.hits.push((vis, Hit::Case(case.id.clone())));
@@ -1368,9 +1630,9 @@ impl App {
 
     fn draw_tests_detail(&mut self, cv: &mut Canvas, area: Rect) {
         let c = self.theme.chrome;
-        let (fg, dim, bg) = (self.theme.foreground, c.tab_inactive_fg, self.theme.background);
+        let (strong, dim, bg) = (c.tab_active_fg, c.tab_inactive_fg, self.theme.background);
         let sel = self.tests.sel.as_deref().and_then(|s| self.tests.case(s)).cloned();
-        let ty0 = area.y + 8;
+        let ty0 = area.y + 10;
         let mut x = area.x + 14;
         let inner_r = area.right() - 12;
 
@@ -1384,14 +1646,18 @@ impl App {
                 Status::Running => ("RUNNING", c.accent_text),
                 Status::Pending => ("NOT RUN", dim),
             };
-            let bw = self.tx.ui_width(label, true) + 14;
-            let br = Rect::new(x, ty0, bw, 20);
-            cv.fill_round_clip(br, 5, col.with_alpha(34).over(bg), head);
-            self.tx.draw_ui(cv, br.x + 7, br.y + 1, label, col, head, true);
+            // Badge and title share one 24 px line, both vertically centered on it.
+            const BADGE_H: i32 = 24;
+            const BADGE_TEXT: f32 = 11.0;
+            let bw = sized_w(&mut self.tx, label, true, BADGE_TEXT) + 20;
+            let br = Rect::new(x, ty0, bw, BADGE_H);
+            cv.fill_round_clip(br, RAD, col.with_alpha(0x2a).over(bg), head);
+            let blh = (BADGE_TEXT * 1.4).round() as i32;
+            self.tx.draw_ui_sized(cv, br.x + 10, br.y + (BADGE_H - blh) / 2, label, col, head, true, BADGE_TEXT);
             x += bw + 10;
             let title = case.name.rsplit_once(" › ").map(|x| x.1).unwrap_or(&case.name).to_string();
             let t = fit(&mut self.tx, &title, inner_r - x, true);
-            self.tx.draw_ui(cv, x, ty0 + 1, &t, fg, head, true);
+            self.tx.draw_ui(cv, x, ty0 + (BADGE_H - 18) / 2, &t, strong, head, true);
 
             let mut meta = case.group.clone();
             let (gn, gd) = group_label(&self.root, &case.group);
@@ -1405,9 +1671,9 @@ impl App {
                 meta = format!("{meta}  ·  {}", fmt_ms(ms));
             }
             let m = fit(&mut self.tx, &meta, area.w - 28, false);
-            self.tx.draw_ui(cv, area.x + 14, ty0 + 26, &m, dim, head, false);
+            self.tx.draw_ui_sized(cv, area.x + 14, ty0 + 31, &m, dim, head, false, SMALL);
 
-            let by = ty0 + 52;
+            let by = ty0 + 54;
             let mut bx = area.x + 14;
             let id = case.id.clone();
             let running = self.tests.proc.is_some();
@@ -1415,7 +1681,6 @@ impl App {
                 cv,
                 bx,
                 by,
-                24,
                 "Run",
                 Some("ui/play_filled"),
                 Btn::Secondary,
@@ -1428,7 +1693,6 @@ impl App {
                 cv,
                 bx,
                 by,
-                24,
                 "Debug",
                 Some("ui/debug"),
                 Btn::Secondary,
@@ -1440,7 +1704,6 @@ impl App {
                 cv,
                 bx,
                 by,
-                24,
                 "Open",
                 Some("ui/arrow_up_right"),
                 Btn::Secondary,
@@ -1449,26 +1712,14 @@ impl App {
                 head,
             ) + 6;
             let on = self.tests.show_output;
-            self.t_button(
-                cv,
-                bx,
-                by,
-                24,
-                "Output",
-                Some("ui/terminal"),
-                Btn::Toggle(on),
-                true,
-                Hit::ShowOutput(!on),
-                head,
-            );
+            self.t_button(cv, bx, by, "Output", Some("ui/terminal"), Btn::Toggle(on), true, Hit::ShowOutput(!on), head);
         } else {
-            self.tx.draw_ui(cv, x, ty0 + 1, "Select a test to see its details", dim, head, false);
+            self.tx.draw_ui(cv, x, ty0 + 3, "Select a test to see its details", dim, head, false);
             let on = self.tests.show_output;
             self.t_button(
                 cv,
                 x,
-                ty0 + 30,
-                24,
+                ty0 + 32,
                 "Output",
                 Some("ui/terminal"),
                 Btn::Toggle(on),
@@ -1666,6 +1917,101 @@ mod tests {
         );
         assert_eq!(wrap_line(&"x".repeat(20), 8).len(), 3);
         assert_eq!(wrap_line("a\tb", 20), vec!["a    b".to_string()]);
+    }
+
+    #[test]
+    fn row_layout_matches_the_hit_rows() {
+        let cases = vec![case("a.rs", "one", Status::Passed), case("a.rs", "two", Status::Passed)];
+        let rows = build_rows(&cases, Filter::All, &HashSet::new(), false);
+        let (tops, total) = row_tops(&rows);
+        // A group row carries its air above it; tests follow back to back.
+        assert_eq!(tops, vec![LIST_PAD, LIST_PAD + GROUP_H, LIST_PAD + GROUP_H + ROW_H]);
+        assert_eq!(total, LIST_PAD + GROUP_H + 2 * ROW_H + LIST_PAD);
+        assert_eq!(row_h(&rows[0]), ROW_H + GROUP_GAP);
+        // Keeping a row in view scrolls as little as possible.
+        assert_eq!(scroll_to_show(0.0, 10, 30, 100), 0.0);
+        assert_eq!(scroll_to_show(0.0, 90, 30, 100), 20.0);
+        assert_eq!(scroll_to_show(50.0, 20, 30, 100), 20.0);
+        assert_eq!(scroll_to_show(50.0, 20, 30, 0), 50.0, "not drawn yet: leave it");
+    }
+
+    #[test]
+    fn keyboard_navigation_over_rows() {
+        let cases = vec![
+            case("a.rs", "one", Status::Passed),
+            case("a.rs", "two", Status::Failed),
+            case("b.rs", "three", Status::Passed),
+        ];
+        let none = HashSet::new();
+        let rows = build_rows(&cases, Filter::All, &none, false);
+        // rows: [a.rs, one, two, b.rs, three]
+        assert_eq!(nav(&rows, &cases, &none, None, Nav::Down), NavOut::To(0));
+        assert_eq!(nav(&rows, &cases, &none, None, Nav::End), NavOut::To(4));
+        assert_eq!(nav(&rows, &cases, &none, Some(0), Nav::Up), NavOut::Stay);
+        assert_eq!(nav(&rows, &cases, &none, Some(1), Nav::Down), NavOut::To(2));
+        assert_eq!(nav(&rows, &cases, &none, Some(4), Nav::Down), NavOut::Stay);
+        assert_eq!(nav(&rows, &cases, &none, Some(1), Nav::PageDown(10)), NavOut::To(4));
+        assert_eq!(nav(&rows, &cases, &none, Some(3), Nav::PageUp(2)), NavOut::To(1));
+        // Left climbs from a test to its group, then folds the group.
+        assert_eq!(nav(&rows, &cases, &none, Some(2), Nav::Left), NavOut::To(0));
+        assert_eq!(nav(&rows, &cases, &none, Some(4), Nav::Left), NavOut::To(3));
+        assert_eq!(nav(&rows, &cases, &none, Some(0), Nav::Left), NavOut::Fold("a.rs".into()));
+        // Right steps into an open group and unfolds a folded one.
+        assert_eq!(nav(&rows, &cases, &none, Some(0), Nav::Right), NavOut::To(1));
+        assert_eq!(nav(&rows, &cases, &none, Some(1), Nav::Right), NavOut::Stay);
+        let fold: HashSet<String> = ["a.rs".to_string()].into();
+        let folded = build_rows(&cases, Filter::All, &fold, false);
+        assert_eq!(nav(&folded, &cases, &fold, Some(0), Nav::Right), NavOut::Unfold("a.rs".into()));
+        assert_eq!(nav(&folded, &cases, &fold, Some(0), Nav::Left), NavOut::Stay);
+        assert_eq!(nav(&[], &cases, &none, None, Nav::Down), NavOut::Stay);
+        // The cursor is the parked group, else the selected test.
+        assert_eq!(cursor_row(&rows, &cases, Some("b.rs"), Some("a.rs::two")), Some(3));
+        assert_eq!(cursor_row(&rows, &cases, None, Some("a.rs::two")), Some(2));
+        assert_eq!(cursor_row(&rows, &cases, Some("gone"), None), None);
+    }
+
+    #[test]
+    fn arrow_keys_drive_the_list_while_it_has_the_focus() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        let _g = lock();
+        let dir = tmp("testskeys");
+        let mut app = test_app(&dir);
+        for c in [case("a.rs", "one", Status::Passed), case("a.rs", "two", Status::Failed)] {
+            app.tests.upsert(c);
+        }
+        app.panel.open = true;
+        app.panel.tab = PanelTab::Tests;
+        app.focus = Focus::Editor;
+        let key = |app: &mut App, k: NamedKey| {
+            app.handle_key(&KeyIn { key: Key::Named(k), text: None });
+        };
+        // Without the focus the arrows belong to the editor.
+        key(&mut app, NamedKey::ArrowDown);
+        assert_eq!((app.tests.sel.as_deref(), app.tests.cur_group.as_deref()), (None, None));
+        app.tests_focus();
+        key(&mut app, NamedKey::ArrowDown);
+        assert_eq!(app.tests.cur_group.as_deref(), Some("a.rs"), "first stop: the group row");
+        key(&mut app, NamedKey::ArrowDown);
+        assert_eq!((app.tests.sel.as_deref(), app.tests.cur_group.as_deref()), (Some("a.rs::one"), None));
+        key(&mut app, NamedKey::ArrowDown);
+        assert_eq!(app.tests.sel.as_deref(), Some("a.rs::two"));
+        key(&mut app, NamedKey::ArrowLeft);
+        assert_eq!(app.tests.cur_group.as_deref(), Some("a.rs"));
+        key(&mut app, NamedKey::ArrowLeft);
+        assert!(app.tests.collapsed.contains("a.rs"), "Left on an open group folds it");
+        key(&mut app, NamedKey::ArrowRight);
+        assert!(!app.tests.collapsed.contains("a.rs"), "Right unfolds it");
+        assert!(app.tests.focused);
+        // Esc hands the keyboard back.
+        key(&mut app, NamedKey::Escape);
+        assert!(!app.tests.focused);
+        key(&mut app, NamedKey::ArrowDown);
+        assert_eq!(app.tests.cur_group.as_deref(), Some("a.rs"), "unchanged once the focus is gone");
+        // A key the list does not use gives the focus back too.
+        app.tests_focus();
+        key(&mut app, NamedKey::Tab);
+        assert!(!app.tests.focused);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
