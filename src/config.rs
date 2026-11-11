@@ -55,6 +55,9 @@ pub struct Config {
     /// How `Pull` integrates remote commits: "merge", "rebase", "ff-only", or "" = not chosen yet
     /// (git's own `pull.rebase` / `pull.ff` if set, else fast-forward only; a diverged pull asks).
     pub git_pull_strategy: String,
+    /// Folder new git worktrees go in (`~` and `{repo}` expanded; relative = to the main worktree);
+    /// empty = `<repo>/../<repo>-worktrees`. Each worktree is a sub-folder named after its branch.
+    pub git_worktree_dir: String,
     /// Columns a tab character spans in the editor (2, 4 or 8).
     pub tab_width: usize,
     /// Width in px of the Git panel when the user dragged its edge (0 = automatic).
@@ -239,6 +242,7 @@ impl Default for Config {
             status_order: normalize_status_order(&[]),
             status_left_order: normalize_left_order(&[]),
             git_pull_strategy: String::new(),
+            git_worktree_dir: String::new(),
             tab_width: 4,
             git_panel_width: 0,
             sidebar_width: crate::app::SIDEBAR_W,
@@ -481,6 +485,7 @@ impl Config {
                     .unwrap_or_default(),
             ),
             git_pull_strategy: clean_pull_strategy(v["git_pull_strategy"].as_str().unwrap_or("")),
+            git_worktree_dir: v["git_worktree_dir"].as_str().unwrap_or("").trim().to_string(),
             tab_width: clean_tab_width(v["tab_width"].as_u64().unwrap_or(4) as usize),
             git_panel_width: v["git_panel_width"].as_i64().map_or(0, |n| n.clamp(0, 4000) as i32),
             sidebar_width: v["sidebar_width"]
@@ -566,6 +571,7 @@ impl Config {
         v["run_command"] = json!(self.run_command);
         v["markdown_remote_images"] = json!(self.markdown_remote_images);
         v["sidebar_width"] = json!(self.sidebar_width);
+        v["git_worktree_dir"] = json!(self.git_worktree_dir);
         v["scrollbar_v"] = json!(2);
         v["local_history"] = json!(self.local_history);
         v["local_history_max_entries"] = json!(self.local_history_max_entries);
@@ -636,6 +642,7 @@ mod tests {
                 .collect(),
             status_left_order: ["problems", "sidebar", "search"].iter().map(|s| s.to_string()).collect(),
             git_pull_strategy: "rebase".into(),
+            git_worktree_dir: "~/trees/{repo}".into(),
             tab_width: 8,
             git_panel_width: 512,
             sidebar_width: 333,

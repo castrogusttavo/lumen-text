@@ -62,6 +62,10 @@ and no GPU driver:
 - Gutter marks, branch switcher, status dots in the explorer, inline blame
 - Git panel (`Ctrl+Shift+G`): stage/unstage files and single hunks, commit, amend, fetch/pull (merge, rebase or ff-only)/push (force with lease behind a confirmation), history
 - Side-by-side diff with intraline highlight, file history, merge-conflict resolution (accept current / incoming / both)
+- Worktrees (`Git: Worktrees…`, or the branch menu): list with branch, folder and dirty state; create one on a new or
+  existing branch (default `<repo>/../<repo>-worktrees/<branch>`, see `git_worktree_dir`) in the background; open it in
+  this window (each project keeps its own session) or in a new window; remove (asks, and asks again before forcing a
+  dirty one) and prune. The branch chip shows a worktree icon when the project is a linked worktree
 
 **Debugging**
 - Breakpoints in the gutter, step over/into/out, stack, variables and output tab
@@ -220,10 +224,12 @@ For testing, `LUMEN_UPDATE_URL` points the check at another `latest.json` (plain
 lumen-text                          # reopen the tabs of the project's last session
 lumen-text project/                 # open a folder
 lumen-text project/ src/app.ts:42:7 # open a file at line:column
+lumen-text --new-window other/      # a second window, even when one is running
 ```
 
 Press `Ctrl+P` to open files, `Ctrl+Shift+P` for the command palette, `Ctrl+,` for settings.
-A second `lumen-text` invocation hands its files to the already running window. The tool tips and
+A second `lumen-text` invocation hands its files to the already running window; a folder other than that window's
+project opens a new window (`--new-window` always does). The tool tips and
 palette are the reference for everything not listed below.
 
 ## Keyboard shortcuts
@@ -317,6 +323,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `status_order` | position, indent, language, terminal, debug, git, ram | Order of the right-hand bottom-bar items |
 | `status_left_order` | sidebar, search, problems | Order of the left-hand bottom-bar items |
 | `git_pull_strategy` | `""` | `"merge"`, `"rebase"` or `"ff-only"`: how Pull integrates remote commits (empty = ask when the branches diverge) |
+| `git_worktree_dir` | `""` | Folder new worktrees go in, one sub-folder per branch (`~` and `{repo}` expanded, relative = to the main worktree); empty = `<repo>/../<repo>-worktrees` |
 | `tab_width` | `4` | Columns a tab character spans (2, 4 or 8); per-file picks live in the session |
 | `git_panel_width` / `md_split` | `0` / `0.5` | Panel width in px (0 = automatic); Markdown source share (0.2 to 0.8) |
 
@@ -369,6 +376,7 @@ src/
                            (backoff, dynamic registration, progress), merged answers, server log, lifecycle in the app
   dap.rs, tasks.rs, terminal.rs  debug adapters, processes and ANSI output, PTY + VT emulator
   git.rs, gitx.rs, gitsync.rs  status, blame, hunks, diff, history, conflicts, fetch/pull/push
+  worktree.rs, app_worktree.rs  git worktrees: list, add/remove/prune (on the git worker), open here / in a new window
   mdview/, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)
   search.rs, fuzzy.rs, snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs
   script.rs                headless mode for tests and screenshots

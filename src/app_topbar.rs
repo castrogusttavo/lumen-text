@@ -65,6 +65,8 @@ pub enum Entry {
     UseDir(PathBuf),
     Up(PathBuf),
     Dir(PathBuf),
+    /// "Worktrees…" in the branch menu (how many the repository has).
+    Worktrees(usize),
 }
 
 pub struct TopMenu {
@@ -84,6 +86,8 @@ pub struct TopMenu {
     /// Delete buttons of local branches drawn last frame: (button, branch).
     pub trash: Vec<(Rect, String)>,
     pub now: i64,
+    /// Branch menu: branches checked out in another worktree, and its folder.
+    pub worktrees: Vec<(String, PathBuf)>,
 }
 
 // ───────────── pure helpers ─────────────
@@ -221,6 +225,7 @@ impl TopMenu {
             rows: Vec::new(),
             trash: Vec::new(),
             now: now_secs(),
+            worktrees: Vec::new(),
         };
         m.refilter();
         m
@@ -245,7 +250,7 @@ impl TopMenu {
                 }
             };
             match e {
-                Entry::UseDir(_) | Entry::Up(_) | Entry::NewBranch => lead.push(i),
+                Entry::UseDir(_) | Entry::Up(_) | Entry::NewBranch | Entry::Worktrees(_) => lead.push(i),
                 Entry::OpenProject => trail.push(i),
                 Entry::Project(p, recent) => {
                     if !searching {
@@ -353,7 +358,13 @@ impl App {
             if open == Some(MenuKind::Branch) {
                 cv.fill_round(r, 6, c.list_active_bg);
             }
-            self.tx.icon(cv, "ui/git_branch", r.x + 10, bar.y + (bar.h - 14) / 2, 14, c.tab_inactive_fg, bar);
+            // A linked worktree shows the worktree icon (the tooltip names its main worktree).
+            let (icon, icol) = if self.gitbg.worktree_main.is_some() {
+                ("ui/git_worktree", c.accent_text)
+            } else {
+                ("ui/git_branch", c.tab_inactive_fg)
+            };
+            self.tx.icon(cv, icon, r.x + 10, bar.y + (bar.h - 14) / 2, 14, icol, bar);
             self.tx.draw_ui(cv, r.x + 10 + 14 + 8, ty, &b, c.tab_inactive_fg, bar, false);
             self.tx.icon(cv, "ui/chevron_down", r.right() - 22, bar.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, bar);
             self.layout.top_btns.push((r, MenuKind::Branch));
@@ -404,9 +415,20 @@ impl App {
                 if branches.is_empty() {
                     return self.say("no branches (is the folder a git repository?)");
                 }
-                let entries =
-                    std::iter::once(Entry::NewBranch).chain(branches.into_iter().map(Entry::Branch)).collect();
-                self.overlay = Overlay::TopMenu(Box::new(TopMenu::new(kind, anchor, entries, self.root.clone())));
+                let wts = crate::worktree::list(&self.root);
+                let entries = [Entry::NewBranch, Entry::Worktrees(wts.len())]
+                    .into_iter()
+                    .chain(branches.into_iter().map(Entry::Branch))
+                    .collect();
+                let mut m = TopMenu::new(kind, anchor, entries, self.root.clone());
+                let cur = crate::worktree::containing(&wts, &self.root);
+                m.worktrees = wts
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| Some(*i) != cur)
+                    .filter_map(|(_, w)| Some((w.branch.clone()?, w.path.clone())))
+                    .collect();
+                self.overlay = Overlay::TopMenu(Box::new(m));
             }
             MenuKind::Browse => {
                 let start = self.root.parent().map_or_else(|| self.root.clone(), Path::to_path_buf);
@@ -514,8 +536,20 @@ impl App {
                     let name = fit(&mut self.tx, &project_name(p), rr.w - 60);
                     self.tx.draw_ui(cv, rr.x + 38, ly, &name, fg, rr, false);
                 }
+                Entry::Worktrees(n) => {
+                    self.tx.icon(cv, "ui/git_worktree", rr.x + 12, iy, 16, c.accent, rr);
+                    let label = if *n > 1 { format!("Worktrees… ({n})") } else { "Worktrees…".to_string() };
+                    self.tx.draw_ui(cv, rr.x + 38, ly, &label, c.accent_text, rr, false);
+                }
                 Entry::Branch(b) => {
-                    self.tx.icon(cv, if b.remote { "ui/public" } else { "ui/git_branch" }, rr.x + 12, iy, 16, dim, rr);
+                    // Checked out in another worktree: choosing it offers to open that worktree.
+                    let held = if b.remote { None } else { m.worktrees.iter().find(|(n, _)| *n == b.name) };
+                    let icon = match (b.remote, held.is_some()) {
+                        (true, _) => "ui/public",
+                        (false, true) => "ui/git_worktree",
+                        (false, false) => "ui/git_branch",
+                    };
+                    self.tx.icon(cv, icon, rr.x + 12, iy, 16, dim, rr);
                     let name = fit(&mut self.tx, &b.name, rr.w * 2 / 5);
                     let name_col = if b.current { c.accent_text } else { fg };
                     self.tx.draw_ui(cv, rr.x + 38, ly, &name, name_col, rr, b.current);
@@ -523,10 +557,13 @@ impl App {
                     let dx = rr.x + 38 + used + 12;
                     // Local branches other than the current one get a delete button on the
                     // highlighted row (it asks before deleting).
-                    let deletable = !b.remote && !b.current;
+                    let deletable = !b.remote && !b.current && held.is_none();
                     let end = rr.right() - if b.current || (deletable && k == m.sel) { 40 } else { 12 };
                     self.tx.draw_ui(cv, dx, ly, "|", dim.with_alpha(0x70), rr, false);
-                    let info = format!("{}, {}, {}", b.author, git::ago((m.now - b.when).max(0)), b.subject);
+                    let mut info = format!("{}, {}, {}", b.author, git::ago((m.now - b.when).max(0)), b.subject);
+                    if let Some((_, p)) = held {
+                        info = format!("worktree {} · {info}", tilde(p));
+                    }
                     let info = fit(&mut self.tx, &info, end - (dx + 16));
                     self.tx.draw_ui(cv, dx + 16, ly, &info, dim, rr, false);
                     if b.current {
@@ -654,8 +691,16 @@ impl App {
             Entry::Project(p, _) | Entry::UseDir(p) => self.switch_project(p),
             Entry::OpenProject => self.open_topmenu(MenuKind::Browse, m.anchor),
             Entry::Up(p) | Entry::Dir(p) => self.overlay = Overlay::TopMenu(Box::new(browse_menu(m.anchor, p))),
-            Entry::Branch(b) => self.checkout_branch(b, &m.entries),
+            Entry::Branch(b) => match m.worktrees.iter().find(|(n, _)| !b.remote && *n == b.name) {
+                // git refuses to check out a branch another worktree holds: offer that worktree.
+                Some((_, p)) => {
+                    let pick = crate::app_worktree::WtPick::Menu(p.clone());
+                    self.git_pick(crate::app_gitpanel::GitPick::Worktree(pick));
+                }
+                None => self.checkout_branch(b, &m.entries),
+            },
             Entry::NewBranch => self.git_new_branch(None, m.field.text.trim()),
+            Entry::Worktrees(_) => self.worktrees_open(),
         }
     }
 
@@ -700,6 +745,7 @@ impl App {
         self.eslint_busy.clear();
         self.git_status.clear();
         self.root = path;
+        crate::instance::set_root(&self.root);
         self.tree = Tree::with_ignore(self.root.clone(), self.config.explorer_hide_gitignored);
         self.active = 0;
         self.refresh_git_status();

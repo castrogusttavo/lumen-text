@@ -423,7 +423,18 @@ impl App {
                 };
                 t(&label.unwrap_or_default(), None, act_hint(act).map(str::to_string))
             }
-            TipKey::Top(MenuKind::Branch) => t("Switch branch", None, self.branch.clone()),
+            TipKey::Top(MenuKind::Branch) => match &self.gitbg.worktree_main {
+                Some(main) => t(
+                    "Switch branch",
+                    None,
+                    Some(format!(
+                        "{} · linked worktree of {}",
+                        self.branch.clone().unwrap_or_default(),
+                        crate::app_topbar::tilde(main)
+                    )),
+                ),
+                None => t("Switch branch", None, self.branch.clone()),
+            },
             TipKey::Top(_) => t("Switch project", None, Some(crate::app_topbar::tilde(&self.root))),
             TipKey::Tab(i) => match self.docs.get(i) {
                 Some(d) => {

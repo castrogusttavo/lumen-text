@@ -173,6 +173,22 @@ pub enum Op {
     /// GitHub release through the `gh` CLI: the tag is pushed first, then
     /// `gh release create <tag> --verify-tag …` publishes the release.
     Release(ReleasePlan),
+    /// `git worktree add` (see `worktree::add_args`): `branch` checked out at `path`, created at
+    /// `base` (or HEAD) when `create`.
+    WorktreeAdd {
+        path: std::path::PathBuf,
+        branch: String,
+        create: bool,
+        base: Option<String>,
+    },
+    /// `git worktree remove [--force]`; a dirty worktree is refused without `force`.
+    WorktreeRemove {
+        path: std::path::PathBuf,
+        force: bool,
+        locked: bool,
+    },
+    /// `git worktree prune`: forget worktrees whose folder is gone.
+    WorktreePrune,
 }
 
 /// Everything a release is published with (the confirmation card shows all of it).
@@ -211,6 +227,7 @@ impl Op {
             Op::PushTags { .. } => "Push tags",
             Op::DeleteRemote { .. } => "Delete on remote",
             Op::Release(_) => "Release",
+            Op::WorktreeAdd { .. } | Op::WorktreeRemove { .. } | Op::WorktreePrune => "Worktree",
         }
     }
 
@@ -224,6 +241,9 @@ impl Op {
             Op::PushTags { .. } => "Pushing tags",
             Op::DeleteRemote { .. } => "Deleting on remote",
             Op::Release(_) => "Publishing release",
+            Op::WorktreeAdd { .. } => "Creating worktree",
+            Op::WorktreeRemove { .. } => "Removing worktree",
+            Op::WorktreePrune => "Pruning worktrees",
         }
     }
 
@@ -237,6 +257,9 @@ impl Op {
             Op::PushTags { .. } => "Tags pushed",
             Op::DeleteRemote { .. } => "Deleted on the remote",
             Op::Release(_) => "Release published",
+            Op::WorktreeAdd { .. } => "Worktree created",
+            Op::WorktreeRemove { .. } => "Worktree removed",
+            Op::WorktreePrune => "Worktrees pruned",
         }
     }
 }
@@ -264,6 +287,11 @@ pub fn args_for(op: &Op, pull_configured: bool) -> Vec<String> {
         Op::DeleteRemote { remote, refname } => s(&["push", "--progress", remote, "--delete", refname]),
         // The git step of a release: make sure the tag is on the remote (`--verify-tag` needs it).
         Op::Release(p) => s(&["push", "--progress", &p.remote, &format!("refs/tags/{}", p.tag)]),
+        Op::WorktreeAdd { path, branch, create, base } => {
+            crate::worktree::add_args(path, branch, *create, base.as_deref())
+        }
+        Op::WorktreeRemove { path, force, locked } => crate::worktree::remove_args(path, *force, *locked),
+        Op::WorktreePrune => crate::worktree::prune_args(),
     }
 }
 
@@ -303,6 +331,19 @@ pub struct Fail {
 pub fn classify(lines: &[String]) -> Fail {
     let all = lines.join("\n");
     let has = |s: &str| all.contains(s);
+    // Worktree commands: checked first, their messages contain words the remote checks look for
+    // ("Permission denied" while creating the folder is not an authentication problem).
+    if has("contains modified or untracked files") {
+        return Fail { kind: FailKind::Dirty, text: "The worktree has modified or untracked files".into() };
+    }
+    if has("could not create directory") || has("could not create leading directories") {
+        let line = lines
+            .iter()
+            .rev()
+            .find(|l| l.starts_with("fatal:"))
+            .map_or("could not create the folder", |l| l.trim_start_matches("fatal:").trim());
+        return Fail { kind: FailKind::Other, text: line.to_string() };
+    }
     let (kind, text) = if has("has no upstream branch")
         || has("no upstream configured")
         || has("There is no tracking information")
@@ -397,6 +438,7 @@ pub fn summarize(op: &Op, stdout: &str, stderr: &[String]) -> String {
             Some(url) => format!("Release {} published: {url}", p.tag),
             None => format!("Release {} published", p.tag),
         },
+        Op::WorktreeAdd { path, branch, .. } => format!("Worktree “{branch}” created at {}", path.display()),
         _ => op.done().to_string(),
     }
 }
