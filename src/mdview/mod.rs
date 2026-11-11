@@ -18,7 +18,7 @@
 //! re-lays out the segment it landed in (the other segments are reused as they are and placed by
 //! y offset). Layouts are cached per width / font size.
 //!
-//! Supported: ATX/setext headings (H1-H6, hairline under H1/H2), paragraphs with word wrap,
+//! Supported: ATX/setext headings (H1-H6), paragraphs with word wrap,
 //! **bold** (semibold face), *emphasis* (the UI family has no italic face: emphasis is slanted
 //! synthetically by cosmic-text; if that ever fails it falls back to the text colour mixed toward
 //! the accent), ~~strikethrough~~ (line through), `inline code` (monospace
@@ -28,7 +28,7 @@
 //! source, see [`MdView::check_at`]), footnotes (numbered by first reference, collected at the end),
 //! math (`$..$` as a chip, `$$..$$` as a block, monospace source text, no LaTeX engine), block quotes, thematic breaks, fenced and indented code blocks (monospace, never wrapped, clipped
 //! horizontally, language label, TextMate syntax colors when a highlighter is given to
-//! [`MdView::draw_with`]), GFM tables (content-sized columns, ellipsized cells, alignment),
+//! [`MdView::draw_with`]), GFM tables (content-sized columns capped at ~48ch, wrapping cells, alignment),
 //! hard and soft breaks, and `<img>` / `<br>` / `<a href>` found in raw HTML (other tags are
 //! stripped; HTML comments are dropped).
 //! Not supported: definition lists, metadata blocks, admonition quotes, true italic faces, inline images
@@ -59,19 +59,38 @@ pub use parse::*;
 // constants
 
 const PAD: i32 = 24;
-const MAX_COL: i32 = 760;
-/// UI font sizes in use: H1..H6 (0..5 -- index 4 is also the body, 5 also table cells), then small.
-const SIZES: [f32; 7] = [28.0, 22.0, 18.0, 16.0, 14.0, 13.0, 11.0];
-/// Line box height (px) per size index.
-const LH: [i32; 7] = [38, 30, 25, 22, 22, 20, 16];
-const BODY: usize = 4;
-const SMALL: usize = 5;
-const TINY: usize = 6;
-const ROW_H: i32 = 28;
-const CELL_PAD: i32 = 10;
+/// Reading measure of the text column (about 75 characters of body text).
+const MAX_COL: i32 = 736;
+/// UI font sizes in use: H1..H6 (0..5), body, table cells, small, tiny. A modular scale over a 16 px
+/// body (H1 1.6x, H2 1.4x, H3 1.2x, H4..H6 at body size and told apart by weight / color).
+const SIZES: [f32; 10] = [25.6, 22.4, 19.2, 16.0, 16.0, 16.0, 16.0, 16.0, 13.0, 11.0];
+/// Line box height (px) per size index: headings ~1.35, body 1.8 (airy prose), table cells 1.4.
+const LH: [i32; 10] = [35, 30, 26, 26, 26, 26, 29, 22, 20, 16];
+const BODY: usize = 6;
+/// Table cells: body size on a tighter line.
+const CELL: usize = 7;
+const SMALL: usize = 8;
+const TINY: usize = 9;
+/// Table cell padding (horizontal, vertical).
+const CELL_PAD_X: i32 = 13;
+const CELL_PAD_Y: i32 = 8;
+/// A table column asks for at most this many `0` widths before its cells wrap.
+const CELL_MAX_CH: f32 = 48.0;
+const TABLE_RAD: i32 = 8;
 const CHIP_PAD: i32 = 4;
+/// Corner radius of inline code chips and code blocks.
+const CODE_RAD: i32 = 6;
+/// Horizontal padding inside code blocks, and their top / bottom padding.
+const CODE_PAD_X: i32 = 12;
+const CODE_PAD_Y: i32 = 12;
+/// Gap between consecutive blocks.
+const BLOCK_GAP: i32 = 16;
 const LIST_BULLET_INDENT: i32 = 24;
-const QUOTE_INDENT: i32 = 16;
+/// Block quote: bar width, and the text indent (bar included).
+const QUOTE_BAR: i32 = 4;
+const QUOTE_INDENT: i32 = 20;
+/// Task checkbox side.
+const CHECK: i32 = 18;
 
 const F_B: u8 = 1;
 const F_I: u8 = 2;
@@ -543,7 +562,15 @@ impl MdView {
                     Op::Text { x, w, text, flags, si, lh } => {
                         let size = SIZES[*si as usize];
                         let (sx, sy) = (x + ox, d.y0 + oy);
-                        let base_col = if flags & F_DIM != 0 { pal.dim } else { pal.fg };
+                        // Prose reads in the softer text color; headings, bold and table headers in
+                        // the full foreground; list numbers and footnote marks muted.
+                        let base_col = if flags & F_DIM != 0 {
+                            pal.dim
+                        } else if flags & F_B != 0 {
+                            pal.fg
+                        } else {
+                            pal.text
+                        };
                         let mut color = base_col;
                         // Emphasis is slanted synthetically; the accent tint stays only as a fallback
                         // when the slant does not render.
@@ -557,8 +584,8 @@ impl MdView {
                         if flags & F_CODE != 0 {
                             let ch = (*lh - 2).min(line_h() as i32 + 2);
                             let chip = Rect::new(sx, sy + (*lh - ch) / 2, *w, ch);
-                            let fill = if flags & F_MATH != 0 { pal.math_chip(color) } else { pal.input };
-                            round_clip(cv, chip, 4, fill, clip);
+                            let fill = if flags & F_MATH != 0 { pal.math_chip(color) } else { pal.code };
+                            round_clip(cv, chip, CODE_RAD, fill, clip);
                             let cl = line_h() as i32;
                             tx.draw_line(cv, sx + CHIP_PAD, sy + (*lh - cl) / 2, text, color, clip);
                         } else {
@@ -591,12 +618,12 @@ impl MdView {
                         }
                     }
                     Op::Check { x, y, done } => {
-                        let r = Rect::new(x + ox, y + oy, 14, 14);
+                        let r = Rect::new(x + ox, y + oy, CHECK, CHECK);
                         if *done {
-                            round_clip(cv, r, 3, pal.accent, clip);
-                            check_mark(cv, r.x, r.y, pal.bg, clip);
+                            round_clip(cv, r, 5, pal.accent, clip);
+                            check_mark(cv, r, pal.on_accent, clip);
                         } else {
-                            card_clip(cv, r, 3, pal.bg, pal.dim, clip);
+                            card_clip(cv, r, 5, pal.bg, pal.dim, clip);
                         }
                     }
                     Op::Image { r, id } => {
@@ -644,27 +671,35 @@ impl MdView {
                     }
                     Op::Code { r, lang, lines, lh, top: ctop, key, math } => {
                         let sr = tr(*r);
-                        let fill = if *math { pal.math_block() } else { pal.widget };
-                        card_clip(cv, sr, 6, fill, pal.border, clip);
+                        let fill = if *math { pal.math_block() } else { pal.code };
+                        round_clip(cv, sr, CODE_RAD, fill, clip);
                         if *math {
-                            round_clip(cv, Rect::new(sr.x + 1, sr.y + 6, 3, sr.h - 12), 1, pal.accent, clip);
+                            round_clip(cv, Rect::new(sr.x, sr.y + 6, 3, sr.h - 12), 1, pal.accent, clip);
                         }
-                        if !lang.is_empty() {
+                        let max_chars = ((sr.w as f32) / tx.cell_w.max(1.0)) as usize + 2;
+                        // The language sits faintly in the top-right corner, only when the first line
+                        // leaves room for it.
+                        if !lang.is_empty() && !*math {
                             let lw = tx.ui_width_sized(lang, false, SIZES[TINY]);
-                            tx.draw_ui_sized(
-                                cv,
-                                sr.right() - lw - 10,
-                                sr.y + 3,
-                                lang,
-                                pal.dim,
-                                clip.intersect(&sr),
-                                false,
-                                SIZES[TINY],
-                            );
+                            let first_w = lines
+                                .first()
+                                .map_or(0.0, |l| code_w(tx, &l.chars().take(max_chars).collect::<String>()));
+                            if CODE_PAD_X as f32 + first_w + 16.0 + (lw + 10) as f32 <= sr.w as f32 {
+                                tx.draw_ui_sized(
+                                    cv,
+                                    sr.right() - lw - 10,
+                                    sr.y + 4,
+                                    lang,
+                                    pal.faint,
+                                    clip.intersect(&sr),
+                                    false,
+                                    SIZES[TINY],
+                                );
+                            }
                         }
                         let inner = Rect::new(sr.x + 1, sr.y + 1, sr.w - 2, sr.h - 2).intersect(&clip);
                         let first = ((clip.y - sr.y - ctop) / lh).max(0) as usize;
-                        let max_chars = ((sr.w as f32) / tx.cell_w.max(1.0)) as usize + 2;
+                        let text_dy = (lh - line_h() as i32) / 2;
                         let colored = if !*math && !lang.is_empty() && lines.len() <= HL_MAX_LINES {
                             hl_lines(hl_cache, *key, lang, lines, &mut hl, fill, pal.bg)
                         } else {
@@ -684,13 +719,17 @@ impl MdView {
                                 line.clone()
                             };
                             let sw = code_w(tx, &shown);
-                            let lx = if *math { sr.x + ((sr.w as f32 - sw) / 2.0).max(14.0) as i32 } else { sr.x + 14 };
+                            let lx = if *math {
+                                sr.x + ((sr.w as f32 - sw) / 2.0).max(CODE_PAD_X as f32) as i32
+                            } else {
+                                sr.x + CODE_PAD_X
+                            };
                             match colored.as_ref().and_then(|c| c.get(i)) {
                                 Some(runs) if !runs.is_empty() => {
-                                    let pieces = pieces_of(&shown, runs, pal.fg);
-                                    tx.draw_styled(cv, lx, ly, &pieces, inner);
+                                    let pieces = pieces_of(&shown, runs, pal.text);
+                                    tx.draw_styled(cv, lx, ly + text_dy, &pieces, inner);
                                 }
-                                _ => tx.draw_line(cv, lx, ly, &shown, pal.fg, inner),
+                                _ => tx.draw_line(cv, lx, ly + text_dy, &shown, pal.text, inner),
                             }
                         }
                     }

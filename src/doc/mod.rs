@@ -31,6 +31,8 @@ const CURSOR_TAU_Y: f64 = 0.055;
 const CURSOR_TAU_X: f64 = 0.040;
 const CURSOR_W: i32 = 2;
 const MIN_GUTTER_DIGITS: usize = 3;
+/// Most occurrences of the selected text highlighted in one frame (visible lines only).
+const OCCURRENCE_CAP: usize = 512;
 
 #[derive(Clone, Debug)]
 pub struct Diag {
