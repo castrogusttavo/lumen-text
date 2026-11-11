@@ -374,7 +374,7 @@ and `gif` only for Markdown images). The binary is a single executable plus the 
 - Tokenization runs on a background thread with a per-frame budget; the UI thread spends ~0.05 ms on it and long jumps get an immediate color.
 - Big files (above 20k lines) get semantic colors for the visible window only (`semanticTokens/range`) and an outline trimmed to its first 3 levels; responses above 4 MB that have no streaming path are dropped.
 - A single font is loaded (fallback faces on demand), glibc arenas are limited and memory is trimmed with `malloc_trim`.
-- The CI `perf` job runs regression tests (`cargo test --release perf -- --nocapture`); thresholds are generous and the job never blocks a release.
+- The CI `perf` job runs regression tests (`cargo test --release perf -- --nocapture`) on every push to `main` and on pull requests labelled `perf`; thresholds are generous and the job never blocks a release.
 
 ## Headless mode
 
