@@ -8,7 +8,6 @@ use crate::{
     doc::Doc,
 };
 use std::{
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::atomic::Ordering,
@@ -64,8 +63,13 @@ impl App {
                 e.version = u64::MAX;
             }
         }
-        let live: HashMap<u64, bool> = self.docs.iter().map(|d| (d.buf.gen_id(), d.buf.is_dirty())).collect();
-        let stale: Vec<u64> = st.written.keys().filter(|g| live.get(g) != Some(&true)).copied().collect();
+        // No allocation unless something is stale (this runs on every tick).
+        let stale: Vec<u64> = st
+            .written
+            .keys()
+            .filter(|&&g| !self.docs.iter().any(|d| d.buf.gen_id() == g && d.buf.is_dirty()))
+            .copied()
+            .collect();
         for g in stale {
             if let Some(e) = st.written.remove(&g) {
                 st.delete(e.file);
