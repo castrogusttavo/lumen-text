@@ -427,9 +427,10 @@ fn narrow_table_wraps_cells_instead_of_ellipsizing() {
         .filter_map(|o| if let Op::Text { x, w, text, .. } = &o.op { Some((*x, o.y0, *w, text.clone())) } else { None })
         .collect();
     assert!(texts.iter().all(|t| !t.3.ends_with("...")), "nothing is cut");
-    let all: String = texts.iter().map(|t| t.3.as_str()).collect::<Vec<_>>().join(" ");
-    for word in ["aaaaaaaa", "eeeeeeee", "zzzzzzzz", "wwwwwwww"] {
-        assert!(all.contains(word), "{word} missing from {all}");
+    // Every letter is drawn (a word wider than its column breaks between characters).
+    let all: String = texts.iter().map(|t| t.3.as_str()).collect();
+    for ch in ['a', 'e', 'z', 'w'] {
+        assert_eq!(all.chars().filter(|&c| c == ch).count(), 8 + usize::from(ch == 'a'), "{ch} in {all}");
     }
     // The body row grew to fit its wrapped lines, and the frame encloses every line.
     assert!(frame.h > row_h(1) + row_h(2), "frame {}", frame.h);
