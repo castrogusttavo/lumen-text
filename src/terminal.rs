@@ -984,7 +984,7 @@ impl vte::Perform for Grid {
                 .get(from..)
                 .unwrap_or_default()
                 .iter()
-                .map(|s| String::from_utf8_lossy(s))
+                .map(|s| String::from_utf8_lossy(s).into_owned())
                 .collect::<Vec<_>>()
                 .join(";")
         };

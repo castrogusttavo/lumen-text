@@ -152,8 +152,7 @@ pub fn draw(tx: &mut TextCtx, cv: &mut Canvas, term: &Term, ox: i32, oy: i32, cl
                 break;
             }
             let style = text_style(&row[*c0]);
-            for c in *c0..(*c1).min(last) {
-                let cell = row[c];
+            for (c, &cell) in row.iter().enumerate().take((*c1).min(last)).skip(*c0) {
                 if cell.ch == terminal::WIDE_TAIL {
                     continue;
                 }
