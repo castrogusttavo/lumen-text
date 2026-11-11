@@ -359,10 +359,10 @@ impl App {
                             p.items[i].action = Action::Open(h.path.clone(), Some((h.line, h.col)));
                         }
                     }
+                    r.want = None;
                     p.refilter();
                     p.sel = sel.min(p.filtered.len().saturating_sub(1));
                     p.keep_visible();
-                    r.want = None;
                 }
                 self.say(format!("replaced 1 match in {}", self.rel(&hit.path)));
             }
@@ -389,11 +389,11 @@ impl App {
                     r.hits.retain(|_| *k.next().unwrap_or(&true));
                     let mut k = keep.iter();
                     p.items.retain(|_| *k.next().unwrap_or(&true));
+                    r.want = None;
                     let sel = p.sel;
                     p.refilter();
                     p.sel = sel.min(p.filtered.len().saturating_sub(1));
                     p.keep_visible();
-                    r.want = None;
                 }
                 let s = if n == 1 { "" } else { "s" };
                 self.say(format!("{n} replacement{s} in {}", self.rel(&path)));
