@@ -697,7 +697,8 @@ pub fn write_mirror(root: &Path, mirror: &Path, includes: &[PathBuf]) -> std::io
     // through the symlinks to real paths, and the project's own `rootDir` may be inherited): "." made
     // every such import a TS6059. Nothing is emitted, so the filesystem root is harmless.
     let fs_root = mirror.ancestors().last().unwrap_or(mirror).to_string_lossy().into_owned();
-    let mut cfg = json!({"include": rels, "compilerOptions": {"incremental": false, "noEmit": true, "rootDir": fs_root}});
+    let mut cfg =
+        json!({"include": rels, "compilerOptions": {"incremental": false, "noEmit": true, "rootDir": fs_root}});
     let real_cfg = root.join("tsconfig.json");
     if real_cfg.exists() {
         cfg["extends"] = json!(real_cfg.to_string_lossy());
