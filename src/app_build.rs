@@ -493,11 +493,27 @@ enum Btn {
     Danger,
 }
 
-/// What leads the toolbar status: the dot spinner, an icon, or nothing.
+/// What leads the toolbar status: the dot spinner, a still dot (a Run), an icon, or nothing.
 enum Glyph {
     Spin,
+    Dot(Rgba),
     Icon(&'static str, Rgba),
     None,
+}
+
+/// Elapsed time of a Run in whole seconds (it repaints once a second, so no tenths).
+fn fmt_elapsed(ms: f64) -> String {
+    let s = (ms / 1000.0) as u64;
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m {:02}s", s / 60, s % 60),
+        _ => format!("{}h {:02}m", s / 3600, (s / 60) % 60),
+    }
+}
+
+/// A still status dot centered on (`cx`, `cy`).
+fn status_dot(cv: &mut Canvas, cx: i32, cy: i32, col: Rgba, clip: Rect) {
+    cv.fill_round_clip(Rect::new(cx - 4, cy - 4, 8, 8), 4, col, clip);
 }
 
 impl App {
@@ -755,17 +771,28 @@ impl App {
 
     /// Timers: the spinners while a job runs, and the documents' build diagnostics.
     pub fn build_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
-        if self.build.proc.is_some() {
-            let due = self.build.anim_at.map_or(now, |t| t + Duration::from_millis(90));
+        if let Some(step) = self.build_anim_step() {
+            let due = self.build.anim_at.map_or(now, |t| t + step);
             if due <= now {
                 self.build.anim_at = Some(now);
                 self.request_redraw();
-                want(now + Duration::from_millis(90));
+                want(now + step);
             } else {
                 want(due);
             }
         }
         self.build_sync_diags();
+    }
+
+    /// How often the running job repaints. A build or clean ends soon: spinner and progress at
+    /// ~11 fps. A Run is often a dev server that lives for hours: no animation at all (a static
+    /// "running" dot), only the elapsed time ticking once a second while the Build panel shows it —
+    /// otherwise an idle editor would repaint forever.
+    fn build_anim_step(&self) -> Option<Duration> {
+        match self.build.job.filter(|_| self.build.running())? {
+            Job::Run => (self.panel.open && self.panel.tab == PanelTab::Build).then_some(Duration::from_secs(1)),
+            _ => Some(Duration::from_millis(90)),
+        }
     }
 
     /// Give open documents the build problems of their file as diagnostics (source "build"):
@@ -1085,7 +1112,8 @@ impl App {
         let mut v: Vec<(String, Rgba)> = Vec::new();
         if let Some(job) = self.build.job {
             let ms = self.build.started.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
-            v.push((format!("{}…  {}", job.verb(), fmt_secs(ms)), dim));
+            let elapsed = if job == Job::Run { fmt_elapsed(ms) } else { fmt_secs(ms) };
+            v.push((format!("{}…  {elapsed}", job.verb()), dim));
             if counts.errors > 0 {
                 v.push(("   ".into(), dim));
                 v.push((plural(counts.errors, "error"), c.error));
@@ -1094,7 +1122,8 @@ impl App {
                 v.push(("  ".into(), dim));
                 v.push((plural(counts.warnings, "warning"), c.warning));
             }
-            return (Glyph::Spin, v);
+            let glyph = if job == Job::Run { Glyph::Dot(c.git_added) } else { Glyph::Spin };
+            return (glyph, v);
         }
         let Some(d) = self.build.last else { return (Glyph::None, v) };
         if d.stopped {
@@ -1174,6 +1203,7 @@ impl App {
         if px - 24 > x {
             match glyph {
                 Glyph::Spin => spinner_t(cv, px - 14, gy, 5, c.accent_text, bg, t, body),
+                Glyph::Dot(col) => status_dot(cv, px - 14, gy, col, body),
                 Glyph::Icon(name, col) => self.tx.icon(cv, name, px - 22, gy - 8, 16, col, body),
                 Glyph::None => {}
             }
@@ -1187,7 +1217,10 @@ impl App {
         // ── progress: indeterminate while running, then the outcome's color ──
         let pb = Rect::new(body.x, body.y + TOOLBAR_H, body.w, PROG_H);
         cv.fill(pb, c.border.with_alpha(110).over(bg));
-        if running {
+        if running && self.build.job == Some(Job::Run) {
+            // A Run may never end: a still bar, not a moving one.
+            cv.fill_clip(pb, c.git_added.with_alpha(0x60), pb);
+        } else if running {
             let bw = (body.w / 5).max(80);
             let pos = ((t * 0.8).fract() * (body.w + bw) as f32) as i32 - bw;
             cv.fill_clip(Rect::new(body.x + pos, pb.y, bw, PROG_H), c.accent, pb);
@@ -1644,7 +1677,9 @@ impl App {
         if self.panel.open && self.panel.tab == PanelTab::Build {
             cv.fill_round(b, 6, c.list_active_bg);
         }
-        if running.is_some() {
+        if running == Some(Job::Run) {
+            status_dot(cv, b.x + 8 + 7, r.y + r.h / 2, c.git_added, r);
+        } else if running.is_some() {
             let t = self.build.started.map_or(0.0, |t| t.elapsed().as_secs_f32());
             spinner_t(cv, b.x + 8 + 7, r.y + r.h / 2, 5, col, c.status_bg, t, r);
         } else {
@@ -1820,6 +1855,14 @@ mod tests {
         app.build_run();
         assert_eq!((app.build.job, app.build.view), (Some(Job::Run), LogView::Run));
         assert!(app.build.running());
+        // A Run (often a dev server that never ends) doesn't keep an idle editor repainting: no
+        // timer while the panel is hidden, one a second for the elapsed time while it shows.
+        app.panel.open = false;
+        assert_eq!(app.build_anim_step(), None, "hidden panel: no repaint timer during a Run");
+        app.panel.open = true;
+        app.panel.tab = PanelTab::Build;
+        assert_eq!(app.build_anim_step(), Some(Duration::from_secs(1)));
+        assert!(matches!(app.build_status().0, Glyph::Dot(_)), "a still dot, not the spinner");
         app.build_stop();
         assert!(!app.build.running());
         assert_eq!(app.build.last.map(|d| (d.job, d.stopped)), Some((Job::Run, true)));
@@ -1827,6 +1870,14 @@ mod tests {
         // The build's log is still there to switch back to.
         assert!(app.build.logs[LogView::Build as usize].plain.iter().any(|l| l == "compiled"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_elapsed_time_is_whole_seconds() {
+        assert_eq!(fmt_elapsed(400.0), "0s");
+        assert_eq!(fmt_elapsed(59_900.0), "59s");
+        assert_eq!(fmt_elapsed(61_000.0), "1m 01s");
+        assert_eq!(fmt_elapsed(3_725_000.0), "1h 02m");
     }
 
     #[test]
