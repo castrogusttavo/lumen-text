@@ -75,11 +75,13 @@ jobs:
     # but the red job says which language stopped working.
     steps:
       - uses: actions/checkout@v7
-      - name: clangd for C/C++ (best effort; the job runs without it)
+      - name: clangd for C/C++ (official standalone release, pinned and checksummed - no apt)
         run: |
-          command -v clangd && exit 0
-          timeout 180 bash -c 'sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get install -y -qq clangd' \
-            || echo "::warning::clangd unavailable (Ubuntu archive unreachable?): the C/C++ rows of the matrix will fail"
+          v=23.1.0
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/clangd.zip" "https://github.com/clangd/clangd/releases/download/${v}/clangd-linux-${v}.zip"
+          echo "e53b1a96196095faedb7642cf64964f7fb9ad4a0c1f00dd2c172a3d9dcbafdfd  ${RUNNER_TEMP}/clangd.zip" | sha256sum -c -
+          unzip -q "${RUNNER_TEMP}/clangd.zip" -d "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/clangd_${v}/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Toolchains the servers run on (or need to analyse their language).
@@ -105,7 +107,7 @@ jobs:
       - name: Versions
         run: |
           php --version | head -1; java -version 2>&1 | head -1; dotnet --version; go version
-          ruby --version; node --version; { clangd --version || echo "clangd: missing"; } | head -1
+          ruby --version; node --version; clangd --version | head -1
       - name: LSP matrix (every language - server starts, diagnostics, hover, completion)
         shell: bash
         run: |
@@ -234,8 +236,9 @@ jobs:
       - name: Smoke test the .deb (install and run --version)
         if: matrix.arch == 'x86_64'
         run: |
-          # Its dependencies ship with the runner image: install without touching the network.
-          sudo apt-get install -y --no-download ./dist/lumen-text_*.deb
+          # Its hard dependencies ship with the runner image: install without touching the network
+          # (the X11/Wayland Recommends are not needed for the headless check).
+          sudo apt-get install -y --no-download --no-install-recommends ./dist/lumen-text_*.deb
           lumen-text --version
           test -f /usr/share/lumen-text/assets/language-manifest.json
           # Headless render: proves fonts, assets lookup and the CPU renderer work from the installed layout.
