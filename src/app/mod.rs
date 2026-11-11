@@ -156,7 +156,8 @@ pub struct App {
     pub comp_t0: Option<Instant>,
     pub file_index: Option<Vec<PathBuf>>,
     pub panel: Panel,
-    pub term: Option<crate::terminal::Term>,
+    /// The bottom panel's terminals (tabs, split, the one with the keyboard).
+    pub terms: crate::app_terms::Terms,
     /// AI panel (the user's agent CLI in the right-hand slot) and the terminals' pointer state.
     pub ai: crate::app_aipanel::AiState,
     pub termio: crate::app_termio::TermIo,
@@ -301,7 +302,7 @@ impl App {
             comp_t0: None,
             file_index: None,
             panel: Panel::new(),
-            term: None,
+            terms: Default::default(),
             ai: Default::default(),
             termio: Default::default(),
             search_gen: Arc::new(AtomicUsize::new(0)),

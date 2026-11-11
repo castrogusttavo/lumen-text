@@ -18,8 +18,17 @@ const MAX_LINES: usize = 6000;
 /// the terminal, sidebar, palette, project search, explorer, Git panel, quit). Everything else,
 /// including plain `Ctrl+<letter>` keys shells rely on (Ctrl+C/D/R/L/A/E/W/U/K/P...), goes to the
 /// shell unless the user binds it to one of these.
-const TERM_GLOBAL: &[&str] =
-    &["ToggleOutput", "OpenTerminal", "ToggleSidebar", "Quit", "Commands", "ProjectSearch", "FocusSidebar", "GitPanel"];
+const TERM_GLOBAL: &[&str] = &[
+    "ToggleOutput",
+    "OpenTerminal",
+    "NewTerminal",
+    "ToggleSidebar",
+    "Quit",
+    "Commands",
+    "ProjectSearch",
+    "FocusSidebar",
+    "GitPanel",
+];
 
 /// Is this key, as bound in the keymap (user file first, then the defaults), one the editor keeps
 /// while the terminal is focused?
@@ -104,42 +113,7 @@ impl App {
         self.open_terminal();
     }
 
-    pub fn open_terminal(&mut self) {
-        if self.term.is_none() {
-            let (rows, cols) = (
-                (self.panel.height - PANEL_HEADER) / line_h() as i32,
-                (self.size.0 as i32 - 40) / self.tx.cell_w as i32,
-            );
-            match crate::terminal::Term::spawn(&self.root, rows.max(4) as usize, cols.max(20) as usize, self.wake()) {
-                Ok(t) => self.term = Some(t),
-                Err(e) => return self.say(format!("could not open the terminal: {e}")),
-            }
-        }
-        self.panel.open = true;
-        self.panel.tab = PanelTab::Terminal;
-        self.focus = Focus::Terminal;
-    }
-
-    pub fn close_terminal(&mut self) {
-        self.term = None;
-        if self.focus == Focus::Terminal {
-            self.focus = Focus::Editor;
-        }
-        self.panel.tab = PanelTab::Output;
-    }
-
-    pub fn pump_term(&mut self) {
-        let Some(t) = self.term.as_mut() else { return };
-        let changed = t.pump();
-        if !t.alive {
-            self.close_terminal();
-            self.say("terminal closed");
-        }
-        self.term_effects(crate::app_termio::Which::Bottom);
-        if changed {
-            self.request_redraw();
-        }
-    }
+    // Opening, closing and pumping the terminals: see `app_terms`.
 
     /// Keys while the terminal is focused. Returns true when consumed.
     pub fn term_key(&mut self, ev: &crate::app::KeyIn) -> bool {
@@ -147,7 +121,7 @@ impl App {
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let alt = self.mods.alt_key();
-        if !self.panel.open || self.panel.tab != PanelTab::Terminal || self.term.is_none() {
+        if !self.panel.open || self.panel.tab != PanelTab::Terminal || self.terms.get(self.terms.active).is_none() {
             self.focus = Focus::Editor;
             return false;
         }
@@ -158,7 +132,7 @@ impl App {
         if !clip_key && term_global(&self.keymap, ctrl, shift, alt, &ev.key) {
             return false;
         }
-        self.term_type(crate::app_termio::Which::Bottom, ev)
+        self.term_type(crate::app_termio::Which::Bottom(self.terms.active), ev)
     }
 
     pub fn run_task(&mut self, cmd: &str, title: &str) {
@@ -283,6 +257,9 @@ impl App {
             return false;
         }
         if y < (r.y + PANEL_HEADER) as f64 {
+            if self.terms_strip_click(x, y) {
+                return true;
+            }
             let hit = self.layout.panel_tabs.iter().find(|(rr, _)| rr.contains(x, y)).map(|(_, t)| *t);
             match hit {
                 Some(PanelTab::Debug) => {
@@ -321,10 +298,7 @@ impl App {
             return true;
         }
         if self.panel.tab == PanelTab::Terminal {
-            if self.term.is_some() {
-                self.focus = Focus::Terminal;
-                self.term_press(crate::app_termio::Which::Bottom, x, y, 0);
-            }
+            self.terms_press(x, y);
             return true;
         }
         self.focus = Focus::Editor;
@@ -352,7 +326,9 @@ impl App {
             return false;
         }
         if self.panel.tab == PanelTab::Terminal {
-            self.term_wheel(crate::app_termio::Which::Bottom, delta);
+            if let Some(id) = self.term_pane_at(x, y) {
+                self.term_wheel(crate::app_termio::Which::Bottom(id), delta);
+            }
             return true;
         }
         let view = r.h - PANEL_HEADER;
@@ -400,13 +376,16 @@ impl App {
             x += w + 4;
         }
         // The panel toggle as bound now (a rebinding shows its own combo; switched off: no hint).
+        let mut hint_x = r.right() - 8;
         if let Some(combo) = crate::app_tooltip::shortcut_in(&self.keymap.entries(), "ToggleOutput") {
             let hint = format!("{combo} closes");
             let hw = self.tx.ui_width(&hint, false);
-            self.tx.draw_ui(cv, r.right() - hw - 14, ty, &hint, dim, head, false);
+            hint_x = r.right() - hw - 14;
+            self.tx.draw_ui(cv, hint_x, ty, &hint, dim, head, false);
         }
 
         if self.panel.tab == PanelTab::Terminal {
+            self.draw_term_strip(cv, Rect::new(x, r.y, hint_x - 12 - x, PANEL_HEADER));
             return self.draw_terminal(cv, body);
         }
         if self.panel.tab == PanelTab::Debug {
@@ -461,46 +440,6 @@ impl App {
         self.panel.scroll = self.panel.scroll.clamp(0.0, (total - visible).max(0.0));
         let pos = self.panel.scroll;
         self.region_bar(cv, Reg::Output, body, total, visible, pos, 1.0, false);
-    }
-
-    fn draw_terminal(&mut self, cv: &mut Canvas, body: Rect) {
-        let lh = line_h() as i32;
-        let (rows, cols) = crate::termview::fit(self.tx.cell_w, body.w - 24, body.h - 8);
-        let focused = self.focus == Focus::Terminal;
-        let (fg, bg) = (self.theme.foreground, self.theme.background);
-        let (ox, oy) = (body.x + 12, body.y + 4);
-        let look = self.term_look(crate::app_termio::Which::Bottom, focused, (ox, oy));
-        let Some(term) = self.term.as_mut() else {
-            self.tx.draw_ui(
-                cv,
-                body.x + 14,
-                body.y + 10,
-                "Terminal closed — Ctrl+` opens a new one",
-                self.theme.chrome.tab_inactive_fg,
-                body,
-                false,
-            );
-            return;
-        };
-        term.resize(rows, cols);
-        term.grid.colors = (fg, bg);
-        term.set_focus(focused);
-        crate::termview::draw(&mut self.tx, cv, term, ox, oy, body, &look);
-        let alt = term.alt_screen();
-        let (hist, off) = (term.grid.history_len(), term.scroll_offset);
-        if !alt {
-            // Rows are the unit: the bar counts from the oldest line, the live screen is the bottom.
-            self.region_bar(
-                cv,
-                Reg::Terminal,
-                body,
-                (hist + rows) as f64,
-                rows as f64,
-                (hist - off.min(hist)) as f64,
-                lh as f64,
-                true,
-            );
-        }
     }
 }
 

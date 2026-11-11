@@ -1,5 +1,6 @@
-//! Input and side effects shared by the two terminals (the bottom panel's shell and the AI panel's
-//! agent): typing (xterm key encoding, Ctrl+Shift+C / Ctrl+Shift+V), mouse selection, mouse
+//! Input and side effects shared by the terminals (the bottom panel's shells and the AI panel's
+//! agent): typing (xterm key encoding, or the kitty keyboard protocol when the program pushed its
+//! flags; Ctrl+Shift+C / Ctrl+Shift+V), mouse selection, mouse
 //! reporting, the wheel (history, or arrow keys / reports on the alternate screen), OSC 8 links
 //! (Ctrl+click), OSC 52 clipboard writes and OSC 9 / 777 notifications.
 
@@ -10,20 +11,11 @@ use crate::{
 };
 use winit::{event::MouseScrollDelta, keyboard::Key};
 
-/// Which terminal an action is for.
+/// Which terminal an action is for: one of the bottom panel's (by id, see `app_terms`) or the AI panel's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Which {
-    Bottom,
+    Bottom(u32),
     Ai,
-}
-
-impl Which {
-    fn idx(self) -> usize {
-        match self {
-            Which::Bottom => 0,
-            Which::Ai => 1,
-        }
-    }
 }
 
 /// A mouse drag that started in a terminal.
@@ -38,11 +30,28 @@ enum Drag {
 /// Per-terminal pointer state, kept by the App.
 #[derive(Default)]
 pub struct TermIo {
-    /// Top-left of each terminal's grid at the last draw.
-    origin: [(i32, i32); 2],
+    /// Top-left of each terminal's grid at its last draw.
+    origin: Vec<(Which, (i32, i32))>,
     drag: Option<(Which, Drag)>,
-    /// OSC 8 link under the pointer in each terminal (underlined while hovered).
-    hover_link: [u16; 2],
+    /// OSC 8 link under the pointer and its terminal (underlined while hovered).
+    hover_link: Option<(Which, u16)>,
+}
+
+impl TermIo {
+    fn origin(&self, w: Which) -> Option<(i32, i32)> {
+        self.origin.iter().find(|(x, _)| *x == w).map(|(_, o)| *o)
+    }
+
+    /// A terminal went away: drop its pointer state.
+    pub fn forget(&mut self, w: Which) {
+        self.origin.retain(|(x, _)| *x != w);
+        if self.drag.is_some_and(|(x, _)| x == w) {
+            self.drag = None;
+        }
+        if self.hover_link.is_some_and(|(x, _)| x == w) {
+            self.hover_link = None;
+        }
+    }
 }
 
 /// The `http(s)://` URL in `line` that covers column `col` (plain text, for Ctrl+click).
@@ -73,35 +82,50 @@ pub fn url_at(line: &str, col: usize) -> Option<String> {
 impl App {
     pub fn term_ref(&self, w: Which) -> Option<&Term> {
         match w {
-            Which::Bottom => self.term.as_ref(),
+            Which::Bottom(id) => self.terms.get(id).map(|t| &t.term),
             Which::Ai => self.ai.term.as_ref(),
         }
     }
 
     pub fn term_mut(&mut self, w: Which) -> Option<&mut Term> {
         match w {
-            Which::Bottom => self.term.as_mut(),
+            Which::Bottom(id) => self.terms.get_mut(id).map(|t| &mut t.term),
             Which::Ai => self.ai.term.as_mut(),
         }
     }
 
     /// Theme colors for drawing terminal `w` (and remembers where its grid starts).
     pub fn term_look(&mut self, w: Which, focused: bool, origin: (i32, i32)) -> Look {
-        self.termio.origin[w.idx()] = origin;
+        match self.termio.origin.iter_mut().find(|(x, _)| *x == w) {
+            Some(slot) => slot.1 = origin,
+            None => self.termio.origin.push((w, origin)),
+        }
         Look {
             fg: self.theme.foreground,
             bg: self.theme.background,
             cursor: self.theme.cursor,
             selection: self.theme.selection,
             focused,
-            hover_link: self.termio.hover_link[w.idx()],
+            hover_link: self.termio.hover_link.filter(|(x, _)| *x == w).map_or(0, |(_, l)| l),
         }
     }
 
     /// The cell of terminal `w` under (x, y), if it is on the grid.
     fn term_cell(&self, w: Which, x: f64, y: f64) -> Option<(usize, usize)> {
-        let (ox, oy) = self.termio.origin[w.idx()];
+        let (ox, oy) = self.termio.origin(w)?;
         termview::cell_at(self.term_ref(w)?, self.tx.cell_w, ox, oy, x, y)
+    }
+
+    /// Terminals on screen now: the bottom panel's visible panes and the AI panel's agent.
+    fn terms_on_screen(&self) -> Vec<Which> {
+        let mut v: Vec<Which> = Vec::new();
+        if self.panel.open && self.panel.tab == crate::app_panel::PanelTab::Terminal {
+            v.extend(self.terms.panes.iter().map(|id| Which::Bottom(*id)));
+        }
+        if self.ai.open && self.ai.term.is_some() {
+            v.push(Which::Ai);
+        }
+        v
     }
 
     /// Clipboard writes (OSC 52) and notifications (OSC 9 / 777) the program asked for; returns
@@ -123,6 +147,7 @@ impl App {
     /// A key for terminal `w` (the caller already kept the editor's global shortcuts). Always consumed.
     pub fn term_type(&mut self, w: Which, ev: &KeyIn) -> bool {
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        let sup = self.mods.super_key();
         if let Key::Character(c) = &ev.key
             && ctrl
             && shift
@@ -165,9 +190,15 @@ impl App {
             return true;
         }
         let app_cursor = t.grid.app_cursor;
-        if let Some(bytes) =
+        // A program that pushed kitty keyboard flags gets that encoding; everything else the xterm one.
+        let flags = t.grid.kitty_flags();
+        let bytes = if flags != 0 {
+            let m = crate::kittykeys::Mods { shift, alt, ctrl, sup };
+            crate::kittykeys::encode(flags, named.as_deref(), text.as_deref(), m)
+        } else {
             crate::terminal::key_bytes_app(named.as_deref(), text.as_deref(), ctrl, shift, alt, app_cursor)
-        {
+        };
+        if let Some(bytes) = bytes {
             t.sel = None;
             t.write(&bytes);
         }
@@ -223,18 +254,17 @@ impl App {
     pub fn term_drag_move(&mut self) -> bool {
         let (x, y) = self.mouse;
         let mut changed = false;
-        for w in [Which::Bottom, Which::Ai] {
-            let link = self
-                .term_cell(w, x, y)
-                .and_then(|(r, c)| self.term_ref(w).map(|t| t.grid.view_cell(r, c, t.scroll_offset).link))
-                .unwrap_or(0);
-            if self.termio.hover_link[w.idx()] != link {
-                self.termio.hover_link[w.idx()] = link;
-                changed = true;
-            }
+        let link = self.terms_on_screen().into_iter().find_map(|w| {
+            let (r, c) = self.term_cell(w, x, y)?;
+            let id = self.term_ref(w).map(|t| t.grid.view_cell(r, c, t.scroll_offset).link)?;
+            (id != 0).then_some((w, id))
+        });
+        if self.termio.hover_link != link {
+            self.termio.hover_link = link;
+            changed = true;
         }
         let Some((w, drag)) = self.termio.drag else { return changed };
-        let (ox, oy) = self.termio.origin[w.idx()];
+        let Some((ox, oy)) = self.termio.origin(w) else { return changed };
         let (cw, lh) = (self.tx.cell_w as f64, crate::ui::line_h() as f64);
         let mods = (self.mods.shift_key(), self.mods.alt_key(), self.mods.control_key());
         let Some(t) = self.term_mut(w) else { return changed };
@@ -317,7 +347,8 @@ impl App {
     /// Per-event hook: a synchronized-output hold that ran out gets the screen drawn.
     pub fn term_tick(&mut self, want: &mut impl FnMut(std::time::Instant)) {
         let mut redraw = false;
-        for w in [Which::Bottom, Which::Ai] {
+        let all = self.terms.tabs.iter().map(|t| Which::Bottom(t.id)).chain([Which::Ai]).collect::<Vec<_>>();
+        for w in all {
             if let Some(t) = self.term_mut(w) {
                 let (expired, next) = t.grid.sync_check();
                 redraw |= expired;

@@ -53,6 +53,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("alt+left", "NavBack"),
     ("alt+right", "NavForward"),
     ("ctrl+`", "OpenTerminal"),
+    ("ctrl+shift+`", "NewTerminal"),
     ("ctrl+shift+[", "Fold"),
     ("ctrl+shift+]", "Unfold"),
     ("ctrl+,", "OpenSettings"),
@@ -280,6 +281,8 @@ impl Keymap {
             "_" => cands.push(combo(ctrl, false, alt, "-")),
             "{" => cands.push(combo(ctrl, shift, alt, "[")),
             "}" => cands.push(combo(ctrl, shift, alt, "]")),
+            // Shift+` types `~` on most layouts.
+            "~" => cands.push(combo(ctrl, shift, alt, "`")),
             n if is_fkey(n) && (ctrl || alt) => {
                 cands.push(combo(false, shift, false, n));
                 if shift {

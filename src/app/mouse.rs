@@ -297,6 +297,7 @@ impl App {
             || l.sidebar_tabs.iter().any(|(r, _)| r.contains(x, y))
             || l.crumbs.iter().any(|(r, _)| r.contains(x, y))
             || l.panel_tabs.iter().any(|(r, _)| r.contains(x, y))
+            || self.terms_hit_at(x, y).is_some()
             || self.tests_clickable_at(x, y)
             || self.build_clickable_at(x, y)
             || l.completion_rows.iter().any(|(r, _)| r.contains(x, y))
@@ -378,6 +379,9 @@ impl App {
         }
         if let Some((r, _)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((*r, 6));
+        }
+        if let Some(h) = self.terms_hover_target() {
+            return Some(h);
         }
         if let Some(h) = self.aipanel_hover_target() {
             return Some(h);
