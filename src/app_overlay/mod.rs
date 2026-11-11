@@ -39,6 +39,8 @@ pub enum Action {
     TestRunner(crate::testrun::Runner),
     /// Build panel target (its id, see `buildrun::Target`).
     BuildTarget(String),
+    /// AI panel agent (its id, see `app_aipanel::AGENTS`).
+    AiAgent(String),
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),

@@ -17,6 +17,7 @@ impl App {
         self.chord = None;
         self.tests.focused = false; // a click in the Tests panel gives it back
         self.build.focused = false; // likewise for the Build panel
+        self.aipanel_mouse_pre(); // and for the AI panel
         if button == MouseButton::Right {
             return self.right_click();
         }
@@ -27,6 +28,9 @@ impl App {
             return self.request_redraw();
         }
         if self.update_card_mouse(x, y) {
+            return self.request_redraw();
+        }
+        if self.aipanel_mouse(x, y, if button == MouseButton::Middle { 1 } else { 0 }) {
             return self.request_redraw();
         }
         if self.gitpanel_mouse(x, y) {
@@ -257,6 +261,9 @@ impl App {
         if let Some(c) = self.hover_cursor(x, y) {
             return c;
         }
+        if let Some(c) = self.aipanel_cursor(x, y) {
+            return c;
+        }
         if let Some(c) = self.gitpanel_cursor(x, y) {
             return c;
         }
@@ -365,6 +372,9 @@ impl App {
         }
         if let Some((r, _)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((*r, 6));
+        }
+        if let Some(h) = self.aipanel_hover_target() {
+            return Some(h);
         }
         if let Some(h) = self.debug_hover_target() {
             return Some(h);
@@ -477,6 +487,15 @@ impl App {
         }
         if self.regions_drag() {
             return self.request_redraw();
+        }
+        if self.aipanel_move() {
+            return self.request_redraw();
+        }
+        if self.term_drag_move() {
+            self.request_redraw();
+            if self.term_dragging() {
+                return;
+            }
         }
         if self.tree_drag_move() || self.sidebar_edge_move() || self.tab_drag_move() {
             return self.request_redraw();

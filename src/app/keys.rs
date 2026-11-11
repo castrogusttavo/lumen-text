@@ -30,6 +30,10 @@ impl App {
             self.request_redraw();
             return false;
         }
+        if self.aipanel_key(ev) {
+            self.request_redraw();
+            return false;
+        }
         if self.gitpanel_key(ev) {
             self.request_redraw();
             return false;

@@ -10,9 +10,9 @@ impl App {
         }
     }
 
-    /// Is (x, y) on the draggable left edge of the open panel?
+    /// Is (x, y) on the draggable left edge of the open panel (the switch above it included)?
     pub(super) fn gp_on_edge(&self, x: f64, y: f64) -> bool {
-        let p = self.gitpanel_rect();
+        let p = self.right_slot_rect();
         self.gitpanel.is_some() && Rect::new(p.x - GP_GRAB, p.y, 2 * GP_GRAB, p.h).contains(x, y)
     }
 
@@ -24,16 +24,23 @@ impl App {
         }
     }
 
-    /// Width taken from the editor area: 0 when the panel is closed.
+    /// Width taken from the editor area by the right-hand slot (Git or AI panel): 0 when closed.
     pub fn gitpanel_w(&self) -> i32 {
-        if self.gitpanel.is_none() { 0 } else { self.gp_width() }
+        if self.gitpanel.is_none() && !self.ai.open { 0 } else { self.gp_width() }
     }
 
-    /// Panel rectangle (as if open).
-    pub fn gitpanel_rect(&self) -> Rect {
+    /// The whole right-hand slot, as if open: the "Git | AI" switch on top, then the panel.
+    pub fn right_slot_rect(&self) -> Rect {
         let w = self.gp_width();
         let (ww, hh) = (self.size.0 as i32, self.size.1 as i32);
         Rect::new(ww - w, crate::app::TOP_H, w, (hh - crate::app::TOP_H - crate::app::STATUS_H).max(0))
+    }
+
+    /// Panel rectangle (as if open): the slot under its switch.
+    pub fn gitpanel_rect(&self) -> Rect {
+        let s = self.right_slot_rect();
+        let sw = crate::app_aipanel::SLOT_H;
+        Rect::new(s.x, s.y + sw, s.w, (s.h - sw).max(0))
     }
 
     /// Ctrl+Shift+G / palette: open, or focus, or close when it already has the focus.
@@ -55,6 +62,8 @@ impl App {
     }
 
     pub fn open_git_panel(&mut self) {
+        // The Git and AI panels share the right-hand slot (the agent keeps running).
+        self.ai_hide();
         self.refresh_git_status();
         let mut gp = Box::new(GitPanel::new(&self.root));
         // A command that kept running while the panel was closed is shown again.

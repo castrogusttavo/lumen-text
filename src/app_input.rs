@@ -200,6 +200,9 @@ impl App {
         if self.regions_wheel(delta) {
             return self.request_redraw();
         }
+        if self.aipanel_wheel(delta) {
+            return self.request_redraw();
+        }
         if self.gitpanel_wheel(delta) {
             return self.request_redraw();
         }
@@ -545,6 +548,8 @@ impl App {
     pub fn mouse_up(&mut self) {
         self.hover_mouse_up();
         self.gitpanel_release();
+        self.aipanel_release();
+        self.term_release();
         self.sidebar_edge_release();
         self.tab_drag_release();
         self.tree_drag_release();

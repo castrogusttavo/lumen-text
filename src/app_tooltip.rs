@@ -53,6 +53,8 @@ pub enum TipKey {
     Outline(usize),
     /// An item of the open context menu that needs a word of explanation.
     Ctx(Act),
+    /// A button of the AI panel or of the Git | AI switch.
+    Ai(crate::app_aipanel::AiHit),
 }
 
 /// Pointer-rest state (the text is resolved while drawing).
@@ -341,6 +343,9 @@ impl App {
         if let Some((r, t)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((TipKey::PanelTab(*t), *r, false));
         }
+        if let Some((r, h)) = self.aipanel_tip_target(x, y) {
+            return Some((TipKey::Ai(h), r, true));
+        }
         if let Some(gp) = &self.gitpanel
             && self.gitpanel_rect().contains(x, y)
         {
@@ -395,6 +400,7 @@ impl App {
             more: Vec::new(),
         };
         match key {
+            TipKey::Ai(h) => self.aipanel_tip(h),
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
                 Some(s) => t(&s.name, None, Some(format!("{} · line {}", symbol_kind_name(s.kind), s.sl + 1))),
                 None => TipText::default(),
@@ -504,6 +510,11 @@ impl App {
                     t(&title, None, detail)
                 }
                 StatusBtn::Build => t("Build", self.shortcut_text("BuildBuild"), Some(self.build_status_tip())),
+                StatusBtn::Ai => t(
+                    "AI agent",
+                    self.shortcut_text("AiPanel"),
+                    Some(format!("{} — click to open the AI panel", self.ai.status.label())),
+                ),
                 StatusBtn::Language => t(
                     "Change language…",
                     None,

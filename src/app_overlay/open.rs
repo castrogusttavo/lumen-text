@@ -314,6 +314,7 @@ impl App {
         self.pump_tests();
         self.pump_build();
         self.pump_term();
+        self.pump_ai();
         self.pump_inbox();
         self.pump_eslint();
         self.pump_debug();

@@ -3,6 +3,7 @@
 // the parent console for command-line use.
 #![cfg_attr(all(windows, not(debug_assertions), not(test)), windows_subsystem = "windows")]
 mod app;
+mod app_aipanel;
 mod app_build;
 mod app_ctxmenu;
 mod app_debug;
@@ -26,6 +27,7 @@ mod app_settings;
 mod app_sidebar;
 mod app_split;
 mod app_tabdrag;
+mod app_termio;
 mod app_tests;
 mod app_tooltip;
 mod app_topbar;
@@ -89,6 +91,7 @@ mod settingsui;
 mod snippets;
 mod tasks;
 mod terminal;
+mod termview;
 mod testrun;
 mod textmate;
 mod theme;

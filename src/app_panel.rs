@@ -135,6 +135,7 @@ impl App {
             self.close_terminal();
             self.say("terminal closed");
         }
+        self.term_effects(crate::app_termio::Which::Bottom);
         if changed {
             self.request_redraw();
         }
@@ -150,48 +151,14 @@ impl App {
             self.focus = Focus::Editor;
             return false;
         }
-        if let Key::Character(c) = &ev.key
-            && ctrl
-            && shift
-            && c.to_lowercase() == "v"
-        {
-            let t = self.clip.get();
-            if let Some(term) = self.term.as_mut() {
-                let bytes = term.paste_bytes(&t.replace('\n', "\r"));
-                term.write(&bytes);
-            }
-            return true;
-        }
-        // Keys the editor keeps even while the terminal has focus (as bound in the keymap).
-        if term_global(&self.keymap, ctrl, shift, alt, &ev.key) {
+        // Keys the editor keeps even while the terminal has focus (as bound in the keymap);
+        // Ctrl+Shift+C / Ctrl+Shift+V copy and paste.
+        let clip_key =
+            matches!(&ev.key, Key::Character(c) if ctrl && shift && matches!(c.to_lowercase().as_str(), "c" | "v"));
+        if !clip_key && term_global(&self.keymap, ctrl, shift, alt, &ev.key) {
             return false;
         }
-        let named = match &ev.key {
-            Key::Named(n) => Some(format!("{n:?}")),
-            _ => None,
-        };
-        let text = match &ev.key {
-            Key::Character(c) => Some(c.to_string()),
-            _ => ev.text.clone(),
-        };
-        let app_cursor = self.term.as_ref().is_some_and(|t| t.grid.app_cursor);
-        // Shift+PageUp/PageDown scroll the terminal's own history instead of going to the shell.
-        if shift
-            && matches!(named.as_deref(), Some("PageUp" | "PageDown"))
-            && self.term.as_ref().is_some_and(|t| !t.alt_screen())
-        {
-            let rows = self.term.as_ref().map_or(10, |t| t.grid.rows as isize);
-            if let Some(t) = self.term.as_mut() {
-                t.scroll_view(if named.as_deref() == Some("PageUp") { rows - 1 } else { -(rows - 1) });
-            }
-            return true;
-        }
-        if let Some(bytes) = crate::terminal::key_bytes_app(named.as_deref(), text.as_deref(), ctrl, alt, app_cursor)
-            && let Some(t) = self.term.as_mut()
-        {
-            t.write(&bytes);
-        }
-        true
+        self.term_type(crate::app_termio::Which::Bottom, ev)
     }
 
     pub fn run_task(&mut self, cmd: &str, title: &str) {
@@ -356,6 +323,7 @@ impl App {
         if self.panel.tab == PanelTab::Terminal {
             if self.term.is_some() {
                 self.focus = Focus::Terminal;
+                self.term_press(crate::app_termio::Which::Bottom, x, y, 0);
             }
             return true;
         }
@@ -384,12 +352,7 @@ impl App {
             return false;
         }
         if self.panel.tab == PanelTab::Terminal {
-            let lines = -crate::scroller::wheel_rows_int(delta, line_h() as f64);
-            if let Some(t) = self.term.as_mut()
-                && !t.alt_screen()
-            {
-                t.scroll_view(lines);
-            }
+            self.term_wheel(crate::app_termio::Which::Bottom, delta);
             return true;
         }
         let view = r.h - PANEL_HEADER;
@@ -501,11 +464,12 @@ impl App {
     }
 
     fn draw_terminal(&mut self, cv: &mut Canvas, body: Rect) {
-        let (cell_w, lh) = (self.tx.cell_w, line_h() as i32);
-        let cols = (((body.w - 24) as f32 / cell_w) as usize).max(10);
-        let rows = (((body.h - 8) / lh) as usize).max(2);
+        let lh = line_h() as i32;
+        let (rows, cols) = crate::termview::fit(self.tx.cell_w, body.w - 24, body.h - 8);
         let focused = self.focus == Focus::Terminal;
-        let (fg, bg, cursor) = (self.theme.foreground, self.theme.background, self.theme.cursor);
+        let (fg, bg) = (self.theme.foreground, self.theme.background);
+        let (ox, oy) = (body.x + 12, body.y + 4);
+        let look = self.term_look(crate::app_termio::Which::Bottom, focused, (ox, oy));
         let Some(term) = self.term.as_mut() else {
             self.tx.draw_ui(
                 cv,
@@ -519,46 +483,9 @@ impl App {
             return;
         };
         term.resize(rows, cols);
-        let offset = term.scroll_offset;
-        let g = &term.grid;
-        let (ox, oy) = (body.x + 12, body.y + 4);
-        let mut pieces: Vec<(String, Rgba)> = Vec::new();
-        for r in 0..g.rows.min(rows) {
-            let mut c = 0;
-            while c < g.cols.min(cols) {
-                let cell = g.view_cell(r, c, offset);
-                let (cfg, cbg) = if cell.inverse {
-                    (cell.bg.unwrap_or(bg), cell.fg.unwrap_or(fg))
-                } else {
-                    (cell.fg.unwrap_or(fg), cell.bg.unwrap_or(bg))
-                };
-                let has_bg = cell.inverse || cell.bg.is_some();
-                // Group a run of cells with identical styling.
-                let mut end = c + 1;
-                let mut text = String::from(cell.ch);
-                while end < g.cols.min(cols) {
-                    let n = g.view_cell(r, end, offset);
-                    if n.fg != cell.fg || n.bg != cell.bg || n.inverse != cell.inverse {
-                        break;
-                    }
-                    text.push(n.ch);
-                    end += 1;
-                }
-                if has_bg {
-                    let x0 = ox + (c as f32 * cell_w).round() as i32;
-                    let x1 = ox + (end as f32 * cell_w).round() as i32;
-                    cv.fill_clip(Rect::new(x0, oy + r as i32 * lh, x1 - x0, lh), cbg, body);
-                }
-                pieces.push((text, tasks::legible(cfg, cbg)));
-                c = end;
-            }
-            pieces.push(("\n".to_string(), fg));
-        }
-        if focused && g.cursor_visible && offset == 0 && g.cy < rows && g.cx < cols {
-            let x = ox + (g.cx as f32 * cell_w).round() as i32;
-            cv.fill_clip(Rect::new(x, oy + g.cy as i32 * lh, cell_w.round() as i32, lh), cursor.with_alpha(0xb0), body);
-        }
-        self.tx.draw(cv, ox, oy, &pieces, body);
+        term.grid.colors = (fg, bg);
+        term.set_focus(focused);
+        crate::termview::draw(&mut self.tx, cv, term, ox, oy, body, &look);
         let alt = term.alt_screen();
         let (hist, off) = (term.grid.history_len(), term.scroll_offset);
         if !alt {

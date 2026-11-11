@@ -60,6 +60,10 @@
   "id": "GitPanel"
  },
  {
+  "combo": "ctrl+shift+a",
+  "id": "AiPanel"
+ },
+ {
   "combo": "ctrl+t",
   "id": "WorkspaceSymbols"
  },

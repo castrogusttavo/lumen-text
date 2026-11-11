@@ -1,9 +1,13 @@
-//! Integrated terminal: a PTY running the user's shell plus a small VT100/xterm emulator
-//! (cursor movement, erase, scroll regions, SGR colors) over `vte`.
+//! Integrated terminal: a PTY running the user's shell (or an agent CLI in the AI panel) plus an
+//! xterm-compatible emulator over `vte`: cursor movement, erase, scroll regions, SGR colors and
+//! attributes (bold, dim, italic, underline, strikethrough), wide characters, the alternate screen,
+//! mouse and focus reporting, synchronized output, cursor shapes and OSC titles / hyperlinks /
+//! clipboard / notifications. Sequences it does not implement (kitty keyboard, modifyOtherKeys...)
+//! are ignored instead of being misread as other commands.
 
 use crate::{
     lsp::Wake,
-    pty::Pty,
+    pty::{EnvEdit, Pty},
     tasks::{PALETTE, xterm256},
     theme::Rgba,
 };
@@ -13,25 +17,72 @@ use std::{
     path::Path,
     sync::mpsc::{Receiver, channel},
     thread,
+    time::{Duration, Instant},
 };
+use unicode_width::UnicodeWidthChar;
+
+/// Cell attribute flags (`Cell::flags`).
+pub const BOLD: u8 = 1;
+pub const DIM: u8 = 2;
+pub const ITALIC: u8 = 4;
+pub const UNDERLINE: u8 = 8;
+pub const STRIKE: u8 = 16;
+pub const INVERSE: u8 = 32;
+pub const HIDDEN: u8 = 64;
+/// First half of a double-width character; the next cell holds [`WIDE_TAIL`].
+pub const WIDE: u8 = 128;
+/// What the second cell of a double-width character holds (never drawn, never copied).
+pub const WIDE_TAIL: char = '\0';
+
+/// Longest `?2026` (synchronized output) hold before the screen is drawn anyway.
+pub const SYNC_MAX: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Cell {
     pub ch: char,
     pub fg: Option<Rgba>,
     pub bg: Option<Rgba>,
-    pub bold: bool,
-    pub inverse: bool,
+    /// [`BOLD`], [`DIM`], [`ITALIC`], [`UNDERLINE`], [`STRIKE`], [`INVERSE`], [`HIDDEN`], [`WIDE`].
+    pub flags: u8,
+    /// OSC 8 hyperlink: index + 1 into `Grid::links` (0 = none).
+    pub link: u16,
 }
 
 impl Default for Cell {
     fn default() -> Self {
-        Cell { ch: ' ', fg: None, bg: None, bold: false, inverse: false }
+        Cell { ch: ' ', fg: None, bg: None, flags: 0, link: 0 }
     }
+}
+
+impl Cell {
+    pub fn has(&self, f: u8) -> bool {
+        self.flags & f != 0
+    }
+}
+
+/// DECSCUSR cursor shapes (blinking variants are drawn steady).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Underline,
+    Bar,
+}
+
+/// A mouse event to report to the program (buttons: 0 left, 1 middle, 2 right).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MouseEv {
+    Press(u8),
+    Release(u8),
+    Drag(u8),
+    /// `true` = up.
+    Wheel(bool),
 }
 
 /// Default scrollback size (lines).
 pub const DEFAULT_HISTORY: usize = 5_000;
+/// Most distinct OSC 8 targets kept per terminal (later links are shown as plain text).
+const MAX_LINKS: usize = 4096;
 
 /// The main screen parked while the alternate screen is active.
 struct SavedMain {
@@ -65,6 +116,62 @@ fn reshape(
     (out, shift)
 }
 
+/// DEC special graphics (`ESC ( 0`): the line-drawing set ncurses programs use for boxes.
+fn dec_graphics(ch: char) -> char {
+    match ch {
+        '`' => '◆',
+        'a' => '▒',
+        'f' => '°',
+        'g' => '±',
+        'j' => '┘',
+        'k' => '┐',
+        'l' => '┌',
+        'm' => '└',
+        'n' => '┼',
+        'o' => '⎺',
+        'p' => '⎻',
+        'q' => '─',
+        'r' => '⎼',
+        's' => '⎽',
+        't' => '├',
+        'u' => '┤',
+        'v' => '┴',
+        'w' => '┬',
+        'x' => '│',
+        'y' => '≤',
+        'z' => '≥',
+        '{' => 'π',
+        '|' => '≠',
+        '}' => '£',
+        '~' => '·',
+        _ => ch,
+    }
+}
+
+/// The color of a colon-separated SGR 38/48/58 (`sub` starts after the 38): `5:n`, `2:r:g:b` or
+/// `2:<colorspace>:r:g:b` (the colorspace id is often left empty, which reads as 0).
+fn colon_color(sub: &[u16]) -> Option<Rgba> {
+    match sub.first()? {
+        5 => sub.get(1).map(|&n| xterm256((n as u32).min(255))),
+        2 => {
+            let rgb = if sub.len() >= 5 {
+                &sub[2..5]
+            } else if sub.len() == 4 {
+                &sub[1..4]
+            } else {
+                return None;
+            };
+            Some(Rgba(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8, 255))
+        }
+        _ => None,
+    }
+}
+
+/// Standard base64 (OSC 52 payloads); `None` on anything that is not base64.
+fn base64(data: &[u8]) -> Option<Vec<u8>> {
+    std::str::from_utf8(data).ok().and_then(|s| crate::update::base64_decode(s).ok())
+}
+
 pub struct Grid {
     pub rows: usize,
     pub cols: usize,
@@ -88,6 +195,34 @@ pub struct Grid {
     pub app_cursor: bool,
     /// `?2004`: pasted text should be bracketed.
     pub bracketed_paste: bool,
+    /// `?7` (DECAWM): printing past the last column wraps to the next line.
+    pub autowrap: bool,
+    /// `CSI 4 h` (IRM): printed characters push the rest of the line right.
+    pub insert: bool,
+    /// Mouse reporting: 0 off, 9 (X10, presses only), 1000 (press / release), 1002 (+ drags), 1003 (+ motion).
+    pub mouse_mode: u16,
+    /// `?1006`: mouse reports use the SGR encoding (`CSI < b ; x ; y M/m`).
+    pub mouse_sgr: bool,
+    /// `?1004`: the program wants `CSI I` / `CSI O` when the terminal gains / loses the focus.
+    pub focus_events: bool,
+    /// `?2026` (synchronized output) was set at this moment and not reset yet.
+    sync_since: Option<Instant>,
+    pub cursor_shape: CursorShape,
+    /// OSC 0 / 2 window title.
+    pub title: String,
+    /// OSC 8 hyperlink targets (`Cell::link` - 1 indexes here).
+    pub links: Vec<String>,
+    /// OSC 52 text the program asked to put on the clipboard (taken by the app).
+    pub clipboard: Option<String>,
+    /// OSC 9 / 777 desktop notifications: (title, body), taken by the app.
+    pub notices: Vec<(String, String)>,
+    /// BEL characters received so far.
+    pub bells: u64,
+    last_char: Option<char>,
+    /// `ESC ( 0` is active: ASCII letters print DEC line-drawing characters.
+    line_drawing: bool,
+    /// Default foreground / background, for OSC 10 / 11 color queries.
+    pub colors: (Rgba, Rgba),
 }
 
 impl Grid {
@@ -112,6 +247,21 @@ impl Grid {
             alt: None,
             app_cursor: false,
             bracketed_paste: false,
+            autowrap: true,
+            insert: false,
+            mouse_mode: 0,
+            mouse_sgr: false,
+            focus_events: false,
+            sync_since: None,
+            cursor_shape: CursorShape::Block,
+            title: String::new(),
+            links: Vec::new(),
+            clipboard: None,
+            notices: Vec::new(),
+            bells: 0,
+            last_char: None,
+            line_drawing: false,
+            colors: (Rgba(0xd4, 0xd4, 0xd4, 255), Rgba(0x1e, 0x1e, 0x1e, 255)),
         }
     }
 
@@ -121,7 +271,7 @@ impl Grid {
 
     #[cfg(test)]
     pub fn row_text(&self, r: usize) -> String {
-        (0..self.cols).map(|c| self.at(r, c).ch).collect::<String>().trim_end().to_string()
+        (0..self.cols).map(|c| self.at(r, c).ch).filter(|c| *c != WIDE_TAIL).collect::<String>().trim_end().to_string()
     }
 
     /// Keep the top-left content; the cursor is clamped.
@@ -174,9 +324,47 @@ impl Grid {
         }
     }
 
+    /// Absolute line number of screen row `row` with the view `offset` lines back: stable while
+    /// output scrolls (selections are kept in these coordinates).
+    pub fn abs_row(&self, row: usize, offset: usize) -> usize {
+        self.pushed + row - offset.min(self.history_len())
+    }
+
+    /// The cell on absolute line `line` (see [`abs_row`](Self::abs_row)); blank when it is gone.
+    pub fn abs_cell(&self, line: usize, col: usize) -> Cell {
+        if line >= self.pushed {
+            let r = line - self.pushed;
+            return if r < self.rows && col < self.cols { self.at(r, col) } else { Cell::default() };
+        }
+        let back = self.pushed - line;
+        let h = self.history_len();
+        if back > h {
+            return Cell::default();
+        }
+        self.history[h - back].get(col).copied().unwrap_or_default()
+    }
+
+    /// The text of a selection, one line per row (trailing blanks trimmed).
+    pub fn sel_text(&self, sel: Sel) -> String {
+        let ((l0, c0), (l1, c1)) = sel.ordered();
+        let mut out: Vec<String> = Vec::new();
+        for line in l0..=l1 {
+            let (from, to) = (if line == l0 { c0 } else { 0 }, if line == l1 { c1 + 1 } else { self.cols });
+            let s: String =
+                (from..to.min(self.cols)).map(|c| self.abs_cell(line, c).ch).filter(|c| *c != WIDE_TAIL).collect();
+            out.push(s.trim_end().to_string());
+        }
+        out.join("\n")
+    }
+
     #[cfg(test)]
     pub fn view_row_text(&self, row: usize, offset: usize) -> String {
-        (0..self.cols).map(|c| self.view_cell(row, c, offset).ch).collect::<String>().trim_end().to_string()
+        (0..self.cols)
+            .map(|c| self.view_cell(row, c, offset).ch)
+            .filter(|c| *c != WIDE_TAIL)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
     }
 
     /// Bytes to send for pasted text (bracketed when the program asked for it).
@@ -189,6 +377,74 @@ impl Grid {
         } else {
             text.as_bytes().to_vec()
         }
+    }
+
+    /// Is the screen held back by `?2026` (synchronized output, at most [`SYNC_MAX`])?
+    pub fn sync_held(&self) -> bool {
+        self.sync_since.is_some_and(|t| t.elapsed() < SYNC_MAX)
+    }
+
+    /// Synchronized-output timer: `(false, Some(deadline))` while a hold is on; a hold past its
+    /// deadline is dropped and reported with `(true, None)` (draw the screen now).
+    pub fn sync_check(&mut self) -> (bool, Option<Instant>) {
+        match self.sync_since {
+            Some(t) if t.elapsed() >= SYNC_MAX => {
+                self.sync_since = None;
+                (true, None)
+            }
+            Some(t) => (false, Some(t + SYNC_MAX)),
+            None => (false, None),
+        }
+    }
+
+    /// The report for a mouse event at a 0-based cell, or `None` when the program did not ask for it.
+    pub fn mouse_report(
+        &self,
+        ev: MouseEv,
+        col: usize,
+        row: usize,
+        shift: bool,
+        alt: bool,
+        ctrl: bool,
+    ) -> Option<Vec<u8>> {
+        let mode = self.mouse_mode;
+        if mode == 0 {
+            return None;
+        }
+        let (mut b, release) = match ev {
+            MouseEv::Press(b) => (b as u32, false),
+            MouseEv::Release(b) if mode != 9 => (b as u32, true),
+            MouseEv::Drag(b) if mode >= 1002 => (b as u32 + 32, false),
+            MouseEv::Wheel(up) if mode != 9 => (if up { 64 } else { 65 }, false),
+            _ => return None,
+        };
+        if mode != 9 {
+            b += 4 * shift as u32 + 8 * alt as u32 + 16 * ctrl as u32;
+        }
+        let (x, y) = (col + 1, row + 1);
+        if self.mouse_sgr {
+            return Some(format!("\x1b[<{b};{x};{y}{}", if release { 'm' } else { 'M' }).into_bytes());
+        }
+        // Legacy encoding: one byte per value (offset by 32), releases do not say which button.
+        if release {
+            b = (b & !3) | 3;
+        }
+        if x + 32 > 255 || y + 32 > 255 {
+            return None;
+        }
+        Some(vec![0x1b, b'[', b'M', (32 + b) as u8, (32 + x) as u8, (32 + y) as u8])
+    }
+
+    /// Arrow keys standing in for wheel notches on the alternate screen (pagers, editors without
+    /// mouse support scroll with them).
+    pub fn wheel_keys(&self, up: bool, lines: usize) -> Vec<u8> {
+        let k = match (self.app_cursor, up) {
+            (true, true) => "\x1bOA",
+            (true, false) => "\x1bOB",
+            (false, true) => "\x1b[A",
+            (false, false) => "\x1b[B",
+        };
+        k.repeat(lines.max(1)).into_bytes()
     }
 
     fn enter_alt(&mut self) {
@@ -230,18 +486,71 @@ impl Grid {
         Cell { bg: self.attr.bg, ..Cell::default() }
     }
 
+    /// Writing over half of a wide character blanks its other half.
+    fn clear_wide_at(&mut self, c: usize) {
+        if c >= self.cols {
+            return;
+        }
+        let row = self.cy * self.cols;
+        let cell = self.cells[row + c];
+        if cell.ch == WIDE_TAIL && c > 0 {
+            let head = &mut self.cells[row + c - 1];
+            head.ch = ' ';
+            head.flags &= !WIDE;
+        }
+        if cell.has(WIDE) && c + 1 < self.cols {
+            self.cells[row + c + 1].ch = ' ';
+        }
+    }
+
     fn put(&mut self, ch: char) {
-        if self.wrap_pending {
+        let ch = if self.line_drawing { dec_graphics(ch) } else { ch };
+        // Combining marks and zero-width joiners have no cell of their own (one char per cell):
+        // they are dropped and the base character stands alone.
+        let w = match ch.width() {
+            Some(0) => return,
+            Some(2) => 2,
+            _ => 1,
+        };
+        if self.wrap_pending && self.autowrap {
             self.cx = 0;
             self.linefeed();
-            self.wrap_pending = false;
         }
-        let i = self.cy * self.cols + self.cx;
-        self.cells[i] = Cell { ch, ..self.attr };
-        if self.cx + 1 >= self.cols {
-            self.wrap_pending = true;
+        self.wrap_pending = false;
+        if w == 2 && self.cx + 1 >= self.cols {
+            if self.cols < 2 {
+                return;
+            }
+            if self.autowrap {
+                // Does not fit at the end of the line: the last cell stays blank and it wraps.
+                let i = self.cy * self.cols + self.cx;
+                self.cells[i] = self.blank();
+                self.cx = 0;
+                self.linefeed();
+            } else {
+                self.cx = self.cols - 2;
+            }
+        }
+        let row = self.cy * self.cols;
+        if self.insert {
+            let n = w.min(self.cols - self.cx);
+            self.cells.copy_within(row + self.cx..row + self.cols - n, row + self.cx + n);
+        }
+        self.clear_wide_at(self.cx);
+        if w == 2 {
+            self.clear_wide_at(self.cx + 1);
+        }
+        let i = row + self.cx;
+        self.cells[i] = Cell { ch, flags: self.attr.flags | if w == 2 { WIDE } else { 0 }, ..self.attr };
+        if w == 2 {
+            self.cells[i + 1] = Cell { ch: WIDE_TAIL, ..self.attr };
+        }
+        self.last_char = Some(ch);
+        if self.cx + w >= self.cols {
+            self.cx = self.cols - 1;
+            self.wrap_pending = self.autowrap;
         } else {
-            self.cx += 1;
+            self.cx += w;
         }
     }
 
@@ -300,40 +609,145 @@ impl Grid {
         self.wrap_pending = false;
     }
 
-    fn sgr(&mut self, params: &[u16]) {
+    fn reply(&mut self, s: &str) {
+        self.replies.extend_from_slice(s.as_bytes());
+    }
+
+    /// Index + 1 of a hyperlink target (0 when the table is full).
+    fn link_id(&mut self, uri: String) -> u16 {
+        if let Some(i) = self.links.iter().rposition(|l| *l == uri) {
+            return (i + 1) as u16;
+        }
+        if self.links.len() >= MAX_LINKS {
+            return 0;
+        }
+        self.links.push(uri);
+        self.links.len() as u16
+    }
+
+    /// State of a DEC private mode for DECRQM (`None` = not recognized).
+    fn private_mode(&self, m: u16) -> Option<bool> {
+        Some(match m {
+            1 => self.app_cursor,
+            7 => self.autowrap,
+            25 => self.cursor_visible,
+            9 | 1000 | 1002 | 1003 => self.mouse_mode == m,
+            1004 => self.focus_events,
+            1006 => self.mouse_sgr,
+            2004 => self.bracketed_paste,
+            2026 => self.sync_since.is_some(),
+            47 | 1047 | 1049 => self.alt.is_some(),
+            _ => return None,
+        })
+    }
+
+    /// `CSI ? Pm h` / `CSI ? Pm l`.
+    fn private_set(&mut self, p: &[u16], on: bool) {
+        for &mode in p {
+            match mode {
+                1 => self.app_cursor = on,
+                7 => self.autowrap = on,
+                25 => self.cursor_visible = on,
+                9 | 1000 | 1002 | 1003 => {
+                    if on {
+                        self.mouse_mode = mode;
+                    } else if self.mouse_mode == mode {
+                        self.mouse_mode = 0;
+                    }
+                }
+                1004 => self.focus_events = on,
+                1006 => self.mouse_sgr = on,
+                2004 => self.bracketed_paste = on,
+                2026 => self.sync_since = if on { Some(Instant::now()) } else { None },
+                47 | 1047 | 1049 => {
+                    if on {
+                        self.enter_alt()
+                    } else {
+                        self.leave_alt()
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// DECSTR (`CSI ! p`): modes and attributes back to their defaults, the screen untouched.
+    fn soft_reset(&mut self) {
+        self.cursor_visible = true;
+        self.app_cursor = false;
+        self.autowrap = true;
+        self.insert = false;
+        self.top = 0;
+        self.bottom = self.rows - 1;
+        self.attr = Cell::default();
+        self.saved = (0, 0);
+        self.line_drawing = false;
+        self.cursor_shape = CursorShape::Block;
+    }
+
+    fn sgr(&mut self, params: &[Vec<u16>]) {
+        if params.is_empty() {
+            self.attr = Cell { link: self.attr.link, ..Cell::default() };
+            return;
+        }
         let mut i = 0;
-        let ps: Vec<u16> = if params.is_empty() { vec![0] } else { params.to_vec() };
-        while i < ps.len() {
-            match ps[i] {
-                0 => self.attr = Cell::default(),
-                1 => self.attr.bold = true,
-                22 => self.attr.bold = false,
-                7 => self.attr.inverse = true,
-                27 => self.attr.inverse = false,
+        while i < params.len() {
+            let p = &params[i];
+            let code = p.first().copied().unwrap_or(0);
+            if p.len() > 1 {
+                // Colon form: `38:2::r:g:b`, `38:5:n`, `4:3` (curly underline) ...
+                match code {
+                    38 => self.attr.fg = colon_color(&p[1..]),
+                    48 => self.attr.bg = colon_color(&p[1..]),
+                    4 if p[1] == 0 => self.attr.flags &= !UNDERLINE,
+                    4 => self.attr.flags |= UNDERLINE,
+                    _ => {}
+                }
+                i += 1;
+                continue;
+            }
+            match code {
+                0 => self.attr = Cell { link: self.attr.link, ..Cell::default() },
+                1 => self.attr.flags |= BOLD,
+                2 => self.attr.flags |= DIM,
+                3 => self.attr.flags |= ITALIC,
+                4 | 21 => self.attr.flags |= UNDERLINE,
+                7 => self.attr.flags |= INVERSE,
+                8 => self.attr.flags |= HIDDEN,
+                9 => self.attr.flags |= STRIKE,
+                22 => self.attr.flags &= !(BOLD | DIM),
+                23 => self.attr.flags &= !ITALIC,
+                24 => self.attr.flags &= !UNDERLINE,
+                27 => self.attr.flags &= !INVERSE,
+                28 => self.attr.flags &= !HIDDEN,
+                29 => self.attr.flags &= !STRIKE,
                 n @ 30..=37 => self.attr.fg = Some(PALETTE[(n - 30) as usize]),
                 n @ 90..=97 => self.attr.fg = Some(PALETTE[(n - 90 + 8) as usize]),
                 n @ 40..=47 => self.attr.bg = Some(PALETTE[(n - 40) as usize]),
                 n @ 100..=107 => self.attr.bg = Some(PALETTE[(n - 100 + 8) as usize]),
                 39 => self.attr.fg = None,
                 49 => self.attr.bg = None,
-                n @ (38 | 48) => {
-                    let color = match ps.get(i + 1) {
-                        Some(5) => {
-                            let c = ps.get(i + 2).map(|&v| xterm256(v as u32));
-                            i += 2;
-                            c
-                        }
+                // Semicolon form: the color arguments are separate parameters (58 = underline color:
+                // not drawn, but its arguments must not be read as attributes).
+                n @ (38 | 48 | 58) => {
+                    let arg = |k: usize| params.get(i + k).and_then(|v| v.first().copied());
+                    let (color, used) = match arg(1) {
+                        Some(5) => (arg(2).map(|v| xterm256((v as u32).min(255))), 2),
                         Some(2) => {
-                            let c = match (ps.get(i + 2), ps.get(i + 3), ps.get(i + 4)) {
-                                (Some(&r), Some(&g), Some(&b)) => Some(Rgba(r as u8, g as u8, b as u8, 255)),
+                            let c = match (arg(2), arg(3), arg(4)) {
+                                (Some(r), Some(g), Some(b)) => Some(Rgba(r as u8, g as u8, b as u8, 255)),
                                 _ => None,
                             };
-                            i += 4;
-                            c
+                            (c, 4)
                         }
-                        _ => None,
+                        _ => (None, 0),
                     };
-                    if n == 38 { self.attr.fg = color } else { self.attr.bg = color }
+                    i += used;
+                    match n {
+                        38 => self.attr.fg = color,
+                        48 => self.attr.bg = color,
+                        _ => {}
+                    }
                 }
                 _ => {}
             }
@@ -349,6 +763,7 @@ impl vte::Perform for Grid {
 
     fn execute(&mut self, byte: u8) {
         match byte {
+            0x07 => self.bells += 1,
             0x08 => {
                 self.cx = self.cx.saturating_sub(1);
                 self.wrap_pending = false;
@@ -367,37 +782,71 @@ impl vte::Perform for Grid {
     }
 
     fn csi_dispatch(&mut self, params: &vte::Params, inter: &[u8], _ignore: bool, action: char) {
-        let p: Vec<u16> = params.iter().map(|s| s.first().copied().unwrap_or(0)).collect();
+        let all: Vec<Vec<u16>> = params.iter().map(|s| s.to_vec()).collect();
+        let p: Vec<u16> = all.iter().map(|s| s.first().copied().unwrap_or(0)).collect();
         let get = |i: usize, d: usize| p.get(i).copied().filter(|v| *v != 0).map_or(d, |v| v as usize);
-        if inter == b"?" {
-            if matches!(action, 'h' | 'l') {
-                let on = action == 'h';
-                for &mode in &p {
-                    match mode {
-                        1 => self.app_cursor = on,
-                        25 => self.cursor_visible = on,
-                        2004 => self.bracketed_paste = on,
-                        47 | 1047 | 1049 => {
-                            if on {
-                                self.enter_alt()
-                            } else {
-                                self.leave_alt()
-                            }
-                        }
-                        _ => {}
-                    }
+        let first = p.first().copied().unwrap_or(0);
+        match inter {
+            b"" => {}
+            b"?" => {
+                if matches!(action, 'h' | 'l') {
+                    self.private_set(&p, action == 'h');
                 }
+                // `CSI ? u` (kitty keyboard query) and friends: unsupported, so no answer.
+                return;
             }
-            return;
+            // DECRQM for a private mode: 1 = set, 2 = reset, 0 = unknown.
+            b"?$" if action == 'p' => {
+                let st = match self.private_mode(first) {
+                    Some(true) => 1,
+                    Some(false) => 2,
+                    None => 0,
+                };
+                return self.reply(&format!("\x1b[?{first};{st}$y"));
+            }
+            b"$" if action == 'p' => {
+                let st = match first {
+                    4 if self.insert => 1,
+                    4 => 2,
+                    _ => 0,
+                };
+                return self.reply(&format!("\x1b[{first};{st}$y"));
+            }
+            // DECSCUSR: 0-2 block, 3-4 underline, 5-6 bar (blinking or not).
+            b" " if action == 'q' => {
+                self.cursor_shape = match first {
+                    3 | 4 => CursorShape::Underline,
+                    5 | 6 => CursorShape::Bar,
+                    _ => CursorShape::Block,
+                };
+                return;
+            }
+            b">" if action == 'c' => return self.reply("\x1b[>0;10;1c"),
+            // XTVERSION.
+            b">" if action == 'q' => return self.reply("\x1bP>|lumen-text\x1b\\"),
+            b"!" if action == 'p' => return self.soft_reset(),
+            // Any other private marker or intermediate (`CSI > 4;2 m` modifyOtherKeys, `CSI > 1 u` /
+            // `CSI < u` kitty keyboard push / pop, ...): not supported, and never one of the plain
+            // commands below.
+            _ => return,
         }
         match action {
             // ConPTY (Windows) waits for the answer to its cursor query before it prints anything.
-            'n' if p.first() == Some(&6) => {
-                self.replies.extend(format!("\x1b[{};{}R", self.cy + 1, self.cx + 1).into_bytes());
+            'n' if first == 6 => {
+                let s = format!("\x1b[{};{}R", self.cy + 1, self.cx + 1);
+                self.reply(&s);
             }
-            'n' if p.first() == Some(&5) => self.replies.extend_from_slice(b"\x1b[0n"),
-            'c' if inter.is_empty() && p.first().is_none_or(|v| *v == 0) => {
-                self.replies.extend_from_slice(b"\x1b[?1;2c")
+            'n' if first == 5 => self.reply("\x1b[0n"),
+            'c' if first == 0 => self.reply("\x1b[?1;2c"),
+            // Window size in characters (other window operations are ignored).
+            't' if first == 18 => {
+                let s = format!("\x1b[8;{};{}t", self.rows, self.cols);
+                self.reply(&s);
+            }
+            'h' | 'l' => {
+                if p.contains(&4) {
+                    self.insert = action == 'h';
+                }
             }
             'A' => self.move_to(self.cy.saturating_sub(get(0, 1)), self.cx),
             'B' | 'e' => self.move_to(self.cy + get(0, 1), self.cx),
@@ -408,9 +857,28 @@ impl vte::Perform for Grid {
             'G' | '`' => self.move_to(self.cy, get(0, 1) - 1),
             'H' | 'f' => self.move_to(get(0, 1) - 1, get(1, 1) - 1),
             'd' => self.move_to(get(0, 1) - 1, self.cx),
+            'I' => {
+                for _ in 0..get(0, 1).min(self.cols) {
+                    self.cx = ((self.cx / 8 + 1) * 8).min(self.cols - 1);
+                }
+                self.wrap_pending = false;
+            }
+            'Z' => {
+                for _ in 0..get(0, 1).min(self.cols) {
+                    self.cx = self.cx.saturating_sub(1) / 8 * 8;
+                }
+                self.wrap_pending = false;
+            }
+            'b' => {
+                if let Some(c) = self.last_char {
+                    for _ in 0..get(0, 1).min(self.rows * self.cols) {
+                        self.put(c);
+                    }
+                }
+            }
             'J' => {
                 let here = self.cy * self.cols + self.cx;
-                match p.first().copied().unwrap_or(0) {
+                match first {
                     0 => self.erase_range(here, self.cells.len()),
                     1 => self.erase_range(0, here + 1),
                     3 => self.history.clear(),
@@ -419,7 +887,7 @@ impl vte::Perform for Grid {
             }
             'K' => {
                 let (row, here) = (self.cy * self.cols, self.cy * self.cols + self.cx);
-                match p.first().copied().unwrap_or(0) {
+                match first {
                     0 => self.erase_range(here, row + self.cols),
                     1 => self.erase_range(row, here + 1),
                     _ => self.erase_range(row, row + self.cols),
@@ -471,37 +939,123 @@ impl vte::Perform for Grid {
             }
             's' => self.saved = (self.cy, self.cx),
             'u' => self.move_to(self.saved.0, self.saved.1),
-            'm' => self.sgr(&p),
+            'm' => self.sgr(&all),
             _ => {}
         }
     }
 
-    fn esc_dispatch(&mut self, _inter: &[u8], _ignore: bool, byte: u8) {
-        match byte {
-            b'7' => self.saved = (self.cy, self.cx),
-            b'8' => self.move_to(self.saved.0, self.saved.1),
-            b'M' => {
+    fn esc_dispatch(&mut self, inter: &[u8], _ignore: bool, byte: u8) {
+        match (inter, byte) {
+            (b"(", b'0') => self.line_drawing = true,
+            (b"(", _) => self.line_drawing = false,
+            ([], b'7') => self.saved = (self.cy, self.cx),
+            ([], b'8') => self.move_to(self.saved.0, self.saved.1),
+            ([], b'M') => {
                 if self.cy == self.top {
                     self.scroll_down(1);
                 } else {
-                    self.cy -= 1;
+                    self.cy = self.cy.saturating_sub(1);
                 }
             }
-            b'D' => self.linefeed(),
-            b'E' => {
+            ([], b'D') => self.linefeed(),
+            ([], b'E') => {
                 self.cx = 0;
                 self.linefeed();
             }
-            b'c' => {
+            ([], b'c') => {
                 let history = std::mem::take(&mut self.history);
-                let (pushed, max) = (self.pushed, self.max_history);
+                let links = std::mem::take(&mut self.links);
+                let (pushed, max, colors) = (self.pushed, self.max_history, self.colors);
                 *self = Grid::new(self.rows, self.cols);
                 self.history = history;
+                self.links = links;
                 self.pushed = pushed;
                 self.max_history = max;
+                self.colors = colors;
             }
             _ => {}
         }
+    }
+
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        let Some(kind) = params.first() else { return };
+        let text = |from: usize| -> String {
+            params
+                .get(from..)
+                .unwrap_or_default()
+                .iter()
+                .map(|s| String::from_utf8_lossy(s))
+                .collect::<Vec<_>>()
+                .join(";")
+        };
+        match *kind {
+            b"0" | b"2" => {
+                self.title = text(1).chars().filter(|c| !c.is_control()).take(256).collect();
+            }
+            // Hyperlink: `OSC 8 ; params ; uri`; an empty uri ends it (the uri may contain ';').
+            b"8" => {
+                let uri = text(2);
+                self.attr.link = if uri.is_empty() { 0 } else { self.link_id(uri) };
+            }
+            // Set the clipboard: `OSC 52 ; c ; <base64>` (queries, `?`, are not answered).
+            b"52" => {
+                if let Some(data) = params.get(2)
+                    && *data != &b"?"[..]
+                    && let Some(bytes) = base64(data)
+                {
+                    self.clipboard = Some(String::from_utf8_lossy(&bytes).into_owned());
+                }
+            }
+            // Notification (`OSC 9 ; 4 ; ...` is ConEmu's progress report, not a message).
+            b"9" => {
+                if params.get(1).is_some_and(|p| *p == &b"4"[..]) {
+                    return;
+                }
+                let body = text(1);
+                if !body.is_empty() {
+                    self.notices.push((String::new(), body));
+                }
+            }
+            b"777" => {
+                if params.get(1).is_some_and(|p| *p == &b"notify"[..]) {
+                    let title = params.get(2).map(|s| String::from_utf8_lossy(s).into_owned()).unwrap_or_default();
+                    self.notices.push((title, text(3)));
+                }
+            }
+            // Default foreground / background color queries (programs pick light or dark styles).
+            b"10" | b"11" => {
+                if params.get(1).is_some_and(|p| *p == &b"?"[..]) {
+                    let c = if *kind == &b"10"[..] { self.colors.0 } else { self.colors.1 };
+                    let end = if bell_terminated { "\x07" } else { "\x1b\\" };
+                    let k = String::from_utf8_lossy(kind).into_owned();
+                    let s = format!(
+                        "\x1b]{k};rgb:{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}{end}",
+                        c.0, c.0, c.1, c.1, c.2, c.2
+                    );
+                    self.reply(&s);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A selection in absolute line coordinates (`Grid::abs_row`), anchor where the drag started.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Sel {
+    pub anchor: (usize, usize),
+    pub head: (usize, usize),
+}
+
+impl Sel {
+    /// (start, end) in reading order; `end` is inclusive.
+    pub fn ordered(&self) -> ((usize, usize), (usize, usize)) {
+        if self.anchor <= self.head { (self.anchor, self.head) } else { (self.head, self.anchor) }
+    }
+
+    pub fn contains(&self, line: usize, col: usize) -> bool {
+        let (a, b) = self.ordered();
+        a != b && (line, col) >= a && (line, col) <= b
     }
 }
 
@@ -513,18 +1067,47 @@ pub struct Term {
     pub alive: bool,
     /// Lines the view is scrolled back into history (0 = live).
     pub scroll_offset: usize,
+    /// When the program started, last printed something, and last got a key from us.
+    pub started: Instant,
+    pub last_output: Option<Instant>,
+    pub last_input: Option<Instant>,
+    /// Exit code once the program has ended.
+    pub exit_code: Option<i32>,
+    /// Text selected with the mouse.
+    pub sel: Option<Sel>,
+    /// Last focus state reported with `?1004`.
+    focus_sent: Option<bool>,
 }
 
 impl Term {
     pub fn spawn(cwd: &Path, rows: usize, cols: usize, wake: Wake) -> std::io::Result<Term> {
-        let (pty, mut reader) = Pty::spawn(cwd, rows, cols)?;
+        let (pty, reader) = Pty::spawn(cwd, rows, cols)?;
+        Ok(Self::start(pty, reader, rows, cols, wake))
+    }
+
+    /// Run `program` (not the shell) on a terminal of its own, with `env` edits on top of the
+    /// user's environment.
+    pub fn spawn_cmd(
+        cwd: &Path,
+        program: &str,
+        args: &[&str],
+        env: &[EnvEdit],
+        rows: usize,
+        cols: usize,
+        wake: Wake,
+    ) -> std::io::Result<Term> {
+        let (pty, reader) = Pty::spawn_cmd(cwd, program, args, env, rows, cols)?;
+        Ok(Self::start(pty, reader, rows, cols, wake))
+    }
+
+    fn start(pty: Pty, mut reader: Box<dyn Read + Send>, rows: usize, cols: usize, wake: Wake) -> Term {
         let (tx, rx) = channel();
         thread::spawn(move || {
             let mut buf = vec![0u8; 16 * 1024];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
-                        let _ = tx.send(Vec::new()); // empty = shell exited
+                        let _ = tx.send(Vec::new()); // empty = the program exited
                         wake();
                         break;
                     }
@@ -537,10 +1120,24 @@ impl Term {
                 }
             }
         });
-        Ok(Term { grid: Grid::new(rows, cols), parser: vte::Parser::new(), pty, rx, alive: true, scroll_offset: 0 })
+        Term {
+            grid: Grid::new(rows, cols),
+            parser: vte::Parser::new(),
+            pty,
+            rx,
+            alive: true,
+            scroll_offset: 0,
+            started: Instant::now(),
+            last_output: None,
+            last_input: None,
+            exit_code: None,
+            sel: None,
+            focus_sent: None,
+        }
     }
 
-    /// Feed pending output through the emulator; true if anything changed.
+    /// Feed pending output through the emulator; true if the screen should be redrawn (false
+    /// while a synchronized-output hold is on: the program is still painting).
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
         while let Ok(bytes) = self.rx.try_recv() {
@@ -548,10 +1145,18 @@ impl Term {
                 self.alive = false;
             } else {
                 self.ingest(&bytes);
+                self.last_output = Some(Instant::now());
             }
             changed = true;
         }
-        changed
+        if self.exit_code.is_none() {
+            self.exit_code = self.pty.try_wait();
+            if self.exit_code.is_some() {
+                self.alive = false;
+                changed = true;
+            }
+        }
+        changed && !self.grid.sync_held()
     }
 
     /// Run bytes through the emulator, keeping a scrolled-back view anchored on the same text.
@@ -591,8 +1196,20 @@ impl Term {
         self.grid.paste_bytes(text)
     }
 
+    /// Bytes typed or pasted by the user: the view snaps back to the live screen.
     pub fn write(&mut self, bytes: &[u8]) {
         self.scroll_offset = 0;
+        self.last_input = Some(Instant::now());
+        self.pty.write(bytes);
+    }
+
+    /// End the program (SIGHUP to its process group on Unix); its last screen stays readable.
+    pub fn hangup(&mut self) {
+        self.pty.hangup();
+    }
+
+    /// Bytes the terminal itself sends (mouse / focus reports): no side effects on the view.
+    pub fn send(&mut self, bytes: &[u8]) {
         self.pty.write(bytes);
     }
 
@@ -604,74 +1221,142 @@ impl Term {
         self.scroll_offset = self.scroll_offset.min(self.grid.history_len());
         self.pty.resize(rows.max(1), cols.max(1));
     }
+
+    /// Report a mouse event when the program asked for mouse reporting; true when it was sent.
+    pub fn mouse(&mut self, ev: MouseEv, col: usize, row: usize, mods: (bool, bool, bool)) -> bool {
+        match self.grid.mouse_report(ev, col, row, mods.0, mods.1, mods.2) {
+            Some(b) => {
+                self.send(&b);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Tell a program that asked for focus events (`?1004`) that the focus moved.
+    pub fn set_focus(&mut self, focused: bool) {
+        if !self.grid.focus_events {
+            self.focus_sent = None;
+            return;
+        }
+        if self.focus_sent != Some(focused) {
+            self.focus_sent = Some(focused);
+            self.send(if focused { b"\x1b[I" } else { b"\x1b[O" });
+        }
+    }
+
+    /// The selected text, one line per row (trailing blanks trimmed).
+    pub fn selected_text(&self) -> String {
+        self.sel.map(|s| self.grid.sel_text(s)).unwrap_or_default()
+    }
+
+    /// The hyperlink (OSC 8) under a screen cell of the current view.
+    pub fn link_at(&self, row: usize, col: usize) -> Option<&str> {
+        let id = self.grid.view_cell(row, col, self.scroll_offset).link;
+        if id == 0 {
+            return None;
+        }
+        self.grid.links.get(id as usize - 1).map(String::as_str)
+    }
 }
 
 #[cfg(test)]
 /// Bytes a key sends to the shell (None when the key has no terminal meaning).
 pub fn key_bytes(named: Option<&str>, text: Option<&str>, ctrl: bool, alt: bool) -> Option<Vec<u8>> {
-    key_bytes_app(named, text, ctrl, alt, false)
+    key_bytes_app(named, text, ctrl, false, alt, false)
 }
 
-/// Like `key_bytes`, honoring application cursor keys (`Grid::app_cursor`).
+/// Bytes a key sends to the program, xterm style: modified arrows / Home / End / F-keys carry the
+/// modifier parameter (`CSI 1;5D` is Ctrl+Left), Shift+Tab is `CSI Z`, Shift+Enter is `CSI 13;2u`
+/// (what agent CLIs read as "new line"), and application cursor keys (`Grid::app_cursor`) are honored.
+/// `named` is a winit `NamedKey` name ("Enter", "ArrowUp", "F5"...); `text` the typed text.
 pub fn key_bytes_app(
     named: Option<&str>,
     text: Option<&str>,
     ctrl: bool,
+    shift: bool,
     alt: bool,
     app_cursor: bool,
 ) -> Option<Vec<u8>> {
+    let m = 1 + shift as u8 + 2 * alt as u8 + 4 * ctrl as u8;
     if let Some(n) = named {
-        if app_cursor {
-            let s: Option<&[u8]> = match n {
-                "ArrowUp" => Some(b"\x1bOA"),
-                "ArrowDown" => Some(b"\x1bOB"),
-                "ArrowRight" => Some(b"\x1bOC"),
-                "ArrowLeft" => Some(b"\x1bOD"),
-                "Home" => Some(b"\x1bOH"),
-                "End" => Some(b"\x1bOF"),
-                _ => None,
-            };
-            if let Some(s) = s {
-                return Some(s.to_vec());
+        let cursor = |x: char| -> Vec<u8> {
+            if m > 1 {
+                format!("\x1b[1;{m}{x}").into_bytes()
+            } else if app_cursor {
+                format!("\x1bO{x}").into_bytes()
+            } else {
+                format!("\x1b[{x}").into_bytes()
             }
-        }
-        let s: &[u8] = match n {
-            "Enter" => b"\r",
-            "Backspace" => b"\x7f",
-            "Tab" => b"\t",
-            "Escape" => b"\x1b",
-            "ArrowUp" => b"\x1b[A",
-            "ArrowDown" => b"\x1b[B",
-            "ArrowRight" => b"\x1b[C",
-            "ArrowLeft" => b"\x1b[D",
-            "Home" => b"\x1b[H",
-            "End" => b"\x1b[F",
-            "PageUp" => b"\x1b[5~",
-            "PageDown" => b"\x1b[6~",
-            "Delete" => b"\x1b[3~",
-            "Space" => {
-                if ctrl {
-                    b"\x00"
-                } else {
-                    b" "
-                }
-            }
+        };
+        let tilde = |k: u8| -> Vec<u8> {
+            if m > 1 { format!("\x1b[{k};{m}~").into_bytes() } else { format!("\x1b[{k}~").into_bytes() }
+        };
+        let ss3 = |x: char| -> Vec<u8> {
+            if m > 1 { format!("\x1b[1;{m}{x}").into_bytes() } else { format!("\x1bO{x}").into_bytes() }
+        };
+        let v: Vec<u8> = match n {
+            "Enter" if shift && !ctrl && !alt => b"\x1b[13;2u".to_vec(),
+            "Enter" if ctrl => format!("\x1b[13;{m}u").into_bytes(),
+            "Enter" if alt => b"\x1b\r".to_vec(),
+            "Enter" => b"\r".to_vec(),
+            "Tab" if shift && !ctrl => b"\x1b[Z".to_vec(),
+            "Tab" if alt => b"\x1b\t".to_vec(),
+            "Tab" => b"\t".to_vec(),
+            // Ctrl+Backspace deletes the previous word (^W) in shells and agent prompts alike.
+            "Backspace" if ctrl => vec![0x17],
+            "Backspace" if alt => b"\x1b\x7f".to_vec(),
+            "Backspace" => vec![0x7f],
+            "Escape" if alt => b"\x1b\x1b".to_vec(),
+            "Escape" => vec![0x1b],
+            "ArrowUp" => cursor('A'),
+            "ArrowDown" => cursor('B'),
+            "ArrowRight" => cursor('C'),
+            "ArrowLeft" => cursor('D'),
+            "Home" => cursor('H'),
+            "End" => cursor('F'),
+            "Insert" => tilde(2),
+            "Delete" => tilde(3),
+            "PageUp" => tilde(5),
+            "PageDown" => tilde(6),
+            "F1" => ss3('P'),
+            "F2" => ss3('Q'),
+            "F3" => ss3('R'),
+            "F4" => ss3('S'),
+            "F5" => tilde(15),
+            "F6" => tilde(17),
+            "F7" => tilde(18),
+            "F8" => tilde(19),
+            "F9" => tilde(20),
+            "F10" => tilde(21),
+            "F11" => tilde(23),
+            "F12" => tilde(24),
+            "Space" if ctrl => vec![0],
+            "Space" if alt => b"\x1b ".to_vec(),
+            "Space" => b" ".to_vec(),
             _ => return None,
         };
-        return Some(s.to_vec());
+        return Some(v);
     }
     let t = text?;
     if ctrl {
-        let c = t.chars().next()?.to_ascii_lowercase();
-        if c.is_ascii_lowercase() {
-            return Some(vec![c as u8 - b'a' + 1]);
-        }
-        return match c {
-            '[' => Some(vec![0x1b]),
-            '\\' => Some(vec![0x1c]),
-            ']' => Some(vec![0x1d]),
-            _ => None,
+        let c = t.chars().next()?;
+        let lc = c.to_ascii_lowercase();
+        let code = if lc.is_ascii_lowercase() {
+            lc as u8 - b'a' + 1
+        } else {
+            match c {
+                '@' | ' ' | '2' => 0,
+                '[' | '3' => 0x1b,
+                '\\' | '4' => 0x1c,
+                ']' | '5' => 0x1d,
+                '^' | '6' => 0x1e,
+                '_' | '-' | '/' | '7' => 0x1f,
+                '?' | '8' => 0x7f,
+                _ => return None,
+            }
         };
+        return Some(if alt { vec![0x1b, code] } else { vec![code] });
     }
     let mut v = Vec::new();
     if alt {
@@ -755,6 +1440,221 @@ mod tests {
     }
 
     #[test]
+    fn shift_enter_shift_tab_and_modified_keys() {
+        let k = |n: &str, ctrl: bool, shift: bool, alt: bool| key_bytes_app(Some(n), None, ctrl, shift, alt, false);
+        assert_eq!(k("Enter", false, true, false), Some(b"\x1b[13;2u".to_vec()), "Shift+Enter = new line for agents");
+        assert_eq!(k("Enter", true, false, false), Some(b"\x1b[13;5u".to_vec()));
+        assert_eq!(k("Enter", false, false, true), Some(b"\x1b\r".to_vec()));
+        assert_eq!(k("Tab", false, true, false), Some(b"\x1b[Z".to_vec()), "Shift+Tab is back-tab");
+        assert_eq!(k("ArrowLeft", true, false, false), Some(b"\x1b[1;5D".to_vec()));
+        assert_eq!(k("ArrowRight", false, true, false), Some(b"\x1b[1;2C".to_vec()));
+        assert_eq!(k("ArrowUp", false, false, true), Some(b"\x1b[1;3A".to_vec()));
+        assert_eq!(k("Home", true, true, false), Some(b"\x1b[1;6H".to_vec()));
+        assert_eq!(k("End", false, true, false), Some(b"\x1b[1;2F".to_vec()));
+        assert_eq!(k("Delete", true, false, false), Some(b"\x1b[3;5~".to_vec()));
+        assert_eq!(k("PageUp", false, true, false), Some(b"\x1b[5;2~".to_vec()));
+        assert_eq!(k("PageDown", false, false, false), Some(b"\x1b[6~".to_vec()));
+        assert_eq!(k("F1", false, false, false), Some(b"\x1bOP".to_vec()));
+        assert_eq!(k("F1", true, false, false), Some(b"\x1b[1;5P".to_vec()));
+        assert_eq!(k("F5", false, false, false), Some(b"\x1b[15~".to_vec()));
+        assert_eq!(k("F12", false, true, false), Some(b"\x1b[24;2~".to_vec()));
+        assert_eq!(k("Backspace", true, false, false), Some(vec![0x17]));
+        assert_eq!(k("Escape", false, false, false), Some(vec![0x1b]));
+        // Modifiers win over application cursor mode (SS3 cannot carry them).
+        assert_eq!(key_bytes_app(Some("ArrowLeft"), None, true, false, false, true), Some(b"\x1b[1;5D".to_vec()));
+        assert_eq!(key_bytes_app(None, Some("j"), true, false, false, false), Some(vec![0x0a]), "Ctrl+J is a newline");
+        assert_eq!(key_bytes_app(None, Some("b"), true, false, false, false), Some(vec![0x02]));
+        assert_eq!(key_bytes_app(None, Some("x"), true, false, true, false), Some(vec![0x1b, 0x18]));
+    }
+
+    #[test]
+    fn prefixed_csi_sequences_are_ignored() {
+        let mut g = Grid::new(3, 10);
+        feed(&mut g, "ab\x1b[s");
+        feed(&mut g, "\x1b[>4;2m");
+        assert_eq!(g.attr.flags, 0, "modifyOtherKeys must not turn on bold / dim");
+        feed(&mut g, "\x1b[2;5H\x1b[>1u");
+        assert_eq!((g.cy, g.cx), (1, 4), "kitty keyboard push is not restore-cursor");
+        feed(&mut g, "\x1b[<u\x1b[=1;1u\x1b[?u");
+        assert_eq!((g.cy, g.cx), (1, 4), "kitty pop / set / query leave the cursor alone");
+        assert!(g.replies.is_empty(), "no answer to the kitty query (not supported)");
+        feed(&mut g, "x");
+        assert_eq!(g.at(1, 4).flags, 0);
+        feed(&mut g, "\x1b#8");
+        assert_eq!((g.cy, g.cx), (1, 5), "ESC # 8 is not restore-cursor either");
+    }
+
+    #[test]
+    fn sgr_attributes_set_and_reset() {
+        let mut g = Grid::new(2, 20);
+        feed(&mut g, "\x1b[1;2;3;4;9mA\x1b[22mB\x1b[23;24mC\x1b[29mD\x1b[7;8mE\x1b[27;28mF");
+        let f = |c: usize| g.at(0, c).flags;
+        assert_eq!(f(0), BOLD | DIM | ITALIC | UNDERLINE | STRIKE);
+        assert_eq!(f(1), ITALIC | UNDERLINE | STRIKE, "22 ends bold and dim");
+        assert_eq!(f(2), STRIKE);
+        assert_eq!(f(3), 0);
+        assert_eq!(f(4), INVERSE | HIDDEN);
+        assert_eq!(f(5), 0);
+        feed(&mut g, "\x1b[4:3mG\x1b[4:0mH\x1b[1mI\x1b[0mJ");
+        assert_eq!(f(6), UNDERLINE, "curly underline reads as underline");
+        assert_eq!(f(7), 0);
+        assert_eq!(f(8), BOLD);
+        assert_eq!(f(9), 0);
+    }
+
+    #[test]
+    fn truecolor_in_both_notations() {
+        let mut g = Grid::new(2, 10);
+        feed(&mut g, "\x1b[38;2;10;20;30mA\x1b[38:2::40:50:60mB\x1b[48:2:1:2:3mC\x1b[38:5:196mD");
+        assert_eq!(g.at(0, 0).fg, Some(Rgba(10, 20, 30, 255)));
+        assert_eq!(g.at(0, 1).fg, Some(Rgba(40, 50, 60, 255)), "colon form with an empty colorspace");
+        assert_eq!(g.at(0, 2).bg, Some(Rgba(1, 2, 3, 255)), "colon form without a colorspace");
+        assert_eq!(g.at(0, 3).fg, Some(Rgba(255, 0, 0, 255)));
+        // Underline color (58) arguments are consumed, not read as attributes (2 = dim, 5...).
+        feed(&mut g, "\x1b[0;58;2;2;5;9mE");
+        assert_eq!(g.at(0, 4).flags, 0);
+    }
+
+    #[test]
+    fn wide_and_combining_characters() {
+        let mut g = Grid::new(2, 6);
+        feed(&mut g, "a日b");
+        assert_eq!(g.at(0, 1).ch, '日');
+        assert!(g.at(0, 1).has(WIDE));
+        assert_eq!(g.at(0, 2).ch, WIDE_TAIL);
+        assert_eq!(g.at(0, 3).ch, 'b');
+        assert_eq!(g.cx, 4, "a wide char takes two columns");
+        feed(&mut g, "e\u{301}");
+        assert_eq!(g.at(0, 4).ch, 'e');
+        assert_eq!(g.cx, 5, "a combining mark takes none");
+        feed(&mut g, "語");
+        assert_eq!(g.row_text(0), "a日be", "no room at the end of the line: it wraps");
+        assert_eq!(g.at(1, 0).ch, '語');
+        // Overwriting half of a wide char blanks the other half.
+        feed(&mut g, "\x1b[1;3Hx");
+        assert_eq!(g.at(0, 1).ch, ' ');
+        assert!(!g.at(0, 1).has(WIDE));
+        assert_eq!(g.row_text(0), "a xbe");
+    }
+
+    #[test]
+    fn synchronized_output_holds_and_reports() {
+        let mut g = Grid::new(2, 6);
+        feed(&mut g, "\x1b[?2026$p");
+        assert_eq!(g.replies, b"\x1b[?2026;2$y".to_vec(), "supported, currently reset");
+        g.replies.clear();
+        feed(&mut g, "\x1b[?2026h");
+        assert!(g.sync_held());
+        assert!(matches!(g.sync_check(), (false, Some(_))));
+        feed(&mut g, "\x1b[?2026$p");
+        assert_eq!(g.replies, b"\x1b[?2026;1$y".to_vec());
+        feed(&mut g, "\x1b[?2026l");
+        assert!(!g.sync_held());
+        g.replies.clear();
+        feed(&mut g, "\x1b[?9999$p");
+        assert_eq!(g.replies, b"\x1b[?9999;0$y".to_vec(), "unknown mode");
+        g.sync_since = Some(Instant::now() - SYNC_MAX - Duration::from_millis(1));
+        assert!(!g.sync_held(), "a forgotten hold expires");
+        assert_eq!(g.sync_check(), (true, None), "and the screen gets drawn");
+        assert_eq!(g.sync_check(), (false, None));
+    }
+
+    #[test]
+    fn osc_title_hyperlink_clipboard_and_notifications() {
+        let mut g = Grid::new(2, 20);
+        feed(&mut g, "\x1b]0;✳ Claude Code\x07");
+        assert_eq!(g.title, "✳ Claude Code");
+        feed(&mut g, "\x1b]2;build: ok\x1b\\");
+        assert_eq!(g.title, "build: ok");
+        feed(&mut g, "\x1b]8;;https://example.com/a;b\x1b\\link\x1b]8;;\x1b\\ no");
+        let id = g.at(0, 0).link;
+        assert!(id > 0);
+        assert_eq!(g.links[id as usize - 1], "https://example.com/a;b");
+        assert_eq!(g.at(0, 3).link, id);
+        assert_eq!(g.at(0, 5).link, 0, "the link ended");
+        feed(&mut g, "\x1b]52;c;aGVsbG8gd29ybGQ=\x07");
+        assert_eq!(g.clipboard.as_deref(), Some("hello world"));
+        g.clipboard = None;
+        feed(&mut g, "\x1b]52;c;?\x07");
+        assert_eq!(g.clipboard, None, "clipboard queries are not answered");
+        feed(&mut g, "\x1b]9;Claude needs your permission\x07\x1b]9;4;1;50\x07");
+        feed(&mut g, "\x1b]777;notify;Done;All tests pass\x07");
+        assert_eq!(
+            g.notices,
+            vec![
+                (String::new(), "Claude needs your permission".to_string()),
+                ("Done".to_string(), "All tests pass".to_string())
+            ]
+        );
+        feed(&mut g, "\x07\x07");
+        assert_eq!(g.bells, 2);
+        g.colors = (Rgba(0xff, 0xff, 0xff, 255), Rgba(0x10, 0x20, 0x30, 255));
+        feed(&mut g, "\x1b]11;?\x07");
+        assert_eq!(g.replies, b"\x1b]11;rgb:1010/2020/3030\x07".to_vec());
+    }
+
+    #[test]
+    fn mouse_reporting_encodings() {
+        let mut g = Grid::new(10, 40);
+        assert_eq!(g.mouse_report(MouseEv::Press(0), 0, 0, false, false, false), None, "off by default");
+        feed(&mut g, "\x1b[?1000h\x1b[?1006h");
+        assert_eq!(g.mouse_report(MouseEv::Press(0), 4, 2, false, false, false), Some(b"\x1b[<0;5;3M".to_vec()));
+        assert_eq!(g.mouse_report(MouseEv::Release(0), 4, 2, false, false, false), Some(b"\x1b[<0;5;3m".to_vec()));
+        assert_eq!(g.mouse_report(MouseEv::Drag(0), 5, 2, false, false, false), None, "1000 has no drags");
+        assert_eq!(g.mouse_report(MouseEv::Wheel(true), 1, 1, false, false, true), Some(b"\x1b[<80;2;2M".to_vec()));
+        feed(&mut g, "\x1b[?1002h");
+        assert_eq!(g.mouse_report(MouseEv::Drag(0), 5, 2, true, false, false), Some(b"\x1b[<36;6;3M".to_vec()));
+        feed(&mut g, "\x1b[?1006l");
+        assert_eq!(
+            g.mouse_report(MouseEv::Press(2), 0, 0, false, false, false),
+            Some(vec![0x1b, b'[', b'M', 34, 33, 33])
+        );
+        assert_eq!(
+            g.mouse_report(MouseEv::Release(2), 0, 0, false, false, false),
+            Some(vec![0x1b, b'[', b'M', 35, 33, 33])
+        );
+        feed(&mut g, "\x1b[?1002l");
+        assert_eq!(g.mouse_mode, 0);
+        // Wheel without mouse reporting on the alternate screen: arrow keys.
+        assert_eq!(g.wheel_keys(true, 3), b"\x1b[A\x1b[A\x1b[A".to_vec());
+        feed(&mut g, "\x1b[?1h");
+        assert_eq!(g.wheel_keys(false, 1), b"\x1bOB".to_vec());
+    }
+
+    #[test]
+    fn focus_events_and_cursor_shape_and_insert_mode() {
+        let mut g = Grid::new(2, 8);
+        assert!(!g.focus_events);
+        feed(&mut g, "\x1b[?1004h");
+        assert!(g.focus_events);
+        feed(&mut g, "\x1b[5 q");
+        assert_eq!(g.cursor_shape, CursorShape::Bar);
+        feed(&mut g, "\x1b[4 q");
+        assert_eq!(g.cursor_shape, CursorShape::Underline);
+        feed(&mut g, "\x1b[0 q");
+        assert_eq!(g.cursor_shape, CursorShape::Block);
+        feed(&mut g, "abc\x1b[1;2H\x1b[4hX\x1b[4lY");
+        assert_eq!(g.row_text(0), "aXYc", "insert pushes right, replace overwrites");
+        feed(&mut g, "\x1b[2;1H\x1b(0lqk\x1b(Bq");
+        assert_eq!(g.row_text(1), "┌─┐q", "DEC line drawing");
+    }
+
+    #[test]
+    fn selection_survives_scrolling_and_copies_text() {
+        let mut g = Grid::new(3, 10);
+        feed(&mut g, "one\r\ntwo 日本\r\nthree");
+        let mut sel = Sel { anchor: (g.abs_row(1, 0), 4), head: (g.abs_row(0, 0), 1) };
+        assert_eq!(sel.ordered().0, (g.abs_row(0, 0), 1));
+        assert!(sel.contains(g.abs_row(0, 0), 2) && !sel.contains(g.abs_row(2, 0), 0));
+        feed(&mut g, "\r\nfour\r\nfive");
+        // The lines moved into history; their absolute numbers did not change.
+        assert_eq!(g.abs_cell(sel.anchor.0, 4).ch, '日');
+        sel.head = (sel.head.0, 0);
+        let t = g.sel_text(sel);
+        assert_eq!(t, "one\ntwo 日");
+    }
+
+    #[test]
     fn real_shell_through_a_pty() {
         let wake: Wake = std::sync::Arc::new(|| {});
         let mut t = Term::spawn(&std::env::temp_dir(), 10, 60, wake).unwrap();
@@ -777,6 +1677,27 @@ mod tests {
         assert!(found, "rows: {:?}", (0..t.grid.rows).map(|r| t.grid.row_text(r)).collect::<Vec<_>>());
         t.resize(5, 40);
         assert_eq!((t.grid.rows, t.grid.cols), (5, 40));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawned_program_reports_its_exit_code() {
+        let wake: Wake = std::sync::Arc::new(|| {});
+        let mut t =
+            Term::spawn_cmd(&std::env::temp_dir(), "sh", &["-c", "printf ready; exit 7"], &[], 5, 30, wake).unwrap();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < end && (t.alive || t.grid.row_text(0).is_empty()) {
+            t.pump();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!t.alive);
+        assert_eq!(t.grid.row_text(0), "ready");
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while t.exit_code.is_none() && std::time::Instant::now() < end {
+            t.pump();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(t.exit_code, Some(7));
     }
 
     fn lines(g: &Grid, off: usize) -> Vec<String> {
@@ -930,12 +1851,13 @@ mod tests {
         assert!(!g.app_cursor);
         feed(&mut g, "\x1b[?1h");
         assert!(g.app_cursor);
-        assert_eq!(key_bytes_app(Some("ArrowUp"), None, false, false, g.app_cursor), Some(b"\x1bOA".to_vec()));
-        assert_eq!(key_bytes_app(Some("ArrowLeft"), None, false, false, true), Some(b"\x1bOD".to_vec()));
-        assert_eq!(key_bytes_app(Some("Home"), None, false, false, true), Some(b"\x1bOH".to_vec()));
-        assert_eq!(key_bytes_app(Some("End"), None, false, false, true), Some(b"\x1bOF".to_vec()));
-        assert_eq!(key_bytes_app(Some("PageUp"), None, false, false, true), Some(b"\x1b[5~".to_vec()));
-        assert_eq!(key_bytes_app(Some("ArrowDown"), None, false, false, false), Some(b"\x1b[B".to_vec()));
+        let app = |n: &str, on: bool| key_bytes_app(Some(n), None, false, false, false, on);
+        assert_eq!(app("ArrowUp", g.app_cursor), Some(b"\x1bOA".to_vec()));
+        assert_eq!(app("ArrowLeft", true), Some(b"\x1bOD".to_vec()));
+        assert_eq!(app("Home", true), Some(b"\x1bOH".to_vec()));
+        assert_eq!(app("End", true), Some(b"\x1bOF".to_vec()));
+        assert_eq!(app("PageUp", true), Some(b"\x1b[5~".to_vec()));
+        assert_eq!(app("ArrowDown", false), Some(b"\x1b[B".to_vec()));
         assert_eq!(key_bytes(Some("ArrowRight"), None, false, false), Some(b"\x1b[C".to_vec()));
         feed(&mut g, "\x1b[?1l");
         assert!(!g.app_cursor);

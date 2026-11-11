@@ -64,7 +64,13 @@ and no GPU driver:
 - TypeScript/JavaScript through js-debug; Rust and C through `gdb` DAP
 
 **Terminal**
-- Integrated PTY terminal with a VT emulator (`vte`), 5,000-line scrollback, alternate screen (`vim`, `less`), bracketed paste
+- Integrated PTY terminal with an xterm-compatible emulator (`vte`): truecolor, bold / dim / italic / underline / strikethrough, wide characters, 5,000-line scrollback, alternate screen (`vim`, `less`), bracketed paste, mouse and focus reporting, synchronized output, OSC titles, hyperlinks (`Ctrl+click`), clipboard and notifications
+- Mouse selection with `Ctrl+Shift+C` / `Ctrl+Shift+V`; modified keys the xterm way (`Shift+Enter`, `Shift+Tab`, `Ctrl+Left`...)
+
+**AI panel**
+- Your own agent CLI (Claude Code, Gemini CLI or Codex CLI) in a panel on the right (`Ctrl+Shift+A`), sharing the slot with the Git panel (a `Git | AI` switch on top). It runs in the project folder with your environment and its own login: Lumen never handles API keys
+- Status chip (Starting / Working / Waiting for you / Done / Exited), New session / Restart / Stop, and a status bar badge when a hidden agent finishes or needs you
+- While the panel has the focus every key goes to the agent (`Esc` included, `Ctrl+J`, `Ctrl+B`...); `Ctrl+Shift+P`, `Ctrl+Q` and `Ctrl+Shift+A` stay with Lumen. Click the editor or press `Ctrl+1` to type in the editor again
 
 **Themes**
 - 65 bundled VS Code themes with live preview (arrows apply, `Esc` restores), follow-the-system light/dark mode
@@ -240,6 +246,7 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Explorer: new file / folder / rename / delete | `A` / `Shift+A` / `F2` / `Delete` |
 | Git panel | `Ctrl+Shift+G` (in a diff: `n` / `p` pick a hunk, `s` stage) |
 | Bottom panel / terminal | `Ctrl+J` / ``Ctrl+` `` |
+| AI panel: show / focus / hide | `Ctrl+Shift+A` (back to the editor: click it or `Ctrl+1`) |
 | Tests: at cursor / file / rerun / stop | `Ctrl+K T` / `Ctrl+K F` / `Ctrl+K R` / `Ctrl+K X` |
 | Tests panel: run all / re-run failed / debug at cursor | `Ctrl+K A` / `Ctrl+K E` / `Ctrl+K D` |
 | Debug: start / stop / breakpoint | `F5` / `Shift+F5` / `F9` (or click the gutter) |

@@ -157,6 +157,9 @@ pub struct App {
     pub file_index: Option<Vec<PathBuf>>,
     pub panel: Panel,
     pub term: Option<crate::terminal::Term>,
+    /// AI panel (the user's agent CLI in the right-hand slot) and the terminals' pointer state.
+    pub ai: crate::app_aipanel::AiState,
+    pub termio: crate::app_termio::TermIo,
 
     pub search_gen: Arc<AtomicUsize>,
     pub search_tx: mpsc::Sender<(usize, Vec<Hit>)>,
@@ -293,6 +296,8 @@ impl App {
             file_index: None,
             panel: Panel::new(),
             term: None,
+            ai: Default::default(),
+            termio: Default::default(),
             search_gen: Arc::new(AtomicUsize::new(0)),
             search_tx: stx,
             search_rx: srx,

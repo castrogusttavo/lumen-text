@@ -1,8 +1,16 @@
 //! Pseudo-terminal backend for the integrated terminal: the Unix PTY (Linux, macOS) through `libc`,
 //! ConPTY on Windows through `portable-pty`.
+//!
+//! `Pty::spawn` runs the user's shell; `Pty::spawn_cmd` runs any program (the AI panel's agent CLI)
+//! with extra environment. Dropping a `Pty` ends the whole process group on Unix (SIGHUP, then
+//! SIGKILL a moment later), so helpers the program started (an agent's tools, a shell's jobs) go too.
+
+/// Environment changes for [`Pty::spawn_cmd`]: `Some(value)` sets a variable, `None` removes it.
+pub type EnvEdit<'a> = (&'a str, Option<&'a str>);
 
 #[cfg(unix)]
 mod imp {
+    use super::EnvEdit;
     use std::{
         fs::File,
         io::{self, Read, Write},
@@ -14,7 +22,8 @@ mod imp {
 
     pub struct Pty {
         master: File,
-        child: Child,
+        child: Option<Child>,
+        pid: i32,
     }
 
     fn winsize(rows: usize, cols: usize) -> libc::winsize {
@@ -23,6 +32,21 @@ mod imp {
 
     impl Pty {
         pub fn spawn(cwd: &Path, rows: usize, cols: usize) -> io::Result<(Pty, Box<dyn Read + Send>)> {
+            let fallback = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" };
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| fallback.into());
+            Self::spawn_cmd(cwd, &shell, &[], &[], rows, cols)
+        }
+
+        /// Run `program` with `args` in `cwd` on a new PTY, with the user's environment plus
+        /// `TERM` / `COLORTERM` and the `env` edits on top.
+        pub fn spawn_cmd(
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+            env: &[EnvEdit],
+            rows: usize,
+            cols: usize,
+        ) -> io::Result<(Pty, Box<dyn Read + Send>)> {
             let (mut m, mut s) = (0, 0);
             #[allow(unused_mut)]
             let mut ws = winsize(rows, cols);
@@ -36,16 +60,22 @@ mod imp {
                 return Err(io::Error::last_os_error());
             }
             let (master, slave) = unsafe { (File::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
-            let fallback = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" };
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| fallback.into());
-            let mut cmd = Command::new(shell);
-            cmd.current_dir(cwd)
+            let mut cmd = Command::new(program);
+            cmd.args(args)
+                .current_dir(cwd)
                 .env("TERM", "xterm-256color")
                 .env("COLORTERM", "truecolor")
                 .stdin(Stdio::from(slave.try_clone()?))
                 .stdout(Stdio::from(slave.try_clone()?))
                 .stderr(Stdio::from(slave));
-            // The shell gets the PTY as its controlling terminal in its own session.
+            for (k, v) in env {
+                match v {
+                    Some(v) => cmd.env(k, v),
+                    None => cmd.env_remove(k),
+                };
+            }
+            // The program gets the PTY as its controlling terminal in its own session (so it also
+            // leads its own process group, which `Drop` signals as a whole).
             unsafe {
                 cmd.pre_exec(|| {
                     libc::setsid();
@@ -54,8 +84,9 @@ mod imp {
                 });
             }
             let child = cmd.spawn()?;
+            let pid = child.id() as i32;
             let reader = master.try_clone()?;
-            Ok((Pty { master, child }, Box::new(reader)))
+            Ok((Pty { master, child: Some(child), pid }, Box::new(reader)))
         }
 
         pub fn write(&mut self, bytes: &[u8]) {
@@ -70,18 +101,48 @@ mod imp {
                 libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws);
             }
         }
+
+        /// Hang up: SIGHUP to the program's process group (what closing a terminal window does).
+        pub fn hangup(&mut self) {
+            // SAFETY: plain signal call on the group this Pty leads (the child is not reaped yet,
+            // or the group still has members keeping its id reserved).
+            unsafe {
+                libc::killpg(self.pid, libc::SIGHUP);
+            }
+        }
+
+        /// Exit code once the program has ended (a signal counts as 128 + its number).
+        pub fn try_wait(&mut self) -> Option<i32> {
+            use std::os::unix::process::ExitStatusExt;
+            let st = self.child.as_mut()?.try_wait().ok()??;
+            Some(st.code().unwrap_or_else(|| 128 + st.signal().unwrap_or(0)))
+        }
     }
 
     impl Drop for Pty {
         fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+            let Some(mut child) = self.child.take() else { return };
+            let pid = self.pid;
+            // SAFETY: plain signal calls. The child is not reaped yet, so its pid (= the group id,
+            // it called setsid) cannot have been reused by an unrelated process group.
+            unsafe {
+                libc::killpg(pid, libc::SIGHUP);
+            }
+            // Give the group a moment to exit cleanly, then make sure; reaping happens off the UI thread.
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                unsafe {
+                    libc::killpg(pid, libc::SIGKILL);
+                }
+                let _ = child.wait();
+            });
         }
     }
 }
 
 #[cfg(windows)]
 mod imp {
+    use super::EnvEdit;
     use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
     use std::{
         io::{self, Read, Write},
@@ -100,12 +161,32 @@ mod imp {
 
     impl Pty {
         pub fn spawn(cwd: &Path, rows: usize, cols: usize) -> io::Result<(Pty, Box<dyn Read + Send>)> {
-            let pair = native_pty_system().openpty(size(rows, cols)).map_err(io::Error::other)?;
             let shell = std::env::var("LUMEN_SHELL").unwrap_or_else(|_| "powershell.exe".into());
-            let mut cmd = CommandBuilder::new(shell);
+            Self::spawn_cmd(cwd, &shell, &[], &[], rows, cols)
+        }
+
+        /// Run `program` with `args` in `cwd` on a new ConPTY, with the user's environment plus
+        /// `TERM` / `COLORTERM` and the `env` edits on top.
+        pub fn spawn_cmd(
+            cwd: &Path,
+            program: &str,
+            args: &[&str],
+            env: &[EnvEdit],
+            rows: usize,
+            cols: usize,
+        ) -> io::Result<(Pty, Box<dyn Read + Send>)> {
+            let pair = native_pty_system().openpty(size(rows, cols)).map_err(io::Error::other)?;
+            let mut cmd = CommandBuilder::new(program);
+            cmd.args(args);
             cmd.cwd(cwd);
             cmd.env("TERM", "xterm-256color");
             cmd.env("COLORTERM", "truecolor");
+            for (k, v) in env {
+                match v {
+                    Some(v) => cmd.env(k, v),
+                    None => cmd.env_remove(k),
+                }
+            }
             let child = pair.slave.spawn_command(cmd).map_err(io::Error::other)?;
             drop(pair.slave);
             let reader = pair.master.try_clone_reader().map_err(io::Error::other)?;
@@ -121,6 +202,16 @@ mod imp {
         pub fn resize(&mut self, rows: usize, cols: usize) {
             let _ = self.master.resize(size(rows, cols));
         }
+
+        /// Hang up: ConPTY has no process groups, so the program is terminated.
+        pub fn hangup(&mut self) {
+            let _ = self.child.kill();
+        }
+
+        /// Exit code once the program has ended.
+        pub fn try_wait(&mut self) -> Option<i32> {
+            self.child.try_wait().ok()?.map(|s| s.exit_code() as i32)
+        }
     }
 
     impl Drop for Pty {
@@ -132,3 +223,79 @@ mod imp {
 }
 
 pub use imp::Pty;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    fn read_until(mut r: Box<dyn Read + Send>, needle: &str) -> String {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = r.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut out = String::new();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < end && !out.contains(needle) {
+            if let Ok(b) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                out.push_str(&String::from_utf8_lossy(&b));
+            }
+        }
+        out
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawn_cmd_runs_a_program_with_args_and_env() {
+        let env = [("LUMEN_PTY_FOO", Some("bar-42")), ("LUMEN_PTY_GONE", None)];
+        let (mut pty, reader) = Pty::spawn_cmd(
+            &std::env::temp_dir(),
+            "sh",
+            &["-c", "echo \"[$LUMEN_PTY_FOO|${LUMEN_PTY_GONE:-unset}|$TERM]\"; exit 3"],
+            &env,
+            10,
+            60,
+        )
+        .unwrap();
+        let out = read_until(reader, "]");
+        assert!(out.contains("[bar-42|unset|xterm-256color]"), "{out:?}");
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut code = None;
+        while code.is_none() && std::time::Instant::now() < end {
+            code = pty.try_wait();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(code, Some(3), "exit code is reported");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dropping_the_pty_ends_the_whole_process_group() {
+        // The child starts a background grandchild that would outlive a plain kill of the child.
+        let dir = std::env::temp_dir().join(format!("lumen-pty-group-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("pid");
+        let script = format!("sleep 30 & echo $! > '{}'; echo started; wait", pidfile.display());
+        let (pty, reader) = Pty::spawn_cmd(&dir, "sh", &["-c", &script], &[], 10, 60).unwrap();
+        let out = read_until(reader, "started");
+        assert!(out.contains("started"), "{out:?}");
+        let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        drop(pty);
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // SAFETY: signal 0 only checks that the process exists.
+        while std::time::Instant::now() < end && unsafe { libc::kill(pid, 0) } == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // A zombie still answers kill(0) until its parent (init) reaps it: look at its state too.
+        let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        let gone = unsafe { libc::kill(pid, 0) } != 0 || state.split_whitespace().nth(2) == Some("Z");
+        assert!(gone, "the grandchild was signalled with the group");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -290,6 +290,26 @@
   "id": "GitPanel"
  },
  {
+  "label": "AI: Toggle Panel",
+  "shortcut": "Ctrl+Shift+A",
+  "id": "AiPanel"
+ },
+ {
+  "label": "AI: New Session",
+  "shortcut": "",
+  "id": "AiNewSession"
+ },
+ {
+  "label": "AI: Stop Agent",
+  "shortcut": "",
+  "id": "AiStop"
+ },
+ {
+  "label": "AI: Choose Agent…",
+  "shortcut": "",
+  "id": "AiChooseAgent"
+ },
+ {
   "label": "Git: Stage file",
   "shortcut": "",
   "id": "GitStage"

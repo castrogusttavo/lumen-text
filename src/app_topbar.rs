@@ -780,6 +780,8 @@ pub enum StatusBtn {
     Update,
     /// A build is running, or the last one failed (left group, only then).
     Build,
+    /// The agent of the hidden AI panel finished or wants an answer (left group, only then).
+    Ai,
 }
 
 /// Is it drawn as an icon button (as opposed to a text read-out)?
@@ -922,6 +924,7 @@ impl App {
             x = self.status_btn(cv, x, "ui/download", "", tint, self.upd.card.is_some(), StatusBtn::Update);
         }
         x = self.draw_build_status(cv, x);
+        x = self.draw_ai_status(cv, x);
 
         // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
         // (cursor position, indentation, language: clickable) and the memory figure, in any order.
@@ -1039,7 +1042,8 @@ impl App {
                     | StatusBtn::Search
                     | StatusBtn::Problems
                     | StatusBtn::Update
-                    | StatusBtn::Build => {}
+                    | StatusBtn::Build
+                    | StatusBtn::Ai => {}
                 }
                 ix += w + kinds.get(k + 1).map_or(0, |&n| status_gap(kind, n));
             }
@@ -1113,6 +1117,7 @@ impl App {
             StatusBtn::Language => self.open_language_picker(),
             StatusBtn::Update => self.update_indicator_click(),
             StatusBtn::Build => self.build_toggle_panel(),
+            StatusBtn::Ai => self.ai_show(),
             StatusBtn::Ram => {}
         }
         true
