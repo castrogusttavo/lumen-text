@@ -141,6 +141,11 @@ debounces them and compares a cheap `GitSig` before refreshing the branch, gutte
 writes `.git/index` on every refresh (use `--no-optional-locks`), or the watcher loops. Tests run real `git` in temp repos
 (`app_fswatch::tests`); `LUMEN_FORCE_POLL=1` tries the polling fallback on a local disk.
 
+**Per-window state.** Each window is its own process (`src/app_window.rs` explains why); anything that
+must survive a restart per window goes into the session (`save_session` / `restore_session`, keyed by
+project root and window slot). State shared by every window lives on disk (config, recents, `windows.json`),
+never in memory, and a second invocation reaches a window only through `src/instance.rs`.
+
 **A theme.** Bundled themes are VS Code JSON in `assets/themes/` and listed through `assets/language-manifest.json`; the test suite loads every theme and checks WCAG AA text pairs, so run `cargo test --release theme`.
 Users can add themes without code in `~/.config/lumen-text/themes/` (see README). Zed conversion lives in `src/zedtheme.rs`.
 

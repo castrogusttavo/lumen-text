@@ -220,6 +220,10 @@ pub enum Cmd {
     PythonSelectInterpreter,
     CycleInlineDiagnostics,
     ProblemsProject,
+    NewWindow,
+    OpenFolderNewWindow,
+    MoveTabToNewWindow,
+    CloseWindow,
 }
 
 impl Cmd {
@@ -450,4 +454,8 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Python: Select interpreter…", "", Cmd::PythonSelectInterpreter),
     ("View: Inline diagnostics (off / current line / all)", "", Cmd::CycleInlineDiagnostics),
     ("View: Problems in whole project", "", Cmd::ProblemsProject),
+    ("File: New window", "Ctrl+Shift+N", Cmd::NewWindow),
+    ("File: Open folder in new window…", "", Cmd::OpenFolderNewWindow),
+    ("File: Move tab to new window", "", Cmd::MoveTabToNewWindow),
+    ("File: Close window", "", Cmd::CloseWindow),
 ];

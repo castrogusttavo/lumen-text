@@ -220,6 +220,9 @@ pub fn act_hint(act: Act) -> Option<&'static str> {
         Act::TogglePin => "Pinned tabs stay on the left and survive “Close All”",
         Act::Markdown => "Shows the rendered text beside the editor",
         Act::LocalHistory => "Earlier versions of this file, kept on every save: compare and restore",
+        Act::NewWindow => {
+            "Opens this tab in a window of its own, unsaved changes included (or drag the tab out of the window)"
+        }
         Act::CherryPick => "Applies this commit's changes on top of the current branch (git cherry-pick)",
         Act::Checkout => "Switches to the branch at this commit, or detaches HEAD there",
         Act::Revert => "Adds a commit that undoes this one (git revert)",

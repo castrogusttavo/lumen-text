@@ -269,14 +269,9 @@ impl App {
 
     // ── session ──
 
+    /// Per project root and window slot (see `app_window`).
     pub(super) fn session_path(&self) -> Option<PathBuf> {
-        let base = crate::paths::state_home()?;
-        let h = self
-            .root
-            .to_string_lossy()
-            .bytes()
-            .fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
-        Some(base.join("lumen-text").join(format!("session-{h:016x}.json")))
+        self.win_session_path()
     }
 
     pub fn save_session(&self) {
@@ -306,6 +301,7 @@ impl App {
         if let Some(sp) = self.split_session(&file_ix) {
             v["split"] = sp;
         }
+        self.win_session_save(&mut v);
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -316,6 +312,7 @@ impl App {
         let Some(path) = self.session_path() else { return };
         let Ok(text) = std::fs::read_to_string(path) else { return };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+        self.win_session_restore(&v);
         let mut opened: Vec<Option<usize>> = Vec::new();
         for f in v["files"].as_array().into_iter().flatten() {
             opened.push(None);

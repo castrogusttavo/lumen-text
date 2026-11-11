@@ -4,7 +4,8 @@
 //! `DRAG_START` px the tab lifts: a floating copy follows the pointer, its slot in the strip stays as
 //! a faint placeholder, an accent marker shows where it will land, and the strip scrolls when the
 //! pointer nears either end. Releasing drops it there (`move_tab`); Esc, or releasing away from the
-//! strip (the marker disappears there), cancels. Pinned tabs move among the pinned ones and the
+//! strip (the marker disappears there), cancels. Releasing outside the window moves the tab to a
+//! new window (`app_window`). Pinned tabs move among the pinned ones and the
 //! others among the others.
 //!
 //! The order of `App::docs` is the tab order (with pinned tabs shown first, see `tab_order`), so a
@@ -175,11 +176,20 @@ impl App {
         if !d.active {
             return false;
         }
-        if let Some((_, Some(to))) = drop {
+        if self.outside_window() {
+            // Dropped outside the window: the tab opens in a new one.
+            self.move_tab_to_new_window(d.doc, Some(self.mouse));
+        } else if let Some((_, Some(to))) = drop {
             self.move_tab(d.doc, to);
         }
         self.request_redraw();
         true
+    }
+
+    /// The pointer is beyond the window's edges (a drag keeps reporting it there).
+    pub fn outside_window(&self) -> bool {
+        let (x, y) = self.mouse;
+        x < 0.0 || y < 0.0 || x >= self.size.0 as f64 || y >= self.size.1 as f64
     }
 
     /// Esc while dragging a tab puts it back. True when the key was used.
@@ -370,6 +380,30 @@ mod tests {
         assert_eq!(shown[0], "d");
         app.move_tab(9, 0); // out of range: nothing happens
         assert_eq!(app.docs.len(), 4);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_tab_dropped_outside_the_window_moves_to_a_new_one() {
+        use crate::app_unsaved::testkit;
+        let _g = testkit::lock();
+        let dir = testkit::tmp("tabout");
+        let mut app = testkit::test_app(&dir);
+        app.win.base = Some(dir.join("state"));
+        testkit::untitled(&mut app, "b");
+        app.size = (1000, 700);
+        let n = app.docs.len();
+        // Dropped back on the strip area: stays.
+        app.inp.tabs.drag = Some(TabDrag { doc: 1, press: (10.0, 10.0), grab: 0.0, active: true });
+        app.mouse = (500.0, 300.0);
+        assert!(app.tab_drag_release());
+        assert_eq!(app.docs.len(), n);
+        // Dropped past the right edge: a new window takes it.
+        app.inp.tabs.drag = Some(TabDrag { doc: 1, press: (10.0, 10.0), grab: 0.0, active: true });
+        app.mouse = (1100.0, 300.0);
+        assert!(app.tab_drag_release());
+        assert_eq!(app.docs.len(), n - 1);
+        assert_eq!(app.win.spawned.len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 

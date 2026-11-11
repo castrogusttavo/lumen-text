@@ -217,7 +217,7 @@ pub struct App {
     pub breakpoints: std::collections::BTreeMap<PathBuf, Vec<usize>>,
     pub dbg_last_stop: Option<(String, usize)>,
     pub pending_native: Option<PathBuf>,
-    pub inbox: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    pub inbox: Option<std::sync::mpsc::Receiver<crate::instance::Msg>>,
     pub watcher: Option<crate::watcher::Watcher>,
     /// When set, re-pull diagnostics of every open TS document (a dependency changed on disk).
     pub lsp_refresh_at: Option<Instant>,
@@ -267,6 +267,8 @@ pub struct App {
     pub proj: crate::app_projcfg::ProjState,
     /// Zen mode (chrome hidden, text centered) and what it puts back on exit; see `app_view`.
     pub zen: crate::app_view::Zen,
+    /// This window among the others (slot, handoff target, geometry): see `app_window`.
+    pub win: crate::app_window::WinState,
 }
 
 impl App {
@@ -402,6 +404,7 @@ impl App {
             elevated: None,
             proj: Default::default(),
             zen: Default::default(),
+            win: Default::default(),
         };
         // `.lumen/config.json` / `.lumen/config.local.json` on top of the user settings.
         app.projcfg_init();
@@ -415,7 +418,7 @@ impl App {
         for (p, at) in files {
             app.open_path(&p, at);
         }
-        if !had_args {
+        if !had_args && app.win.restore {
             app.restore_session();
         }
         app.restore_backups();
@@ -494,6 +497,7 @@ impl ApplicationHandler<UserEvent> for App {
             attrs = WindowAttributesExtWayland::with_name(attrs, "lumen-text", "lumen-text");
             attrs = WindowAttributesExtX11::with_name(attrs, "lumen-text", "lumen-text");
         }
+        let attrs = self.win_attrs(el, attrs);
         let window = Rc::new(el.create_window(attrs).expect("window"));
         window.set_cursor(Cursor::Icon(CursorIcon::Default));
         window.set_ime_allowed(true);
@@ -562,6 +566,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Focused(true) => {
                 self.git_bg_focus(true);
                 self.ai_window_focus(true);
+                self.win_focused();
                 self.follow_system_theme();
                 // Open files' mtimes, the git dir and the expanded folders: refresh what moved.
                 self.fswatch_focus();
