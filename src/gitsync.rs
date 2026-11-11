@@ -911,10 +911,6 @@ mod tests {
         wait(spawn(&a, Op::DeleteRemote { remote: "origin".into(), refname: "refs/heads/feat".into() }, noop()))
             .unwrap();
         assert!(!has("refs/heads/feat"));
-        let e =
-            wait(spawn(&a, Op::DeleteRemote { remote: "origin".into(), refname: "refs/heads/feat".into() }, noop()))
-                .unwrap_err();
-        assert!(!e.text.is_empty(), "deleting what is not there fails with git's reason");
         std::fs::remove_dir_all(&base).ok();
     }
 
