@@ -226,7 +226,7 @@ impl App {
         let c = self.theme.chrome;
         let bar = self.layout.tabbar;
         let strip = Rect::new(bar.x + 2, bar.y, bar.w - 4, bar.h);
-        // The tab's own slot: covered, with a faint dashed-looking outline where it came from.
+        // The tab's own slot: covered by a faint placeholder where it came from.
         let slot = Rect::new(sx + 2, bar.y + 5, w - 4, bar.h - 10);
         cv.fill_clip(Rect::new(sx, bar.y, w, bar.h), c.tabbar_bg, strip);
         cv.fill_round_clip(slot, 8, self.theme.foreground.with_alpha(0x0c), strip);
