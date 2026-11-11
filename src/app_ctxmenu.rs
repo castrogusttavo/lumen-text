@@ -304,6 +304,9 @@ pub enum Target {
     GitFiles(Vec<PathBuf>),
     /// The text of the active document.
     Editor,
+    /// The explorer's header (Files / Outline tabs): the "Sort by" menu, with the current order
+    /// and the folders-first switch.
+    ExplorerHeader(crate::tree::SortMode, bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -483,6 +486,18 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
             sep(),
             item(Act::CopyPath, "Copy Path", "hugeicons/link", ""),
         ],
+        Target::ExplorerHeader(mode, first) => {
+            use crate::tree::SortMode;
+            let mark = |on: bool| if on { "ui/check" } else { "" };
+            vec![
+                item(Act::Run("ExplorerSortName"), "Sort by Name", mark(*mode == SortMode::Name), ""),
+                item(Act::Run("ExplorerSortType"), "Sort by Type", mark(*mode == SortMode::Type), ""),
+                item(Act::Run("ExplorerSortModified"), "Sort by Date Modified", mark(*mode == SortMode::Modified), ""),
+                item(Act::Run("ExplorerSortMixed"), "Mixed: Folders Among Files", mark(*mode == SortMode::Mixed), ""),
+                sep(),
+                item(Act::Run("ToggleFoldersFirst"), "Folders First", mark(*first && *mode != SortMode::Mixed), ""),
+            ]
+        }
         Target::Commit(c) => {
             let mut v = vec![
                 item(Act::Checkout, "Checkout", "ui/git_branch", ""),
@@ -580,7 +595,7 @@ impl App {
         let sb = self.layout.sidebar;
         if self.sidebar_open && sb.contains(x, y) && self.sidebar_mode == crate::app::SidebarMode::Files {
             if y < (sb.y + TAB_H) as f64 {
-                return None;
+                return Some(Target::ExplorerHeader(self.tree.sort(), self.tree.folders_first()));
             }
             let rel = y - (sb.y + TAB_H) as f64 + self.tree.scroll;
             let row = (rel >= 0.0).then(|| (rel / ROW_H as f64) as usize).filter(|&i| i < self.tree.rows.len());
@@ -784,7 +799,7 @@ impl App {
             Target::Folder(p) | Target::File(p) | Target::Root(p) => Some(p.clone()),
             Target::Multi(v) => v.first().cloned(),
             Target::Tab(i) => self.docs.get(*i).and_then(|d| d.path()).map(Path::to_path_buf),
-            Target::Commit(_) => None,
+            Target::Commit(_) | Target::ExplorerHeader(..) => None,
             Target::GitFiles(v) => v.first().cloned(),
             Target::Editor => self.docs.get(self.active).and_then(|d| d.path()).map(Path::to_path_buf),
         }

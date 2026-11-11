@@ -953,3 +953,36 @@ fn scope_switch_keys_only_when_it_is_shown() {
     m.switch_page();
     assert_ne!(m.key(&ch("p"), Some("p"), false, false, true), Event::Scope(crate::projcfg::Scope::Project));
 }
+
+#[test]
+fn record_mouse_combos() {
+    let mut p = kb();
+    select(&mut p, "TestFile");
+    assert_eq!(p.record_mouse(true, false, false, "click"), None, "not recording: the click is a click");
+    p.begin_record();
+    assert_eq!(p.record_mouse(false, false, false, "click"), None, "a plain click picks rows");
+    assert_eq!(p.record_mouse(false, true, false, "wheelup"), None, "Shift+wheel scrolls the list");
+    assert!(p.is_recording());
+    let ev = p.record_mouse(false, false, false, "mouse4");
+    assert_eq!(ev, Some(Event::Bind { combo: "mouse4".into(), command_id: "TestFile".into() }));
+    p.begin_record();
+    let ev = p.record_mouse(true, false, false, "wheelup");
+    assert_eq!(
+        ev,
+        Some(Event::Batch(vec![
+            Event::Unbind { combo: "mouse4".into() },
+            Event::Bind { combo: "ctrl+wheelup".into(), command_id: "TestFile".into() },
+        ]))
+    );
+    assert_eq!(p.bindings_of("TestFile"), vec!["ctrl+wheelup"]);
+    // A built-in mouse combo is owned: replacing it asks first.
+    p.add_default_aliases([("alt+click".to_string(), "AddCursor".to_string())]);
+    p.begin_record();
+    assert_eq!(p.record_mouse(false, false, true, "click"), Some(Event::None));
+    assert_eq!(p.pending_conflict(), Some(("alt+click", "AddCursor")));
+    assert_eq!(combo_chips("ctrl+wheelup"), ["Ctrl", "Wheel ↑"]);
+    assert_eq!(combo_chips("mouse5"), ["Mouse forward"]);
+    // Through the modal: only on the shortcuts page.
+    let mut m = modal();
+    assert_eq!(m.record_mouse(false, false, false, "middle"), None);
+}

@@ -51,6 +51,9 @@ and no GPU driver:
 - Reopen closed tabs (`Ctrl+Shift+T`, palette *View: Reopen closed tab*, tab menu): the last 20, each back in its split pane with its cursor, selection and scroll
 - Save as administrator: when a save is refused for lack of permission (`/etc/hosts`) a card offers to write the file in place through `pkexec` (Linux) or the macOS password prompt, keeping its owner and mode
 - Fonts: separate **interface** and **buffer** (code, terminal, diffs) fonts with a searchable picker of the installed families, weight, size, line height and ligatures, all live
+- Buffer font OpenType features (`zero`, `ss01`, `cv02`...) and letter spacing, previewed in the font picker; columns and the caret stay aligned
+- Zen mode (`Ctrl+K Z`): bars, sidebar, panels and minimap hidden, the text centered in a column of `zen_max_width` columns; `Esc Esc` brings the layout back exactly. The tab bar and the status bar can also be switched off on their own
+- Explorer order: by name (numbers by value, `file2` before `file10`), type, date modified or mixed, folders first or not (right-click the explorer's header)
 - Display options: line numbers, bookmarks (`Ctrl+F2`), breakpoint dots, scrollbars (show / auto-hide / never) and a master switch for the language servers
 - Smooth Zed-style scrolling, drag selection by word/line, Wayland and X11 clipboard, IME, fractional hi-DPI scaling
 
@@ -119,7 +122,7 @@ and no GPU driver:
 
 **Customization**
 - Settings modal (`Ctrl+,`) and shortcut editor with conflict detection
-- `config.json`, `keybindings.json`, user themes folder, removable and reorderable bottom-bar items
+- `config.json`, `keybindings.json` (keys and mouse: side buttons, middle click, `Ctrl`/`Alt` + click or wheel), user themes folder, removable and reorderable bottom-bar items
 - Per-project settings in `.lumen/config.json` (and a personal `.lumen/config.local.json`), per-language overrides
   (`"languages": {"python": {"tab_width": 4}}`), live reload, a *User | Project* switch in the settings modal
 
@@ -296,8 +299,9 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Debug: start / stop / breakpoint | `F5` / `Shift+F5` / `F9` (or click the gutter) |
 | Bookmark: toggle / next / previous | `Ctrl+F2` / `Ctrl+Alt+F2` / `Ctrl+Alt+Shift+F2` |
 | Debug: step over / into / out | `F10` / `F11` / `Shift+F11` |
-| Zoom in / out / reset | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` |
-| Navigate back / forward | `Alt+Left` / `Alt+Right` |
+| Zoom in / out / reset | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` (or `Ctrl+wheel`) |
+| Navigate back / forward | `Alt+Left` / `Alt+Right` (or the mouse back / forward buttons) |
+| Zen mode | `Ctrl+K Z` (leave: `Esc Esc` or `Ctrl+K Z`) |
 | Next occurrence / all occurrences | `Ctrl+D` / `Ctrl+Shift+L` |
 | Add cursor above/below, at click | `Ctrl+Alt+Up/Down`, `Alt+click` |
 | Column (box) selection | `Shift+Alt+drag` (or `Shift+Alt+click` from the cursor), middle-button drag, `Ctrl+Shift+Alt+Up/Down/Left/Right` |
@@ -392,6 +396,11 @@ settings are in effect; its tooltip lists the keys (amber while commands wait fo
   `args` or `env` coming from a project file are not applied until you answer the one-time prompt *Trust: run these
   commands*. The answer is remembered per project (in `$XDG_STATE_HOME/lumen-text/trusted-projects.json`) and asked again
   when the commands change; *Project: Trust the commands of the project settings…* changes it.
+| `show_tabs` / `show_status_bar` | `true` / `true` | Tab bar above the editor / bottom bar; off gives the editor that row (palette: *View: Toggle tab bar / status bar*) |
+| `zen_max_width` | `100` | Columns of the centered text in zen mode (`Ctrl+K Z`), 40 to 400 |
+| `explorer_sort` / `explorer_folders_first` | `"name"` / `true` | Explorer order: `"name"`, `"type"` (by extension), `"modified"` (newest first) or `"mixed"` (folders among files); names compare numbers by value |
+| `buffer_font_features` | `{}` | OpenType features of the buffer font, e.g. `{"zero": true, "ss01": true, "cv02": false, "cv05": 3}` (on top of the ligature switch); code, terminal and diffs |
+| `buffer_letter_spacing` | `0` | Extra space between buffer characters in px, -1 to 3 (part of the cell width, so columns stay aligned) |
 
 Environment variables: `LUMEN_THEME` (path to a theme file), `LUMEN_ASSETS` (assets directory),
 `LUMEN_TSGO` (path to a `tsgo` binary), `LUMEN_AUTOIMPORT=1`, `LUMEN_DEBUG=1`, `LUMEN_GIT_POLL_MS` (interval of the background ahead/behind refresh, default 60000),
@@ -416,6 +425,17 @@ as headless `--keys` tokens:
 
 ```json
 { "ctrl+alt+1": "macro:wrap-bold" }
+```
+
+Mouse combinations work the same way: `mouse4` / `mouse5` (back / forward side buttons), `middle`, and
+`ctrl` / `shift` / `alt` with `click`, `middle`, `wheelup` or `wheeldown`. Clicks act in the editor's text
+(the caret goes to the pointer first), side buttons and the wheel everywhere. Built-in: `mouse4` → `NavBack`,
+`mouse5` → `NavForward`, `ctrl+wheelup` / `ctrl+wheeldown` → `ZoomIn` / `ZoomOut`, `ctrl+click` → `GotoDefinition`,
+`alt+click` → `AddCursor` and `middle` → `PastePrimary` (two mouse-only actions: a new cursor at the click, dragging
+makes a column selection; paste the primary selection). The shortcut editor records mouse combos too.
+
+```json
+{ "mouse4": "PrevTab", "mouse5": "NextTab", "ctrl+wheelup": "none", "shift+middle": "FindReferences" }
 ```
 
 ### Themes

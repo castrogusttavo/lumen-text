@@ -5,6 +5,7 @@
 //! installed families (from fontconfig) and the globals that layout code reads. `TextCtx` (in
 //! `ui.rs`) turns a choice into loaded faces.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -33,6 +34,10 @@ pub struct FontSpec {
     /// Multiplier of the size (1.0..=2.5) or pixels (> 4).
     pub line_height: f32,
     pub ligatures: bool,
+    /// OpenType features on top of the ligature switch (`zero` -> 1, `cv02` -> 0, ...); buffer only.
+    pub features: BTreeMap<String, u32>,
+    /// Extra advance per character in logical px (see [`LETTER_SPACING_RANGE`]); buffer only.
+    pub letter_spacing: f32,
 }
 
 impl FontSpec {
@@ -43,10 +48,20 @@ impl FontSpec {
             weight: 400,
             line_height: DEFAULT_BUFFER_LH,
             ligatures: false,
+            features: BTreeMap::new(),
+            letter_spacing: 0.0,
         }
     }
     pub fn ui_default() -> Self {
-        Self { family: String::new(), size: DEFAULT_UI_SIZE, weight: 400, line_height: DEFAULT_UI_LH, ligatures: true }
+        Self {
+            family: String::new(),
+            size: DEFAULT_UI_SIZE,
+            weight: 400,
+            line_height: DEFAULT_UI_LH,
+            ligatures: true,
+            features: BTreeMap::new(),
+            letter_spacing: 0.0,
+        }
     }
 }
 
@@ -74,6 +89,91 @@ pub fn clean_line_height(v: f64, default: f32) -> f32 {
 pub fn line_px(size: f32, lh: f32) -> f32 {
     let px = if lh > LH_MULT_MAX { lh } else { size * lh };
     px.round().max(1.0)
+}
+
+/// Bounds of the buffer letter spacing in logical px.
+pub const LETTER_SPACING_RANGE: (f32, f32) = (-1.0, 3.0);
+
+/// A letter-spacing setting inside [`LETTER_SPACING_RANGE`], rounded to 0.05 px (NaN -> 0).
+pub fn clean_letter_spacing(v: f64) -> f32 {
+    if !v.is_finite() {
+        return 0.0;
+    }
+    ((v as f32).clamp(LETTER_SPACING_RANGE.0, LETTER_SPACING_RANGE.1) * 20.0).round() / 20.0
+}
+
+/// An OpenType feature tag as stored: exactly 4 ASCII letters or digits, lowercased.
+pub fn clean_feature_tag(t: &str) -> Option<String> {
+    let t = t.trim();
+    (t.len() == 4 && t.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| t.to_ascii_lowercase())
+}
+
+/// `buffer_font_features` from config.json: `{"zero": true, "cv02": false, "cv05": 3}`. Booleans
+/// mean on / off, numbers pick an alternate (0..=99); anything else is dropped.
+pub fn clean_features(v: &serde_json::Value) -> BTreeMap<String, u32> {
+    let mut m = BTreeMap::new();
+    for (k, x) in v.as_object().into_iter().flatten() {
+        let val = match x {
+            serde_json::Value::Bool(b) => Some(*b as u32),
+            n => n.as_u64().map(|n| n.min(99) as u32),
+        };
+        if let (Some(tag), Some(val)) = (clean_feature_tag(k), val) {
+            m.insert(tag, val);
+        }
+    }
+    m
+}
+
+/// The features as config.json stores them: true / false for 1 / 0, a number otherwise.
+pub fn features_json(m: &BTreeMap<String, u32>) -> serde_json::Value {
+    let o: serde_json::Map<String, serde_json::Value> = m
+        .iter()
+        .map(|(k, v)| {
+            let x = match v {
+                0 => serde_json::Value::Bool(false),
+                1 => serde_json::Value::Bool(true),
+                n => serde_json::json!(n),
+            };
+            (k.clone(), x)
+        })
+        .collect();
+    serde_json::Value::Object(o)
+}
+
+/// The one-line text form the settings field edits: `zero ss01 -cv02 cv05=3` (`-` switches a
+/// feature off, `=n` picks an alternate; commas work as separators too). Bad words are skipped.
+pub fn parse_features_text(s: &str) -> BTreeMap<String, u32> {
+    let mut m = BTreeMap::new();
+    for w in s.split(|c: char| c.is_whitespace() || c == ',' || c == ';').filter(|w| !w.is_empty()) {
+        let (w, off) = match w.strip_prefix('-') {
+            Some(r) => (r, true),
+            None => (w.strip_prefix('+').unwrap_or(w), false),
+        };
+        let (tag, val) = match w.split_once('=') {
+            Some((t, v)) => match v.trim() {
+                "true" | "on" => (t, Some(1)),
+                "false" | "off" => (t, Some(0)),
+                n => (t, n.parse::<u32>().ok().map(|n| n.min(99))),
+            },
+            None => (w, Some(if off { 0 } else { 1 })),
+        };
+        if let (Some(tag), Some(val)) = (clean_feature_tag(tag), val) {
+            m.insert(tag, val);
+        }
+    }
+    m
+}
+
+/// Inverse of [`parse_features_text`].
+pub fn features_text(m: &BTreeMap<String, u32>) -> String {
+    m.iter()
+        .map(|(k, v)| match v {
+            0 => format!("-{k}"),
+            1 => k.clone(),
+            n => format!("{k}={n}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Family names with whitespace trimmed and control characters removed.
@@ -368,6 +468,33 @@ mod tests {
         assert!(matches_query("JetBrains Mono", "jet mono"));
         assert!(!matches_query("JetBrains Mono", "fira"));
         assert!(matches_query("Fira Code", ""));
+    }
+
+    #[test]
+    fn font_features_parse_clean_and_round_trip() {
+        let m = parse_features_text("zero, +SS01 -cv02 cv05=3 calt=off bad toolong -x ss02=nope");
+        let got: Vec<(&str, u32)> = m.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        assert_eq!(got, [("calt", 0), ("cv02", 0), ("cv05", 3), ("ss01", 1), ("zero", 1)]);
+        assert_eq!(features_text(&m), "-calt -cv02 cv05=3 ss01 zero");
+        assert_eq!(parse_features_text(&features_text(&m)), m);
+        assert!(parse_features_text("").is_empty());
+        let j = features_json(&m);
+        assert_eq!(j["zero"], serde_json::json!(true));
+        assert_eq!(j["cv02"], serde_json::json!(false));
+        assert_eq!(j["cv05"], serde_json::json!(3));
+        assert_eq!(clean_features(&j), m);
+        assert!(clean_features(&serde_json::json!("zero")).is_empty());
+        assert_eq!(clean_feature_tag(" Zero "), Some("zero".into()));
+        assert_eq!(clean_feature_tag("ss-1"), None);
+    }
+
+    #[test]
+    fn letter_spacing_is_clamped_and_rounded() {
+        assert_eq!(clean_letter_spacing(0.0), 0.0);
+        assert_eq!(clean_letter_spacing(-5.0), -1.0);
+        assert_eq!(clean_letter_spacing(9.0), 3.0);
+        assert_eq!(clean_letter_spacing(0.52), 0.5);
+        assert_eq!(clean_letter_spacing(f64::NAN), 0.0);
     }
 
     #[test]

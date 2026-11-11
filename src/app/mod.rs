@@ -261,6 +261,8 @@ pub struct App {
     pub elevated: Option<std::sync::mpsc::Receiver<crate::app_elevated::Done>>,
     /// Per-project settings and Python interpreter state (see `app_projcfg`).
     pub proj: crate::app_projcfg::ProjState,
+    /// Zen mode (chrome hidden, text centered) and what it puts back on exit; see `app_view`.
+    pub zen: crate::app_view::Zen,
 }
 
 impl App {
@@ -279,7 +281,7 @@ impl App {
         mem::report("fonts ready");
         let assets = crate::config::assets_dir();
         let (stx, srx) = mpsc::channel();
-        let tree = Tree::with_ignore(root.clone(), config.explorer_hide_gitignored);
+        let tree = Tree::for_config(root.clone(), &config);
         let mut app = Self {
             wake_fn,
             theme,
@@ -393,6 +395,7 @@ impl App {
             exit_requested: false,
             elevated: None,
             proj: Default::default(),
+            zen: Default::default(),
         };
         // `.lumen/config.json` / `.lumen/config.local.json` on top of the user settings.
         app.projcfg_init();
@@ -571,6 +574,8 @@ impl ApplicationHandler<UserEvent> for App {
                 (ElementState::Pressed, MouseButton::Left | MouseButton::Middle | MouseButton::Right) => {
                     self.mouse_down(button)
                 }
+                (ElementState::Pressed, MouseButton::Back | MouseButton::Forward) => self.mouse_side_button(button),
+                (ElementState::Released, MouseButton::Back | MouseButton::Forward) => {}
                 (ElementState::Released, _) => self.mouse_up(),
                 _ => {}
             },

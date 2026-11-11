@@ -116,6 +116,11 @@ The palette, fuzzy search and the shortcut modal pick it up automatically.
 
 **A shortcut.** Add `("ctrl+shift+x", "VariantName")` to `DEFAULTS` in `src/keymap.rs` (the first row for a command is its main default and must match the palette text; later rows are aliases).
 A test checks that ids exist, combos are unique and the palette text agrees. Chords use a space (`ctrl+k r`); explorer-only keys use `explorer:`.
+Mouse combos (`mouse4`, `middle`, `ctrl+click`, `ctrl+wheelup`...) have their own table, `MOUSE_DEFAULTS`, resolved by `Keymap::lookup_mouse`
+and dispatched from `src/app_input.rs` / `src/app/mouse.rs`; besides command ids they may name the mouse-only actions in `MOUSE_ACTIONS`.
+
+**A layout switch.** Bars that can be hidden (zen mode, `show_tabs`, `show_status_bar`) get their height from `App::chrome_heights`
+(`src/app_view.rs`); layout code must read `self.layout` rects, never the `TOP_H` / `TAB_H` / `STATUS_H` constants directly.
 
 **A setting.** Add a field to `Config` in `src/config.rs` with its default in `Default`, parse it in `load_from` (validate and clamp), write it in `save_to`, extend the round-trip test, and add a row in `src/settingsui.rs` so it shows in the settings modal. Document it in the README table.
 Settings can be overridden per project (`.lumen/config.json`, see `src/projcfg.rs`): if the new key only makes sense for the

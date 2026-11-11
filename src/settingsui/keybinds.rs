@@ -104,6 +104,12 @@ pub fn combo_chips(combo: &str) -> Vec<String> {
                 "space" => "Space".into(),
                 "tab" => "Tab".into(),
                 "backspace" => "Backspace".into(),
+                "click" => "Click".into(),
+                "middle" => "Middle click".into(),
+                "mouse4" => "Mouse back".into(),
+                "mouse5" => "Mouse forward".into(),
+                "wheelup" => "Wheel ↑".into(),
+                "wheeldown" => "Wheel ↓".into(),
                 s if s.chars().count() == 1 => s.to_uppercase(),
                 s if is_fkey(s) => format!("F{}", &s[1..]),
                 s => {
@@ -468,7 +474,25 @@ impl KeybindsPage {
             self.mode = Mode::Record;
             return Event::None;
         }
-        let combo = keymap::combo(ctrl, shift, alt, &name);
+        self.bind_captured(keymap::combo(ctrl, shift, alt, &name))
+    }
+
+    /// A mouse combo while recording: Ctrl/Alt + click or wheel, the middle button or a side
+    /// button (`button` is one of `keymap::MOUSE_KEYS`). `None` lets the event do its usual job
+    /// (a plain click picks rows and buttons, a plain wheel scrolls the list).
+    pub fn record_mouse(&mut self, ctrl: bool, shift: bool, alt: bool, button: &str) -> Option<Event> {
+        if self.mode != Mode::Record {
+            return None;
+        }
+        let needs_mod = matches!(button, "click" | "wheelup" | "wheeldown");
+        if needs_mod && !(ctrl || alt) {
+            return None;
+        }
+        Some(self.bind_captured(keymap::combo(ctrl, shift, alt, button)))
+    }
+
+    /// Bind a captured combo to the selected command, or ask first when another command owns it.
+    fn bind_captured(&mut self, combo: String) -> Event {
         let Some(id) = self.selected_id().map(str::to_string) else { return Event::None };
         match self.owner_of(&combo).map(str::to_string) {
             Some(o) if o == id => {

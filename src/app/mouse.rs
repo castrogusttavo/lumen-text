@@ -9,6 +9,13 @@ impl App {
 
     pub fn mouse_down(&mut self, button: MouseButton) {
         let (x, y) = self.mouse;
+        // The shortcuts page recording a combo takes Ctrl/Alt+click and the middle button.
+        if button != MouseButton::Right
+            && matches!(self.overlay, Overlay::Settings(_))
+            && self.settings_record_mouse(if button == MouseButton::Middle { "middle" } else { "click" })
+        {
+            return self.request_redraw();
+        }
         if self.hover_mouse_down(button) {
             return self.request_redraw();
         }
@@ -133,12 +140,23 @@ impl App {
         if self.docs.is_empty() {
             return;
         }
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
         if button == MouseButton::Middle {
-            // Middle drag: column selection; a middle click pastes the primary selection on release.
-            self.drag_press_middle();
+            // A user binding for the middle button runs instead; by default a middle drag is a column
+            // selection and a click pastes the primary selection on release.
+            let bound = self.keymap.lookup_mouse(ctrl, shift, alt, "middle").map(str::to_string);
+            match bound.as_deref() {
+                Some("PastePrimary") | None => self.drag_press_middle(),
+                Some("none") => {}
+                Some(id) => {
+                    let d = &mut self.docs[self.active];
+                    let p = d.pos_at(x, y);
+                    d.ed.click(&mut d.buf, p, false);
+                    self.run_mouse_action(id);
+                }
+            }
             return self.request_redraw();
         }
-        let ctrl = self.mods.control_key();
         let near = (x - self.last_click_pos.0).abs() < 5.0 && (y - self.last_click_pos.1).abs() < 5.0;
         self.clicks =
             if near && self.last_click.elapsed() < Duration::from_millis(400) { self.clicks % 3 + 1 } else { 1 };
@@ -176,9 +194,14 @@ impl App {
             }
             return self.request_redraw();
         }
-        let shift = self.mods.shift_key();
-        let alt = self.mods.alt_key();
         let clicks = self.clicks;
+        // Modifier + single click: what keybindings.json binds to it (`alt+click` adds a cursor,
+        // `ctrl+click` goes to the definition by default; see `keymap::MOUSE_DEFAULTS`).
+        let bound = if clicks == 1 && (ctrl || alt) {
+            self.keymap.lookup_mouse(ctrl, shift, alt, "click").filter(|id| *id != "none").map(str::to_string)
+        } else {
+            None
+        };
         let d = &mut self.docs[self.active];
         if clicks == 1 && !alt && d.click_fold(x, y) {
             return self.request_redraw();
@@ -188,7 +211,7 @@ impl App {
         }
         let d = &mut self.docs[self.active];
         let (p, hint) = d.hit_at(x, y);
-        if alt && clicks == 1 {
+        if bound.as_deref() == Some("AddCursor") {
             if shift {
                 self.drag_press_box(p);
             } else {
@@ -205,7 +228,7 @@ impl App {
         // Inlay hints: Ctrl+click on a label part with a location goes there; a double click on a
         // type hint inserts the annotation (one undo step). A plain click only places the cursor.
         if let Some(hit) = hint {
-            if ctrl && clicks == 1 {
+            if bound.as_deref() == Some("GotoDefinition") {
                 d.ed.click(&mut d.buf, p, false);
                 if let Some(l) = d.hint_link(hit) {
                     self.goto_location(&(l.uri, l.line, l.character));
@@ -217,9 +240,10 @@ impl App {
                 return self.request_redraw();
             }
         }
-        if ctrl && clicks == 1 {
+        if let Some(id) = bound {
+            // The caret goes to the click, then the bound command runs there.
             d.ed.click(&mut d.buf, p, false);
-            self.goto_definition(crate::lsp::DefKind::Definition);
+            self.run_mouse_action(&id);
             return self.request_redraw();
         }
         d.reveal = true;

@@ -750,7 +750,7 @@ impl App {
         crate::instance::set_root(&self.root);
         // The new project's `.lumen/` settings replace the old project's.
         self.projcfg_init();
-        self.tree = Tree::with_ignore(self.root.clone(), self.config.explorer_hide_gitignored);
+        self.tree = Tree::for_config(self.root.clone(), &self.config);
         self.active = 0;
         self.refresh_git_status();
         self.watcher = crate::watcher::Watcher::new(self.wake()).ok();

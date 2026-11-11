@@ -1,8 +1,12 @@
-//! File tree model for the sidebar: lazily read directories, hidden junk folders.
+//! File tree model for the sidebar: lazily read directories, hidden junk folders, and the
+//! explorer order (`explorer_sort`: name / type / modified / mixed, folders first or not, numbers
+//! compared by value so `file2` comes before `file10`).
 
 use std::{
+    cmp::Ordering,
     collections::HashSet,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 const HIDDEN_DIRS: &[&str] =
@@ -58,6 +62,113 @@ pub struct Tree {
     filter: crate::ignore_filter::IgnoreFilter,
     /// Leave ignored entries out of the list (off: show them dimmed).
     hide_ignored: bool,
+    /// Order of the entries of each folder.
+    sort: SortMode,
+    folders_first: bool,
+}
+
+/// How the explorer orders the entries of a folder (`explorer_sort`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SortMode {
+    /// By name (natural order), folders first unless `explorer_folders_first` is off.
+    #[default]
+    Name,
+    /// By extension, then by name.
+    Type,
+    /// Newest first.
+    Modified,
+    /// Folders and files interleaved by name, whatever `explorer_folders_first` says.
+    Mixed,
+}
+
+impl SortMode {
+    pub fn from_name(s: &str) -> SortMode {
+        match s {
+            "type" => SortMode::Type,
+            "modified" => SortMode::Modified,
+            "mixed" => SortMode::Mixed,
+            _ => SortMode::Name,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SortMode::Name => "name",
+            SortMode::Type => "type",
+            SortMode::Modified => "modified",
+            SortMode::Mixed => "mixed",
+        }
+    }
+}
+
+/// One directory entry as listed (before it becomes a [`Row`]).
+#[derive(Clone, Debug)]
+pub struct Listed {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_dir: bool,
+    pub ignored: bool,
+    /// Modification time, read only when sorting by it.
+    pub mtime: Option<SystemTime>,
+}
+
+/// Case-insensitive "natural" order: runs of digits compare by value (`file2` < `file10`,
+/// `v1.9` < `v1.10`); equal-looking names fall back to a plain comparison so the order is total.
+pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return a.cmp(b),
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let (rx, ry) = (digits(&mut x), digits(&mut y));
+                let (nx, ny) = (rx.trim_start_matches('0'), ry.trim_start_matches('0'));
+                let o = nx.len().cmp(&ny.len()).then_with(|| nx.cmp(ny));
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            (Some(c), Some(d)) => {
+                let o = c.to_lowercase().cmp(d.to_lowercase());
+                if o != Ordering::Equal {
+                    return o;
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
+}
+
+/// The run of ASCII digits at the front of `it` (consumed).
+fn digits(it: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut s = String::new();
+    while let Some(ch) = it.peek().copied().filter(char::is_ascii_digit) {
+        s.push(ch);
+        it.next();
+    }
+    s
+}
+
+/// Lowercased extension used by the "type" order ("" for folders and dot files).
+fn type_of(e: &Listed) -> String {
+    if e.is_dir {
+        return String::new();
+    }
+    Path::new(&e.name).extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default()
+}
+
+/// Sort the entries of one folder.
+pub fn sort_listed(v: &mut [Listed], mode: SortMode, folders_first: bool) {
+    v.sort_by(|a, b| {
+        let dirs = if folders_first && mode != SortMode::Mixed { b.is_dir.cmp(&a.is_dir) } else { Ordering::Equal };
+        dirs.then_with(|| match mode {
+            SortMode::Name | SortMode::Mixed => natural_cmp(&a.name, &b.name),
+            SortMode::Type => natural_cmp(&type_of(a), &type_of(b)).then_with(|| natural_cmp(&a.name, &b.name)),
+            SortMode::Modified => b.mtime.cmp(&a.mtime).then_with(|| natural_cmp(&a.name, &b.name)),
+        })
+    });
 }
 
 impl Tree {
@@ -79,10 +190,36 @@ impl Tree {
             selected: HashSet::new(),
             anchor: None,
             drag: None,
+            sort: SortMode::Name,
+            folders_first: true,
         };
         t.expanded.insert(root);
         t.rebuild();
         t
+    }
+
+    /// A tree that follows the explorer settings of `c` (ignored files, order).
+    pub fn for_config(root: PathBuf, c: &crate::config::Config) -> Self {
+        let mut t = Self::with_ignore(root, c.explorer_hide_gitignored);
+        t.set_sort(SortMode::from_name(&c.view.explorer_sort), c.view.explorer_folders_first);
+        t
+    }
+
+    /// Change the order of the entries (re-reads the open folders when it changed).
+    pub fn set_sort(&mut self, mode: SortMode, folders_first: bool) {
+        if (self.sort, self.folders_first) != (mode, folders_first) {
+            self.sort = mode;
+            self.folders_first = folders_first;
+            self.rebuild();
+        }
+    }
+
+    pub fn sort(&self) -> SortMode {
+        self.sort
+    }
+
+    pub fn folders_first(&self) -> bool {
+        self.folders_first
     }
 
     /// Hide or show (dimmed) the ignored entries.
@@ -98,11 +235,12 @@ impl Tree {
         self.filter.invalidate();
     }
 
-    /// `(name, path, is_dir, ignored)` of the entries to list in `dir`: `.git` never, ignored ones only
-    /// when they are shown.
-    fn entries(&self, dir: &Path, parent_ignored: bool) -> Vec<(String, PathBuf, bool, bool)> {
+    /// The entries to list in `dir`, in the explorer order: `.git` never, ignored ones only when
+    /// they are shown.
+    fn entries(&self, dir: &Path, parent_ignored: bool) -> Vec<Listed> {
         let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
-        let mut v: Vec<(String, PathBuf, bool, bool)> = rd
+        let by_time = self.sort == SortMode::Modified;
+        let mut v: Vec<Listed> = rd
             .flatten()
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().into_owned();
@@ -118,10 +256,11 @@ impl Tree {
                 if ignored && self.hide_ignored {
                     return None;
                 }
-                Some((name, path, is_dir, ignored))
+                let mtime = if by_time { e.metadata().and_then(|m| m.modified()).ok() } else { None };
+                Some(Listed { name, path, is_dir, ignored, mtime })
             })
             .collect();
-        v.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        sort_listed(&mut v, self.sort, self.folders_first);
         v
     }
 
@@ -133,7 +272,7 @@ impl Tree {
     }
 
     fn walk(&self, dir: &Path, depth: usize, parent_ignored: bool, out: &mut Vec<Row>) {
-        for (name, path, is_dir, ignored) in self.entries(dir, parent_ignored) {
+        for Listed { name, path, is_dir, ignored, .. } in self.entries(dir, parent_ignored) {
             let expanded = is_dir && self.expanded.contains(&path);
             out.push(Row { path: path.clone(), name, depth, is_dir, expanded, ignored });
             if expanded {
@@ -471,6 +610,75 @@ mod tests {
         t.select_paths(&[p("a.ts"), p("b.ts")]);
         assert_eq!(names(&t), ["a.ts", "b.ts"]);
         assert_eq!(t.rows[t.sel].name, "b.ts");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn natural_order_compares_numbers_by_value() {
+        let mut v = vec!["file10", "File2", "file1", "file02", "a", "file2b", "v1.10", "v1.9", "B"];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(v, ["a", "B", "file1", "File2", "file02", "file2b", "file10", "v1.9", "v1.10"]);
+        assert_eq!(natural_cmp("x", "x"), Ordering::Equal);
+        assert_ne!(natural_cmp("File2", "file2"), Ordering::Equal, "total order");
+    }
+
+    fn listed(name: &str, is_dir: bool, age: u64) -> Listed {
+        let mtime = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000 - age));
+        Listed { name: name.into(), path: PathBuf::from(name), is_dir, ignored: false, mtime }
+    }
+
+    fn order(mode: SortMode, folders_first: bool) -> Vec<String> {
+        let mut v = vec![
+            listed("b.rs", false, 5),
+            listed("src", true, 1),
+            listed("a10.ts", false, 2),
+            listed("a9.ts", false, 9),
+            listed("docs", true, 7),
+            listed("Makefile", false, 3),
+            listed("c.md", false, 0),
+        ];
+        sort_listed(&mut v, mode, folders_first);
+        v.into_iter().map(|e| e.name).collect()
+    }
+
+    #[test]
+    fn sort_orders() {
+        assert_eq!(order(SortMode::Name, true), ["docs", "src", "a9.ts", "a10.ts", "b.rs", "c.md", "Makefile"]);
+        assert_eq!(order(SortMode::Name, false), ["a9.ts", "a10.ts", "b.rs", "c.md", "docs", "Makefile", "src"]);
+        assert_eq!(
+            order(SortMode::Mixed, true),
+            ["a9.ts", "a10.ts", "b.rs", "c.md", "docs", "Makefile", "src"],
+            "mixed ignores folders-first"
+        );
+        assert_eq!(order(SortMode::Type, true), ["docs", "src", "Makefile", "c.md", "b.rs", "a9.ts", "a10.ts"]);
+        assert_eq!(order(SortMode::Modified, true), ["src", "docs", "c.md", "a10.ts", "Makefile", "b.rs", "a9.ts"]);
+        assert_eq!(order(SortMode::Modified, false), ["c.md", "src", "a10.ts", "Makefile", "b.rs", "docs", "a9.ts"]);
+        for m in [SortMode::Name, SortMode::Type, SortMode::Modified, SortMode::Mixed] {
+            assert_eq!(SortMode::from_name(m.name()), m);
+        }
+        assert_eq!(SortMode::from_name("size"), SortMode::Name);
+    }
+
+    #[test]
+    fn tree_follows_the_sort_setting() {
+        let root = std::env::temp_dir().join(format!("lumen-treesort-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("z")).unwrap();
+        for f in ["f10.txt", "f2.txt", "a.rs"] {
+            std::fs::write(root.join(f), "").unwrap();
+        }
+        let mut t = Tree::new(root.clone());
+        let names = |t: &Tree| t.rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&t), ["z", "a.rs", "f2.txt", "f10.txt"]);
+        t.set_sort(SortMode::Type, true);
+        assert_eq!(names(&t), ["z", "a.rs", "f2.txt", "f10.txt"]);
+        t.set_sort(SortMode::Mixed, true);
+        assert_eq!(names(&t), ["a.rs", "f2.txt", "f10.txt", "z"]);
+        assert_eq!((t.sort(), t.folders_first()), (SortMode::Mixed, true));
+        let mut c = crate::config::Config::default();
+        c.view.explorer_sort = "name".into();
+        c.view.explorer_folders_first = false;
+        assert_eq!(names(&Tree::for_config(root.clone(), &c)), ["a.rs", "f2.txt", "f10.txt", "z"]);
         std::fs::remove_dir_all(&root).ok();
     }
 }

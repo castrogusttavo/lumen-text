@@ -316,6 +316,7 @@ pub fn default_settings() -> Vec<SettingDef> {
         ),
     ];
     defs.extend(crate::settings_ext::defs());
+    defs.extend(crate::app_view::defs());
     defs
 }
 
@@ -347,6 +348,9 @@ pub fn default_values() -> Value {
     if let (Some(dst), Some(src)) = (v.as_object_mut(), crate::settings_ext::defaults().as_object()) {
         dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
     }
+    if let (Some(dst), Some(src)) = (v.as_object_mut(), crate::app_view::defaults().as_object()) {
+        dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
+    }
     v
 }
 
@@ -374,6 +378,7 @@ pub(super) fn choice_label(s: &str) -> String {
         "all" => "All".into(),
         "normal" => "Normal".into(),
         "current_line" => "Current line".into(),
+        "name" | "type" | "modified" | "mixed" => crate::app_view::sort_label(s).into(),
         o => o.to_string(),
     }
 }

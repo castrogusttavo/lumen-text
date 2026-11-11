@@ -20,6 +20,10 @@ const ROW_H: i32 = 38;
 const INPUT_H: i32 = 50;
 const TOGGLE_H: i32 = 32;
 const FOOT_H: i32 = 30;
+/// Buffer picker only: a line of code in the selected family with the buffer font features and
+/// letter spacing applied.
+const PREVIEW_H: i32 = 48;
+const PREVIEW_TEXT: &str = "0O o1lI| {[()]} => != -> <= === www";
 
 /// One row of the list.
 #[derive(Clone, Debug, PartialEq)]
@@ -263,11 +267,11 @@ impl App {
     fn fontpicker_rect(&self) -> Rect {
         let w = self.size.0 as i32;
         let pw = (w - 40).clamp(300, 560);
-        let toggle = match &self.overlay {
-            Overlay::Font(p) if p.is_buffer() => TOGGLE_H,
+        let extra = match &self.overlay {
+            Overlay::Font(p) if p.is_buffer() => TOGGLE_H + PREVIEW_H,
             _ => 0,
         };
-        Rect::new((w - pw) / 2, 70, pw, INPUT_H + toggle + ROWS as i32 * ROW_H + FOOT_H + 12)
+        Rect::new((w - pw) / 2, 70, pw, INPUT_H + extra + ROWS as i32 * ROW_H + FOOT_H + 12)
     }
 
     /// Geometry of the list: its top-left y and the toggle row (buffer picker only).
@@ -406,6 +410,32 @@ impl App {
         }
         if total == 0 {
             self.tx.draw_ui(cv, r.x + 16, list.y + 8, "No fonts found", dim, r, false);
+        }
+        if is_buffer {
+            // The selected family (else the one in use) as code, features and spacing applied.
+            let family = match rows.get(sel.wrapping_sub(scroll)) {
+                Some(Row::Family(i)) => Some(&fams[*i]),
+                _ => fams.iter().find(|f| f.name.eq_ignore_ascii_case(&current)),
+            };
+            let pr = Rect::new(r.x + 8, list.bottom() + 3, r.w - 16, PREVIEW_H);
+            cv.fill(Rect::new(pr.x + 8, pr.y, pr.w - 16, 1), c.border);
+            let v = &self.config.view;
+            let mut how = crate::fontcfg::features_text(&v.buffer_font_features);
+            if v.buffer_letter_spacing != 0.0 {
+                how = format!("{how}  spacing {} px", v.buffer_letter_spacing).trim().to_string();
+            }
+            if how.is_empty() {
+                how = "no font features".into();
+            }
+            let hw = self.tx.ui_width(&how, false);
+            self.tx.draw_ui(cv, pr.right() - hw - 8, pr.y + 4, &how, dim, pr, false);
+            match family {
+                Some(f) if self.tx.preview_ready(&f.name, &f.file) => {
+                    let clip = Rect::new(pr.x, pr.y, pr.w - hw - 24, pr.h);
+                    self.tx.draw_family_buffer(cv, pr.x + 14, pr.y + 18, &f.name, PREVIEW_TEXT, fg, clip, 16.0);
+                }
+                _ => self.tx.draw_ui(cv, pr.x + 14, pr.y + 20, "Pick a family to preview it", dim, pr, false),
+            }
         }
         let foot = format!("{total} fonts   Enter picks   Esc closes");
         self.tx.draw_ui(cv, r.x + 16, r.bottom() - FOOT_H + 4, &foot, dim, r, false);

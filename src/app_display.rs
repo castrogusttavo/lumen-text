@@ -19,6 +19,8 @@ pub fn buffer_spec(c: &Config) -> FontSpec {
         weight: c.buffer_font_weight,
         line_height: c.buffer_line_height,
         ligatures: c.buffer_font_ligatures,
+        features: c.view.buffer_font_features.clone(),
+        letter_spacing: c.view.buffer_letter_spacing,
     }
 }
 
@@ -30,6 +32,7 @@ pub fn ui_spec(c: &Config) -> FontSpec {
         weight: c.ui_font_weight,
         line_height: c.ui_line_height,
         ligatures: c.ui_font_ligatures,
+        ..FontSpec::ui_default()
     }
 }
 
@@ -65,7 +68,7 @@ impl App {
 
     /// Re-apply the buffer and/or UI font group after a setting changed, then refresh whatever
     /// depends on text metrics.
-    fn refit_fonts(&mut self, buffer: bool, ui: bool) {
+    pub(crate) fn refit_fonts(&mut self, buffer: bool, ui: bool) {
         let mut missing: Vec<String> = Vec::new();
         if buffer && !self.tx.set_buffer_font(&buffer_spec(&self.config)) {
             missing.push(self.config.buffer_font_family.clone());
