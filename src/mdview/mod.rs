@@ -107,7 +107,7 @@ const F_MATH: u8 = 64;
 const F_ERR: u8 = 128;
 /// Display math is set this much larger than body text; inline math matches the text's x-height.
 const DISPLAY_MATH_SCALE: f32 = 1.18;
-const INLINE_MATH_SCALE: f32 = 1.08;
+const INLINE_MATH_SCALE: f32 = 1.12;
 /// A display formula wider than the column is shrunk to fit, down to this fraction (beyond it,
 /// the formula overflows to the right and is clipped by the pane).
 const MIN_MATH_SHRINK: f32 = 0.6;

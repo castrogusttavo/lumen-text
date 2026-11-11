@@ -825,7 +825,7 @@ impl Ts<'_, '_> {
             match kind {
                 ArrKind::Cases => Align::L,
                 ArrKind::Aligned => {
-                    if c % 2 == 0 {
+                    if c.is_multiple_of(2) {
                         Align::R
                     } else {
                         Align::L
