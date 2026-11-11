@@ -988,6 +988,7 @@ impl App {
         x = self.draw_projcfg_status(cv, x);
         x = self.draw_img_status(cv, x);
         x = self.draw_inline_status(cv, x);
+        x = self.draw_cov_status(cv, x);
 
         // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
         // (cursor position, indentation, language: clickable) and the memory figure, in any order.

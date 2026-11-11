@@ -127,6 +127,7 @@ impl App {
         self.zen_restore_minimaps(minimaps);
         crate::perf::lap!("doc.caret_end");
         busy |= self.draw_md(cv);
+        self.draw_merge(cv);
         crate::perf::lap!("md");
         // Hidden bars (zen mode, View toggles) draw nothing and keep no stale hit rects.
         if self.layout.topbar.h > 0 {
@@ -379,9 +380,17 @@ impl App {
             let fg = if dim { fg.with_alpha(0x60).over(c.sidebar_bg) } else { fg };
             // A name that does not fit before the git dot ends in "…"; scrolling right reveals it.
             let text_x = r.x + hx + indent + 38;
-            let room = crate::app_sidebar::name_room(r, text_x, false);
+            // Line coverage of the file, when a report is loaded, just before the git dot.
+            let cov = if row.is_dir { None } else { self.coverage_pct_of(&row.path) };
+            let cov_label = cov.map(|p| format!("{p:.0}%"));
+            let cov_w = cov_label.as_deref().map_or(0, |l| self.tx.ui_width_sized(l, false, 11.0) + 6);
+            let room = crate::app_sidebar::name_room(r, text_x, false) - cov_w;
             let name = crate::ui::fit_ellipsis(&mut self.tx, &row.name, room, false);
             self.tx.draw_ui(cv, text_x, y + (ROW_H - 18) / 2, &name, fg, body, false);
+            if let (Some(p), Some(l)) = (cov, cov_label.as_deref()) {
+                let col = self.coverage_color(p).with_alpha(0xc0).over(c.sidebar_bg);
+                self.tx.draw_ui_sized(cv, r.right() - 30 - cov_w, y + (ROW_H - 15) / 2, l, col, body, false, 11.0);
+            }
             if let Some(b) = badge {
                 // A quiet dot instead of a colored letter: modified / new / deleted.
                 let dot = match b {

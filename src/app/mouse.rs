@@ -118,6 +118,9 @@ impl App {
         if self.panel_mouse(x, y) {
             return self.request_redraw();
         }
+        if self.merge_mouse(x, y) {
+            return self.request_redraw();
+        }
         if self.split_mouse_down(x, y) {
             return self.request_redraw();
         }
@@ -336,6 +339,7 @@ impl App {
             || self.fswatch_clickable_at(x, y)
             || l.completion_rows.iter().any(|(r, _)| r.contains(x, y))
             || self.diff_btn_at(x, y).is_some()
+            || self.merge_btn_at(x, y)
         {
             return CursorIcon::Pointer;
         }

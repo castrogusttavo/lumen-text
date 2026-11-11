@@ -82,6 +82,7 @@ and no GPU driver:
   shows the active interpreter
 - Spell checking (opt-in, `spell_check`): [harper-ls](https://github.com/Automattic/harper) (spelling and grammar in comments, strings, Markdown, plain text and commit messages) and [typos-lsp](https://github.com/tekumara/typos-lsp) run as companions when installed; their slips get a dotted info underline (never an error) and `Ctrl+.` offers the fixes and *add to dictionary*
 - Vitest/Jest runs with pass/fail marks in the gutter, `package.json` and `cargo` tasks with an ANSI output panel
+- Test coverage in the gutter (Vitest, Jest, `cargo llvm-cov`, or any `lcov.info` / Cobertura XML): covered / partial / uncovered bars, per-file percentage in the explorer and status bar
 
 **Git**
 - Gutter marks, branch switcher, status dots in the explorer, inline blame
@@ -96,6 +97,7 @@ and no GPU driver:
 - Stage, unstage or revert single lines: select rows in the diff (drag, or `Shift+↓`/`Shift+↑`) and press `s` (or the "Stage lines" button) / `r`; CRLF files and missing final newlines are kept exact
 - Ignore whitespace in diffs (`-w`): header toggle, `w` key or `diff_ignore_whitespace`; staging a hunk or lines still stages their real text
 - Compare with any branch, tag or commit (or a typed ref like `HEAD~3`): "Git: Compare with branch or commit…", "Compare two refs…", "Compare file with…"; the list of changed files opens each one side by side (`]` / `[` next / previous file, `f` the list), and its first entry switches to "since the branches diverged" (merge base, like a pull request; `main...` typed does the same)
+- 3-way merge editor for merge, rebase and cherry-pick conflicts: Incoming | Current panes over the editable result, per-conflict checkboxes, conflict navigation and "Mark resolved" (stages the file)
 
 **Debugging**
 - Breakpoints in the gutter, step over/into/out, stack, variables and output tab
@@ -499,6 +501,8 @@ src/
   git.rs, gitx.rs, gitsync.rs  status, blame, hunks, diff, history, conflicts, fetch/pull/push
   worktree.rs, app_worktree.rs  git worktrees: list, add/remove/prune (on the git worker), open here / in a new window
   gitpatch.rs, gitcmp.rs   line-level staging patches; compare with any ref (refs, merge base, changed files)
+  merge3.rs, app_merge.rs  diff3 regions, result assembly and locating, git stages; the 3-way merge editor
+  testrun.rs, coverage.rs  test runners and reports; LCOV / Cobertura coverage and its gutter marks
   mdview/, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)
   imgview.rs, app_img.rs   image tabs (picture, zoom / pan, SVG preview / source)
   fstype.rs, poller.rs, app_fswatch.rs  untrusted file systems (statfs), polling fallback, .git watching and refresh on focus
@@ -577,4 +581,12 @@ lumen-text is released under the [MIT License](LICENSE). Full list of Rust crate
 
 `Ctrl+K A` (or the **Tests** tab of the bottom panel) runs the project's tests and lists them as a tree: a live progress bar, pass / fail / skip filters, durations, the failure message with an expected-vs-received box and clickable `file:line` links, and ✓/✗ marks in the gutter. Failing groups open first, `Failed` re-runs only what broke, `Watch` re-runs on save, and `Debug` starts the selected test under gdb (Rust) or js-debug (Vitest, Jest, `node --test`).
 
+**Coverage.** "Tests: Run with coverage" runs everything with the runner's coverage on (Vitest `--coverage --coverage.reporter=lcov`, Jest `--coverage --coverageReporters=lcov`, both writing `coverage/lcov.info`; cargo through [`cargo llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) when it is installed). Open files get a thin bar at the inner edge of the gutter: green for lines that ran, yellow when some branch on the line never ran, red for lines that never ran; the explorer shows each file's line percentage and the status bar the active file's. Later runs (re-run, watch) keep collecting coverage until "Tests: Hide coverage". "Tests: Show coverage from file" loads the newest `coverage/lcov.info`, `lcov.info` or Cobertura `coverage.xml` of the project without running anything. Marks follow edits: lines moved by an edit keep theirs, a line whose text changed loses its mark until the next run.
+
 Supported runners are detected from the project files: cargo test / cargo nextest, Vitest, Jest, `node --test`, Bun, Deno, `go test`, pytest, PHPUnit / Pest, RSpec, Maven, Gradle, `dotnet test` and ctest. Anything else works through JUnit XML: set `test_command` and `test_report` (the XML file it writes, relative to the project) in `config.json`. Without a report the run still shows in the Output tab.
+
+## Merge editor
+
+"Git: Open merge editor" on a conflicted file (or the conflict icon on its row in the Git panel) splits the editor: the read-only **Incoming** (theirs: the merged branch, the commit being replayed or cherry-picked) and **Current** (ours: HEAD, or during a rebase the branch being rebased onto) versions side by side on top, aligned conflict by conflict, and the **Result** below, which is the file itself and edits like any document. The versions come from the index stages (`git show :1:`, `:2:`, `:3:`) and are merged region by region (diff3, refined like git's zealous merge, so the conflicts match git's markers).
+
+Each conflict has two checkboxes: *Accept incoming* and *Accept current*; checking both keeps both, in the order they were checked, and unchecking the only one brings the markers back. Typing in a conflict resolves it by hand. The header counts "2 of 5 conflicts resolved", *Previous* / *Next* (also `Merge: Next conflict` / `Merge: Previous conflict` in the palette) move between conflicts, and *Mark resolved* saves the result and stages it (`git add`); it stays disabled while any conflict marker is left. The panes scroll with the result (and the result with the panes). Ctrl+Z undoes a choice. Works the same for merge, rebase and cherry-pick conflicts; then finish with a commit, `git rebase --continue` or the Git panel's cherry-pick Continue.

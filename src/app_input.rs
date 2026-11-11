@@ -349,7 +349,7 @@ impl App {
         if self.panel_wheel(delta) {
             return self.request_redraw();
         }
-        if self.diff_wheel(delta) {
+        if self.merge_wheel(delta) || self.diff_wheel(delta) {
             return self.request_redraw();
         }
         if self.img_wheel(delta) || self.md_wheel(delta) || self.split_wheel(delta) {

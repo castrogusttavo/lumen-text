@@ -315,6 +315,8 @@ pub struct Plan {
     pub cleanup: Vec<PathBuf>,
     /// A package.json script whose results cannot be parsed: only its output and exit code count.
     pub log_only: bool,
+    /// The LCOV report a coverage run writes (see [`with_coverage`]).
+    pub coverage: Option<PathBuf>,
 }
 
 pub(crate) fn exec_prefix(root: &Path, local: &str, bin: &str) -> String {
@@ -369,6 +371,7 @@ pub fn plan_with(
         report_dirs: &[],
         cleanup: Vec::new(),
         log_only: false,
+        coverage: None,
     };
     let js_exec = |root: &Path, bin: &str| match inv.and_then(|i| i.pm) {
         Some(pm) => format!("{} {bin}", pm.exec()),
@@ -752,6 +755,73 @@ pub fn plan_with(
         p.cleanup.push(r.clone());
     }
     p
+}
+
+// ───────────── coverage ─────────────
+
+/// `cargo llvm-cov` is installed (on the PATH or in cargo's bin folder).
+fn llvm_cov_installed() -> bool {
+    let cargo_bin = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")))
+        .map(|d| d.join("bin"));
+    let exe = if cfg!(windows) { "cargo-llvm-cov.exe" } else { "cargo-llvm-cov" };
+    on_path(exe) || cargo_bin.is_some_and(|d| d.join(exe).is_file())
+}
+
+/// Can a run of `runner` collect coverage? Err says why not.
+pub fn coverage_supported(runner: Runner) -> Result<(), String> {
+    coverage_supported_with(runner, llvm_cov_installed())
+}
+
+fn coverage_supported_with(runner: Runner, llvm_cov: bool) -> Result<(), String> {
+    match runner {
+        Runner::Vitest | Runner::Jest => Ok(()),
+        Runner::Cargo | Runner::Nextest if llvm_cov => Ok(()),
+        Runner::Cargo | Runner::Nextest => Err("cargo llvm-cov is not installed (cargo install cargo-llvm-cov)".into()),
+        r => Err(format!("coverage runs work with vitest, jest and cargo test (llvm-cov), not {}", r.label())),
+    }
+}
+
+/// Make `plan` also write an LCOV report: vitest and jest into `coverage/lcov.info` of `dir`
+/// (the folder the run happens in), cargo through `cargo llvm-cov` into a temp file next to
+/// `report` (removed with the run's other temp files once read).
+pub fn with_coverage(plan: &mut Plan, dir: &Path, report: &Path) -> Result<(), String> {
+    with_coverage_as(plan, dir, report, llvm_cov_installed())
+}
+
+fn with_coverage_as(plan: &mut Plan, dir: &Path, report: &Path, llvm_cov: bool) -> Result<(), String> {
+    coverage_supported_with(plan.runner, llvm_cov)?;
+    if plan.log_only {
+        return Err("a log-only script cannot collect coverage".into());
+    }
+    match plan.runner {
+        Runner::Vitest => {
+            plan.cmd.push_str(" --coverage --coverage.reporter=lcov");
+            plan.coverage = Some(dir.join("coverage").join("lcov.info"));
+        }
+        Runner::Jest => {
+            plan.cmd.push_str(" --coverage --coverageReporters=lcov");
+            plan.coverage = Some(dir.join("coverage").join("lcov.info"));
+        }
+        Runner::Cargo | Runner::Nextest => {
+            let out = report.with_extension("lcov");
+            let cov = format!("--lcov --output-path {}", shell_quote(&out.to_string_lossy()));
+            let (from, to) = if plan.runner == Runner::Nextest {
+                ("cargo nextest run", format!("cargo llvm-cov nextest {cov}"))
+            } else {
+                ("cargo test", format!("cargo llvm-cov {cov}"))
+            };
+            if !plan.cmd.contains(from) {
+                return Err("unexpected test command".into());
+            }
+            plan.cmd = plan.cmd.replacen(from, &to, 1);
+            plan.cleanup.push(out.clone());
+            plan.coverage = Some(out);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn file_stem(f: &str) -> String {
@@ -1356,6 +1426,7 @@ pub fn plan_script(t: &ScriptTarget, scope: &Scope, report: &Path) -> Plan {
             report_dirs: &[],
             cleanup: Vec::new(),
             log_only: true,
+            coverage: None,
         },
     }
 }
@@ -2639,5 +2710,56 @@ mod tests {
             format!("CI=1 npx jest 'src/a.test.js' --json --outputFile={q}")
         );
         std::fs::remove_dir_all(&d).ok();
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn plan_of(r: Runner, scope: &Scope) -> Plan {
+        plan(r, Path::new("/p"), scope, Path::new("/r/rep.dat"), ("", ""))
+    }
+
+    #[test]
+    fn coverage_flags_per_runner() {
+        let rep = Path::new("/r/rep.dat");
+        let mut p = plan_of(Runner::Vitest, &Scope::All);
+        with_coverage_as(&mut p, Path::new("/p/pkg"), rep, false).unwrap();
+        assert!(p.cmd.ends_with(" --coverage --coverage.reporter=lcov"), "{}", p.cmd);
+        assert!(p.cmd.contains("--reporter=json"), "the JSON results stay: {}", p.cmd);
+        assert_eq!(p.coverage.as_deref(), Some(Path::new("/p/pkg/coverage/lcov.info")));
+
+        let mut p = plan_of(Runner::Jest, &Scope::File("src/a.test.ts"));
+        with_coverage_as(&mut p, Path::new("/p"), rep, false).unwrap();
+        assert!(p.cmd.ends_with(" --coverage --coverageReporters=lcov"), "{}", p.cmd);
+        assert_eq!(p.coverage.as_deref(), Some(Path::new("/p/coverage/lcov.info")));
+
+        let mut p = plan_of(Runner::Cargo, &Scope::Test { file: None, name: "adds", case: None });
+        with_coverage_as(&mut p, Path::new("/p"), rep, true).unwrap();
+        assert!(p.cmd.starts_with("cargo llvm-cov --lcov --output-path '/r/rep.lcov' --no-fail-fast"), "{}", p.cmd);
+        assert!(p.cmd.contains("adds"), "the filter stays: {}", p.cmd);
+        assert_eq!(p.coverage.as_deref(), Some(Path::new("/r/rep.lcov")));
+        assert!(p.cleanup.iter().any(|c| c == Path::new("/r/rep.lcov")), "the temp report is removed after reading");
+
+        let mut p = plan_of(Runner::Nextest, &Scope::All);
+        with_coverage_as(&mut p, Path::new("/p"), rep, true).unwrap();
+        assert!(
+            p.cmd.contains("cargo llvm-cov nextest --lcov --output-path '/r/rep.lcov' --no-fail-fast"),
+            "{}",
+            p.cmd
+        );
+        assert_eq!(p.stream, Some(StreamKind::LibtestJson), "results still stream");
+    }
+
+    #[test]
+    fn coverage_is_refused_where_it_cannot_work() {
+        let mut p = plan_of(Runner::Cargo, &Scope::All);
+        let before = p.cmd.clone();
+        assert!(with_coverage_as(&mut p, Path::new("/p"), Path::new("/r"), false).unwrap_err().contains("llvm-cov"));
+        assert_eq!(p.cmd, before, "nothing changes when refused");
+        assert!(coverage_supported_with(Runner::Pytest, true).unwrap_err().contains("pytest"));
+        assert!(coverage_supported_with(Runner::Go, true).is_err());
+        assert!(coverage_supported_with(Runner::Jest, false).is_ok());
     }
 }

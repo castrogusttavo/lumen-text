@@ -784,6 +784,18 @@ impl Doc {
                 tx.icon(cv, icon, rect.x + 12, y + (lh - 12) / 2, 12, color, gclip);
             }
         }
+        // Coverage: a thin bar at the inner edge of the gutter, on every row of a marked line.
+        if !self.cov.is_empty() {
+            for (r, row) in rows.iter().enumerate() {
+                let Ok(i) = self.cov.binary_search_by_key(&row.line, |m| m.line) else { continue };
+                let color = match self.cov[i].cov {
+                    crate::coverage::Cov::Covered => c.git_added,
+                    crate::coverage::Cov::Partial => c.warning,
+                    crate::coverage::Cov::Uncovered => c.error,
+                };
+                cv.fill_clip(Rect::new(rect.x + gutter_w - 3, ry(r), 2, lh), color.with_alpha(0xd0), gclip);
+            }
+        }
         let mut worst: std::collections::HashMap<usize, u8> = std::collections::HashMap::new();
         for d in self.diags.iter().filter(|d| d.severity <= 3) {
             let e = worst.entry(d.sl).or_insert(d.severity);

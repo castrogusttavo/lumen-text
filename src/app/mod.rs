@@ -209,6 +209,8 @@ pub struct App {
     pub diff: Option<crate::app_gitx::DiffView>,
     /// Local history folder (`localhist`); None in unit tests unless a test sets a temp folder.
     pub hist_root: Option<PathBuf>,
+    /// 3-way merge editor over the focused pane (see `app_merge`).
+    pub merge: Option<Box<crate::app_merge::MergeView>>,
     /// Git panel docked on the right (Changes / History).
     pub gitpanel: Option<Box<crate::app_gitpanel::GitPanel>>,
     pub split: Option<Box<crate::app_split::Split>>,
@@ -360,6 +362,7 @@ impl App {
             dbg: None,
             diff: None,
             hist_root: if cfg!(test) { None } else { crate::localhist::default_root() },
+            merge: None,
             gitpanel: None,
             split: None,
             breakpoints: Default::default(),
