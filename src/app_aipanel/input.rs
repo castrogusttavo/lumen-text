@@ -139,7 +139,9 @@ impl App {
             Some(AiHit::Refresh) => {
                 self.ai_detect(true);
                 match self.ai_default_agent() {
-                    Some(a) if self.ai.path_of(a).is_some() => self.ai_start(a),
+                    Some(a) if self.ai.path_of(a).is_some() => {
+                        self.ai_new_session(a, None);
+                    }
                     _ => self.say("no agent CLI found on PATH"),
                 }
             }
