@@ -1135,6 +1135,26 @@ fn math_is_typeset_inline_and_in_display_blocks() {
 }
 
 #[test]
+fn math_fenced_code_blocks_are_display_math() {
+    let src = "Gauss:\n\n```math\n\\nabla \\cdot \\mathbf{E} = \\frac{\\rho}{\\varepsilon_0}\n```\n\n```Math\n\\foo\n```\n\n```rust\nlet x = 1;\n```\n";
+    let (v, _) = laid(src, 800);
+    assert_eq!(kinds(&v), ["p", "math", "math", "code"]);
+    let maths: Vec<(&str, bool)> = v
+        .ops()
+        .iter()
+        .filter_map(|o| if let Op::Math { src, display, .. } = &o.op { Some((src.as_str(), *display)) } else { None })
+        .collect();
+    assert_eq!(maths, [("\\nabla \\cdot \\mathbf{E} = \\frac{\\rho}{\\varepsilon_0}", true)]);
+    // a formula that does not typeset keeps the source block, with the error located
+    let code: Vec<(bool, Option<(usize, usize, usize)>)> = v
+        .ops()
+        .iter()
+        .filter_map(|o| if let Op::Code { math, err, .. } = &o.op { Some((*math, *err)) } else { None })
+        .collect();
+    assert_eq!(code, [(true, Some((0, 0, 4))), (false, None)]);
+}
+
+#[test]
 fn tall_inline_math_grows_its_line_and_keeps_the_baseline() {
     let plain = laid("x and y\n", 800).0.content_height();
     let tall = "x $\\dfrac{\\dfrac{a}{b}}{\\dfrac{c}{d}}$ y\n";

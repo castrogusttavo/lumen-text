@@ -26,7 +26,7 @@
 //! files are decoded: png, jpg, gif, webp, svg, see `mdimg`; remote URLs keep a bordered placeholder
 //! with alt text and URL), bullet / ordered / nested / task lists (a click on a checkbox toggles the
 //! source, see [`MdView::check_at`]), footnotes (numbered by first reference, collected at the end),
-//! TeX math (`$..$` inline on the text baseline, `$$..$$` as a centered display block, typeset with
+//! TeX math (`$..$` inline on the text baseline, `$$..$$` and ```` ```math ```` fences as a centered display block, typeset with
 //! the embedded STIX Two Math font, see [`math`]; a formula that does not parse falls back to its
 //! monospace source with the offending part in the error color), block quotes, thematic breaks, fenced and indented code blocks (monospace, never wrapped, clipped
 //! horizontally, language label, TextMate syntax colors when a highlighter is given to
