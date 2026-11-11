@@ -138,10 +138,17 @@ pub fn config_section(settings: &Value, section: Option<&str>) -> Value {
     for part in sec.split('.') {
         match cur.get(part) {
             Some(v) => cur = v,
-            None => return settings.get(sec).cloned().unwrap_or(Value::Null),
+            None => return settings.get(sec).cloned().unwrap_or_else(|| missing_section(sec)),
         }
     }
     cur.clone()
+}
+
+/// What an unconfigured section reads as. Like VS Code, a top-level namespace (`css`, `yaml`) is an
+/// empty object, so servers that do `settings.lint` with defaults keep working (the CSS server threw
+/// on `null` and never validated); a dotted leaf (`python.analysis.mode`) is `null` ("use the default").
+fn missing_section(sec: &str) -> Value {
+    if sec.contains('.') { Value::Null } else { Value::Object(Default::default()) }
 }
 
 /// Answer to `workspace/configuration` for a registry server.
@@ -256,7 +263,7 @@ mod tests {
         assert!(config_section(&s, Some("nope.x")).is_null());
         assert_eq!(config_section(&s, None), s);
         let r = configuration_reply(&s, &json!({"items": [{"section": "x"}, {"section": "y"}]}));
-        assert_eq!(r, json!([1, null]));
+        assert_eq!(r, json!([1, {}]), "an unconfigured namespace is an empty object, not null");
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //!
 //! This module is pure data and filesystem probing: no processes, no UI.
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -43,6 +43,29 @@ const EDITOR_LANGS: &[&str] = &[
     "vue",
     "svelte",
     "zig",
+    "csharp",
+    "fsharp",
+    "kotlin",
+    "scala",
+    "dart",
+    "elixir",
+    "haskell",
+    "ocaml",
+    "docker",
+    "make",
+    "cmake",
+    "terraform",
+    "astro",
+    "less",
+    "xml",
+    "objective-c",
+    "objective-cpp",
+    "perl",
+    "r",
+    "julia",
+    "nix",
+    "graphql",
+    "prisma",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,23 +144,72 @@ impl ServerSpec {
     }
 
     pub fn settings_for(&self, root: &Path) -> Value {
-        subst_value(&self.settings, root)
+        let mut v = subst_value(&self.settings, root);
+        // Python servers do not look for the project's virtualenv themselves (VS Code's Python
+        // extension tells them): without it every installed dependency is "could not be resolved".
+        if self.languages.iter().any(|l| l == "python")
+            && let Some(py) = project_python(root)
+        {
+            let py = json!(py.to_string_lossy());
+            if !v.is_object() {
+                v = json!({});
+            }
+            if v.pointer("/python/pythonPath").is_none() {
+                v["python"]["pythonPath"] = py.clone();
+            }
+            if self.id == "pylsp" && v.pointer("/pylsp/plugins/jedi/environment").is_none() {
+                v["pylsp"]["plugins"]["jedi"]["environment"] = py;
+            }
+        }
+        v
     }
 
     /// Is a `requires` condition satisfied for a file in `dir`?
     pub fn requirement_met(&self, dir: &Path) -> bool {
-        self.requires.is_empty() || dir.ancestors().any(|a| self.requires.iter().any(|r| a.join(r).exists()))
+        self.requires.is_empty() || dir.ancestors().any(|a| self.requires.iter().any(|r| marker_in(a, r)))
     }
 
     /// Workspace root for a file: the nearest ancestor holding a root marker, else the file's directory.
     pub fn root_for(&self, file: &Path) -> PathBuf {
         let dir = file.parent().unwrap_or(Path::new("/"));
+        // The home folder is never the workspace of a file below it: a stray `~/package.json` or
+        // `~/.git` would make a server index the whole home for `~/Downloads/x.css`.
+        let home = home_dir().map(PathBuf::from);
         for a in dir.ancestors() {
-            if self.root_markers.iter().any(|m| a.join(m).exists()) {
+            if a != dir && home.as_deref() == Some(a) {
+                break;
+            }
+            if self.root_markers.iter().any(|m| marker_in(a, m)) {
                 return a.to_path_buf();
             }
         }
         dir.to_path_buf()
+    }
+}
+
+/// The interpreter of the project's virtualenv: `.venv`, `venv` or `env` in `root`, else the
+/// activated `$VIRTUAL_ENV`.
+pub fn project_python(root: &Path) -> Option<PathBuf> {
+    let exe = |venv: &Path| {
+        [venv.join("bin/python"), venv.join("bin/python3"), venv.join("Scripts/python.exe")]
+            .into_iter()
+            .find(|p| p.is_file())
+    };
+    [".venv", "venv", "env"]
+        .iter()
+        .map(|d| root.join(d))
+        .filter(|d| d.join("pyvenv.cfg").is_file())
+        .find_map(|d| exe(&d))
+        .or_else(|| std::env::var_os("VIRTUAL_ENV").and_then(|v| exe(Path::new(&v))))
+}
+
+/// Does `dir` hold `marker`? A marker is a relative path, or `*.ext` for "any file with that
+/// extension directly in `dir`" (C# solutions and projects have per-project names: `App.csproj`).
+fn marker_in(dir: &Path, marker: &str) -> bool {
+    match marker.strip_prefix("*.") {
+        Some(ext) if !ext.contains('/') => std::fs::read_dir(dir)
+            .is_ok_and(|rd| rd.flatten().any(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case(ext)))),
+        _ => dir.join(marker).exists(),
     }
 }
 
@@ -149,6 +221,10 @@ pub fn language_id(lang: Option<&str>, path: Option<&Path>) -> String {
         Some("tsx") => "typescriptreact".into(),
         Some("jsx") => "javascriptreact".into(),
         Some("json") if ext == "jsonc" => "jsonc".into(),
+        // Editor (grammar) ids that differ from the LSP spec's well-known language identifiers.
+        Some("docker") => "dockerfile".into(),
+        Some("make") => "makefile".into(),
+        Some("shellscript") => "shellscript".into(),
         Some(l) => l.to_string(),
         None if ext.is_empty() => "plaintext".into(),
         None => ext,
@@ -413,13 +489,58 @@ pub fn search_dirs(root: &Path) -> Vec<PathBuf> {
     if let Some(p) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&p));
     }
-    if let Some(h) = home_dir() {
-        let h = PathBuf::from(h);
-        for rel in [".local/share/lumen-text/lsp/bin", ".cargo/bin", ".local/bin", "go/bin"] {
-            dirs.push(h.join(rel));
-        }
+    dirs.extend(user_tool_dirs());
+    dirs
+}
+
+/// Per-user tool folders that are often missing from the PATH of an editor started from the
+/// desktop: Lumen's own server folder, cargo, pipx/uv, go, .NET global tools, Ruby user gems.
+fn user_tool_dirs() -> Vec<PathBuf> {
+    let Some(h) = home_dir().map(PathBuf::from) else { return Vec::new() };
+    let mut dirs: Vec<PathBuf> =
+        [".local/share/lumen-text/lsp/bin", ".cargo/bin", ".local/bin", "go/bin", ".dotnet/tools"]
+            .iter()
+            .map(|r| h.join(r))
+            .collect();
+    // `gem install --user-install` (the default on Arch, Fedora...) puts executables in a folder per Ruby version.
+    for base in [h.join(".local/share/gem/ruby"), h.join(".gem/ruby")] {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(&base)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path().join("bin"))
+            .filter(|p| p.is_dir())
+            .collect();
+        v.sort();
+        dirs.extend(v.into_iter().rev());
     }
     dirs
+}
+
+/// `PATH` for a server process: the folder of its executable (and of the symlink target, so a
+/// server installed in a venv or node_modules finds its siblings), the per-user tool folders, then
+/// the editor's own `PATH`. Servers run helpers (`bundle`, `zig`, `go`, `node`, `dotnet`) that an
+/// editor launched from the desktop menu would otherwise not find.
+pub fn child_path(exe: &Path) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push = |d: PathBuf| {
+        if !d.as_os_str().is_empty() && !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    };
+    if let Some(d) = exe.parent() {
+        push(d.to_path_buf());
+    }
+    if let Some(d) = exe.canonicalize().ok().as_deref().and_then(Path::parent) {
+        push(d.to_path_buf());
+    }
+    for d in user_tool_dirs().into_iter().filter(|d| d.is_dir()) {
+        push(d);
+    }
+    for d in std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default() {
+        push(d);
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
 }
 
 /// Absolute path of the server's executable, or `None` when it is not installed.
@@ -560,5 +681,113 @@ mod tests {
         assert!(resolve_command("definitely-not-a-real-server-xyz", Path::new("/")).is_none());
         assert!(resolve_command("sh", Path::new("/")).is_some());
         assert!(resolve_command("/bin/sh", Path::new("/")).is_some());
+    }
+
+    #[test]
+    fn the_home_folder_is_not_a_workspace_for_files_below_it() {
+        let Some(home) = home_dir().map(PathBuf::from) else { return };
+        let r = Registry::builtin();
+        let json = r.get("vscode-json-language-server").unwrap();
+        // Whatever markers the real home holds, a file in a sub-folder roots at that folder.
+        let f = home.join("lumen-no-such-dir-xyz/a.json");
+        assert_eq!(json.root_for(&f), home.join("lumen-no-such-dir-xyz"));
+    }
+
+    #[test]
+    fn glob_root_markers_find_per_project_names() {
+        let base = std::env::temp_dir().join(format!("lumen-reg-glob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("App/src")).unwrap();
+        std::fs::write(base.join("App/App.csproj"), "<Project/>").unwrap();
+        let r = Registry::builtin();
+        let cs = r.get("csharp-ls").unwrap();
+        assert_eq!(cs.root_for(&base.join("App/src/Program.cs")), base.join("App"));
+        assert!(!marker_in(&base.join("App/src"), "*.csproj"));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn python_servers_get_the_project_virtualenv() {
+        let base = std::env::temp_dir().join(format!("lumen-reg-venv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join(".venv/bin")).unwrap();
+        std::fs::write(base.join(".venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+        std::fs::write(base.join(".venv/bin/python"), "").unwrap();
+        let r = Registry::builtin();
+        let py = base.join(".venv/bin/python").to_string_lossy().into_owned();
+        assert_eq!(r.get("pyright").unwrap().settings_for(&base)["python"]["pythonPath"], json!(py));
+        assert_eq!(r.get("pylsp").unwrap().settings_for(&base)["pylsp"]["plugins"]["jedi"]["environment"], json!(py));
+        assert!(r.get("gopls").unwrap().settings_for(&base).pointer("/python").is_none());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn language_ids_use_the_lsp_spelling() {
+        assert_eq!(language_id(Some("docker"), Some(Path::new("/p/Dockerfile"))), "dockerfile");
+        assert_eq!(language_id(Some("make"), Some(Path::new("/p/Makefile"))), "makefile");
+        assert_eq!(language_id(Some("csharp"), Some(Path::new("/p/a.cs"))), "csharp");
+        assert_eq!(language_id(Some("kotlin"), Some(Path::new("/p/a.kt"))), "kotlin");
+    }
+
+    #[test]
+    fn every_builtin_language_is_one_the_editor_assigns() {
+        // A server for a language `highlight::language_for` never returns would never start.
+        let assigned: Vec<&str> = [
+            "a.ts",
+            "a.tsx",
+            "a.js",
+            "a.jsx",
+            "a.json",
+            "a.rs",
+            "a.py",
+            "a.go",
+            "a.md",
+            "a.html",
+            "a.css",
+            "a.scss",
+            "a.less",
+            "a.sh",
+            "a.toml",
+            "a.yaml",
+            "a.c",
+            "a.cpp",
+            "a.java",
+            "a.kt",
+            "a.cs",
+            "a.swift",
+            "a.m",
+            "a.mm",
+            "a.dart",
+            "a.ex",
+            "a.hs",
+            "a.scala",
+            "a.tf",
+            "a.lua",
+            "a.rb",
+            "a.php",
+            "a.zig",
+            "a.vue",
+            "a.svelte",
+            "a.astro",
+            "Dockerfile",
+        ]
+        .iter()
+        .filter_map(|f| crate::highlight::language_for(f))
+        .collect();
+        for s in &Registry::builtin().servers {
+            assert!(s.languages.iter().any(|l| assigned.contains(&l.as_str())), "{}: {:?}", s.id, s.languages);
+        }
+    }
+
+    #[test]
+    fn server_path_starts_with_the_executable_folder() {
+        let p = child_path(Path::new("/opt/srv/bin/server"));
+        let dirs: Vec<PathBuf> = std::env::split_paths(&p).collect();
+        assert_eq!(dirs[0], PathBuf::from("/opt/srv/bin"));
+        if let Some(path) = std::env::var_os("PATH") {
+            for d in std::env::split_paths(&path).filter(|d| !d.as_os_str().is_empty()) {
+                assert!(dirs.contains(&d), "the editor's PATH is kept: {}", d.display());
+            }
+        }
     }
 }

@@ -254,6 +254,9 @@ impl App {
         let args = spec.args_for(&e.root);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let mut env = spec.env_for(&e.root);
+        if !env.iter().any(|(k, _)| k == "PATH") {
+            env.push(("PATH".into(), lspreg::child_path(&exe).to_string_lossy().into_owned()));
+        }
         if exe.file_name().is_some_and(|n| n == "gopls") && !env.iter().any(|(k, _)| k == "GOMEMLIMIT") {
             env.push(("GOMEMLIMIT".into(), "512MiB".into()));
         }
@@ -533,12 +536,10 @@ impl App {
 
     /// The `initialize` answer of a registry server.
     pub(crate) fn lspx_initialized(&mut self, li: usize, result: &Value) {
-        self.lsps[li].on_initialized(result);
-        let id = self.lsps[li].name.clone();
         let settings = self.lsps[li].generic.as_ref().map(|g| g.settings.clone()).unwrap_or(Value::Null);
-        if !settings.is_null() {
-            self.lsps[li].notify("workspace/didChangeConfiguration", json!({"settings": settings}));
-        }
+        let config = (!settings.is_null()).then(|| ("workspace/didChangeConfiguration", json!({"settings": settings})));
+        self.lsps[li].on_initialized_then(result, config);
+        let id = self.lsps[li].name.clone();
         let server = result["serverInfo"]["name"].as_str().unwrap_or("");
         let ver = result["serverInfo"]["version"].as_str().unwrap_or("");
         self.lsps[li].log_line("app", &format!("initialized {server} {ver}"));
@@ -623,6 +624,7 @@ impl App {
         if !self.lsps.get(li).is_some_and(Lsp::is_generic) {
             return false;
         }
+        let mut resend_config = false;
         let result = match method {
             "workspace/configuration" => {
                 let settings = self.lsps[li].generic.as_ref().map(|g| g.settings.clone()).unwrap_or(Value::Null);
@@ -632,6 +634,12 @@ impl App {
                 let l = &mut self.lsps[li];
                 let (caps, regs) = (&mut l.caps, &mut l.registrations);
                 lspsup::register(caps, regs, params);
+                // A server that registers for configuration changes (yaml-language-server) only
+                // listens from now on: the settings sent after `initialized` were dropped, so send
+                // them again once it has its answer (VS Code does the same).
+                resend_config = params["registrations"]
+                    .as_array()
+                    .is_some_and(|r| r.iter().any(|x| x["method"] == "workspace/didChangeConfiguration"));
                 Value::Null
             }
             "client/unregisterCapability" => {
@@ -656,6 +664,11 @@ impl App {
             _ => Value::Null,
         };
         self.lsps[li].respond(rid.clone(), result);
+        if resend_config {
+            let settings = self.lsps[li].generic.as_ref().map(|g| g.settings.clone()).unwrap_or(Value::Null);
+            let settings = if settings.is_null() { json!({}) } else { settings };
+            self.lsps[li].notify("workspace/didChangeConfiguration", json!({"settings": settings}));
+        }
         true
     }
 
@@ -1122,7 +1135,8 @@ mod tests {
             "dynamic registration missed"
         );
         assert!(
-            pump(&mut app, 4000, |a| a.lsps[0].log_text().contains("config reply: [3,null]")),
+            // An unconfigured namespace reads as `{}` (as in VS Code), not `null`.
+            pump(&mut app, 4000, |a| a.lsps[0].log_text().contains("config reply: [3,{}]")),
             "{}",
             app.lsps[0].log_text()
         );

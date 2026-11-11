@@ -23,8 +23,9 @@ and no GPU driver:
   (65 themes, 260 grammar files), through a port of the `vscode-textmate` core on top of `onig`.
 - TypeScript is served by [`tsgo`](https://github.com/microsoft/typescript-go) (the native TypeScript
   compiler) started on demand with full project awareness (like VS Code or Zed); an opt-in *lean mode* only loads open files and their imports for low-RAM machines.
-- Any language server works: a built-in table (rust-analyzer, pyright, gopls, clangd, lua-language-server, taplo,
-  the vscode JSON/CSS/HTML servers, yaml, bash, marksman, zls, ruby-lsp, phpactor, svelte, astro, vue, Tailwind, deno...)
+- Any language server works: a built-in table (rust-analyzer, pyright, gopls, clangd, jdtls (Java), csharp-ls (C#),
+  kotlin-lsp, lua-language-server, taplo, the vscode JSON/CSS/HTML servers, yaml, bash, marksman, zls, ruby-lsp,
+  phpactor, Dockerfile, sourcekit-lsp, dart, elixir-ls, haskell, metals, svelte, astro, vue, Tailwind, deno...)
   starts a server **only when a matching file is opened and the program is installed**; add your own in `config.json`.
 - One window, one process per editor, one font in memory, no web view, no Electron.
 

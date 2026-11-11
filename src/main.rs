@@ -61,6 +61,8 @@ mod instance;
 mod keymap;
 mod lsp;
 mod lsp_guard;
+#[cfg(test)]
+mod lsp_matrix;
 mod lsp_stream;
 mod lsplog;
 mod lspmerge;

@@ -574,43 +574,138 @@ pub fn highlight_text(tk: &SharedTokenizer, theme: &Theme, text: &str) -> Vec<Ve
 }
 
 pub fn comment_prefix(path: &str) -> &'static str {
-    match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
-        "py" | "sh" | "bash" | "zsh" | "toml" | "yaml" | "yml" | "rb" | "conf" => "#",
-        "lua" | "sql" => "--",
-        "css" | "scss" | "html" | "htm" | "md" | "json" => "",
+    match language_for(path) {
+        Some(
+            "python" | "shellscript" | "fish" | "toml" | "yaml" | "ruby" | "perl" | "r" | "julia" | "elixir" | "nim"
+            | "docker" | "make" | "cmake" | "powershell" | "terraform" | "hcl" | "dotenv" | "ini" | "nginx" | "graphql"
+            | "crystal" | "tcl" | "gdscript" | "coffee" | "nix" | "just" | "nushell" | "awk",
+        ) => "#",
+        Some("lua" | "sql" | "haskell" | "elm" | "purescript" | "ada" | "vhdl" | "plsql") => "--",
+        Some("erlang" | "latex" | "tex" | "matlab" | "prolog") => "%",
+        Some("clojure" | "scheme" | "racket" | "common-lisp" | "emacs-lisp" | "fennel" | "asm") => ";",
+        Some("vb") => "'",
+        Some("viml") => "\"",
+        Some("fsharp" | "ocaml") => "//",
+        Some("css" | "scss" | "less" | "html" | "xml" | "markdown" | "json" | "vue" | "svelte" | "astro") => "",
         _ => "//",
     }
 }
 
+/// The editor's language id (a grammar id from `assets/language-manifest.json`) for a path: by
+/// well-known file name first (Dockerfile, Makefile...), then by extension.
 pub fn language_for(path: &str) -> Option<&'static str> {
-    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let lower = name.to_ascii_lowercase();
+    let by_name = match lower.as_str() {
+        "dockerfile" | "containerfile" => Some("docker"),
+        "makefile" | "gnumakefile" => Some("make"),
+        "cmakelists.txt" => Some("cmake"),
+        "gemfile" | "rakefile" | "podfile" | "vagrantfile" | "brewfile" | "guardfile" => Some("ruby"),
+        "justfile" | ".justfile" => Some("just"),
+        ".bashrc" | ".bash_profile" | ".zshrc" | ".zprofile" | ".profile" | "pkgbuild" => Some("shellscript"),
+        ".env" => Some("dotenv"),
+        "go.mod" | "go.sum" | "go.work" => None,
+        _ if lower.starts_with("dockerfile.") || lower.ends_with(".dockerfile") => Some("docker"),
+        _ if lower.starts_with(".env.") => Some("dotenv"),
+        _ => None,
+    };
+    if by_name.is_some() {
+        return by_name;
+    }
+    let (_, ext) = lower.rsplit_once('.')?;
+    Some(match ext {
         "ts" | "mts" | "cts" => "typescript",
         "tsx" => "tsx",
         "js" | "mjs" | "cjs" => "javascript",
         "jsx" => "jsx",
-        "json" | "jsonc" => "json",
+        "json" | "jsonc" | "json5" => "json",
         "rs" => "rust",
-        "py" => "python",
+        "py" | "pyi" | "pyw" => "python",
         "go" => "go",
-        "md" => "markdown",
-        "html" | "htm" => "html",
+        "md" | "markdown" => "markdown",
+        "mdx" => "mdx",
+        "html" | "htm" | "xhtml" => "html",
         "css" => "css",
         "scss" => "scss",
-        "sh" | "bash" | "zsh" => "shellscript",
+        "sass" => "sass",
+        "less" => "less",
+        "sh" | "bash" | "zsh" | "ksh" => "shellscript",
+        "fish" => "fish",
+        "ps1" | "psm1" | "psd1" => "powershell",
+        "bat" | "cmd" => "bat",
         "toml" => "toml",
         "yaml" | "yml" => "yaml",
+        "xml" | "xsd" | "svg" | "plist" | "csproj" | "fsproj" | "vbproj" | "props" | "targets" | "xaml" | "pom" => {
+            "xml"
+        }
+        "ini" | "cfg" | "conf" | "properties" => "ini",
         "c" | "h" => "c",
-        "cpp" | "cc" | "hpp" => "cpp",
+        "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "ipp" | "inl" | "tpp" => "cpp",
+        "m" => "objective-c",
+        "mm" => "objective-cpp",
+        "cs" | "csx" => "csharp",
+        "fs" | "fsi" | "fsx" => "fsharp",
+        "vb" => "vb",
         "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "scala" | "sc" | "sbt" => "scala",
+        "groovy" | "gradle" => "groovy",
+        "clj" | "cljs" | "cljc" | "edn" => "clojure",
         "swift" => "swift",
+        "dart" => "dart",
         "lua" => "lua",
-        "rb" => "ruby",
-        "php" => "php",
+        "rb" | "rake" | "gemspec" | "ru" => "ruby",
+        "erb" => "erb",
+        "php" | "phtml" => "php",
+        "pl" | "pm" => "perl",
+        "r" => "r",
+        "jl" => "julia",
+        "ex" | "exs" => "elixir",
+        "erl" | "hrl" => "erlang",
+        "gleam" => "gleam",
+        "hs" | "lhs" => "haskell",
+        "elm" => "elm",
+        "ml" | "mli" => "ocaml",
+        "nim" | "nims" => "nim",
+        "cr" => "crystal",
+        "zig" | "zon" => "zig",
+        "odin" => "odin",
+        "v" => "v",
+        "d" => "d",
         "sql" => "sql",
+        "prisma" => "prisma",
+        "graphql" | "gql" => "graphql",
+        "proto" => "proto",
+        "tf" | "tfvars" => "terraform",
+        "hcl" => "hcl",
+        "nix" => "nix",
+        "cmake" => "cmake",
+        "mk" => "make",
+        "dockerfile" => "docker",
+        "tex" | "sty" | "cls" => "latex",
         "vue" => "vue",
         "svelte" => "svelte",
-        "zig" => "zig",
+        "astro" => "astro",
+        "sol" => "solidity",
+        "wgsl" => "wgsl",
+        "glsl" | "vert" | "frag" => "glsl",
+        "vim" => "viml",
+        "diff" | "patch" => "diff",
+        "csv" => "csv",
+        "tsv" => "tsv",
+        "asm" | "s" => "asm",
+        "tcl" => "tcl",
+        "gd" => "gdscript",
+        "coffee" => "coffee",
+        "jinja" | "j2" => "jinja",
+        "twig" => "twig",
+        "hbs" | "handlebars" => "handlebars",
+        "pug" => "pug",
+        "liquid" => "liquid",
+        "rst" => "rst",
+        "typ" => "typst",
+        "nu" => "nushell",
+        "awk" => "awk",
         _ => return None,
     })
 }
@@ -620,6 +715,49 @@ mod tests {
     use super::*;
     use crate::buffer::{EditKind, Sel};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn languages_by_extension_and_by_file_name() {
+        for (f, want) in [
+            ("/p/src/Program.cs", Some("csharp")),
+            ("/p/Main.kt", Some("kotlin")),
+            ("/p/build.gradle.kts", Some("kotlin")),
+            ("/p/lib/main.dart", Some("dart")),
+            ("/p/a.cxx", Some("cpp")),
+            ("/p/a.hpp", Some("cpp")),
+            ("/p/Dockerfile", Some("docker")),
+            ("/p/Dockerfile.dev", Some("docker")),
+            ("/p/Makefile", Some("make")),
+            ("/p/CMakeLists.txt", Some("cmake")),
+            ("/p/Gemfile", Some("ruby")),
+            ("/p/.env.local", Some("dotenv")),
+            ("/p/App.csproj", Some("xml")),
+            ("C:\\p\\Main.java", Some("java")),
+            ("/p/README", None),
+            ("/p/go.mod", None),
+        ] {
+            assert_eq!(language_for(f), want, "{f}");
+        }
+        assert_eq!(comment_prefix("/p/Dockerfile"), "#");
+        assert_eq!(comment_prefix("/p/a.hs"), "--");
+        assert_eq!(comment_prefix("/p/a.cs"), "//");
+    }
+
+    #[test]
+    fn every_language_id_has_a_grammar() {
+        let text = std::fs::read_to_string(assets().join("language-manifest.json")).unwrap();
+        let m: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let ids: Vec<&str> = m["languages"].as_array().unwrap().iter().filter_map(|l| l["id"].as_str()).collect();
+        let src = include_str!("highlight.rs");
+        let start = src.find("pub fn language_for").unwrap();
+        let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+        for cap in body.split("=> ").skip(1) {
+            let cap = cap.trim_start_matches("Some(");
+            if let Some(id) = cap.strip_prefix('"').and_then(|r| r.split('"').next()) {
+                assert!(ids.contains(&id), "language id {id:?} has no grammar in the manifest");
+            }
+        }
+    }
 
     fn assets() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("assets")

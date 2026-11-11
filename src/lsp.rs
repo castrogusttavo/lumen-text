@@ -388,9 +388,19 @@ impl Lsp {
 
     /// Must be called with the `initialize` response.
     pub fn on_initialized(&mut self, result: &Value) {
+        self.on_initialized_then(result, None);
+    }
+
+    /// `on_initialized`, sending `first` (a notification: method, params) right after `initialized`
+    /// and before the queued `didOpen`s: settings must reach a server before it lints the first
+    /// document (taplo, among others, does not re-lint when the configuration arrives later).
+    pub fn on_initialized_then(&mut self, result: &Value, first: Option<(&str, Value)>) {
         self.caps = result["capabilities"].clone();
         self.ready = true;
         self.write(&json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
+        if let Some((method, params)) = first {
+            self.write(&json!({"jsonrpc":"2.0","method":method,"params":params}));
+        }
         for v in std::mem::take(&mut self.queue) {
             self.write(&v);
         }
