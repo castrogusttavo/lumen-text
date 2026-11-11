@@ -214,8 +214,8 @@ impl Drop for Server {
 /// A random port in 10000–65535 (as the IDE extensions do), else any free one.
 fn bind() -> io::Result<TcpListener> {
     let r = random_bytes(32);
-    for pair in r.chunks_exact(2) {
-        let port = 10000 + (u16::from_le_bytes([pair[0], pair[1]]) % 55536);
+    for pair in r.as_chunks::<2>().0 {
+        let port = 10000 + (u16::from_le_bytes(*pair) % 55536);
         if let Ok(l) = TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
             return Ok(l);
         }
