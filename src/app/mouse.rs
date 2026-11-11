@@ -15,6 +15,7 @@ impl App {
         self.hover = None;
         self.dismiss_tooltip();
         self.chord = None;
+        self.jump = None; // a click gives up a pending "Jump to…"
         self.tests.focused = false; // a click in the Tests panel gives it back
         self.build.focused = false; // likewise for the Build panel
         self.aipanel_mouse_pre(); // and for the AI panel
@@ -130,13 +131,8 @@ impl App {
             return;
         }
         if button == MouseButton::Middle {
-            // Middle click: paste the primary selection at the pointer.
-            let text = self.clip.get_primary();
-            let d = &mut self.docs[self.active];
-            let p = d.pos_at(x, y);
-            d.ed.click(&mut d.buf, p, false);
-            d.ed.paste(&mut d.buf, &text);
-            d.reveal = true;
+            // Middle drag: column selection; a middle click pastes the primary selection on release.
+            self.drag_press_middle();
             return self.request_redraw();
         }
         let ctrl = self.mods.control_key();
@@ -190,7 +186,11 @@ impl App {
         let d = &mut self.docs[self.active];
         let (p, hint) = d.hit_at(x, y);
         if alt && clicks == 1 {
-            self.drag_press_block(p);
+            if shift {
+                self.drag_press_box(p);
+            } else {
+                self.drag_press_block(p);
+            }
             return self.request_redraw();
         }
         d.ed.clear_extra();

@@ -154,6 +154,11 @@ pub enum Cmd {
     RestartUpdate,
     About,
     Quit,
+    ColumnSelectUp,
+    ColumnSelectDown,
+    ColumnSelectLeft,
+    ColumnSelectRight,
+    JumpTo,
 }
 
 impl Cmd {
@@ -318,4 +323,9 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Help: Restart to update", "", Cmd::RestartUpdate),
     ("Help: About Lumen", "", Cmd::About),
     ("Quit", "Ctrl+Q", Cmd::Quit),
+    ("Edit: Column select up", "Ctrl+Shift+Alt+↑", Cmd::ColumnSelectUp),
+    ("Edit: Column select down", "Ctrl+Shift+Alt+↓", Cmd::ColumnSelectDown),
+    ("Edit: Column select left", "Ctrl+Shift+Alt+←", Cmd::ColumnSelectLeft),
+    ("Edit: Column select right", "Ctrl+Shift+Alt+→", Cmd::ColumnSelectRight),
+    ("Go to: Jump to…", "Alt+J", Cmd::JumpTo),
 ];

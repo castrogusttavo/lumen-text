@@ -909,8 +909,8 @@ impl App {
             x += w + 14;
         }
         // A chord waits for its second stroke: say so (Esc gives up).
-        if let Some(prefix) = self.chord.clone() {
-            let label = crate::keymap::chord_label(&prefix);
+        // So does "Jump to…" while it waits for characters or a label.
+        if let Some(label) = self.chord.as_deref().map(crate::keymap::chord_label).or_else(|| self.jump_status()) {
             let lw = self.tx.ui_width(&label, true);
             let pill = Rect::new(x + 2, r.y + 4, lw + 18, r.h - 8);
             cv.fill_round(pill, (pill.h / 2).min(10), c.accent.with_alpha(0x38));

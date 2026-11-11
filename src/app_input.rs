@@ -37,12 +37,22 @@ pub struct DragSel {
     /// Block mode: anchor (line, visual column) and the cursors that were there before.
     pub block: (usize, usize),
     pub base: Vec<Sel>,
+    /// Middle button: a column selection once dragged, else (with `pending`) a paste on release.
+    pub middle: bool,
 }
 
 impl DragSel {
     /// Mouse press at char `p`. `clicks`: 1 single, 2 double (word), 3+ triple (line).
     pub fn press(d: &mut Doc, p: usize, clicks: u32, shift: bool) -> DragSel {
-        let mut ds = DragSel { kind: DragKind::Char, lo: p, hi: p, pending: false, block: (0, 0), base: Vec::new() };
+        let mut ds = DragSel {
+            kind: DragKind::Char,
+            lo: p,
+            hi: p,
+            pending: false,
+            block: (0, 0),
+            base: Vec::new(),
+            middle: false,
+        };
         match clicks {
             1 => {
                 let s = d.ed.sel;
@@ -101,7 +111,21 @@ impl DragSel {
         let base = d.ed.all_sels();
         d.ed.add_cursor_at(p);
         let (line, _) = d.buf.line_col(p);
-        DragSel { kind: DragKind::Block, lo: p, hi: p, pending: false, block: (line, vcol), base }
+        DragSel { kind: DragKind::Block, lo: p, hi: p, pending: false, block: (line, vcol), base, middle: false }
+    }
+
+    /// Shift+Alt+press at `pt` = (line, visual column): a column selection from the current box's
+    /// corner (or the primary cursor) to the pointer, replacing the other cursors; dragging resizes it.
+    pub fn press_box(d: &mut Doc, p: usize, pt: (usize, usize)) -> DragSel {
+        let anchor = d.ed.box_anchor(&d.buf);
+        d.ed.block_select(&d.buf, anchor, pt, &[], d.view.folds.hidden_ranges());
+        DragSel { kind: DragKind::Block, lo: p, hi: p, pending: false, block: anchor, base: Vec::new(), middle: false }
+    }
+
+    /// Middle press at char `p` / point `pt`: nothing changes yet. Dragging to another column or
+    /// line makes a column selection anchored here; a release without moving pastes (see `mouse_up`).
+    pub fn press_middle(p: usize, pt: (usize, usize)) -> DragSel {
+        DragSel { kind: DragKind::Block, lo: p, hi: p, pending: true, block: pt, base: Vec::new(), middle: true }
     }
 
     /// The pointer is now at char `p` (visual column `vcol`, unclamped, for blocks).
@@ -137,7 +161,13 @@ impl DragSel {
             }
             DragKind::Block => {
                 let (line, _) = d.buf.line_col(p);
-                d.ed.block_select(&d.buf, self.block, (line, vcol), &self.base);
+                if self.pending {
+                    if (line, vcol) == self.block {
+                        return;
+                    }
+                    self.pending = false;
+                }
+                d.ed.block_select(&d.buf, self.block, (line, vcol), &self.base, d.view.folds.hidden_ranges());
             }
         }
     }
@@ -464,11 +494,6 @@ impl App {
     // ── drag selection glue ──
 
     /// Visual column under window x for the active document (not clamped to the line length).
-    fn vcol_at(d: &Doc, x: f64) -> usize {
-        let bx = (d.rect.x + d.gutter_w()) as f64;
-        ((x - bx + d.left) / d.cell_w as f64).round().max(0.0) as usize
-    }
-
     /// Mouse press in the text (single / double / triple click, shift extends).
     pub fn drag_press(&mut self, p: usize, clicks: u32, shift: bool) {
         let Some(d) = self.docs.get_mut(self.active) else { return };
@@ -478,11 +503,38 @@ impl App {
 
     /// Alt+press: add a cursor, and a column selection if the pointer is dragged.
     pub fn drag_press_block(&mut self, p: usize) {
-        let x = self.mouse.0;
+        let (x, y) = self.mouse;
         let Some(d) = self.docs.get_mut(self.active) else { return };
-        let vcol = Self::vcol_at(d, x);
+        let (_, vcol) = d.box_point_at(x, y);
         self.inp.drag = Some(DragSel::press_block(d, p, vcol));
         self.dragging = true;
+    }
+
+    /// Shift+Alt+press: column selection from the cursor to the pointer (resized by dragging).
+    pub fn drag_press_box(&mut self, p: usize) {
+        let (x, y) = self.mouse;
+        let Some(d) = self.docs.get_mut(self.active) else { return };
+        let pt = d.box_point_at(x, y);
+        self.inp.drag = Some(DragSel::press_box(d, p, pt));
+        self.dragging = true;
+    }
+
+    /// Middle press in the text: a column selection when dragged, a paste of the primary
+    /// selection when released in place.
+    pub fn drag_press_middle(&mut self) {
+        let (x, y) = self.mouse;
+        let Some(d) = self.docs.get(self.active) else { return };
+        let p = d.pos_at(x, y);
+        let pt = d.box_point_at(x, y);
+        self.inp.drag = Some(DragSel::press_middle(p, pt));
+        self.dragging = true;
+    }
+
+    /// Ctrl+Shift+Alt+arrows: grow / shrink the column selection of the focused document.
+    pub fn column_select(&mut self, dl: isize, dc: isize) {
+        let Some(d) = self.docs.get_mut(self.active) else { return };
+        d.column_select(dl, dc);
+        d.reveal = true;
     }
 
     /// Extend the dragged selection to the pointer (clamped into the text area).
@@ -497,7 +549,7 @@ impl App {
             let px = x.clamp(bx, ((d.rect.right() - 1) as f64).max(bx));
             let py = y.clamp(d.rect.y as f64, ((d.rect.bottom() - 1) as f64).max(d.rect.y as f64));
             let p = d.pos_at(px, py);
-            let vcol = Self::vcol_at(d, px);
+            let (_, vcol) = d.box_point_at(px, py);
             ds.update(d, p, vcol);
         }
         self.inp.drag = Some(ds);
@@ -567,7 +619,16 @@ impl App {
         self.split_release();
         if self.dragging {
             if let Some(ds) = self.inp.drag.take() {
-                if let Some(d) = self.docs.get_mut(self.active) {
+                if ds.middle && ds.pending {
+                    // A middle click that never moved: paste the primary selection there.
+                    let text = self.clip.get_primary();
+                    if let Some(d) = self.docs.get_mut(self.active) {
+                        d.ed.clear_extra();
+                        d.ed.click(&mut d.buf, ds.lo, false);
+                        d.ed.paste(&mut d.buf, &text);
+                        d.reveal = true;
+                    }
+                } else if let Some(d) = self.docs.get_mut(self.active) {
                     ds.release(d);
                 }
                 self.request_redraw();
@@ -721,6 +782,74 @@ mod tests {
                 .map(|s| (d.buf.line_col(s.start()).0, d.buf.line_col(s.start()).1, d.buf.line_col(s.end()).1))
                 .collect();
         assert!(lines.contains(&(3, 1, 2)), "{lines:?}");
+    }
+
+    fn box_lines(d: &Doc) -> Vec<(usize, usize, usize)> {
+        d.ed.all_sels()
+            .iter()
+            .map(|s| (d.buf.line_col(s.start()).0, d.buf.line_col(s.start()).1, d.buf.line_col(s.end()).1))
+            .collect()
+    }
+
+    #[test]
+    fn shift_alt_press_boxes_from_the_cursor_and_keeps_extending_it() {
+        let mut d = doc("abcdef\nabcdef\nabcdef\n");
+        d.ed.click(&mut d.buf, 1, false); // (0, 1)
+        let other = d.buf.pos(2, 0);
+        d.ed.extra.push(Sel::caret(other)); // an unrelated extra cursor goes away
+        let p = d.buf.pos(2, 4);
+        let mut ds = DragSel::press_box(&mut d, p, (2, 4));
+        assert_eq!(box_lines(&d), vec![(0, 1, 4), (1, 1, 4), (2, 1, 4)]);
+        let to = d.buf.pos(1, 2);
+        ds.update(&mut d, to, 2);
+        assert_eq!(box_lines(&d), vec![(0, 1, 2), (1, 1, 2)], "dragging resizes from the same corner");
+        ds.release(&mut d);
+        // Another Shift+Alt+click grows the same box.
+        let p = d.buf.pos(2, 5);
+        let _ = DragSel::press_box(&mut d, p, (2, 5));
+        assert_eq!(box_lines(&d), vec![(0, 1, 5), (1, 1, 5), (2, 1, 5)]);
+    }
+
+    #[test]
+    fn middle_drag_makes_a_column_selection_and_a_still_click_stays_a_paste() {
+        let mut d = doc("abcdef\nabcdef\nabcdef\n");
+        d.ed.click(&mut d.buf, 2, false);
+        let p = d.buf.pos(0, 1);
+        let mut ds = DragSel::press_middle(p, (0, 1));
+        assert_eq!(sel(&d), (2, 2), "nothing changes on press");
+        ds.update(&mut d, p, 1);
+        assert!(ds.pending && ds.middle, "same point: still a click (pasted on release)");
+        assert_eq!(sel(&d), (2, 2));
+        let to = d.buf.pos(2, 3);
+        ds.update(&mut d, to, 3);
+        assert!(!ds.pending);
+        assert_eq!(box_lines(&d), vec![(0, 1, 3), (1, 1, 3), (2, 1, 3)], "anchored at the press point");
+    }
+
+    #[test]
+    fn middle_click_pastes_the_primary_selection_and_middle_drag_does_not() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp, untitled};
+        let _g = lock();
+        let dir = tmp("middlebox");
+        let mut app = test_app(&dir);
+        let i = untitled(&mut app, "abcdef\nabcdef\nabcdef\n");
+        app.active = i;
+        app.clip.set_primary("XY");
+        app.inp.drag = Some(DragSel::press_middle(3, (0, 3)));
+        app.dragging = true;
+        app.mouse_up();
+        assert_eq!(app.docs[i].buf.to_string(), "abcXYdef\nabcdef\nabcdef\n");
+        // A drag that became a box pastes nothing.
+        let mut ds = DragSel::press_middle(1, (0, 1));
+        let d = &mut app.docs[i];
+        let to = d.buf.pos(1, 2);
+        ds.update(d, to, 2);
+        app.inp.drag = Some(ds);
+        app.dragging = true;
+        app.mouse_up();
+        assert_eq!(app.docs[i].buf.to_string(), "abcXYdef\nabcdef\nabcdef\n");
+        assert_eq!(app.docs[i].ed.all_sels().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn folded_doc() -> Doc {

@@ -34,6 +34,8 @@ and no GPU driver:
 **Editor**
 - Rope buffer (`ropey`), atomic save, CRLF, tree-shaped undo history, opens a 100k-line file in ~21 ms
 - Multi-cursor, auto-indent, bracket pairs and matching, JSX/HTML tag closing, Emmet, snippets with tab stops
+- Column (box) selection: `Shift+Alt+drag`, middle-button drag or `Ctrl+Shift+Alt+arrows`; one cursor per line in visual columns (tabs expanded), carets at the end of shorter lines, folded lines skipped, buffer lines (not wrapped rows) with word wrap
+- Jump to character (`Alt+J`, flash / easymotion style): type 1–2 characters, then the label shown over the match (`Shift` extends the selection)
 - Word wrap, folding, sticky scroll, indent guides, minimap, breadcrumbs, color swatches
 - Find/replace (case, regex), project search, symbols, go to line, back/forward navigation
 - Tabs, quick open (fuzzy), session restore, live reload when files change on disk (inotify)
@@ -258,6 +260,8 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Navigate back / forward | `Alt+Left` / `Alt+Right` |
 | Next occurrence / all occurrences | `Ctrl+D` / `Ctrl+Shift+L` |
 | Add cursor above/below, at click | `Ctrl+Alt+Up/Down`, `Alt+click` |
+| Column (box) selection | `Shift+Alt+drag` (or `Shift+Alt+click` from the cursor), middle-button drag, `Ctrl+Shift+Alt+Up/Down/Left/Right` |
+| Jump to character | `Alt+J`, 1–2 characters, then the label (`Shift`+label extends; `Esc` cancels) |
 | Comment / move line / duplicate / delete line | `Ctrl+/`, `Alt+Up/Down`, `Ctrl+Shift+D`, `Ctrl+Shift+K` |
 | Fold / unfold | `Ctrl+Shift+[` / `Ctrl+Shift+]` |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) |

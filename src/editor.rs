@@ -28,6 +28,22 @@ pub struct Editor {
     pub comment: String, // line-comment prefix, "" if none
     pub tab_w: usize,
     pub jsx: bool, // auto-close tags (tsx/jsx/html)
+    /// The last column selection, so Ctrl+Shift+Alt+arrows and Shift+Alt+click keep growing it.
+    boxsel: Option<BoxSel>,
+}
+
+/// A column (box) selection: corners as (line, visual column) and the cursors it produced. It
+/// only counts as current while the cursors are still exactly those (any other move forgets it).
+#[derive(Clone, Debug, PartialEq)]
+struct BoxSel {
+    anchor: (usize, usize),
+    active: (usize, usize),
+    sels: Vec<Sel>,
+}
+
+/// Is `line` inside one of the inclusive `hidden` ranges (lines folded away)?
+fn in_ranges(hidden: &[(usize, usize)], line: usize) -> bool {
+    hidden.iter().any(|r| r.0 <= line && line <= r.1)
 }
 
 /// Visual column of char column `col` (tabs expand to the next tab stop).
@@ -85,6 +101,7 @@ impl Editor {
             comment: comment.to_string(),
             tab_w: default_tab_w(),
             jsx: false,
+            boxsel: None,
         }
     }
 
@@ -518,15 +535,26 @@ impl Editor {
     }
 
     /// Column (block) selection between visual positions `a = (line, vcol)` and `b = (line, vcol)`:
-    /// one selection per line, the pointer's line being the primary one. `base` are cursors that
-    /// were there before the drag and stay.
-    pub fn block_select(&mut self, buf: &Buffer, a: (usize, usize), b: (usize, usize), base: &[Sel]) {
+    /// one selection per buffer line (lines shorter than the box get a caret at their end), the
+    /// pointer's line being the primary one. Lines inside `hidden` (folded away) are skipped.
+    /// `base` are cursors that were there before the drag and stay.
+    pub fn block_select(
+        &mut self,
+        buf: &Buffer,
+        a: (usize, usize),
+        b: (usize, usize),
+        base: &[Sel],
+        hidden: &[(usize, usize)],
+    ) {
         let (l0, l1) = (a.0.min(b.0), a.0.max(b.0));
         let (vl, vr) = (a.1.min(b.1), a.1.max(b.1));
         let forward = b.1 >= a.1;
         let mut sels: Vec<Sel> = Vec::new();
         let mut primary = None;
         for l in l0..=l1.min(buf.line_count().saturating_sub(1)) {
+            if in_ranges(hidden, l) {
+                continue;
+            }
             let text = buf.line(l);
             let (c0, c1) = (col_from_visual(&text, vl, self.tab_w), col_from_visual(&text, vr, self.tab_w));
             let (p0, p1) = (buf.pos(l, c0), buf.pos(l, c1));
@@ -542,6 +570,60 @@ impl Editor {
         self.sel = primary;
         self.want = None;
         self.normalize_cursors();
+        self.boxsel = base.is_empty().then(|| BoxSel { anchor: a, active: b, sels: self.all_sels() });
+    }
+
+    /// The fixed corner for a new column selection: the corner of the current one while its cursors
+    /// are untouched, else the primary selection's anchor (line, visual column).
+    pub fn box_anchor(&self, buf: &Buffer) -> (usize, usize) {
+        self.current_box().map_or_else(|| self.visual_point(buf, self.sel.anchor), |b| b.anchor)
+    }
+
+    fn current_box(&self) -> Option<&BoxSel> {
+        self.boxsel.as_ref().filter(|b| b.sels == self.all_sels())
+    }
+
+    /// (line, visual column) of char index `p`.
+    fn visual_point(&self, buf: &Buffer, p: usize) -> (usize, usize) {
+        let (l, c) = buf.line_col(p);
+        (l, visual_col(&buf.line(l), c, self.tab_w))
+    }
+
+    /// Ctrl+Shift+Alt+arrows: move the free corner of the column selection by `dl` buffer lines
+    /// (folded lines in `hidden` are stepped over) and `dc` visual columns. Continues the current
+    /// box; otherwise one starts from the primary selection (anchor to head).
+    pub fn column_select(&mut self, buf: &Buffer, dl: isize, dc: isize, hidden: &[(usize, usize)]) {
+        let (anchor, mut active) = match self.current_box() {
+            Some(b) => (b.anchor, b.active),
+            None => (self.visual_point(buf, self.sel.anchor), self.visual_point(buf, self.sel.head)),
+        };
+        let n = buf.line_count() as isize;
+        let step = dl.signum();
+        let mut l = active.0 as isize;
+        for _ in 0..dl.unsigned_abs() {
+            let mut t = l + step;
+            while t >= 0 && t < n && in_ranges(hidden, t as usize) {
+                t += step;
+            }
+            if t < 0 || t >= n {
+                break;
+            }
+            l = t;
+        }
+        active.0 = l as usize;
+        // Right stops at the widest line of the box: past it there is nothing left to select.
+        let (lo, hi) = (anchor.0.min(active.0), anchor.0.max(active.0));
+        let widest = (lo..=hi.min(buf.line_count().saturating_sub(1)))
+            .filter(|&l| !in_ranges(hidden, l))
+            .map(|l| {
+                let t = buf.line(l);
+                visual_col(&t, t.chars().count(), self.tab_w)
+            })
+            .max()
+            .unwrap_or(0);
+        let v = active.1 as isize + dc;
+        active.1 = if dc > 0 { (v as usize).min(widest.max(active.1)) } else { v.max(0) as usize };
+        self.block_select(buf, anchor, active, &[], hidden);
     }
 
     pub fn click(&mut self, buf: &mut Buffer, p: usize, extend: bool) {
@@ -1489,6 +1571,92 @@ mod tests {
         assert_eq!(e.extra.len(), 1);
         e.edit_multi(&mut b, EditKind::Typing, |ed, bf| ed.type_char(bf, '!'));
         assert_eq!(b.to_string(), "!abc\nd!ef");
+    }
+
+    /// Every cursor as (line, start col, end col, head is at the end), in document order.
+    fn box_cols(b: &Buffer, e: &Editor) -> Vec<(usize, usize, usize, bool)> {
+        e.all_sels()
+            .iter()
+            .map(|s| {
+                let (l, c0) = b.line_col(s.start());
+                (l, c0, b.line_col(s.end()).1, s.head == s.end())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn block_select_uses_visual_columns_and_clamps_short_lines() {
+        // Line 1 starts with a tab (4 columns): visual column 5 is its char column 2.
+        let (b, mut e) = setup("abcdefgh\n\tbcdefg\nab\n\nabcdefgh");
+        e.tab_w = 4;
+        e.block_select(&b, (0, 2), (4, 5), &[], &[]);
+        assert_eq!(
+            box_cols(&b, &e),
+            vec![(0, 2, 5, true), (1, 1, 2, true), (2, 2, 2, true), (3, 0, 0, true), (4, 2, 5, true)],
+            "tab expanded, short and empty lines get a caret at their end"
+        );
+        assert_eq!(b.line_col(e.sel.head).0, 4, "the pointer's line is the primary cursor");
+        // Dragging leftwards puts the heads on the left edge.
+        e.block_select(&b, (0, 5), (1, 2), &[], &[]);
+        assert_eq!(box_cols(&b, &e), vec![(0, 2, 5, false), (1, 1, 2, false)]);
+    }
+
+    #[test]
+    fn block_select_skips_folded_lines() {
+        let (b, mut e) = setup("aaaa\nbbbb\ncccc\ndddd\neeee");
+        e.block_select(&b, (0, 1), (4, 3), &[], &[(1, 2)]);
+        let lines: Vec<usize> = box_cols(&b, &e).iter().map(|c| c.0).collect();
+        assert_eq!(lines, vec![0, 3, 4]);
+    }
+
+    #[test]
+    fn box_typing_paste_and_delete_go_through_multi_cursor_editing() {
+        let (mut b, mut e) = setup("one = 1\ntwo = 2\nsix = 6\nx");
+        e.block_select(&b, (0, 0), (2, 3), &[], &[]);
+        assert_eq!(e.copy_text_multi(&b), "one\ntwo\nsix");
+        e.edit_multi(&mut b, EditKind::Typing, |ed, bf| ed.type_char(bf, 'v'));
+        assert_eq!(b.to_string(), "v = 1\nv = 2\nv = 6\nx", "typing replaces every line's piece");
+        e.edit_multi(&mut b, EditKind::Backspace, |ed, bf| ed.backspace(bf));
+        assert_eq!(b.to_string(), " = 1\n = 2\n = 6\nx");
+        e.paste_multi(&mut b, "aa\nbb\ncc");
+        assert_eq!(b.to_string(), "aa = 1\nbb = 2\ncc = 6\nx", "one clipboard line per cursor");
+        e.paste_multi(&mut b, "z");
+        assert_eq!(b.to_string(), "aaz = 1\nbbz = 2\nccz = 6\nx", "other counts paste everywhere");
+        e.undo(&mut b);
+        e.undo(&mut b);
+        assert_eq!(b.to_string(), " = 1\n = 2\n = 6\nx", "each paste is one undo step");
+    }
+
+    #[test]
+    fn keyboard_column_select_grows_and_shrinks_the_box() {
+        let (mut b, mut e) = setup("abcdef\nabcdef\nab\nabcdef\nabcdef");
+        let p = b.pos(0, 1);
+        e.click(&mut b, p, false);
+        e.column_select(&b, 1, 0, &[]);
+        e.column_select(&b, 1, 0, &[]);
+        assert_eq!(box_cols(&b, &e), vec![(0, 1, 1, true), (1, 1, 1, true), (2, 1, 1, true)]);
+        e.column_select(&b, 0, 3, &[]);
+        assert_eq!(box_cols(&b, &e), vec![(0, 1, 4, true), (1, 1, 4, true), (2, 1, 2, true)]);
+        e.column_select(&b, -1, -1, &[]);
+        assert_eq!(box_cols(&b, &e), vec![(0, 1, 3, true), (1, 1, 3, true)], "up shrinks, left narrows");
+        // Right stops at the widest line of the box.
+        for _ in 0..20 {
+            e.column_select(&b, 0, 1, &[]);
+        }
+        assert_eq!(box_cols(&b, &e), vec![(0, 1, 6, true), (1, 1, 6, true)]);
+        // Any other move forgets the box: the next one starts at the new caret.
+        e.clear_extra();
+        let p = b.pos(3, 2);
+        e.click(&mut b, p, false);
+        e.column_select(&b, 1, 0, &[]);
+        assert_eq!(box_cols(&b, &e), vec![(3, 2, 2, true), (4, 2, 2, true)]);
+        // Folded lines are stepped over.
+        let p = b.pos(0, 0);
+        e.click(&mut b, p, false);
+        e.column_select(&b, 1, 0, &[(1, 2)]);
+        let lines: Vec<usize> = box_cols(&b, &e).iter().map(|c| c.0).collect();
+        assert_eq!(lines, vec![0, 3]);
+        assert_eq!(e.box_anchor(&b), (0, 0));
     }
 
     fn occ(text: &str, a: usize, b: usize) -> Option<Occurrence> {
