@@ -313,7 +313,7 @@ fn exercise(app: &mut App, file: &Path, anchor: Option<&str>, want_diag: bool, w
             rows.iter()
                 .filter(|r| r.state != crate::app_lspx::RowState::NotInstalled
                     && r.state != crate::app_lspx::RowState::Ready)
-                .map(|r| format!("{}={:?}", r.id, r.state))
+                .map(|r| format!("{}={:?} ({})", r.id, r.state, r.detail.lines().last().unwrap_or("")))
                 .collect::<Vec<_>>()
                 .join(" ")
         );

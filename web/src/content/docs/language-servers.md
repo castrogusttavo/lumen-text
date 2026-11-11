@@ -15,7 +15,7 @@ Lumen speaks the Language Server Protocol to as many servers as you like. TypeSc
 | Python | `pyright-langserver`, `basedpyright-langserver`, `pylsp`; companion `ruff server` | `pyrightconfig.json`, `pyproject.toml`, `setup.py`, `.git` |
 | Go | `gopls` | `go.work`, `go.mod` |
 | C, C++ | `clangd` | `compile_commands.json`, `compile_flags.txt`, `.clangd` |
-| Java | `jdtls` (Eclipse JDT LS, Java 21+) | `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `.project` |
+| Java | `jdtls` (Eclipse JDT LS, Java 25+) | `pom.xml`, `build.gradle(.kts)`, `settings.gradle(.kts)`, `.project` |
 | C# | `csharp-ls`, `OmniSharp -lsp` | `*.sln`, `*.slnx`, `*.csproj` |
 | Kotlin | `kotlin-lsp --stdio` (JetBrains), `kotlin-language-server` | `settings.gradle(.kts)`, `build.gradle(.kts)`, `pom.xml` |
 | Swift, Objective-C | `sourcekit-lsp` | `Package.swift`, `*.xcodeproj` |

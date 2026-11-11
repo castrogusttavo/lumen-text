@@ -3,7 +3,7 @@
 # Lumen's own folder (~/.local/share/lumen-text/lsp, executables linked in lsp/bin), plus the
 # bundled tsgo. Used by CI (job "Language servers") and handy on a dev machine. Linux only.
 #
-# Needs on PATH: curl, tar, xz, unzip, node + npm, python3 (with venv), Java 21+, dotnet 10,
+# Needs on PATH: curl, tar, xz, unzip, node + npm, python3 (with venv), Java 25+ (jdtls), dotnet 10,
 # go, ruby + gem, php, rustup (or rust-analyzer is downloaded), and clangd from the system.
 #
 #   tools/install-lsp-servers.sh            # everything
