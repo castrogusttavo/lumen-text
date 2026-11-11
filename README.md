@@ -42,6 +42,8 @@ and no GPU driver:
 - **Local history**, independent of git: a snapshot on every save and right before a buffer is reloaded because another program (a formatter, `git checkout`, the AI agent) rewrote the file. *File: Local history* (also in the tab and explorer context menus) lists them ("3 minutes ago · Saved", date, size), opens a side-by-side diff of the snapshot against the buffer and restores it as one undoable edit (`r` or *Restore this version*); *File: Local history (deleted files)* brings back files that no longer exist. Stored in `$XDG_STATE_HOME/lumen-text/history` (default `~/.local/state`): identical snapshots are skipped, files over 5 MB are not kept, 50 snapshots per file and 200 MB in total (oldest pruned first)
 - Never lose anything: **hot exit** (quitting keeps unsaved tabs, untitled ones too, and reopens them next time, no save prompt), **crash recovery** (unsaved buffers are backed up a few seconds after each edit; a backup whose file changed on disk meanwhile is still restored, with a notice) and **persistent undo** (a file's undo tree survives closing it and restarting while its text is unchanged)
 - Always up to date: a `git checkout` / `commit` / `pull` typed in a terminal refreshes the branch, gutter marks and status (the repository's `.git` is watched); on NFS, SMB, FUSE/sshfs, 9p (WSL), FAT/exFAT or when the inotify watch limit is reached, the open files and expanded folders are polled instead (status bar: *Polling (NFS)*); regaining the window focus re-checks what changed; *File: Refresh explorer and git status* (palette, or the button in the explorer header) re-reads everything
+- Reopen closed tabs (`Ctrl+Shift+T`, palette *View: Reopen closed tab*, tab menu): the last 20, each back in its split pane with its cursor, selection and scroll
+- Save as administrator: when a save is refused for lack of permission (`/etc/hosts`) a card offers to write the file in place through `pkexec` (Linux) or the macOS password prompt, keeping its owner and mode
 - Fonts: separate **interface** and **buffer** (code, terminal, diffs) fonts with a searchable picker of the installed families, weight, size, line height and ligatures, all live
 - Display options: line numbers, bookmarks (`Ctrl+F2`), breakpoint dots, scrollbars (show / auto-hide / never) and a master switch for the language servers
 - Smooth Zed-style scrolling, drag selection by word/line, Wayland and X11 clipboard, IME, fractional hi-DPI scaling
@@ -77,6 +79,7 @@ and no GPU driver:
 - Mouse selection with `Ctrl+Shift+C` / `Ctrl+Shift+V`; modified keys the xterm way (`Shift+Enter`, `Shift+Tab`, `Ctrl+Left`...)
 - Several terminals, each with its own shell, scrollback and state: a tab strip in the panel header (`+` new, `×` kill, double click renames; titles follow the program's OSC title or the foreground process), ``Ctrl+Shift+` `` for a new one, and a split that shows two side by side (the clicked one gets the keyboard)
 - Kitty keyboard protocol (progressive enhancement flags 1, 4, 8 and 16, per-screen flag stack) for modern TUIs such as Claude Code, Codex, Neovim and Helix: `Esc`, `Ctrl+…` and modified `Enter` / `Tab` / `Backspace` arrive unambiguously; programs that don't ask keep the legacy encoding. The AI panel's agent gets it too
+- Killing a terminal (its tab's `×` or *Terminal: Kill*) while its shell runs a job (`npm run dev`) asks first, naming it; quitting asks when any terminal has a job, a task runs or a Build & Run process is alive. An idle shell closes without a question (Unix)
 
 **AI panel**
 - Your own agent CLI (Claude Code, Gemini CLI or Codex CLI) in a panel on the right (`Ctrl+Shift+A`), sharing the slot with the Git panel (a `Git | AI` switch on top). It runs in the project folder with your environment and its own login: Lumen never handles API keys
@@ -254,6 +257,7 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Format | `Shift+Alt+F` |
 | Expand / shrink selection | `Shift+Alt+Right` / `Shift+Alt+Left` |
 | Save / close tab / quit | `Ctrl+S` / `Ctrl+W` / `Ctrl+Q` |
+| Reopen closed tab | `Ctrl+Shift+T` |
 | Next / previous tab, jump to tab | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Alt+1`..`Alt+9` |
 | Sidebar / focus explorer | `Ctrl+B` / `Ctrl+Shift+E` |
 | Explorer: new file / folder / rename / delete | `A` / `Shift+A` / `F2` / `Delete` |

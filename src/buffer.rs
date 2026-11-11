@@ -414,6 +414,12 @@ impl Buffer {
         self.version != self.saved_version
     }
 
+    /// The text as it was at `version` reached the disk by another way than [`save`](Self::save)
+    /// (the elevated save): the buffer is clean again unless it was edited since.
+    pub fn mark_saved(&mut self, version: u64) {
+        self.saved_version = version;
+    }
+
     /// Lowest line touched since the last call (for highlighter invalidation).
     pub fn take_dirty_line(&mut self) -> Option<usize> {
         self.dirty_line.take()

@@ -730,6 +730,8 @@ impl App {
         while !self.docs.is_empty() {
             self.close_tab(0, true);
         }
+        // Tabs of the old project are not "recently closed" in the new one.
+        self.closed_tabs.clear();
         self.lsps.clear();
         self.lsp_warned = false;
         self.diff = None;

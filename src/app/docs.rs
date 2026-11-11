@@ -187,9 +187,11 @@ impl App {
             return;
         }
         self.undo_persist(idx, false);
+        let closed = self.closed_tab_entry(idx);
         self.lsp_did_close(idx);
         self.docs.remove(idx);
         self.split_doc_removed(idx);
+        self.remember_closed(closed);
         self.close_armed = None;
         // The code hover, completion list and tooltip belong to the old layout: drop them now.
         self.hover = None;
@@ -226,6 +228,7 @@ impl App {
                 }
                 self.tests_on_save();
             }
+            Err(e) if crate::app_elevated::is_permission_denied(&e) => self.offer_elevated_save(self.active),
             Err(e) => self.say(format!("Error saving {name}: {e}")),
         }
     }

@@ -13,6 +13,7 @@ impl App {
                 let a = self.active;
                 self.close_tab(a, false)
             }
+            Cmd::ReopenClosedTab => self.reopen_closed_tab(),
             Cmd::NextTab | Cmd::PrevTab => {
                 let len = self.docs.len();
                 if len > 0 {
@@ -145,7 +146,7 @@ impl App {
             Cmd::NavBack => self.navigate(true),
             Cmd::NavForward => self.navigate(false),
             Cmd::OpenTerminal => self.toggle_terminal_focus(),
-            Cmd::CloseTerminal => self.close_terminal(),
+            Cmd::CloseTerminal => self.close_terminal_request(),
             Cmd::NewTerminal => self.new_terminal(),
             Cmd::SplitTerminal => self.split_terminal(),
             Cmd::RenameTerminal => self.prompt_rename_terminal(self.terms.active),

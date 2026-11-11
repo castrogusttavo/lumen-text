@@ -246,6 +246,21 @@ impl BuildState {
         self.proc.is_some()
     }
 
+    /// The job that is alive, for a question naming it ("my-app (run)"); `None` when idle.
+    pub fn running_label(&self) -> Option<String> {
+        let job = self.job.filter(|_| self.running())?;
+        let what = match job {
+            Job::Build => "build",
+            Job::Run => "run",
+            Job::Clean => "clean",
+        };
+        Some(if self.job_label.is_empty() {
+            format!("Build & Run ({what})")
+        } else {
+            format!("{} ({what})", self.job_label)
+        })
+    }
+
     pub fn counts(&self) -> Counts {
         Counts::of(&self.problems)
     }

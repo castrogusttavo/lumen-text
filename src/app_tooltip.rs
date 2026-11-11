@@ -225,6 +225,9 @@ pub fn act_hint(act: Act) -> Option<&'static str> {
         Act::TagHere => "Tags this commit (annotated when you give a message)",
         Act::UndoCommit => "Removes the last commit and keeps its changes staged (git reset --soft HEAD~1)",
         Act::Run("AiSendSelection") => "Mentions the selected lines (file#L3-9) in the connected Claude Code",
+        Act::Run("ReopenClosedTab") => {
+            "Reopens the most recently closed tab where it was: same pane, cursor and scroll"
+        }
         Act::CopyHash | Act::Run(_) => return None,
         Act::NewFile | Act::NewFolder | Act::Rename | Act::CloseTab => return None,
     })
@@ -930,6 +933,7 @@ mod tests {
                 md: Some(false),
                 pinned: false,
                 has_path: true,
+                reopen: true,
             };
             for e in crate::app_ctxmenu::entries_for(&t, &f) {
                 if let crate::app_ctxmenu::Entry::Item { act, label, .. } = e {

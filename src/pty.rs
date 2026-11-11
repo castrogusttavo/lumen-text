@@ -132,6 +132,18 @@ mod imp {
             }
         }
 
+        /// The job in the terminal's foreground when it is not the program itself (a shell running
+        /// `npm run dev`): its command line, or `None` while the shell waits at its prompt. The
+        /// program leads its own process group (`setsid`), so any other foreground group is a job.
+        pub fn foreground_job(&self) -> Option<String> {
+            // SAFETY: plain ioctl on our own, open master fd.
+            let pg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+            if pg <= 0 || pg == self.pid || self.child.is_none() {
+                return None;
+            }
+            Some(super::process_command(pg).unwrap_or_else(|| format!("process {pg}")))
+        }
+
         /// Exit code once the program has ended (a signal counts as 128 + its number).
         pub fn try_wait(&mut self) -> Option<i32> {
             use std::os::unix::process::ExitStatusExt;
@@ -234,6 +246,11 @@ mod imp {
             None
         }
 
+        /// ConPTY has no foreground process group to ask: never reports a job.
+        pub fn foreground_job(&self) -> Option<String> {
+            None
+        }
+
         /// Exit code once the program has ended.
         pub fn try_wait(&mut self) -> Option<i32> {
             self.child.try_wait().ok()?.map(|s| s.exit_code() as i32)
@@ -249,6 +266,46 @@ mod imp {
 }
 
 pub use imp::Pty;
+
+/// Longest command line [`Pty::foreground_job`] reports (it ends up in a one-line question).
+#[cfg(unix)]
+const MAX_JOB_NAME: usize = 60;
+
+/// Command line of process `pid` (`/proc` on Linux, `ps` elsewhere), shortened for display.
+#[cfg(unix)]
+fn process_command(pid: i32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    let raw = {
+        let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let args: Vec<String> =
+            cmd.split(|&b| b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+        if args.is_empty() { std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()? } else { args.join(" ") }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let raw = {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "command=", "-p", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    short_command(&raw)
+}
+
+/// `raw` on one line, without surrounding blanks, cut to [`MAX_JOB_NAME`] characters.
+#[cfg(unix)]
+fn short_command(raw: &str) -> Option<String> {
+    let one: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.is_empty() {
+        return None;
+    }
+    if one.chars().count() <= MAX_JOB_NAME {
+        return Some(one);
+    }
+    let cut: String = one.chars().take(MAX_JOB_NAME - 1).collect();
+    Some(format!("{}…", cut.trim_end()))
+}
 
 #[cfg(test)]
 mod tests {
@@ -297,6 +354,47 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert_eq!(code, Some(3), "exit code is reported");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn command_lines_are_shortened_to_one_line() {
+        assert_eq!(short_command("npm  run\ndev\n").as_deref(), Some("npm run dev"));
+        assert_eq!(short_command("  \n"), None);
+        let s = short_command(&"x".repeat(200)).unwrap();
+        assert_eq!(s.chars().count(), MAX_JOB_NAME);
+        assert!(s.ends_with('…'));
+    }
+
+    /// Wait up to `secs` for `f` to return `Some`.
+    #[cfg(unix)]
+    fn poll<T>(secs: u64, mut f: impl FnMut() -> Option<T>) -> Option<T> {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        loop {
+            if let Some(v) = f() {
+                return Some(v);
+            }
+            if std::time::Instant::now() > end {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_job_in_the_foreground_is_reported_but_an_idle_shell_is_not() {
+        let dir = std::env::temp_dir();
+        // Job control on (`-m`): the shell runs `sleep` in a process group of its own and hands it
+        // the terminal. The trailing `true` keeps the shell from exec'ing `sleep` in its place.
+        let (pty, _r) = Pty::spawn_cmd(&dir, "sh", &["-m", "-c", "sleep 30; true"], &[], 10, 60).unwrap();
+        let job = poll(10, || pty.foreground_job());
+        assert!(job.as_deref().is_some_and(|j| j.contains("sleep")), "{job:?}");
+        drop(pty);
+        // A shell waiting for input owns the foreground itself: nothing to report.
+        let (pty, _r) = Pty::spawn_cmd(&dir, "sh", &["-m", "-c", "read x; true"], &[], 10, 60).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(pty.foreground_job(), None);
     }
 
     #[test]

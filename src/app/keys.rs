@@ -446,6 +446,10 @@ impl App {
             self.request_redraw();
             return false;
         }
+        // A job in the terminal, a task or a Build & Run job is alive: confirm first (card).
+        if self.ask_before_quit() {
+            return false;
+        }
         if !hot {
             self.backup_discard_all();
         }

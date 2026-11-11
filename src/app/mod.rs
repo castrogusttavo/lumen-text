@@ -249,6 +249,14 @@ pub struct App {
     pub backup: crate::backup::BackupState,
     /// `.git` watching, the polling fallback and refresh on focus (see `app_fswatch`).
     pub fswatch: crate::app_fswatch::FsWatch,
+    /// Recently closed tabs, newest last (`Ctrl+Shift+T` reopens; see `app_reopen.rs`).
+    pub closed_tabs: Vec<crate::app_reopen::ClosedTab>,
+    /// "Quit anyway" was answered: quitting no longer asks about running processes.
+    pub quit_procs_ok: bool,
+    /// Leave the event loop on its next turn (a quit confirmed in a card, not by a key).
+    pub exit_requested: bool,
+    /// A "Save as administrator" in progress (worker thread; see `app_elevated.rs`).
+    pub elevated: Option<std::sync::mpsc::Receiver<crate::app_elevated::Done>>,
 }
 
 impl App {
@@ -375,6 +383,10 @@ impl App {
             upd: crate::app_update::UpdateUi::new(),
             backup: Default::default(),
             fswatch: Default::default(),
+            closed_tabs: Vec::new(),
+            quit_procs_ok: false,
+            exit_requested: false,
+            elevated: None,
         };
         app.refresh_git_status();
         app.watcher = crate::watcher::Watcher::new(app.wake()).ok();
@@ -482,6 +494,9 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if self.exit_requested {
+            return el.exit();
+        }
         let next = self.tick();
         el.set_control_flow(match next {
             Some(t) => ControlFlow::WaitUntil(t),

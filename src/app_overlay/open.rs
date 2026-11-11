@@ -321,6 +321,7 @@ impl App {
         self.pump_debug();
         self.pump_watcher();
         self.pump_update();
+        self.pump_elevated();
         let cur = self.search_gen.load(Ordering::SeqCst);
         let mut incoming: Vec<Hit> = Vec::new();
         while let Ok((g, hits)) = self.search_rx.try_recv() {

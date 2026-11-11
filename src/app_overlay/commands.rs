@@ -2,6 +2,7 @@
 pub enum Cmd {
     Save,
     CloseTab,
+    ReopenClosedTab,
     NextTab,
     PrevTab,
     ToggleSidebar,
@@ -181,6 +182,7 @@ impl Cmd {
 pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("File: Save", "Ctrl+S", Cmd::Save),
     ("File: Close tab", "Ctrl+W", Cmd::CloseTab),
+    ("View: Reopen closed tab", "Ctrl+Shift+T", Cmd::ReopenClosedTab),
     ("File: Reload from disk", "", Cmd::ReloadFile),
     ("File: Local history", "", Cmd::LocalHistory),
     ("File: Local history (deleted files)", "", Cmd::LocalHistoryDeleted),

@@ -349,6 +349,8 @@ pub struct Flags {
     pub md: Option<bool>,
     pub pinned: bool,
     pub has_path: bool,
+    /// A closed tab can be reopened (tab menu: "Reopen Closed Tab").
+    pub reopen: bool,
 }
 
 fn item(act: Act, label: &'static str, icon: &'static str, key: &'static str) -> Entry {
@@ -434,6 +436,11 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
                 item(Act::CloseTab, "Close", "ui/close", "Ctrl+W"),
                 item(Act::CloseOthers, "Close Others", "ui/x_circle", ""),
                 item(Act::CloseAll, "Close All", "ui/list_x", ""),
+            ];
+            if f.reopen {
+                v.push(item(Act::Run("ReopenClosedTab"), "Reopen Closed Tab", "ui/undo", "Ctrl+Shift+T"));
+            }
+            v.extend([
                 sep(),
                 if f.pinned {
                     item(Act::TogglePin, "Unpin Tab", "ui/unpin", "")
@@ -441,7 +448,7 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
                     item(Act::TogglePin, "Pin Tab", "ui/pin", "")
                 },
                 sep(),
-            ];
+            ]);
             if f.has_path {
                 v.push(item(Act::CopyPath, "Copy Path", "hugeicons/link", ""));
                 v.push(item(Act::LocalHistory, "Local History", "ui/clock", ""));
@@ -525,6 +532,8 @@ pub struct CtxMenu {
     pub confirm: Option<Confirm>,
     /// "Save all / Discard / Cancel" card (see `app_unsaved.rs`).
     pub unsaved: Option<crate::app_unsaved::Unsaved>,
+    /// Two-button question: running processes, "Save as administrator" (see `app_ask.rs`).
+    pub ask: Option<crate::app_ask::Ask>,
 }
 
 // ───────────────────────── App integration ─────────────────────────
@@ -600,6 +609,7 @@ impl App {
             let Some(d) = self.docs.get(*i) else { return };
             f.pinned = d.pinned;
             f.has_path = d.path().is_some();
+            f.reopen = !self.closed_tabs.is_empty();
             f.md = crate::app_md::is_markdown_name(&d.name).then(|| d.md.is_some());
         }
         let entries = entries_for(&target, &f);
@@ -612,6 +622,7 @@ impl App {
             card: Rect::default(),
             confirm: None,
             unsaved: None,
+            ask: None,
         }));
     }
 
@@ -619,6 +630,9 @@ impl App {
         let Overlay::Ctx(m) = &mut self.overlay else { return };
         if m.unsaved.is_some() {
             return self.unsaved_key(&ev.key);
+        }
+        if m.ask.is_some() {
+            return self.ask_key(&ev.key);
         }
         if let Some(c) = m.confirm.as_mut() {
             match &ev.key {
@@ -670,6 +684,10 @@ impl App {
             self.unsaved_mouse(x, y);
             return true;
         }
+        if m.ask.is_some() {
+            self.ask_mouse(x, y);
+            return true;
+        }
         if let Some(c) = m.confirm.as_ref() {
             let (no, yes, paths) = (c.rects[0], c.rects[1], c.paths.clone());
             if yes.contains(x, y) {
@@ -696,6 +714,9 @@ impl App {
         let Overlay::Ctx(m) = &mut self.overlay else { return false };
         if m.unsaved.is_some() {
             return self.unsaved_hover(x, y);
+        }
+        if m.ask.is_some() {
+            return self.ask_hover(x, y);
         }
         if let Some(c) = m.confirm.as_mut() {
             if c.rects[1].contains(x, y) && !c.yes {
@@ -800,6 +821,7 @@ impl App {
                     card: Rect::default(),
                     confirm: Some(Confirm { paths, yes: false, rects: [Rect::default(); 2] }),
                     unsaved: None,
+                    ask: None,
                 }));
             }
             Act::CopyPath => {
@@ -895,6 +917,7 @@ impl App {
                     card: Rect::default(),
                     confirm: Some(Confirm { paths: vec![p], yes: false, rects: [Rect::default(); 2] }),
                     unsaved: None,
+                    ask: None,
                 }));
             }
             Act::CopyPath => {
@@ -1046,6 +1069,11 @@ impl App {
 
         if m.unsaved.is_some() {
             self.draw_unsaved(cv, &mut m);
+            self.overlay = Overlay::Ctx(m);
+            return;
+        }
+        if m.ask.is_some() {
+            self.draw_ask(cv, &mut m);
             self.overlay = Overlay::Ctx(m);
             return;
         }
@@ -1331,6 +1359,12 @@ mod tests {
         // No path (untitled): no separator left dangling.
         let l = labels(&entries_for(&tab, &f));
         assert_eq!(l.last(), Some(&"Pin Tab"));
+        // Something was closed: "Reopen Closed Tab" follows the close items and runs a command.
+        let v = entries_for(&tab, &Flags { reopen: true, ..f });
+        assert_eq!(labels(&v)[..5], ["Close", "Close Others", "Close All", "Reopen Closed Tab", "-"]);
+        assert!(
+            matches!(v[3], Entry::Item { act: Act::Run(id), .. } if crate::app_overlay::Cmd::from_id(id).is_some())
+        );
         // Root: only creation (+ paste).
         assert_eq!(labels(&entries_for(&Target::Root("/p".into()), &f)), ["New File", "New Folder"]);
         // Several rows: no rename / new / open-beside, plural "Copy Paths".

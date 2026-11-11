@@ -320,7 +320,7 @@ impl App {
                     self.prompt_rename_terminal(id);
                 }
             }
-            TermHit::Close(id) => self.close_terminal_id(id),
+            TermHit::Close(id) => self.close_terminal_request_id(id),
             TermHit::New => self.new_terminal(),
             TermHit::Split => self.split_terminal(),
         }

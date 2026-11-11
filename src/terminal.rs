@@ -1221,6 +1221,15 @@ impl Term {
         self.pty.foreground_name()
     }
 
+    /// Command line of the job the shell is running in the foreground (`None` at the prompt, after
+    /// the program ended, and always on Windows).
+    pub fn foreground_job(&self) -> Option<String> {
+        if !self.alive {
+            return None;
+        }
+        self.pty.foreground_job()
+    }
+
     /// Bytes the terminal itself sends (mouse / focus reports): no side effects on the view.
     pub fn send(&mut self, bytes: &[u8]) {
         self.pty.write(bytes);
