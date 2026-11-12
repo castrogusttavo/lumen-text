@@ -40,6 +40,7 @@ and no GPU driver:
 - Column (box) selection: `Shift+Alt+drag`, middle-button drag or `Ctrl+Shift+Alt+arrows`; one cursor per line in visual columns (tabs expanded), carets at the end of shorter lines, folded lines skipped, buffer lines (not wrapped rows) with word wrap
 - Jump to character (`Alt+J`, flash / easymotion style): type 1–2 characters, then the label shown over the match (`Shift` extends the selection)
 - Word wrap, folding, sticky scroll, indent guides, minimap, breadcrumbs, color swatches
+- Rulers at the columns you choose (`rulers`); inline diagnostics after the code, Error Lens style (`inline_diagnostics`: off / current line / all, palette *View: Inline diagnostics*)
 - Find/replace (case, regex), project search, symbols, go to line, back/forward navigation
 - Replace in project (`Ctrl+Shift+H`): case / whole word / regex with `$1` captures, a preview of every replacement, replace one match, a file or everything (after a "Replace 42 matches in 7 files?" question); open files are edited in their buffer (one undo step, left unsaved), the others rewritten atomically with their line endings; `.gitignore` respected like the search
 - Keyboard macros: record with `Ctrl+Shift+R` (keys and commands, not the mouse; a REC pill in the bottom bar), replay with `Ctrl+Alt+R` or N times from the palette, as one undo step; save them by name in `macros.json` and bind them in `keybindings.json`
@@ -57,6 +58,8 @@ and no GPU driver:
 - Diagnostics, rich Markdown hover, completion, signature help, definition, references, rename,
   organize imports, quick fixes (`Ctrl+.`), expand selection, call hierarchy
 - Semantic tokens, optional code lens and inlay hints, optional auto-import
+- Document highlights: the caret resting on a symbol lights its read/write occurrences (`textDocument/documentHighlight`; the same word when no server offers it)
+- Linked editing: renaming an opening tag renames the closing one live, one undo step (`textDocument/linkedEditingRange`: tsgo for JSX/TSX, the HTML server for HTML)
 - Full-project mode (default; also reacts to files changed, created or deleted on disk) versus an opt-in lean mode; uses the project's own `tsgo` or a bundled one
 - Formatting with the project's Biome or Prettier (falls back to `tsgo`); lint through `biome lsp-proxy` and ESLint
 - **Language servers beyond TypeScript** (see the [Language servers](web/src/content/docs/language-servers.md) page): a data-driven
@@ -349,6 +352,8 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `minimap` / `minimap_style` | `true` / `"subtle"` | `"subtle"` or `"normal"` |
 | `word_wrap` / `sticky_scroll` / `indent_guides` | `false` / `true` / `true` | Editor view options |
 | `breadcrumbs` / `git_blame` | `true` / `true` | Path bar above the editor; inline blame |
+| `rulers` | `[]` | Columns of thin vertical guide lines, e.g. `[80, 120]` (theme color `editorRuler.foreground`); also allowed per language in `languages` |
+| `inline_diagnostics` | `"current_line"` | The most severe problem of a line after its code: `"off"`, `"current_line"` or `"all"` |
 | `ram_display` | `"long"` | `"long"` (numbers) or `"short"` (a chip icon) |
 | `local_history` / `local_history_max_entries` | `true` / `50` | Keep a snapshot of a file on every save and before a reload from disk (*File: Local history*); snapshots kept per file, 1 to 1000 |
 | `explorer_hide_gitignored` | `true` | Hide what `.gitignore`, the global ignore file and `.git/info/exclude` ignore; `false` shows those entries dimmed |
@@ -447,6 +452,7 @@ src/
                            (the biggest ones are directory modules: app/, app_overlay/, app_gitpanel/, app_hover/, settingsui/)
   keymap.rs, config.rs     DEFAULTS table + keybindings.json; config.json and paths
   lsp.rs, inlay.rs, eslint.rs, format.rs  JSON-RPC client (lazy tsgo), inlay hints, lint, formatters
+  assist.rs, app_assist.rs  rulers, inline diagnostics, document highlights, linked editing
   lspreg.rs, lsp_servers.json, lspsup.rs, lspmerge.rs, lsplog.rs, app_lspx.rs  language-server registry and config, supervision
                            (backoff, dynamic registration, progress), merged answers, server log, lifecycle in the app
   dap.rs, tasks.rs, terminal.rs  debug adapters, processes and ANSI output, PTY + VT emulator

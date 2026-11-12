@@ -5,6 +5,7 @@
 mod app;
 mod app_aipanel;
 mod app_ask;
+mod app_assist;
 mod app_backup;
 mod app_build;
 mod app_ctxmenu;
@@ -46,6 +47,7 @@ mod app_topbar;
 mod app_unsaved;
 mod app_update;
 mod app_worktree;
+mod assist;
 mod backup;
 mod bigfile;
 mod bookmarks;

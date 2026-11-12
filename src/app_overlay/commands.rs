@@ -194,6 +194,7 @@ pub enum Cmd {
     OpenProjectSettings,
     ProjectTrust,
     PythonSelectInterpreter,
+    CycleInlineDiagnostics,
 }
 
 impl Cmd {
@@ -398,4 +399,5 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Preferences: Project settings (.lumen/config.json)", "", Cmd::OpenProjectSettings),
     ("Project: Trust the commands of the project settings…", "", Cmd::ProjectTrust),
     ("Python: Select interpreter…", "", Cmd::PythonSelectInterpreter),
+    ("View: Inline diagnostics (off / current line / all)", "", Cmd::CycleInlineDiagnostics),
 ];

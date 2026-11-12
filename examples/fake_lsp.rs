@@ -4,7 +4,10 @@
 //! `FAKE_NAME` (hover/diagnostic source), `FAKE_PULL=1` (pull diagnostics instead of push),
 //! `FAKE_FORMAT=1` (documentFormattingProvider), `FAKE_DYNAMIC=1` (register formatting dynamically),
 //! `FAKE_CONFIG=1` (ask `workspace/configuration`), `FAKE_PROGRESS=1` (`$/progress`),
-//! `FAKE_EXIT_AFTER_INIT=1` (die right after `initialized`), `FAKE_NO_HOVER=1`.
+//! `FAKE_EXIT_AFTER_INIT=1` (die right after `initialized`), `FAKE_NO_HOVER=1`,
+//! `FAKE_HIGHLIGHT=1` (documentHighlight: every whole-word occurrence, the first as a write) or
+//! `FAKE_HIGHLIGHT=first` (only the first occurrence), `FAKE_LINKED=1` (linkedEditingRange for
+//! `<tag>...</tag>` names).
 //! A document containing `CRASH` kills the server. Every line containing `FIXME` gets a warning.
 use serde_json::{Value, json};
 use std::io::{BufRead, Read, Write};
@@ -37,6 +40,79 @@ fn diags(text: &str, name: &str) -> Vec<Value> {
         }
     }
     out
+}
+
+fn ident(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c == b'-'
+}
+
+/// Byte offset of an LSP position (the test documents are ASCII, so UTF-16 columns are bytes).
+fn offset(text: &str, p: &Value) -> usize {
+    let (line, ch) = (p["line"].as_u64().unwrap_or(0) as usize, p["character"].as_u64().unwrap_or(0) as usize);
+    let start: usize = text.split_inclusive('\n').take(line).map(str::len).sum();
+    (start + ch).min(text.len())
+}
+
+fn pos(text: &str, off: usize) -> Value {
+    let line = text[..off].matches('\n').count();
+    let col = off - text[..off].rfind('\n').map_or(0, |i| i + 1);
+    json!({"line": line, "character": col})
+}
+
+fn range(text: &str, a: usize, b: usize) -> Value {
+    json!({"start": pos(text, a), "end": pos(text, b)})
+}
+
+/// The identifier around byte `off`.
+fn word_at(text: &str, off: usize) -> (usize, usize) {
+    let b = text.as_bytes();
+    let (mut s, mut e) = (off, off);
+    while s > 0 && ident(b[s - 1]) {
+        s -= 1;
+    }
+    while e < b.len() && ident(b[e]) {
+        e += 1;
+    }
+    (s, e)
+}
+
+fn highlights(text: &str, off: usize, first_only: bool) -> Value {
+    let (s, e) = word_at(text, off);
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    if s < e {
+        let word = &text[s..e];
+        let mut from = 0;
+        while let Some(m) = text[from..].find(word) {
+            let (a, z) = (from + m, from + m + word.len());
+            if (a == 0 || !ident(b[a - 1])) && (z >= b.len() || !ident(b[z])) {
+                out.push(json!({"range": range(text, a, z), "kind": if out.is_empty() { 3 } else { 2 }}));
+                if first_only {
+                    break;
+                }
+            }
+            from = z;
+        }
+    }
+    json!(out)
+}
+
+fn linked(text: &str, off: usize) -> Value {
+    let (s, e) = word_at(text, off);
+    if s == e {
+        return Value::Null;
+    }
+    let name = &text[s..e];
+    let other = if text[..s].ends_with("</") {
+        text[..s].rfind(&format!("<{name}")).map(|i| i + 1)
+    } else if text[..s].ends_with('<') {
+        text[e..].find(&format!("</{name}>")).map(|i| e + i + 2)
+    } else {
+        None
+    };
+    let Some(o) = other else { return Value::Null };
+    let (a, b) = if o < s { ((o, o + name.len()), (s, e)) } else { ((s, e), (o, o + name.len())) };
+    json!({"ranges": [range(text, a.0, a.1), range(text, b.0, b.1)], "wordPattern": "[a-zA-Z0-9:\\-\\._$]*"})
 }
 
 fn main() {
@@ -82,6 +158,12 @@ fn main() {
                 });
                 if env("FAKE_FORMAT") {
                     caps["documentFormattingProvider"] = json!(true);
+                }
+                if std::env::var("FAKE_HIGHLIGHT").is_ok() {
+                    caps["documentHighlightProvider"] = json!(true);
+                }
+                if env("FAKE_LINKED") {
+                    caps["linkedEditingRangeProvider"] = json!(true);
                 }
                 if env("FAKE_PULL") {
                     caps["diagnosticProvider"] = json!({"interFileDependencies": false, "workspaceDiagnostics": false});
@@ -146,6 +228,17 @@ fn main() {
             }
             "textDocument/hover" => {
                 reply(json!({"contents": {"kind": "markdown", "value": format!("hover from {name}")}}))
+            }
+            "textDocument/documentHighlight" | "textDocument/linkedEditingRange" => {
+                let uri = m["params"]["textDocument"]["uri"].as_str().unwrap_or("");
+                let text = docs.get(uri).cloned().unwrap_or_default();
+                let off = offset(&text, &m["params"]["position"]);
+                if method == "textDocument/linkedEditingRange" {
+                    reply(linked(&text, off));
+                } else {
+                    let first = std::env::var("FAKE_HIGHLIGHT").is_ok_and(|v| v == "first");
+                    reply(highlights(&text, off, first));
+                }
             }
             "textDocument/completion" => reply(json!([
                 {"label": format!("{name}_item"), "kind": 3},

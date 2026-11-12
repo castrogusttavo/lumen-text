@@ -139,6 +139,10 @@ pub struct Config {
     /// Where the values came from (user file, `.lumen/config.json`, `.lumen/config.local.json`) so
     /// `save` writes each change to the right file; empty for a plain user config. Never compared.
     pub layers: crate::projcfg::Layers,
+    /// Columns of the thin vertical rulers (empty = none); see `assist::parse_rulers`.
+    pub rulers: Vec<usize>,
+    /// Inline diagnostics after the code: "off", "current_line" (default) or "all".
+    pub inline_diagnostics: String,
 }
 
 /// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
@@ -316,6 +320,8 @@ impl Default for Config {
             insert_final_newline: false,
             languages: Value::Null,
             layers: Default::default(),
+            rulers: Vec::new(),
+            inline_diagnostics: "current_line".into(),
         }
     }
 }
@@ -603,6 +609,10 @@ impl Config {
             insert_final_newline: v["insert_final_newline"].as_bool().unwrap_or(false),
             languages: v.get("languages").filter(|l| l.is_object()).cloned().unwrap_or(Value::Null),
             layers: Default::default(),
+            rulers: crate::assist::parse_rulers(&v["rulers"]),
+            inline_diagnostics: crate::assist::InlineDiags::from_name(v["inline_diagnostics"].as_str().unwrap_or(""))
+                .name()
+                .to_string(),
         }
     }
 
@@ -646,6 +656,8 @@ impl Config {
         v["render_whitespace"] = json!(self.render_whitespace);
         v["trim_trailing_whitespace"] = json!(self.trim_trailing_whitespace);
         v["insert_final_newline"] = json!(self.insert_final_newline);
+        v["rulers"] = json!(self.rulers);
+        v["inline_diagnostics"] = json!(self.inline_diagnostics);
         if !self.languages.is_null() {
             v["languages"] = self.languages.clone();
         }
@@ -759,6 +771,8 @@ mod tests {
             insert_final_newline: true,
             languages: json!({"python": {"tab_width": 4, "format_on_save": true}}),
             layers: Default::default(),
+            rulers: vec![80, 120],
+            inline_diagnostics: "all".into(),
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

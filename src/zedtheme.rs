@@ -166,6 +166,9 @@ const COLOR_MAP: &[(&str, &[&str])] = &[
     ("editorGutter.deletedBackground", &["deleted", "deleted.background"]),
     ("editor.findMatchHighlightBackground", &["search.match_background"]),
     ("editor.findMatchBackground", &["search.match_background"]),
+    ("editorRuler.foreground", &["editor.wrap_guide"]),
+    ("editor.wordHighlightBackground", &["editor.document_highlight.read_background"]),
+    ("editor.wordHighlightStrongBackground", &["editor.document_highlight.write_background"]),
 ];
 
 /// (Zed syntax key, TextMate scopes). Ordered generic -> specific.
@@ -363,7 +366,10 @@ fn template_value(name: &str) -> Value {
             "editorGutter.modifiedBackground": "#1b81a8",
             "editorGutter.deletedBackground": "#f85149",
             "editor.findMatchHighlightBackground": "#ea5c0055",
-            "editor.findMatchBackground": "#51c0a880"
+            "editor.findMatchBackground": "#51c0a880",
+            "editorRuler.foreground": "#5a5a5a",
+            "editor.wordHighlightBackground": "#57575740",
+            "editor.wordHighlightStrongBackground": "#0e639c40"
         },
         "tokenColors": [
             { "scope": ["comment", "punctuation.definition.comment"], "settings": { "foreground": "#6a9955", "fontStyle": "italic" } },

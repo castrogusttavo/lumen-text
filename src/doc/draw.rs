@@ -291,6 +291,29 @@ impl Doc {
             let color = if Some(i) == o.find_cur { c.find_match_current } else { c.find_match };
             paint_range(cv, a, b, color);
         }
+        // Document highlights: the occurrences of the symbol under the caret (read / write from the
+        // language server, or the same word when no server offers them). Only what is on screen.
+        let (doc_hl, hl_word) = self.assist.live_hl(self.buf.version());
+        if o.find.is_empty() && sel.is_empty() && self.ed.extra.is_empty() && !geo.is_empty() {
+            let (vis_a, vis_b) = (geo[0].0, geo[geo.len() - 1].0 + geo[geo.len() - 1].1);
+            for h in doc_hl.iter().filter(|h| h.b >= vis_a && h.a <= vis_b) {
+                paint_range(cv, h.a, h.b, if h.write { c.word_hl_strong } else { c.word_hl });
+            }
+            if let Some(w) = hl_word {
+                let q = crate::editor::Occurrence { needle: w.to_string(), whole_word: true };
+                let mut hits: Vec<(usize, usize)> = Vec::new();
+                for (lk, text) in lines.iter().enumerate() {
+                    let n0 = hits.len();
+                    crate::editor::line_occurrences(text, &q, OCCURRENCE_CAP, &mut hits);
+                    for h in &mut hits[n0..] {
+                        *h = (geo[lk].0 + h.0, geo[lk].0 + h.1);
+                    }
+                }
+                for (a, b) in hits {
+                    paint_range(cv, a, b, c.word_hl);
+                }
+            }
+        }
         // Other occurrences of the selected text (Sublime/Zed): a soft tint of the selection color with a
         // faint outline. Only the visible lines are scanned, so it costs the same in any file; it steps
         // aside while the find bar shows its own matches.
@@ -419,6 +442,11 @@ impl Doc {
                     }
                 }
             }
+        }
+
+        // Rulers: thin vertical lines at fixed columns (the cell grid, scrolled with the text).
+        for x in crate::assist::ruler_xs(&self.assist.rulers, body.x, body.right(), cell_w, left) {
+            cv.fill_clip(Rect::new(x, rect.y, 1, rect.h), c.ruler, body);
         }
 
         // Matching bracket.
@@ -564,6 +592,7 @@ impl Doc {
         }
 
         // Inline git blame for the cursor line, after the code.
+        let mut blame_end: Option<(usize, i32)> = None;
         if let Some((bl, text)) = &self.blame
             && sel.is_empty()
             && *bl == cur_line
@@ -572,6 +601,48 @@ impl Doc {
             let x = vx(vend) + (cell_w * 4.0) as i32;
             if x < body.right() {
                 tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, text, theme.line_number, body, false);
+                blame_end = Some((*bl, x + tx.ui_width(text, false)));
+            }
+        }
+
+        // Inline diagnostics (Error Lens style): the most severe message of a line after its code and
+        // after whatever is already drawn there (hints, fold marker, lenses, blame), faded and cut to
+        // the room left on the line's last row; with too little room (a long or wrapped line) none.
+        if self.assist.inline != crate::assist::InlineDiags::Off && !self.diags.is_empty() {
+            let only = (self.assist.inline == crate::assist::InlineDiags::CurrentLine).then_some(cur_line);
+            for (line, di) in crate::assist::worst_per_line(&self.diags, first, last, only) {
+                let Some((r, vend)) = at_end(line) else { continue };
+                let mut end = vx(vend);
+                for (pill, l) in &self.fold_pills {
+                    if *l == line {
+                        end = end.max(pill.right());
+                    }
+                }
+                for (hit, idx) in &self.lens_hits {
+                    if self.lenses.get(*idx).is_some_and(|lz| lz.line == line) {
+                        end = end.max(hit.right());
+                    }
+                }
+                if let Some((bl, be)) = blame_end
+                    && bl == line
+                {
+                    end = end.max(be);
+                }
+                let gap = (cell_w * 3.0).round() as i32;
+                let Some((x, room)) = crate::assist::inline_slot(end, body.right() - 6, gap, (cell_w * 6.0) as i32)
+                else {
+                    continue;
+                };
+                let d = &self.diags[di];
+                let Some(msg) = crate::assist::fit_message(&d.message, room, &mut |s| tx.ui_width(s, false)) else {
+                    continue;
+                };
+                let color = match d.severity {
+                    1 => c.error,
+                    2 => c.warning,
+                    _ => c.info,
+                };
+                tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, &msg, color.with_alpha(0xc0), body, false);
             }
         }
 
