@@ -167,18 +167,157 @@ pub struct Dap {
     pub rx: Receiver<DapMsg>,
     seq: Arc<AtomicI64>,
     pending: HashMap<i64, Pending>,
+    /// The debugged program's pid, from the DAP `process` event (when the adapter sends it).
+    pub debuggee_pid: Option<u32>,
+    /// Descendants of the adapter process seen when the shutdown began (the debuggee and its children).
+    tree: Vec<u32>,
+    shutdown_sent: bool,
+    /// What the debuggee (and the adapter itself) wrote to the adapter's stdout/stderr.
+    prog: Option<Receiver<ProgLine>>,
 }
 
+/// One line the adapter process wrote on its own stdout/stderr. Delve runs the debuggee with those
+/// descriptors inherited, so this is where the program's output (and dlv's own chatter) shows up.
+pub struct ProgLine {
+    pub stderr: bool,
+    pub text: String,
+}
+
+/// How long a stopping adapter gets to exit by itself after `disconnect`.
+const ADAPTER_GRACE: Duration = Duration::from_secs(2);
+
 impl Drop for Dap {
+    /// Dropping a session that owns its adapter process ends it the safe way: `disconnect` with
+    /// `terminateDebuggee`, a bounded wait for the adapter to exit, then whatever is still alive
+    /// (the adapter, the debuggee and its children) is killed. Killing only the adapter would leave the
+    /// debugged program running as an orphan.
     fn drop(&mut self) {
-        if let Some(c) = self.child.as_mut() {
-            let _ = c.kill();
-            let _ = c.wait();
+        if self.child.is_some() {
+            self.begin_shutdown();
+            self.finish_shutdown();
         }
         if let Some(s) = self.sock.as_ref() {
             let _ = s.shutdown(Shutdown::Both);
         }
     }
+}
+
+/// Pids below `root` in the process tree (children, grandchildren, ...). Unix only (`ps`); empty elsewhere.
+#[cfg(unix)]
+pub fn descendants(root: u32) -> Vec<u32> {
+    let Ok(out) = Command::new("ps").args(["-A", "-o", "pid=", "-o", "ppid="]).output() else { return Vec::new() };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let pairs: Vec<(u32, u32)> = text
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+        })
+        .collect();
+    let (mut found, mut todo) = (Vec::new(), vec![root]);
+    while let Some(p) = todo.pop() {
+        for &(c, parent) in &pairs {
+            if parent == p && !found.contains(&c) {
+                found.push(c);
+                todo.push(c);
+            }
+        }
+    }
+    found
+}
+
+#[cfg(not(unix))]
+pub fn descendants(_root: u32) -> Vec<u32> {
+    Vec::new()
+}
+
+/// Is `pid` a live process (a zombie awaiting its parent does not count)?
+pub fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        if pid == 0 || unsafe { libc::kill(pid as i32, 0) } != 0 {
+            return false;
+        }
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(s) => s.rsplit(')').next().is_some_and(|rest| !rest.trim_start().starts_with('Z')),
+            Err(_) => true,
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let want = pid.to_string();
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().any(|w| w == want))
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Kill `pid` and everything it started: its process group on unix (delve puts the debuggee in its own),
+/// the whole tree through `taskkill /T` on Windows.
+pub fn kill_pid_tree(pid: u32) {
+    if pid <= 1 || pid == std::process::id() {
+        return;
+    }
+    #[cfg(unix)]
+    unsafe {
+        let _ = libc::kill(-(pid as i32), libc::SIGKILL);
+        let _ = libc::kill(pid as i32, libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000)
+            .status();
+    }
+}
+
+/// Forward the lines read from `r` (an adapter pipe) to `tx`, waking the UI for each.
+fn forward_lines(r: impl Read + Send + 'static, stderr: bool, tx: Sender<ProgLine>, wake: Wake) {
+    thread::spawn(move || {
+        read_lines(r, |text| {
+            let ok = tx.send(ProgLine { stderr, text }).is_ok();
+            wake();
+            ok
+        })
+    });
+}
+
+/// Call `f` with every line of `r` (lossy UTF-8, no line ending) until EOF or `f` returns false.
+fn read_lines(r: impl Read, mut f: impl FnMut(String) -> bool) {
+    use std::io::{BufRead, BufReader};
+    let mut r = BufReader::new(r);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match r.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let t = String::from_utf8_lossy(&buf);
+                if !f(t.trim_end_matches(['\n', '\r']).to_string()) {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Lines dlv prints about itself rather than for the program.
+fn adapter_chatter(line: &str) -> bool {
+    line.starts_with("DAP server") || line.starts_with("Detaching") || line.contains(" layer=")
 }
 
 /// Reader/writer threads shared by every transport.
@@ -226,6 +365,102 @@ fn start_io(
 }
 
 impl Dap {
+    fn assemble(
+        child: Option<Child>,
+        sock: Option<TcpStream>,
+        tx: Sender<Vec<u8>>,
+        rx: Receiver<DapMsg>,
+        seq: Arc<AtomicI64>,
+    ) -> Dap {
+        Dap {
+            child,
+            sock,
+            adapter_id: "gdb".into(),
+            tx,
+            rx,
+            seq,
+            pending: HashMap::new(),
+            debuggee_pid: None,
+            tree: Vec::new(),
+            shutdown_sent: false,
+            prog: None,
+        }
+    }
+
+    /// Pid of the adapter process this client started, if it owns one.
+    pub fn adapter_pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
+    }
+
+    /// First half of a clean stop: remember the processes below the adapter (they are reparented once it
+    /// dies) and ask it to `disconnect` with `terminateDebuggee`. Read `rx` until the `disconnect`
+    /// response or `Exited` (bounded), then call [`Dap::finish_shutdown`].
+    pub fn begin_shutdown(&mut self) {
+        if let Some(pid) = self.adapter_pid() {
+            self.tree = descendants(pid);
+        }
+        if let Some(p) = self.debuggee_pid
+            && !self.tree.contains(&p)
+        {
+            self.tree.push(p);
+        }
+        if !self.shutdown_sent {
+            self.shutdown_sent = true;
+            self.disconnect(true);
+        }
+    }
+
+    /// Second half: give the adapter a moment to exit by itself, kill it if it does not, then kill
+    /// the debuggee (and its children) if `disconnect` did not take it down.
+    pub fn finish_shutdown(&mut self) {
+        if let Some(mut c) = self.child.take() {
+            let end = Instant::now() + ADAPTER_GRACE;
+            let mut gone = false;
+            while !gone && Instant::now() < end {
+                gone = !matches!(c.try_wait(), Ok(None));
+                if !gone {
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+            if !gone {
+                #[cfg(windows)]
+                kill_pid_tree(c.id());
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+        let left: Vec<u32> = std::mem::take(&mut self.tree).into_iter().filter(|p| pid_alive(*p)).collect();
+        for p in &left {
+            kill_pid_tree(*p);
+        }
+        let end = Instant::now() + Duration::from_secs(2);
+        while left.iter().any(|p| pid_alive(*p)) && Instant::now() < end {
+            thread::sleep(Duration::from_millis(20));
+        }
+        if let Some(s) = self.sock.as_ref() {
+            let _ = s.shutdown(Shutdown::Both);
+        }
+    }
+
+    /// The lines the adapter process wrote since the last call, formatted for the Debug Console:
+    /// program stdout plain, stderr in the error colour, dlv's own messages dimmed and prefixed.
+    pub fn drain_program_output(&mut self) -> Vec<String> {
+        use crate::debug_model::{ConsoleKind, console_line};
+        let Some(rx) = &self.prog else { return Vec::new() };
+        rx.try_iter()
+            .filter(|l| !l.text.starts_with("DAP server"))
+            .map(|l| {
+                if adapter_chatter(&l.text) {
+                    console_line(ConsoleKind::Echo, &format!("[dlv] {}", l.text))
+                } else if l.stderr {
+                    console_line(ConsoleKind::Stderr, &l.text)
+                } else {
+                    console_line(ConsoleKind::Stdout, &l.text)
+                }
+            })
+            .collect()
+    }
+
     pub fn spawn(cmd: &str, args: &[&str], cwd: &Path, wake: Wake) -> io::Result<Dap> {
         let mut child = Command::new(cmd)
             .args(args)
@@ -237,7 +472,7 @@ impl Dap {
         let stdin = child.stdin.take().ok_or_else(|| io::Error::other("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| io::Error::other("no stdout"))?;
         let (tx, rx, seq) = start_io(stdout, stdin, wake);
-        Ok(Dap { child: Some(child), sock: None, adapter_id: "gdb".into(), tx, rx, seq, pending: HashMap::new() })
+        Ok(Dap::assemble(Some(child), None, tx, rx, seq))
     }
 
     /// Connect to a DAP server over TCP (same framing), retrying for up to ~6 s.
@@ -252,63 +487,73 @@ impl Dap {
         };
         let _ = stream.set_nodelay(true);
         let (tx, rx, seq) = start_io(stream.try_clone()?, stream.try_clone()?, wake);
-        Ok(Dap { child: None, sock: Some(stream), adapter_id: "gdb".into(), tx, rx, seq, pending: HashMap::new() })
+        Ok(Dap::assemble(None, Some(stream), tx, rx, seq))
     }
 
     /// A client over any byte transport (in-memory pipes in the tests).
     pub fn from_io(input: impl Read + Send + 'static, output: impl Write + Send + 'static, wake: Wake) -> Dap {
         let (tx, rx, seq) = start_io(input, output, wake);
-        Dap { child: None, sock: None, adapter_id: "gdb".into(), tx, rx, seq, pending: HashMap::new() }
+        Dap::assemble(None, None, tx, rx, seq)
     }
 
     /// Spawn an adapter that serves DAP on a TCP port it picks itself and announces on stdout
     /// (`... listening at: 127.0.0.1:41234`, as `dlv dap --listen=127.0.0.1:0` does), then connect.
     /// The child is killed when the `Dap` is dropped.
     pub fn spawn_listening(cmd: &str, args: &[&str], cwd: &Path, wake: Wake) -> io::Result<Dap> {
-        use std::io::{BufRead, BufReader};
         let mut child = Command::new(cmd)
             .args(args)
             .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()?;
         let stdout = child.stdout.take().ok_or_else(|| io::Error::other("no stdout"))?;
+        let stderr = child.stderr.take().ok_or_else(|| io::Error::other("no stderr"))?;
         let (atx, arx) = channel::<String>();
+        let (ptx, prx) = channel::<ProgLine>();
+        // Everything after the announcement is the debuggee's output (it inherits these pipes).
+        forward_lines(stderr, true, ptx.clone(), wake.clone());
+        let out_wake = wake.clone();
         thread::spawn(move || {
             let mut sent = false;
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            read_lines(stdout, |line| {
                 if !sent && let Some((_, addr)) = line.split_once("listening at:") {
                     sent = true;
                     let _ = atx.send(addr.trim().to_string());
+                    return true;
                 }
-            }
+                let ok = ptx.send(ProgLine { stderr: false, text: line }).is_ok();
+                out_wake();
+                ok
+            });
         });
+        let fail = |mut child: Child, msg: String| {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(io::Error::other(msg))
+        };
         let addr = match arx.recv_timeout(Duration::from_secs(15)) {
             Ok(a) => a,
             Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(io::Error::other(format!("{cmd} did not announce a listening address")));
+                let mut why = format!("{cmd} did not announce a listening address");
+                // What it printed instead (a bad flag, a missing toolchain, ...) explains why.
+                let said: Vec<String> = prx.try_iter().map(|l| l.text).collect();
+                if !said.is_empty() {
+                    why = format!("{why}: {}", said.join(" | "));
+                }
+                return fail(child, why);
             }
         };
         let port = addr.rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
         let host = addr.rsplit_once(':').map_or("127.0.0.1", |(h, _)| h.trim_matches(['[', ']']));
-        let Some(port) = port else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(io::Error::other(format!("bad listening address: {addr}")));
-        };
+        let Some(port) = port else { return fail(child, format!("bad listening address: {addr}")) };
         match Dap::connect_tcp(if host.is_empty() { "127.0.0.1" } else { host }, port, wake) {
             Ok(mut d) => {
                 d.child = Some(child);
+                d.prog = Some(prx);
                 Ok(d)
             }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                Err(e)
-            }
+            Err(e) => fail(child, e.to_string()),
         }
     }
 
@@ -672,6 +917,8 @@ pub struct Session {
     pub watch_refs: HashMap<String, i64>,
     /// The last hover evaluation: `(expression, value or error)`.
     pub hover_result: Option<(String, Result<String, String>)>,
+    /// Exit code of the debugged program, once the adapter reported it (`exited` event).
+    pub exit_code: Option<i64>,
     locals_ref: i64,
     last_thread: i64,
     /// When set, source paths from the adapter and the editor are normalised against this root
@@ -710,6 +957,7 @@ impl Session {
             watch_results: HashMap::new(),
             watch_refs: HashMap::new(),
             hover_result: None,
+            exit_code: None,
             locals_ref: 0,
             last_thread: 1,
         }
@@ -963,7 +1211,23 @@ impl Session {
                     self.state = State::Running;
                     self.clear_stop();
                 }
-                "exited" | "terminated" => self.state = State::Terminated,
+                "process" => {
+                    if let Some(p) = body.get("systemProcessId").and_then(Value::as_u64) {
+                        dap.debuggee_pid = u32::try_from(p).ok();
+                    }
+                }
+                "exited" => {
+                    self.state = State::Terminated;
+                    let code = body.get("exitCode").and_then(Value::as_i64).unwrap_or(0);
+                    self.exit_code = Some(code);
+                    let k = if code == 0 {
+                        crate::debug_model::ConsoleKind::Echo
+                    } else {
+                        crate::debug_model::ConsoleKind::Error
+                    };
+                    self.output.push(crate::debug_model::console_line(k, &format!("Program exited with code {code}")));
+                }
+                "terminated" => self.state = State::Terminated,
                 "output" => {
                     if let Some(t) = body.get("output").and_then(Value::as_str) {
                         let cat = body.get("category").and_then(Value::as_str).unwrap_or("console");
@@ -1005,6 +1269,13 @@ impl Session {
                         Pending::StackTrace(_) | Pending::Scopes(_) | Pending::Locals | Pending::Variables(_)
                     ) && !matches!(self.state, State::Stopped { .. });
                     if stale {
+                        return;
+                    }
+                    if what == Pending::Launch {
+                        // The program never started: say why, and let F5 try again.
+                        let k = crate::debug_model::ConsoleKind::Error;
+                        self.output.push(crate::debug_model::console_line(k, &format!("could not launch: {text}")));
+                        self.state = State::Terminated;
                         return;
                     }
                     if let Some(m) = message {

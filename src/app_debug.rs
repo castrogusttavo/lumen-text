@@ -103,11 +103,40 @@ impl Debugger {
             Debugger::Native { dap, session } => session.set_breakpoint_specs(path, specs.to_vec(), dap),
         }
     }
-    pub fn stop(&mut self) {
+    /// End the session for good and return only when the debugged program is gone (or after a bounded
+    /// wait): `disconnect` with `terminateDebuggee`, wait for its response while still showing the output
+    /// that arrives, let the adapter exit, then kill whatever survived. Blocks for up to a few seconds,
+    /// so the UI runs it on a worker thread (`App::begin_teardown`).
+    pub fn stop_and_wait(&mut self) {
+        use crate::dap::DapMsg;
+        use std::sync::mpsc::RecvTimeoutError;
+        use std::time::{Duration, Instant};
         match self {
             Debugger::Node(m) => m.stop(),
-            Debugger::Native { dap, .. } => {
-                dap.disconnect(true);
+            Debugger::Native { dap, session } => {
+                dap.begin_shutdown();
+                let end = Instant::now() + Duration::from_secs(4);
+                while Instant::now() < end {
+                    match dap.rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(m) => {
+                            let done = match &m {
+                                DapMsg::Exited => true,
+                                DapMsg::Response { command, .. } => command == "disconnect",
+                                _ => false,
+                            };
+                            session.handle(&m, dap);
+                            if done {
+                                break;
+                            }
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+                dap.finish_shutdown();
+                let late = dap.drain_program_output();
+                session.output.extend(late);
+                session.state = State::Terminated;
             }
         }
     }
@@ -117,13 +146,42 @@ impl Debugger {
             Debugger::Node(m) => m.handle_all(),
             Debugger::Native { dap, session } => {
                 let mut changed = false;
+                // The program's own output first: it was written before the event that reports its end.
+                let lines = dap.drain_program_output();
+                if !lines.is_empty() {
+                    session.output.extend(lines);
+                    changed = true;
+                }
                 while let Ok(msg) = dap.rx.try_recv() {
                     session.handle(&msg, dap);
+                    changed = true;
+                }
+                let lines = dap.drain_program_output();
+                if !lines.is_empty() {
+                    session.output.extend(lines);
                     changed = true;
                 }
                 changed
             }
         }
+    }
+}
+
+/// The status line when the program ended: its exit code and the last thing it printed, so a server
+/// that dies at once ("bind: address already in use") says why without opening the Debug Console.
+fn finish_message(code: Option<i64>, output: &[String]) -> String {
+    let last = output
+        .iter()
+        .rev()
+        .map(|l| dm::classify(l))
+        .find(|(k, t)| matches!(k, ConsoleKind::Stdout | ConsoleKind::Stderr) && !t.trim().is_empty())
+        .map(|(_, t)| t.trim().to_string());
+    match (code, last) {
+        (Some(0), _) => "program exited with code 0".into(),
+        (Some(c), Some(l)) => format!("program exited with code {c}: {l}"),
+        (Some(c), None) => format!("program exited with code {c}"),
+        (None, Some(l)) => format!("execution finished: {l}"),
+        (None, None) => "execution finished".into(),
     }
 }
 
@@ -210,6 +268,10 @@ pub struct DebugUi {
     pub hover_for: Option<(String, usize, usize, usize)>,
     /// A prelaunch build (`ghp build --debug`) running on a worker thread.
     pub build: Option<PendingBuild>,
+    /// Sessions being taken down on worker threads (disconnect, adapter exit, debuggee kill).
+    pub teardown: Vec<std::thread::JoinHandle<()>>,
+    /// A launch waiting for the sessions in `teardown` to be gone (Restart, F5 after a finished run).
+    pub start_after: Option<LaunchConfig>,
     /// Debug Console lines of the build (shown while there is no session).
     pub build_log: Vec<String>,
 }
@@ -561,8 +623,14 @@ impl App {
                 State::Running | State::Idle => return,
                 State::Terminated => {}
             }
-            self.dbg = None; // finished: start a new one
+            // Finished: the adapter may still be winding down; end it before starting a new one.
+            if let Some(d) = self.dbg.take() {
+                self.begin_teardown(d);
+            }
             self.clear_debug_lines();
+        }
+        if self.teardown_busy() && self.dbgui.start_after.is_some() {
+            return;
         }
         let cfgs = self.debug_detect();
         let Some(cfg) = dm::choose(&cfgs, self.dbgui.config.as_deref()).cloned() else {
@@ -570,7 +638,7 @@ impl App {
                 "no debugger for this file (Go package main via delve, TS/JS via js-debug, Rust via gdb, .ghp pages via the ghp adapter)",
             );
         };
-        self.start_config(&cfg);
+        self.start_after_teardown(cfg);
     }
 
     /// Install a freshly created debugger: breakpoints are already in it.
@@ -716,7 +784,13 @@ impl App {
         let Some(adapter) = reg.get(id) else { return self.say(format!("no debug adapter registered: {id}")) };
         let mut dap = match adapter.start(root, self.wake()) {
             Ok(d) => d,
-            Err(e) => return self.say(format!("could not start {}: {e}", adapter.command)),
+            Err(e) => {
+                // Also in the Debug Console: the status line alone is gone in seconds.
+                let msg = format!("could not start {}: {e}", adapter.command);
+                self.dbgui.build_log.push(dm::console_line(ConsoleKind::Error, &msg));
+                self.open_debug_panel();
+                return self.say_for(msg, 8);
+            }
         };
         let mut session = adapter.session_with(path, root, &[], ov);
         for (p, specs) in self.breakpoint_specs() {
@@ -768,12 +842,13 @@ impl App {
             self.dbgui.build_log.push(dm::console_line(ConsoleKind::Error, "build cancelled"));
             return self.say("debug build cancelled");
         }
-        if let Some(mut d) = self.dbg.take() {
-            d.stop();
+        self.dbgui.start_after = None;
+        if let Some(d) = self.dbg.take() {
+            self.begin_teardown(d);
         }
         self.clear_debug_lines();
         self.sync_breakpoint_marks();
-        self.say("debug session ended");
+        self.say("stopping the debug session…");
     }
 
     pub fn debug_restart(&mut self) {
@@ -783,11 +858,57 @@ impl App {
         if self.dbgui.build.is_some() {
             return;
         }
-        if let Some(mut d) = self.dbg.take() {
-            d.stop();
+        if let Some(d) = self.dbg.take() {
+            self.begin_teardown(d);
         }
         self.clear_debug_lines();
-        self.start_config(&cfg);
+        self.start_after_teardown(cfg);
+    }
+
+    /// Take `d` down on a worker thread: the debugged program must be gone (and its port free) before
+    /// anything is started again, but the UI must not freeze while dlv winds down.
+    fn begin_teardown(&mut self, mut d: Debugger) {
+        let wake = self.wake();
+        self.dbgui.teardown.push(std::thread::spawn(move || {
+            d.stop_and_wait();
+            drop(d);
+            wake();
+        }));
+    }
+
+    /// Is a session still being taken down?
+    pub fn teardown_busy(&self) -> bool {
+        self.dbgui.teardown.iter().any(|h| !h.is_finished())
+    }
+
+    /// Start `cfg` as soon as no old session is left: now, or from `pump_debug` when the teardown ends.
+    fn start_after_teardown(&mut self, cfg: LaunchConfig) {
+        self.dbgui.start_after = Some(cfg);
+        if self.teardown_busy() {
+            self.say("waiting for the previous debug session to end…");
+        }
+        self.pump_start_after();
+    }
+
+    fn pump_start_after(&mut self) {
+        self.dbgui.teardown.retain(|h| !h.is_finished());
+        if self.dbgui.teardown.is_empty()
+            && let Some(cfg) = self.dbgui.start_after.take()
+        {
+            self.start_config(&cfg);
+        }
+    }
+
+    /// Quit: end the session and wait (bounded) for the debugged program to be gone, so closing the window
+    /// never leaves it running.
+    pub fn debug_shutdown(&mut self) {
+        self.dbgui.start_after = None;
+        if let Some(mut d) = self.dbg.take() {
+            d.stop_and_wait();
+        }
+        for h in self.dbgui.teardown.drain(..) {
+            let _ = h.join();
+        }
     }
 
     pub fn debug_pause(&mut self) {
@@ -815,11 +936,14 @@ impl App {
         let state = self.dbg.as_ref().map(Debugger::state);
         let stopped = matches!(state, Some(State::Stopped { .. }));
         let building = self.dbgui.build.is_some();
+        let stopping = self.teardown_busy() || self.dbgui.start_after.is_some();
         match t {
-            Tool::Continue => !building && (state.is_none() || stopped || state == Some(State::Terminated)),
+            Tool::Continue => {
+                !building && !stopping && (state.is_none() || stopped || state == Some(State::Terminated))
+            }
             Tool::Over | Tool::Into | Tool::Out => stopped,
             Tool::Pause => state == Some(State::Running),
-            Tool::Restart => !building && self.dbgui.last.is_some(),
+            Tool::Restart => !building && !stopping && self.dbgui.last.is_some(),
             Tool::Stop => building || state.is_some_and(|s| s != State::Terminated),
         }
     }
@@ -842,6 +966,7 @@ impl App {
     /// Follow the adapter: when it stops, show the selected frame in the editor.
     pub fn pump_debug(&mut self) {
         self.pump_debug_build();
+        self.pump_start_after();
         self.follow_breakpoint_edits();
         let Some(d) = self.dbg.as_mut() else { return };
         if !d.pump() {
@@ -851,6 +976,8 @@ impl App {
         let hover = d.session_mut().and_then(|(_, s)| s.hover_result.take());
         let watch_stale = d.session().is_some_and(|s| s.watch != self.dbgui.watch);
         let target = d.session().and_then(|s| s.selected_frame().cloned());
+        let finished =
+            (state == State::Terminated).then(|| finish_message(d.session().and_then(|s| s.exit_code), d.output()));
         match state {
             State::Stopped { .. } => {
                 if watch_stale {
@@ -871,7 +998,12 @@ impl App {
             }
             State::Terminated => {
                 self.clear_debug_lines();
-                self.say("execution finished");
+                let msg = finished.unwrap_or_else(|| "execution finished".into());
+                if msg.contains("code 0") || msg == "execution finished" {
+                    self.say(msg);
+                } else {
+                    self.say_for(msg, 8);
+                }
             }
             _ => self.clear_debug_lines(),
         }
@@ -1385,6 +1517,9 @@ impl App {
     fn debug_status_text(&self) -> String {
         if self.dbgui.build.is_some() {
             return "Building…".into();
+        }
+        if self.teardown_busy() {
+            return "Stopping…".into();
         }
         let Some(s) = self.dbg.as_ref().and_then(Debugger::session) else { return String::new() };
         match &s.state {
