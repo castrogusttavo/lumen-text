@@ -259,6 +259,8 @@ pub struct App {
     pub exit_requested: bool,
     /// A "Save as administrator" in progress (worker thread; see `app_elevated.rs`).
     pub elevated: Option<std::sync::mpsc::Receiver<crate::app_elevated::Done>>,
+    /// Per-project settings and Python interpreter state (see `app_projcfg`).
+    pub proj: crate::app_projcfg::ProjState,
 }
 
 impl App {
@@ -390,7 +392,10 @@ impl App {
             quit_procs_ok: false,
             exit_requested: false,
             elevated: None,
+            proj: Default::default(),
         };
+        // `.lumen/config.json` / `.lumen/config.local.json` on top of the user settings.
+        app.projcfg_init();
         app.refresh_git_status();
         app.watcher = crate::watcher::Watcher::new(app.wake()).ok();
         app.watch_dirs();

@@ -17,8 +17,12 @@ fn keybindings_path() -> Option<std::path::PathBuf> {
 }
 
 impl App {
-    fn config_values(&self) -> Value {
-        let c = &self.config;
+    pub(crate) fn config_values(&self) -> Value {
+        self.config_values_of(&self.config)
+    }
+
+    /// The settings page's values for configuration `c` (the effective one, or the user layer).
+    pub(crate) fn config_values_of(&self, c: &crate::config::Config) -> Value {
         let mut v = json!({
             "format_on_save": c.format_on_save, "updates": c.updates, "auto_import": c.auto_import,
             "lsp_narrow": c.lsp_narrow, "code_lens": c.code_lens, "code_lens_refs": c.code_lens_refs, "code_lens_impls": c.code_lens_impls, "inlay_hints": c.inlay_hints, "inlay_hints_params": c.inlay_hints_params, "inlay_hints_types": c.inlay_hints_types, "appearance": c.appearance, "theme_chrome": c.theme_chrome,
@@ -100,7 +104,11 @@ impl App {
             .filter(|(c, id)| keymap::default_combo(id) != Some(*c))
             .map(|(c, id)| (c.to_string(), id.to_string()));
         kb.add_default_aliases(aliases);
-        self.overlay = Overlay::Settings(Box::new(Modal::new(sp, kb, page)));
+        let mut m = Modal::new(sp, kb, page);
+        m.user_defaults = m.settings.defaults_value();
+        m.scope = Some(crate::projcfg::Scope::User);
+        self.overlay = Overlay::Settings(Box::new(m));
+        self.settings_set_scope(crate::projcfg::Scope::User);
     }
 
     fn window_rect(&self) -> Rect {
@@ -138,14 +146,19 @@ impl App {
         m.wheel(crate::scroller::wheel_px(delta, crate::ui::line_h() as f64));
     }
 
-    fn apply_settings_event(&mut self, e: Event) {
+    pub(crate) fn apply_settings_event(&mut self, e: Event) {
         for e in e.flatten() {
             match e {
                 Event::Close => {
                     self.overlay = Overlay::None;
+                    self.config.layers.with(|s| s.target = None);
                     return;
                 }
-                Event::Setting { key, value } => self.apply_setting(&key, &value),
+                Event::Setting { key, value } => {
+                    self.apply_setting(&key, &value);
+                    self.settings_scoped_after_change();
+                }
+                Event::Scope(s) => self.settings_set_scope(s),
                 Event::PickFont { key } => {
                     if let Some(k) = crate::settings_ext::picker_key(&key) {
                         self.open_font_picker(k, true);
@@ -322,7 +335,7 @@ impl App {
             "word_wrap" => {
                 self.config.word_wrap = b.unwrap_or(false);
                 for d in &mut self.docs {
-                    d.set_word_wrap(self.config.word_wrap);
+                    d.set_word_wrap(self.config.word_wrap_for(d.lang));
                 }
                 self.split_wrap_all(self.config.word_wrap);
             }

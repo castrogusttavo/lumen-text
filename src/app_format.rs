@@ -35,6 +35,7 @@ pub enum Fmt {
 }
 
 impl App {
+    #[cfg(test)]
     pub fn format_on_save_on(&self) -> bool {
         self.config.format_on_save
     }
@@ -175,7 +176,8 @@ impl App {
     /// Format-on-save step for document `i`. Returns what to tell the user *after* saving
     /// (formatting problems must not be overwritten by the plain "Saved" message).
     pub fn format_for_save(&mut self, i: usize) -> Option<String> {
-        if !self.format_on_save_on() {
+        // `languages.<id>.format_on_save` overrides the global switch for that language.
+        if !self.config.format_on_save_for(self.docs.get(i).and_then(|d| d.lang)) {
             return None;
         }
         let path = self.docs.get(i)?.path()?.to_path_buf();

@@ -748,6 +748,8 @@ impl App {
         self.git_status.clear();
         self.root = path;
         crate::instance::set_root(&self.root);
+        // The new project's `.lumen/` settings replace the old project's.
+        self.projcfg_init();
         self.tree = Tree::with_ignore(self.root.clone(), self.config.explorer_hide_gitignored);
         self.active = 0;
         self.refresh_git_status();
@@ -833,6 +835,8 @@ pub enum StatusBtn {
     Build,
     /// The agent of the hidden AI panel finished or wants an answer (left group, only then).
     Ai,
+    /// Project settings (`.lumen/config.json`) are in effect (left group, only then).
+    Project,
 }
 
 /// Is it drawn as an icon button (as opposed to a text read-out)?
@@ -979,6 +983,7 @@ impl App {
         x = self.draw_build_status(cv, x);
         x = self.draw_ai_status(cv, x);
         x = self.draw_fswatch_status(cv, x);
+        x = self.draw_projcfg_status(cv, x);
 
         // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
         // (cursor position, indentation, language: clickable) and the memory figure, in any order.
@@ -1102,7 +1107,8 @@ impl App {
                     | StatusBtn::Problems
                     | StatusBtn::Update
                     | StatusBtn::Build
-                    | StatusBtn::Ai => {}
+                    | StatusBtn::Ai
+                    | StatusBtn::Project => {}
                 }
                 ix += w + kinds.get(k + 1).map_or(0, |&n| status_gap(kind, n));
             }
@@ -1178,6 +1184,7 @@ impl App {
             StatusBtn::Update => self.update_indicator_click(),
             StatusBtn::Build => self.build_toggle_panel(),
             StatusBtn::Ai => self.ai_badge_click(),
+            StatusBtn::Project => self.open_project_settings(),
             StatusBtn::Ram => {}
         }
         true
@@ -1410,9 +1417,17 @@ impl App {
     pub fn set_default_tab_width(&mut self, n: usize) {
         crate::editor::set_default_tab_w(n);
         for i in 0..self.docs.len() {
-            let own = self.docs[i].path().and_then(|p| self.picks.get(p)).is_some_and(|p| p.tab_w.is_some());
+            let own = self.docs[i].path().and_then(|p| self.picks.get(p)).is_some_and(|p| p.tab_w.is_some())
+                || self.docs[i].fileconf.tab_width.is_some();
             if !own {
-                self.docs[i].ed.tab_w = n;
+                // A `languages.<id>.tab_width` override keeps its own width.
+                let lang = self.docs[i].lang;
+                let w = if self.config.lang_override(lang, "tab_width").is_some() {
+                    self.config.tab_width_for(lang)
+                } else {
+                    n
+                };
+                self.docs[i].ed.tab_w = w;
             }
         }
         self.request_redraw();

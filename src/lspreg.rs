@@ -136,26 +136,78 @@ impl ServerSpec {
     }
 
     pub fn env_for(&self, root: &Path) -> Vec<(String, String)> {
-        self.env.iter().map(|(k, v)| (k.clone(), subst(v, root))).collect()
+        let mut env: Vec<(String, String)> = self.env.iter().map(|(k, v)| (k.clone(), subst(v, root))).collect();
+        // Python tools (ruff, pylsp plugins) find the project's packages through the venv.
+        if self.is_python()
+            && !env.iter().any(|(k, _)| k == "VIRTUAL_ENV")
+            && let Some(venv) = crate::pyenv::active(root).and_then(|i| i.venv)
+        {
+            env.push(("VIRTUAL_ENV".into(), venv.to_string_lossy().into_owned()));
+        }
+        env
     }
 
     pub fn init_options_for(&self, root: &Path) -> Value {
-        subst_value(&self.initialization_options, root)
+        let mut v = subst_value(&self.initialization_options, root);
+        if self.is_pyright()
+            && (v.is_null() || v.is_object())
+            && v.pointer("/python/pythonPath").is_none()
+            && let Some(py) = project_python(root)
+        {
+            if v.is_null() {
+                v = json!({});
+            }
+            v["python"]["pythonPath"] = json!(py.to_string_lossy());
+        }
+        v
+    }
+
+    /// Does it serve Python?
+    pub fn is_python(&self) -> bool {
+        self.languages.iter().any(|l| l == "python")
+    }
+
+    /// pyright or basedpyright (they read `python.pythonPath`, `python.venvPath` and `python.venv`).
+    fn is_pyright(&self) -> bool {
+        self.is_python() && self.command.contains("pyright")
+    }
+
+    /// The executable for a project: a Python server installed in the project's venv (ruff,
+    /// basedpyright pinned in the dev dependencies) wins over one on the `PATH`.
+    pub fn resolve_for(&self, root: &Path) -> Option<PathBuf> {
+        let bare = !self.command.contains('/') && !self.command.contains('\\');
+        if self.is_python()
+            && bare
+            && let Some(venv) = crate::pyenv::active(root).and_then(|i| i.venv)
+            && let Some(p) =
+                candidates(crate::pyenv::venv_bin(&venv).join(&self.command)).into_iter().find(|p| is_exec(p))
+        {
+            return Some(p);
+        }
+        resolve_command(&self.command, root)
     }
 
     pub fn settings_for(&self, root: &Path) -> Value {
         let mut v = subst_value(&self.settings, root);
         // Python servers do not look for the project's virtualenv themselves (VS Code's Python
         // extension tells them): without it every installed dependency is "could not be resolved".
-        if self.languages.iter().any(|l| l == "python")
-            && let Some(py) = project_python(root)
+        if self.is_python()
+            && let Some(interp) = crate::pyenv::active(root)
         {
-            let py = json!(py.to_string_lossy());
+            let py = json!(interp.python.to_string_lossy());
             if !v.is_object() {
                 v = json!({});
             }
             if v.pointer("/python/pythonPath").is_none() {
                 v["python"]["pythonPath"] = py.clone();
+                // pyright's `venvPath` + `venv` pair (the folder holding the venv, and its name).
+                if let Some(venv) = &interp.venv
+                    && let (Some(parent), Some(name)) = (venv.parent(), venv.file_name())
+                    && v.pointer("/python/venvPath").is_none()
+                {
+                    v["python"]["venvPath"] = json!(parent.to_string_lossy());
+                    v["python"]["venv"] = json!(name.to_string_lossy());
+                }
             }
             if self.id == "pylsp" && v.pointer("/pylsp/plugins/jedi/environment").is_none() {
                 v["pylsp"]["plugins"]["jedi"]["environment"] = py;
@@ -187,24 +239,10 @@ impl ServerSpec {
     }
 }
 
-/// The interpreter of the project's virtualenv: `.venv`, `venv` or `env` in `root`, else the
-/// activated `$VIRTUAL_ENV`.
+/// The interpreter the project's Python servers get: the one picked with "Python: Select
+/// interpreter…", else the project's virtualenv (see `pyenv`).
 pub fn project_python(root: &Path) -> Option<PathBuf> {
-    // Windows venvs keep the interpreter in `Scripts\python.exe`, POSIX ones in `bin/python`.
-    let exe = |venv: &Path| {
-        let (scripts, bin) = (venv.join("Scripts"), venv.join("bin"));
-        let mut c = vec![bin.join("python"), bin.join("python3"), scripts.join("python.exe")];
-        if cfg!(windows) {
-            c.rotate_right(1);
-        }
-        c.into_iter().find(|p| p.is_file())
-    };
-    [".venv", "venv", "env"]
-        .iter()
-        .map(|d| root.join(d))
-        .filter(|d| d.join("pyvenv.cfg").is_file())
-        .find_map(|d| exe(&d))
-        .or_else(|| std::env::var_os("VIRTUAL_ENV").and_then(|v| exe(Path::new(&v))))
+    crate::pyenv::active(root).map(|i| i.python)
 }
 
 /// Does `dir` hold `marker`? A marker is a relative path, or `*.ext` for "any file with that
@@ -759,6 +797,30 @@ mod tests {
         assert_eq!(r.get("pyright").unwrap().settings_for(&base)["python"]["pythonPath"], json!(py));
         assert_eq!(r.get("pylsp").unwrap().settings_for(&base)["pylsp"]["plugins"]["jedi"]["environment"], json!(py));
         assert!(r.get("gopls").unwrap().settings_for(&base).pointer("/python").is_none());
+        // pyright's venvPath + venv pair, also in the initialization options.
+        let pr = r.get("pyright").unwrap();
+        let s = pr.settings_for(&base);
+        assert_eq!(s["python"]["venvPath"], json!(base.to_string_lossy()));
+        assert_eq!(s["python"]["venv"], json!(".venv"));
+        assert_eq!(pr.init_options_for(&base)["python"]["pythonPath"], json!(py));
+        assert!(r.get("ruff").unwrap().init_options_for(&base).pointer("/python").is_none(), "only pyright's");
+        // Every Python server runs with the venv activated; others do not.
+        let venv_s = venv.to_string_lossy().into_owned();
+        assert!(r.get("ruff").unwrap().env_for(&base).contains(&("VIRTUAL_ENV".to_string(), venv_s)));
+        assert!(!r.get("gopls").unwrap().env_for(&base).iter().any(|(k, _)| k == "VIRTUAL_ENV"));
+        // A server installed in the venv wins over the PATH.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ruff = venv.join("bin/ruff");
+            std::fs::write(&ruff, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&ruff, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(r.get("ruff").unwrap().resolve_for(&base), Some(ruff));
+        }
+        // The user's own setting is never overwritten.
+        let mut custom = pr.clone();
+        custom.settings = json!({"python": {"pythonPath": "/opt/py"}});
+        assert_eq!(custom.settings_for(&base)["python"], json!({"pythonPath": "/opt/py"}));
         std::fs::remove_dir_all(&base).ok();
     }
 

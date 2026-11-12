@@ -19,6 +19,26 @@ Open the settings with `Ctrl+,`. Changes apply immediately and are saved in `~/.
 
 The tables below are generated from the settings model and the defaults in `src/config.rs`.
 
+## Project settings
+
+A project can override your settings: `.lumen/config.json` at its root (commit it to share with the team) and `.lumen/config.local.json` (personal, add it to `.gitignore`). They take the same keys as `config.json`; the order is **your settings < `.lumen/config.json` < `.lumen/config.local.json`**, and `languages` and `language_servers` are merged key by key. Both files reload live.
+
+```json
+{
+  "tab_width": 2,
+  "format_on_save": true,
+  "languages": { "python": { "tab_width": 4 } }
+}
+```
+
+- The settings window has a **User | Project** switch (`Alt+U` / `Alt+P`) that picks the file it writes. On the project side the rows the project sets are marked, user-only rows are hidden, and the reset icon returns to your own value. *Preferences: Project settings* opens it there; a gear in the status bar shows when project settings are in effect.
+- User-only keys (ignored in a project file): `ui_scale`, `scroll_speed`, `updates`, `sidebar_width`, `git_panel_width`, `md_split`, `status_items`, `status_order`, `status_left_order`, `ram_display`, the `ui_font_*` keys, `theme_chrome`, `test_watch`.
+- Commands from a project file (`build_command`, `run_command`, `test_command`, `language_servers` entries with `command`, `args` or `env`) only apply after a one-time trust prompt, remembered per project until the commands change.
+
+## Per-language settings
+
+`languages` (in your settings or a project file) overrides `tab_width`, `format_on_save`, `word_wrap` and `inlay_hints` for one language, keyed by its id: `{"python": {"tab_width": 4, "format_on_save": true}}`.
+
 ## Language servers
 
 The *Language servers* section of the settings window lists every server of the registry with its state and a switch; the `language_servers` object in `config.json` is the full interface (add, replace or switch off servers, set arguments, environment, `initialization_options` and `settings`). It has no row of its own in the tables above because its keys are server names. See [Language servers](/docs/language-servers) for the schema.

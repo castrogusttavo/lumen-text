@@ -159,7 +159,7 @@ impl App {
                 let root = s.root_for(&key.0);
                 PlanEntry {
                     id: s.id.clone(),
-                    exe: lspreg::resolve_command(&s.command, &root),
+                    exe: s.resolve_for(&root),
                     primary: s.role == lspreg::Role::Primary,
                     root,
                 }
@@ -259,7 +259,14 @@ impl App {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let mut env = spec.env_for(&e.root);
         if !env.iter().any(|(k, _)| k == "PATH") {
-            env.push(("PATH".into(), lspreg::child_path(&exe).to_string_lossy().into_owned()));
+            let mut path = lspreg::child_path(&exe);
+            // An activated venv puts its executables first (what `source .venv/bin/activate` does).
+            if let Some((_, venv)) = env.iter().find(|(k, _)| k == "VIRTUAL_ENV") {
+                let bin = crate::pyenv::venv_bin(Path::new(venv));
+                let dirs = std::iter::once(bin).chain(std::env::split_paths(&path).collect::<Vec<_>>());
+                path = std::env::join_paths(dirs).unwrap_or(path);
+            }
+            env.push(("PATH".into(), path.to_string_lossy().into_owned()));
         }
         if exe.file_name().is_some_and(|n| n == "gopls") && !env.iter().any(|(k, _)| k == "GOMEMLIMIT") {
             env.push(("GOMEMLIMIT".into(), "512MiB".into()));
@@ -870,6 +877,27 @@ impl App {
         self.lspx.told.clear();
         self.lspx.agg = None;
         self.lspx.dead_logs.clear();
+    }
+
+    /// Stop the running Python servers (another interpreter was picked); they start again with the
+    /// next tick, with the new settings.
+    pub fn lspx_restart_python(&mut self) {
+        let mut i = 0;
+        while i < self.lsps.len() {
+            let python = self.lsps[i]
+                .generic
+                .as_ref()
+                .is_some_and(|g| self.lspx.reg.get(&g.id).is_some_and(lspreg::ServerSpec::is_python));
+            if python {
+                let mut l = self.lsps.remove(i);
+                l.shutdown();
+                self.lspx_forget_docs(&l);
+            } else {
+                i += 1;
+            }
+        }
+        self.lspx.plans.borrow_mut().clear();
+        self.lspx.health.retain(|(id, _), _| self.lspx.reg.get(id).is_none_or(|s| !s.is_python()));
     }
 
     /// Turn a server on or off (writes `language_servers.<id>.enabled` to the config).

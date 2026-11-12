@@ -926,3 +926,30 @@ fn settings_clicks_toggle_step_and_dropdown_via_hits() {
     assert_eq!(m.mouse_down(x, y), Event::Setting { key: "theme".into(), value: json!("w") });
     assert!(!m.settings.dropdown_open());
 }
+
+#[test]
+fn hidden_rows_leave_the_list_and_empty_sections() {
+    let mut p = page_with(json!({}));
+    let all = p.sections();
+    let general: Vec<String> = p.defs.iter().filter(|d| d.section == "General").map(|d| d.key.to_string()).collect();
+    assert!(!general.is_empty());
+    p.set_hidden(general.clone());
+    assert!(!p.sections().contains(&"General"), "a section with every row hidden disappears");
+    assert_eq!(p.sections().len(), all.len() - 1);
+    p.search.insert("format");
+    p.search_changed();
+    assert!(p.visible().iter().all(|&d| !general.iter().any(|k| k == p.defs[d].key)), "search skips hidden rows");
+    p.set_hidden(Vec::new());
+    assert_eq!(p.sections(), all);
+}
+
+#[test]
+fn scope_switch_keys_only_when_it_is_shown() {
+    let mut m = modal();
+    assert_eq!(m.key(&ch("p"), Some("p"), false, false, true), Event::None, "no switch: Alt+P does nothing");
+    m.scope = Some(crate::projcfg::Scope::User);
+    assert_eq!(m.key(&ch("p"), Some("p"), false, false, true), Event::Scope(crate::projcfg::Scope::Project));
+    assert_eq!(m.key(&ch("U"), Some("U"), false, true, true), Event::Scope(crate::projcfg::Scope::User));
+    m.switch_page();
+    assert_ne!(m.key(&ch("p"), Some("p"), false, false, true), Event::Scope(crate::projcfg::Scope::Project));
+}

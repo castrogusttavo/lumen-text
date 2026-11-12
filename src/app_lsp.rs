@@ -512,7 +512,7 @@ impl App {
                 }
             }
             // Inlay hints for the visible lines only (debounced), once the text is synced.
-            if self.config.inlay_hints && i == self.active && self.docs[i].changed_at.is_none() {
+            if self.config.inlay_hints_for(self.docs[i].lang) && i == self.active && self.docs[i].changed_at.is_none() {
                 self.inlay_tick(i, li, now, want);
             }
             // Outline for breadcrumbs / sticky scroll, once the text is synced.
@@ -615,7 +615,7 @@ impl App {
     fn on_inlay_hints(&mut self, uri: &str, version: i32, first: usize, last: usize, v: &Value) {
         let Some(i) = self.doc_by_uri(uri) else { return };
         let d = &mut self.docs[i];
-        if d.version != version || !self.config.inlay_hints {
+        if d.version != version || !self.config.inlay_hints_for(d.lang) {
             return;
         }
         let mut cache: Option<(usize, String)> = None;

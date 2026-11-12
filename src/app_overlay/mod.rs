@@ -59,6 +59,8 @@ pub enum Action {
     Macro(String),
     /// "Compare with branch or commit" pickers (see `app_gitcmp`).
     Compare(crate::app_gitcmp::CmpPick),
+    /// Trust prompt of the project settings and the Python interpreter picker (see `app_projcfg`).
+    Project(crate::app_projcfg::ProjPick),
 }
 
 #[derive(Clone)]

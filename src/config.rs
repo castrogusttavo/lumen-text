@@ -133,6 +133,12 @@ pub struct Config {
     /// and end the file with a line break. `.editorconfig` overrides both per file.
     pub trim_trailing_whitespace: bool,
     pub insert_final_newline: bool,
+    /// Per-language overrides, kept verbatim: `{"python": {"tab_width": 4, "format_on_save": true}}`
+    /// (see `projcfg::LANG_KEYS` and `Config::tab_width_for` & co.); `Null` when absent.
+    pub languages: Value,
+    /// Where the values came from (user file, `.lumen/config.json`, `.lumen/config.local.json`) so
+    /// `save` writes each change to the right file; empty for a plain user config. Never compared.
+    pub layers: crate::projcfg::Layers,
 }
 
 /// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
@@ -308,6 +314,8 @@ impl Default for Config {
             render_whitespace: "none".into(),
             trim_trailing_whitespace: false,
             insert_final_newline: false,
+            languages: Value::Null,
+            layers: Default::default(),
         }
     }
 }
@@ -467,6 +475,11 @@ impl Config {
     pub fn load_from(path: &Path) -> Config {
         let Ok(text) = std::fs::read_to_string(path) else { return Config::default() };
         let Ok(v) = serde_json::from_str::<Value>(&text) else { return Config::default() };
+        Config::from_value(&v)
+    }
+
+    /// Parse (validate and clamp) a configuration object; missing keys take their defaults.
+    pub fn from_value(v: &Value) -> Config {
         Config {
             theme: v["theme"].as_str().map(str::to_string),
             format_on_save: v["format_on_save"].as_bool().unwrap_or(false),
@@ -588,6 +601,8 @@ impl Config {
             render_whitespace: crate::whitespace::normalize(v["render_whitespace"].as_str()),
             trim_trailing_whitespace: v["trim_trailing_whitespace"].as_bool().unwrap_or(false),
             insert_final_newline: v["insert_final_newline"].as_bool().unwrap_or(false),
+            languages: v.get("languages").filter(|l| l.is_object()).cloned().unwrap_or(Value::Null),
+            layers: Default::default(),
         }
     }
 
@@ -599,6 +614,11 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        std::fs::write(path, serde_json::to_string_pretty(&self.to_json()).unwrap_or_default())
+    }
+
+    /// Every setting as the JSON object `save_to` writes (`from_value(&c.to_json()) == c`).
+    pub fn to_json(&self) -> Value {
         let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "lsp_narrow": self.lsp_narrow, "lsp_lean_v": 2, "lsp_auto_lean": self.lsp_auto_lean, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch});
         // Split in two: one `json!` this long hits the macro recursion limit.
         let fonts = json!({"buffer_font_family": self.buffer_font_family, "buffer_font_size": self.buffer_font_size, "buffer_font_weight": self.buffer_font_weight, "buffer_line_height": self.buffer_line_height, "buffer_font_ligatures": self.buffer_font_ligatures, "ui_font_family": self.ui_font_family, "ui_font_size": self.ui_font_size, "ui_font_weight": self.ui_font_weight, "ui_line_height": self.ui_line_height, "ui_font_ligatures": self.ui_font_ligatures, "show_line_numbers": self.show_line_numbers, "show_bookmarks": self.show_bookmarks, "show_breakpoints": self.show_breakpoints, "scrollbar": self.scrollbar, "enable_lsp": self.enable_lsp});
@@ -626,11 +646,18 @@ impl Config {
         v["render_whitespace"] = json!(self.render_whitespace);
         v["trim_trailing_whitespace"] = json!(self.trim_trailing_whitespace);
         v["insert_final_newline"] = json!(self.insert_final_newline);
-        std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
+        if !self.languages.is_null() {
+            v["languages"] = self.languages.clone();
+        }
+        v
     }
 
+    /// Store the settings. With a project layer active (see `projcfg::Layers`) each change goes to
+    /// the file it belongs to (user, `.lumen/config.json` or `.lumen/config.local.json`).
     pub fn save(&self) {
-        if let Some(p) = default_path() {
+        if let Some(p) = default_path()
+            && !self.layers.save(self, &p)
+        {
             let _ = self.save_to(&p);
         }
     }
@@ -730,6 +757,8 @@ mod tests {
             render_whitespace: "boundary".into(),
             trim_trailing_whitespace: true,
             insert_final_newline: true,
+            languages: json!({"python": {"tab_width": 4, "format_on_save": true}}),
+            layers: Default::default(),
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

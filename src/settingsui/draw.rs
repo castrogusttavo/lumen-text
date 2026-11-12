@@ -238,7 +238,10 @@ pub(super) fn draw_settings(
         let lw = tx.ui_width(&label_s, true);
         let clip_row = row.intersect(&list);
         tx.draw_ui(cv, row.x + 14, row.y + 9, &label_s, fg, clip_row, true);
-        if searching && lw + 80 < text_w {
+        if let Some(b) = p.badges.get(def.key).filter(|_| lw + 80 < text_w) {
+            let b = fit(tx, &format!("· {b}"), text_w - lw - 8, false);
+            tx.draw_ui(cv, row.x + 14 + lw + 8, row.y + 9, &b, c.accent_text, clip_row, false);
+        } else if searching && lw + 80 < text_w {
             tx.draw_ui(
                 cv,
                 row.x + 14 + lw + 8,
@@ -410,7 +413,9 @@ pub(super) fn draw_settings(
     }
 
     // Footer hint.
-    let hint = fit(tx, "↑↓ navigate   Enter/Space change   ←→ adjust   Tab switch section   Esc close", rw, false);
+    let hint =
+        p.footer.as_deref().unwrap_or("↑↓ navigate   Enter/Space change   ←→ adjust   Tab switch section   Esc close");
+    let hint = fit(tx, hint, rw, false);
     tx.draw_ui(cv, rx, area.bottom() - 26, &hint, dim.with_alpha(170), area, false);
     Some(list_info)
 }

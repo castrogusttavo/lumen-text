@@ -118,6 +118,8 @@ The palette, fuzzy search and the shortcut modal pick it up automatically.
 A test checks that ids exist, combos are unique and the palette text agrees. Chords use a space (`ctrl+k r`); explorer-only keys use `explorer:`.
 
 **A setting.** Add a field to `Config` in `src/config.rs` with its default in `Default`, parse it in `load_from` (validate and clamp), write it in `save_to`, extend the round-trip test, and add a row in `src/settingsui.rs` so it shows in the settings modal. Document it in the README table.
+Settings can be overridden per project (`.lumen/config.json`, see `src/projcfg.rs`): if the new key only makes sense for the
+whole app (window, interface, updates), add it to `projcfg::GLOBAL_ONLY`; if it names a program to run, to `projcfg::COMMAND_KEYS`.
 
 **Something that reacts to disk changes.** Every change arrives as a `watcher::FsEvent` in `App::pump_watcher`, from inotify or, on
 file systems inotify cannot be trusted on (`fstype.rs`: NFS, SMB, FUSE, 9p, FAT/exFAT, watch limit), from the poller (`poller.rs`, open
