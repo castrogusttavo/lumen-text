@@ -84,12 +84,11 @@ jobs:
           go install github.com/go-delve/delve/cmd/dlv@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # ghp's module is named `ghp` (not go-installable), so build the CLI from a pinned commit.
-      # Pin: GHP PR #80 (`ghp build --debug` + //line directives naming the project pages);
-      # move to the merge commit on main once it lands.
+      # Pin: merge commit of GHP PR #80 (`ghp build --debug` + //line directives naming the project pages);
       - uses: actions/checkout@v7
         with:
           repository: GHP-GoLang-Framework/ghp
-          ref: 07e5acdf832ae3f0c4c54a61725adc07a7f6144c
+          ref: ee88708d58e13bcc05c024a729165e93da3b1627
           path: ghp-src
       - name: Build ghp
         run: |
