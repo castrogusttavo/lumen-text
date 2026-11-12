@@ -20,7 +20,7 @@ use crate::{
     field::TextField,
     git,
     gitsync::{self, Fail, FailKind, Job, Op, PullStrategy, SyncInfo},
-    gitx::Side,
+    gitx::{self, Side},
     textarea::{KeyAct, TextArea},
     theme::Rgba,
     ui::{Canvas, Rect, TextCtx},
