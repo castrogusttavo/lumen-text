@@ -227,31 +227,10 @@
     },
     {
       "status": "shipped",
-      "type": "feature",
-      "release": "2026.11.12.1",
-      "title": "GHP pages",
-      "text": "Highlighting, indentation, the ghp-lsp language server and debugging that stops in the .ghp file."
-    },
-    {
-      "status": "shipped",
-      "type": "feature",
-      "release": "2026.11.12.1",
-      "title": "Debug panel",
-      "text": "Call stack, variables, breakpoints, watch and console, with conditional breakpoints and hover to evaluate."
-    },
-    {
-      "status": "shipped",
       "type": "enhancement",
       "release": "2026.11.12.1",
       "title": "Breakpoints follow edits",
       "text": "Lines move with the text and a running session is told."
-    },
-    {
-      "status": "shipped",
-      "type": "enhancement",
-      "release": "2026.11.12.1",
-      "title": "launch.json",
-      "text": "Per-project program, args, env, cwd and adapter for Go and GHP launches."
     },
     {
       "status": "shipped",
@@ -280,6 +259,89 @@
       "release": "earlier",
       "title": "Test runner and debugger",
       "text": "Vitest, Jest, cargo; js-debug and gdb DAP."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.12.5",
+      "title": "Go debugging with Delve",
+      "text": "Breakpoints, stepping and variables for Go programs through dlv, with an adapter registry for more debuggers."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.12.7",
+      "title": "ghp-lsp language server",
+      "text": "A native Rust server for .ghp templates: diagnostics, tag completion and hover, symbols, folding, formatting and quick fixes that close missing end tags."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.12.8",
+      "title": "GHP language support",
+      "text": "The editor recognizes .ghp files, highlights Go inside the tags, indents and auto-closes GHP blocks, and ships ghp-lsp in every package."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.12.8",
+      "title": "Debugging GHP pages",
+      "text": "Set breakpoints in a .ghp file and stop in the template with the Go variables of the page. Built on ghp build --debug and line directives in the GHP compiler."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.12.9",
+      "title": "Go expressions in .ghp",
+      "text": "Completion, hover and go to definition inside the Go parts of a template through gopls, with a built-in fallback for local names when gopls is missing."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.12.10",
+      "title": "Debug panel",
+      "text": "Call stack, variables, breakpoints, watch and console, with conditional breakpoints and hover to evaluate."
+    },
+    {
+      "status": "shipped",
+      "type": "enhancement",
+      "release": "2026.11.12.11",
+      "title": "launch.json",
+      "text": "Per-project program, args, env, cwd and adapter for Go and GHP launches; breakpoints follow your edits and the ghp build runs in the background."
+    },
+    {
+      "status": "shipped",
+      "type": "enhancement",
+      "release": "2026.11.12.12",
+      "title": "ghp-lsp hardening",
+      "text": "gopls diagnostics arrive on their own, gopls starts without blocking the server, and big templates stay fast."
+    },
+    {
+      "status": "shipped",
+      "type": "enhancement",
+      "release": "2026.11.12.13",
+      "title": "Switching project starts clean",
+      "text": "The debug session, terminals, AI panel and Git panel are closed and re-scoped to the new project."
+    },
+    {
+      "status": "shipped",
+      "type": "bug",
+      "release": "2026.11.12.14",
+      "title": "Debugged program left running",
+      "text": "Stop, Restart and closing the editor now end the debugged program, so its port is free again; its output and exit code show in the Debug Console."
+    },
+    {
+      "status": "shipped",
+      "type": "bug",
+      "release": "2026.11.12.15",
+      "title": "Windows: VCRUNTIME140.dll not found",
+      "text": "The Windows build no longer needs the Visual C++ Redistributable to start."
+    },
+    {
+      "status": "in-progress",
+      "type": "feature",
+      "title": "Windows installer",
+      "text": "A setup program that installs Lumen per user and updates itself in place, like the Linux packages."
     }
   ]
 }

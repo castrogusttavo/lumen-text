@@ -2,12 +2,16 @@
 import Base from "../layouts/Base.astro";
 import SectionHead from "../components/SectionHead.astro";
 import roadmap from "../data/roadmap.json";
+import changelog from "../data/changelog.json";
 import { GITHUB, url } from "../lib/url";
 const types = [["all", "All"], ["feature", "Features"], ["enhancement", "Enhancements"], ["bug", "Bugs"]] as const;
 const typeLabel: Record<string, string> = { feature: "Feature", enhancement: "Enhancement", bug: "Bug" };
 const dot: Record<string, string> = { feature: "var(--accent)", enhancement: "#3b82f6", bug: "#ef4444" };
 const items = (id: string) => roadmap.items.filter((i) => i.status === id);
-const shippedHref = (release?: string) => (release && release !== "earlier" ? `${url("/changelog")}#v${release}` : url("/changelog"));
+const curated = new Set(changelog.map((c) => c.version));
+// Curated releases have an anchor on the changelog page; every other release links to its GitHub release.
+const shippedHref = (release?: string) =>
+  !release || release === "earlier" ? url("/changelog") : curated.has(release) ? `${url("/changelog")}#v${release}` : `${GITHUB}/releases/tag/v${release}`;
 ---
 <Base title="Roadmap" description="Every feature, enhancement and bug we are exploring, planning, working on or have shipped, as a board." path="/roadmap">
   <section class="container-x py-20 md:py-28">
