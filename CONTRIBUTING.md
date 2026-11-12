@@ -163,6 +163,8 @@ Users can add themes without code in `~/.config/lumen-text/themes/` (see README)
 Short imperative summary (about 70 characters), no trailing period, optional body explaining why. Examples from the history:
 `Add LineTrailingText: ghost text after a line`, `Make ghost text after a long line scrollable`, `Skip the color-emoji test when no color emoji font is installed`.
 
+The changelog is generated from these subjects, so start them with a Conventional Commit type: `feat:`, `fix:`, `perf:`, `docs:` or `ci:` (a scope is optional, `fix(debug): ...`; `chore:`, `refactor:` and `test:` count as other changes). The release job groups every release's notes into Features, Bug fixes, Performance, Other changes, Docs and Build and CI, and the website's changelog page groups all releases of a day the same way. A subject without a prefix is sorted by its first words (`Fix ...` is a bug fix, `Add ...` a feature), which is a guess: the prefix is exact.
+
 ## Releases
 
 Maintainers do not tag by hand. Every push to `main` that passes `.github/workflows/ci.yml` triggers:
@@ -175,7 +177,7 @@ The in-app updater (`src/update.rs`, `src/app_update.rs`; user docs in the READM
 
 - **Public key**: `src/update_key.pub`, embedded in the binary with `include_str!`. It may contain several keys (concatenated `.pub` files); a signature is accepted when it was made by any of them.
 - **Secret key**: only in the GitHub Actions secret `MINISIGN_SECRET_KEY` (repository secret, the content of the key file, generated without a password). Never commit it (`*.key` is git-ignored) and never keep a copy on disk.
-- The `release` job installs `minisign`, signs every `*.AppImage`, `*.tar.gz`, Windows `*.zip` and macOS `*.dmg` with the trusted comment `lumen-text <version> <file name>` (the client requires exactly that, so an old signed file can't be replayed as a new release), verifies each signature against `src/update_key.pub` (a wrong secret fails the release instead of bricking updates), then writes and uploads `latest.json` plus the `.minisig` files next to the other release files. The release notes are generated once (`gh api .../releases/generate-notes`) and used both for the GitHub release and, truncated, in `latest.json`.
+- The `release` job installs `minisign`, signs every `*.AppImage`, `*.tar.gz`, Windows `*.zip` and macOS `*.dmg` with the trusted comment `lumen-text <version> <file name>` (the client requires exactly that, so an old signed file can't be replayed as a new release), verifies each signature against `src/update_key.pub` (a wrong secret fails the release instead of bricking updates), then writes and uploads `latest.json` plus the `.minisig` files next to the other release files. The release notes (every commit since the previous release, grouped by type) are generated once and used both for the GitHub release and, truncated, in `latest.json`.
 - The app reads `https://github.com/castrogusttavo/lumen-text/releases/latest/download/latest.json`.
 
 `latest.json` (modeled on Tauri's updater manifest):
