@@ -178,7 +178,7 @@ static LAST_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new
 fn next_ts(min: i64) -> i64 {
     use std::sync::atomic::Ordering::Relaxed;
     let want = now_ms().max(min);
-    let prev = LAST_TS.fetch_update(Relaxed, Relaxed, |p| Some(want.max(p + 1))).unwrap_or_else(|p| p);
+    let prev = LAST_TS.try_update(Relaxed, Relaxed, |p| Some(want.max(p + 1))).unwrap_or_else(|p| p);
     want.max(prev + 1)
 }
 
