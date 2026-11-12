@@ -197,7 +197,7 @@ fn delve_breakpoint_and_variables() {
         pump(&mut dap, &mut s, |s| matches!(s.state, State::Stopped { .. } | State::Terminated), 10);
     }
     assert_eq!(s.state, State::Terminated);
-    assert!(s.output.iter().any(|l| l.contains("total")), "{:?}", s.output);
+    // (delve prints the debuggee's stdout on its own stdout, not as DAP `output` events.)
     dap.disconnect(true);
     drop(dap);
     let _ = std::fs::remove_dir_all(&dir);
