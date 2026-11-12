@@ -66,6 +66,9 @@ mod clipboard;
 mod config;
 mod coverage;
 mod dap;
+mod dap_adapters;
+#[cfg(test)]
+mod dap_tests;
 mod display;
 mod doc;
 mod doc_scroll;

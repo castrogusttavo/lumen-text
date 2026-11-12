@@ -1,0 +1,28 @@
+{
+  "_comment": "Built-in debug adapters (DAP). An adapter only starts when its command is found (same search path as language servers). transport: 'stdio' = the adapter speaks DAP on stdin/stdout; 'tcp-listen' = the adapter prints 'listening at: host:port' and the editor connects. In 'launch', ${file}, ${dir} (the file's directory) and ${root} (the project root) are replaced. 'experimental' adapters are listed but never chosen automatically.",
+  "adapters": [
+    {
+      "id": "delve",
+      "name": "Delve (Go)",
+      "command": "dlv",
+      "args": ["dap", "--listen=127.0.0.1:0"],
+      "transport": "tcp-listen",
+      "languages": ["go"],
+      "adapter_id": "go",
+      "launch": {"request": "launch", "type": "go", "mode": "debug", "program": "${dir}", "cwd": "${root}", "stopOnEntry": false},
+      "install": "go install github.com/go-delve/delve/cmd/dlv@latest"
+    },
+    {
+      "id": "ghp",
+      "name": "GHP pages (ghp debug)",
+      "command": "ghp",
+      "args": ["debug", "--dap"],
+      "transport": "stdio",
+      "languages": ["ghp"],
+      "adapter_id": "ghp",
+      "launch": {"request": "launch", "program": "${file}", "cwd": "${root}"},
+      "install": "hook for the future `ghp debug` adapter",
+      "experimental": true
+    }
+  ]
+}
