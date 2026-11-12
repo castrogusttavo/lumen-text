@@ -853,5 +853,10 @@
   "label": "Go to: Jump to…",
   "shortcut": "Alt+J",
   "id": "JumpTo"
+ },
+ {
+  "label": "File: Refresh explorer and git status",
+  "shortcut": "",
+  "id": "RefreshExplorer"
  }
 ]
