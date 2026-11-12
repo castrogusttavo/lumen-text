@@ -19,7 +19,8 @@ V2="$a.$b.$c.$((d + 1))"
 V3="$a.$b.$c.$((d + 2))"
 PORT=18766
 APPKEY='HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{B7C1E0D4-5A3F-4C8E-9E21-6F0A7D3C41B2}_is1'
-export MSYS2_ARG_CONV_EXCL='*'
+# Native programs that take /SWITCHES must not have them rewritten as paths (but curl/unzip need real paths).
+nc() { MSYS2_ARG_CONV_EXCL='*' "$@"; }
 
 PY=python; "$PY" -c '' 2>/dev/null || PY=python3
 W="$(mktemp -d)"; mkdir -p "$W/srv" "$W/inst"
@@ -28,12 +29,12 @@ FAILS=0
 pass() { echo "  ok    $1"; }
 fail() { echo "  FAIL  $1"; FAILS=$((FAILS + 1)); }
 check() { local m="$1"; shift; if "$@" >/dev/null 2>&1; then pass "$m"; else fail "$m"; fi; }
-dispver() { reg.exe query "$APPKEY" /v DisplayVersion 2>/dev/null | tr -d '\r' | awk '/DisplayVersion/{print $NF}'; }
+dispver() { nc reg.exe query "$APPKEY" /v DisplayVersion 2>/dev/null | tr -d '\r' | awk '/DisplayVersion/{print $NF}'; }
 is_ver() { [ "$(dispver)" = "$1" ]; }
 wait_for() { local n="$1"; shift; for _ in $(seq "$n"); do "$@" && return 0; sleep 1; done; return 1; }
 cleanup() {
   kill "${SERVER:-0}" 2>/dev/null
-  [ -f "$W/inst/unins000.exe" ] && "$W/inst/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART >/dev/null 2>&1
+  [ -f "$W/inst/unins000.exe" ] && nc "$W/inst/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART >/dev/null 2>&1
   sleep 3; rm -rf "$APPDATA/lumen-text/ci-marker"
 }
 trap cleanup EXIT
@@ -60,7 +61,7 @@ SERVER=$!
 wait_for 30 curl -s -o /dev/null "http://127.0.0.1:$PORT/" || { echo "local server did not start" >&2; exit 1; }
 
 echo "== install $V (the real exe) with the setup, silently"
-"$SETUP" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER "/DIR=$(win "$W/inst")" /TASKS= >/dev/null 2>&1
+nc "$SETUP" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER "/DIR=$(win "$W/inst")" /TASKS= >/dev/null 2>&1
 wait_for 60 test -f "$W/inst/unins000.exe" || { fail "setup did not install"; exit 1; }
 check "DisplayVersion is $V" test "$(dispver)" = "$V"
 mkdir -p "$APPDATA/lumen-text"; echo keep > "$APPDATA/lumen-text/ci-marker"
@@ -89,12 +90,12 @@ echo "$out"
 check "update: exit 0 and the installer is started" test "$code" = 0 -a -n "$(grep 'Installing' <<<"$out")"
 check "installed version became $V2" wait_for 180 is_ver "$V2"
 # the uninstall entry flips before the last files are written; wait for the installer to finish
-setup_gone() { ! tasklist /FI "IMAGENAME eq lumen-text-$V2-windows-x86_64-setup.exe" 2>/dev/null | grep -qi "windows-x86_64-setup"; }
+setup_gone() { ! nc tasklist /FI "IMAGENAME eq lumen-text-$V2-windows-x86_64-setup.exe" 2>/dev/null | grep -qi "windows-x86_64-setup"; }
 wait_for 60 setup_gone
 check "installed exe still runs" test -n "$("$LUMEN" --version | tr -d '\r')"
 check "install dir unchanged (in-place upgrade)" test -f "$W/inst/unins000.exe" -a -f "$W/inst/ghp-lsp.exe" -a -f "$W/inst/assets/language-manifest.json"
 check "settings survived" test -f "$APPDATA/lumen-text/ci-marker"
-check "one uninstall entry only" test "$(reg.exe query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall' | tr -d '\r' | grep -c 'B7C1E0D4-5A3F-4C8E-9E21-6F0A7D3C41B2')" = 1
+check "one uninstall entry only" test "$(nc reg.exe query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall' | tr -d '\r' | grep -c 'B7C1E0D4-5A3F-4C8E-9E21-6F0A7D3C41B2')" = 1
 
 echo "== a replayed older signed setup is rejected"
 cp "$W/srv/lumen-text-$V2-windows-x86_64-setup.exe" "$W/old.exe"; cp "$W/srv/lumen-text-$V2-windows-x86_64-setup.exe.minisig" "$W/old.minisig"
