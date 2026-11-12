@@ -1,0 +1,28 @@
+<go:import ("fmt"
+	"example.com/demo/models")/>
+<go
+    user := models.User{Name: "Ada", Admin: true}
+    items := []string{"a", "b"}
+/>
+<!doctype html>
+<html>
+<head><title><go= user.Name /></title></head>
+<body>
+    <go:if user.Admin/>
+        <p><go= user.Greeting() /></p>
+    <go:elif len(items) > 2/>
+        <p>many</p>
+    <go:else/>
+        <p>plain</p>
+    <go:endif/>
+    <go:for i, it := range items/>
+        <li><go= fmt.Sprint(i, it) /></li>
+    <go:endfor/>
+    <go:switch user.Name/>
+        <go:case "Ada"/>
+        <b>ada</b>
+        <go:default/>
+        <b>other</b>
+    <go:endswitch/>
+</body>
+</html>
