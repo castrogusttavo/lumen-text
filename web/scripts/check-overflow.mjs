@@ -23,7 +23,7 @@ const server = createServer(serve).listen(0);
 const port = server.address().port;
 
 const { readdirSync } = await import("node:fs");
-const found = ["/", "/download", "/changelog", "/404"];
+const found = ["/", "/download", "/changelog", "/roadmap", "/404"];
 try { for (const f of readdirSync(join(root, "docs"))) if (f.endsWith(".html")) found.push("/docs/" + f.replace(/\.html$/, "")); } catch {}
 const pages = (process.env.PAGES ?? found.join(",")).split(",");
 

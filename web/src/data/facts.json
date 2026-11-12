@@ -1,6 +1,6 @@
 {
-  "tests": 808,
-  "testsNote": "cargo test --release: 808 passed, 0 failed, 4 ignored (2026-11-10, commit 56c6fc3)",
+  "tests": 1396,
+  "testsNote": "cargo test --release: 1396 passed, 0 failed, 8 ignored (2026-11-12, commit e2158f2; the 16 perf tests run in their own CI job)",
   "themes": 65,
   "grammars": 260,
   "memoryClaims": "No fixed total is promised: README says the editor stays small and tsgo is counted separately. Memory figures come from benchmarks.json (ram-idle, facts.memoryScenarios)."

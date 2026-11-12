@@ -8,6 +8,10 @@
   "id": "CloseTab"
  },
  {
+  "combo": "ctrl+shift+t",
+  "id": "ReopenClosedTab"
+ },
+ {
   "combo": "ctrl+q",
   "id": "Quit"
  },
@@ -66,6 +70,10 @@
  {
   "combo": "ctrl+alt+k",
   "id": "AiSendSelection"
+ },
+ {
+  "combo": "ctrl+alt+a",
+  "id": "AiNextWaiting"
  },
  {
   "combo": "ctrl+t",
@@ -252,6 +260,34 @@
   "id": "JumpTo"
  },
  {
+  "combo": "ctrl+shift+h",
+  "id": "ProjectReplace"
+ },
+ {
+  "combo": "ctrl+shift+r",
+  "id": "MacroRecord"
+ },
+ {
+  "combo": "ctrl+alt+r",
+  "id": "MacroReplay"
+ },
+ {
+  "combo": "alt+\\",
+  "id": "InlineSuggest"
+ },
+ {
+  "combo": "alt+]",
+  "id": "InlineNext"
+ },
+ {
+  "combo": "alt+[",
+  "id": "InlinePrev"
+ },
+ {
+  "combo": "ctrl+shift+n",
+  "id": "NewWindow"
+ },
+ {
   "combo": "ctrl+k r",
   "id": "RepeatTask"
  },
@@ -306,6 +342,10 @@
  {
   "combo": "ctrl+k shift+w",
   "id": "ClosePane"
+ },
+ {
+  "combo": "ctrl+k z",
+  "id": "ToggleZen"
  },
  {
   "combo": "ctrl+y",

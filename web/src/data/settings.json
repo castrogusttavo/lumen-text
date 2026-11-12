@@ -629,6 +629,22 @@
   "default": true
  },
  {
+  "key": "spell_check",
+  "section": "Editor display",
+  "label": "Spell checking",
+  "help": "Underlines spelling and grammar slips in comments, strings, Markdown, plain text and commit messages with a dotted info line (never an error), through the companion servers harper-ls and typos-lsp. They start only when installed; Ctrl+. offers the fixes and \"add to dictionary\".",
+  "kind": "bool",
+  "default": false
+ },
+ {
+  "key": "inline_completion",
+  "section": "Editor display",
+  "label": "Inline completions",
+  "help": "Faded suggestions at the cursor from language servers that offer them (LSP inline completion), such as GitHub Copilot's copilot-language-server once you install it (npm i -g @github/copilot-language-server) and run \"Copilot: Sign in\". Tab accepts, Ctrl+Right accepts a word, Esc dismisses, Alt+] / Alt+[ show other suggestions, Alt+\\\\ asks now. Lumen never handles API keys.",
+  "kind": "bool",
+  "default": false
+ },
+ {
   "key": "markdown_remote_images",
   "section": "Editor display",
   "label": "Markdown remote images",
@@ -667,6 +683,46 @@
   "default": false
  },
  {
+  "key": "rulers",
+  "section": "Editor display",
+  "label": "Rulers",
+  "help": "Columns where thin vertical guide lines are drawn, separated by commas (for example 80, 120). Empty: none. A project's .editorconfig max_line_length adds one.",
+  "kind": "text",
+  "default": null
+ },
+ {
+  "key": "inline_diagnostics",
+  "section": "Editor display",
+  "label": "Inline diagnostics",
+  "help": "Shows the most severe problem of a line after its code, faded and cut to the room left: Current line (the default) only on the caret's line, All on every line, Off never. Never drawn over the text.",
+  "kind": "text",
+  "default": "current_line"
+ },
+ {
+  "key": "problems_scope",
+  "section": "Editor display",
+  "label": "Problems scope",
+  "help": "What the Problems panel lists: open_files (the diagnostics of the open documents) or project (also what the language servers report for files that are not open, asked with workspace pull diagnostics where supported). Alt+W in the panel switches it.",
+  "kind": "choice",
+  "options": [
+   "open_files",
+   "project"
+  ],
+  "default": "open_files"
+ },
+ {
+  "key": "bidi_paragraph",
+  "section": "Editor display",
+  "label": "Right-to-left paragraphs",
+  "help": "Lines with Arabic, Hebrew or Persian text are shown in visual order. Auto gives each line the direction of its first letter (a Hebrew line reads from the right); Ltr keeps every line left to right and only reorders the right-to-left words inside it.",
+  "kind": "choice",
+  "options": [
+   "auto",
+   "ltr"
+  ],
+  "default": "auto"
+ },
+ {
   "key": "build_command",
   "section": "Build",
   "label": "Build command",
@@ -697,5 +753,21 @@
   "help": "Keeps each file's undo history after it is closed (and across restarts), as long as the file was not changed elsewhere. Up to 2 MB per file; the oldest histories are dropped first.",
   "kind": "bool",
   "default": true
+ },
+ {
+  "key": "ai_notifications",
+  "section": "AI",
+  "label": "Desktop notifications",
+  "help": "Shows a system notification when an agent session is waiting for you or done while Lumen is in the background (once per turn).",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "diff_ignore_whitespace",
+  "section": "Git",
+  "label": "Diff: ignore whitespace",
+  "help": "Side-by-side diffs ignore changes in spaces, tabs and line endings (git diff -w): such lines do not count as changed and are not highlighted. Staging a hunk or lines still stages their real text. Also a toggle in the diff header (key W).",
+  "kind": "bool",
+  "default": false
  }
 ]

@@ -6,7 +6,7 @@ order: 2
 visual: tour
 ---
 
-Lumen is one window with one process. Nothing in it is a web view: every pixel is drawn on the CPU.
+Lumen is one process per window (open as many windows as you like, see [Editing power tools](/docs/editing)). Nothing in it is a web view: every pixel is drawn on the CPU.
 
 ## The parts
 

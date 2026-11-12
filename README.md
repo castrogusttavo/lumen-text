@@ -12,6 +12,8 @@
 
 ![lumen-text, light theme, TypeScript project](docs/screenshots/light-editor.png)
 
+**[Changelog](https://castrogusttavo.github.io/lumen-text/changelog)** · **[Roadmap](https://castrogusttavo.github.io/lumen-text/roadmap)** · **[Docs](https://castrogusttavo.github.io/lumen-text/docs/getting-started)** · **[Releases](https://github.com/castrogusttavo/lumen-text/releases)**
+
 ## Why
 
 Modern editors are great and heavy. lumen-text is an experiment in how far you can get with a small
@@ -27,7 +29,17 @@ and no GPU driver:
   kotlin-lsp, lua-language-server, taplo, the vscode JSON/CSS/HTML servers, yaml, bash, marksman, zls, ruby-lsp,
   phpactor, Dockerfile, sourcekit-lsp, dart, elixir-ls, haskell, metals, svelte, astro, vue, Tailwind, deno...)
   starts a server **only when a matching file is opened and the program is installed**; add your own in `config.json`.
-- One window, one process per editor, one font in memory, no web view, no Electron.
+- One process per window (several windows are fine), one font in memory, no web view, no Electron.
+
+## What's new
+
+Release **2026.11.12.1** is the biggest so far: local history, hot exit and crash recovery, persistent undo and file
+encodings (nothing is lost, any file opens); several AI agent sessions, worktrees, several terminals and the kitty
+keyboard protocol; replace in project, macros, column selection and jump to character; stashes, a commit graph, line
+staging and a 3-way merge editor; per-project settings, zen mode and an image viewer; project-wide problems, inline
+completions and test coverage; right-to-left text and multiple windows. The full list, with enhancements and bug fixes,
+is in the [changelog](https://castrogusttavo.github.io/lumen-text/changelog); what comes next is on the
+[roadmap](https://castrogusttavo.github.io/lumen-text/roadmap).
 
 ## Features
 
@@ -567,9 +579,23 @@ HUGEICONS_TOKEN=<your npm token> tools/setup-hugeicons.sh   # needs node, npm, p
 cargo build --release                                       # build.rs embeds the masks it finds
 ```
 
+## Tests panel
+
+`Ctrl+K A` (or the **Tests** tab of the bottom panel) runs the project's tests and lists them as a tree: a live progress bar, pass / fail / skip filters, durations, the failure message with an expected-vs-received box and clickable `file:line` links, and ✓/✗ marks in the gutter. Failing groups open first, `Failed` re-runs only what broke, `Watch` re-runs on save, and `Debug` starts the selected test under gdb (Rust) or js-debug (Vitest, Jest, `node --test`).
+
+**Coverage.** "Tests: Run with coverage" runs everything with the runner's coverage on (Vitest `--coverage --coverage.reporter=lcov`, Jest `--coverage --coverageReporters=lcov`, both writing `coverage/lcov.info`; cargo through [`cargo llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) when it is installed). Open files get a thin bar at the inner edge of the gutter: green for lines that ran, yellow when some branch on the line never ran, red for lines that never ran; the explorer shows each file's line percentage and the status bar the active file's. Later runs (re-run, watch) keep collecting coverage until "Tests: Hide coverage". "Tests: Show coverage from file" loads the newest `coverage/lcov.info`, `lcov.info` or Cobertura `coverage.xml` of the project without running anything. Marks follow edits: lines moved by an edit keep theirs, a line whose text changed loses its mark until the next run.
+
+Supported runners are detected from the project files: cargo test / cargo nextest, Vitest, Jest, `node --test`, Bun, Deno, `go test`, pytest, PHPUnit / Pest, RSpec, Maven, Gradle, `dotnet test` and ctest. Anything else works through JUnit XML: set `test_command` and `test_report` (the XML file it writes, relative to the project) in `config.json`. Without a report the run still shows in the Output tab.
+
+## Merge editor
+
+"Git: Open merge editor" on a conflicted file (or the conflict icon on its row in the Git panel) splits the editor: the read-only **Incoming** (theirs: the merged branch, the commit being replayed or cherry-picked) and **Current** (ours: HEAD, or during a rebase the branch being rebased onto) versions side by side on top, aligned conflict by conflict, and the **Result** below, which is the file itself and edits like any document. The versions come from the index stages (`git show :1:`, `:2:`, `:3:`) and are merged region by region (diff3, refined like git's zealous merge, so the conflicts match git's markers).
+
+Each conflict has two checkboxes: *Accept incoming* and *Accept current*; checking both keeps both, in the order they were checked, and unchecking the only one brings the markers back. Typing in a conflict resolves it by hand. The header counts "2 of 5 conflicts resolved", *Previous* / *Next* (also `Merge: Next conflict` / `Merge: Previous conflict` in the palette) move between conflicts, and *Mark resolved* saves the result and stages it (`git add`); it stays disabled while any conflict marker is left. The panes scroll with the result (and the result with the panes). Ctrl+Z undoes a choice. Works the same for merge, rebase and cherry-pick conflicts; then finish with a commit, `git rebase --continue` or the Git panel's cherry-pick Continue.
+
 ## Known limitations
 
-- The interface is English only for now; other languages need a string layer (see the roadmap).
+- The interface is English only for now; other languages need a string layer (see the [roadmap](https://castrogusttavo.github.io/lumen-text/roadmap)).
 - RTL editing is logical (arrows, Home/End walk the text order, the caret shows a small direction flag); a Hebrew/Arabic line is reordered but not right-aligned to the window, and inlay hints are not shown on those lines. Selecting with the mouse across direction runs highlights separate pieces.
 - No TextMate `injections` (code embedded in Markdown/HTML gets only the outer grammar).
 - Opening a very large file and jumping to its end leaves that stretch uncolored for a few seconds.
@@ -587,17 +613,3 @@ lumen-text is released under the [MIT License](LICENSE). Full list of Rust crate
 - **Fonts:** none are bundled; the editor uses your system monospace font via fontconfig.
 - **Language server:** [`tsgo`](https://github.com/microsoft/typescript-go) from Microsoft (Apache-2.0), installed separately.
 - Built on `winit`, `softbuffer`, `tiny-skia`, `cosmic-text`, `ropey`, `onig`, `vte`, `pulldown-cmark` and friends.
-
-## Tests panel
-
-`Ctrl+K A` (or the **Tests** tab of the bottom panel) runs the project's tests and lists them as a tree: a live progress bar, pass / fail / skip filters, durations, the failure message with an expected-vs-received box and clickable `file:line` links, and ✓/✗ marks in the gutter. Failing groups open first, `Failed` re-runs only what broke, `Watch` re-runs on save, and `Debug` starts the selected test under gdb (Rust) or js-debug (Vitest, Jest, `node --test`).
-
-**Coverage.** "Tests: Run with coverage" runs everything with the runner's coverage on (Vitest `--coverage --coverage.reporter=lcov`, Jest `--coverage --coverageReporters=lcov`, both writing `coverage/lcov.info`; cargo through [`cargo llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) when it is installed). Open files get a thin bar at the inner edge of the gutter: green for lines that ran, yellow when some branch on the line never ran, red for lines that never ran; the explorer shows each file's line percentage and the status bar the active file's. Later runs (re-run, watch) keep collecting coverage until "Tests: Hide coverage". "Tests: Show coverage from file" loads the newest `coverage/lcov.info`, `lcov.info` or Cobertura `coverage.xml` of the project without running anything. Marks follow edits: lines moved by an edit keep theirs, a line whose text changed loses its mark until the next run.
-
-Supported runners are detected from the project files: cargo test / cargo nextest, Vitest, Jest, `node --test`, Bun, Deno, `go test`, pytest, PHPUnit / Pest, RSpec, Maven, Gradle, `dotnet test` and ctest. Anything else works through JUnit XML: set `test_command` and `test_report` (the XML file it writes, relative to the project) in `config.json`. Without a report the run still shows in the Output tab.
-
-## Merge editor
-
-"Git: Open merge editor" on a conflicted file (or the conflict icon on its row in the Git panel) splits the editor: the read-only **Incoming** (theirs: the merged branch, the commit being replayed or cherry-picked) and **Current** (ours: HEAD, or during a rebase the branch being rebased onto) versions side by side on top, aligned conflict by conflict, and the **Result** below, which is the file itself and edits like any document. The versions come from the index stages (`git show :1:`, `:2:`, `:3:`) and are merged region by region (diff3, refined like git's zealous merge, so the conflicts match git's markers).
-
-Each conflict has two checkboxes: *Accept incoming* and *Accept current*; checking both keeps both, in the order they were checked, and unchecking the only one brings the markers back. Typing in a conflict resolves it by hand. The header counts "2 of 5 conflicts resolved", *Previous* / *Next* (also `Merge: Next conflict` / `Merge: Previous conflict` in the palette) move between conflicts, and *Mark resolved* saves the result and stages it (`git add`); it stays disabled while any conflict marker is left. The panes scroll with the result (and the result with the panes). Ctrl+Z undoes a choice. Works the same for merge, rebase and cherry-pick conflicts; then finish with a commit, `git rebase --continue` or the Git panel's cherry-pick Continue.

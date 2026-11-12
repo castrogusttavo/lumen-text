@@ -1,0 +1,76 @@
+---
+import Base from "../layouts/Base.astro";
+import SectionHead from "../components/SectionHead.astro";
+import roadmap from "../data/roadmap.json";
+import { GITHUB, url } from "../lib/url";
+const types = [["all", "All"], ["feature", "Features"], ["enhancement", "Enhancements"], ["bug", "Bugs"]] as const;
+const typeLabel: Record<string, string> = { feature: "Feature", enhancement: "Enhancement", bug: "Bug" };
+const dot: Record<string, string> = { feature: "var(--accent)", enhancement: "#3b82f6", bug: "#ef4444" };
+const items = (id: string) => roadmap.items.filter((i) => i.status === id);
+const shippedHref = (release?: string) => (release && release !== "earlier" ? `${url("/changelog")}#v${release}` : url("/changelog"));
+---
+<Base title="Roadmap" description="Every feature, enhancement and bug we are exploring, planning, working on or have shipped, as a board." path="/roadmap">
+  <section class="container-x py-20 md:py-28">
+    <SectionHead eyebrow="Roadmap"><Fragment slot="title">Where Lumen is <span class="accent-word">going</span></Fragment>A board of what we are exploring, planning, working on and have shipped. It is not a promise or a schedule: items move right as they are done, and shipped ones link to the changelog.</SectionHead>
+
+    <div class="mt-12 flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Filter by type" data-rm-filters>
+      {types.map(([id, label], i) => (
+        <button type="button" data-type={id} aria-pressed={i === 0 ? "true" : "false"} class="rm-chip rounded-full border border-line px-4 py-2 text-sm text-muted transition-colors hover:text-fg">{label}</button>
+      ))}
+    </div>
+
+    <div class="mt-10 grid gap-5 md:grid-cols-2 xl:grid-cols-4" data-rm-board>
+      {roadmap.columns.map((col) => (
+        <section class="min-w-0 rounded-card border border-line bg-card p-4" aria-labelledby={`col-${col.id}`} data-col={col.id}>
+          <header class="px-1 pb-3">
+            <h2 id={`col-${col.id}`} class="flex items-center justify-between font-medium tracking-tight">
+              <span>{col.title}</span>
+              <span class="rounded-full border border-line px-2 py-0.5 font-mono text-xs text-faint" data-count>{items(col.id).length}</span>
+            </h2>
+            <p class="mt-1 text-xs text-faint">{col.hint}</p>
+          </header>
+          <ul class="space-y-2.5">
+            {items(col.id).map((it) => (
+              <li class="rm-card rounded-xl border border-line bg-solid p-3.5" data-type={it.type}>
+                <div class="flex items-center gap-2 text-xs text-faint">
+                  <span class="size-2 shrink-0 rounded-full" style={`background:${dot[it.type]}`} aria-hidden="true"></span>
+                  <span>{typeLabel[it.type]}</span>
+                  {it.release && <a class="ml-auto font-mono underline decoration-line2 underline-offset-2 hover:text-fg" href={shippedHref(it.release)}>{it.release === "earlier" ? "earlier" : `v${it.release}`}</a>}
+                </div>
+                <h3 class="mt-1.5 text-[15px] font-medium leading-snug">{it.title}</h3>
+                <p class="mt-1 text-sm leading-relaxed text-muted">{it.text}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+
+    <p class="mx-auto mt-12 max-w-2xl text-center text-[15px] text-muted">
+      Missing something, or something broken? <a class="text-fg underline decoration-line2 underline-offset-4" href={`${GITHUB}/issues/new`} rel="noopener">Open an issue</a> and it lands in <em>Exploring</em> or <em>Planned</em>. Releases are listed in the <a class="text-fg underline decoration-line2 underline-offset-4" href={url("/changelog")}>changelog</a>.
+    </p>
+  </section>
+</Base>
+
+<style>
+  .rm-chip[aria-pressed="true"] { color: var(--fg); border-color: var(--line-strong); background: var(--card); }
+</style>
+
+<script>
+  const board = document.querySelector<HTMLElement>("[data-rm-board]");
+  const chips = document.querySelectorAll<HTMLButtonElement>("[data-rm-filters] [data-type]");
+  const apply = (type: string) => {
+    chips.forEach((c) => c.setAttribute("aria-pressed", String(c.dataset.type === type)));
+    board?.querySelectorAll<HTMLElement>("[data-col]").forEach((col) => {
+      let n = 0;
+      col.querySelectorAll<HTMLElement>(".rm-card").forEach((card) => {
+        const show = type === "all" || card.dataset.type === type;
+        card.hidden = !show;
+        if (show) n++;
+      });
+      const badge = col.querySelector("[data-count]");
+      if (badge) badge.textContent = String(n);
+    });
+  };
+  chips.forEach((c) => c.addEventListener("click", () => apply(c.dataset.type ?? "all")));
+</script>

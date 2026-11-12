@@ -10,6 +10,11 @@
   "id": "CloseTab"
  },
  {
+  "label": "View: Reopen closed tab",
+  "shortcut": "Ctrl+Shift+T",
+  "id": "ReopenClosedTab"
+ },
+ {
   "label": "File: Reload from disk",
   "shortcut": "",
   "id": "ReloadFile"
@@ -230,6 +235,21 @@
   "id": "TestRunner"
  },
  {
+  "label": "Tests: Run with coverage",
+  "shortcut": "",
+  "id": "TestCoverage"
+ },
+ {
+  "label": "Tests: Show coverage from file",
+  "shortcut": "",
+  "id": "TestCoverageFile"
+ },
+ {
+  "label": "Tests: Hide coverage",
+  "shortcut": "",
+  "id": "TestCoverageHide"
+ },
+ {
   "label": "Build: Build",
   "shortcut": "Ctrl+Shift+B",
   "id": "BuildBuild"
@@ -320,7 +340,7 @@
   "id": "AiPanel"
  },
  {
-  "label": "AI: New Session",
+  "label": "AI: New Session…",
   "shortcut": "",
   "id": "AiNewSession"
  },
@@ -338,6 +358,26 @@
   "label": "AI: Send Selection to Agent",
   "shortcut": "Ctrl+Alt+K",
   "id": "AiSendSelection"
+ },
+ {
+  "label": "AI: Next Session Waiting for You",
+  "shortcut": "Ctrl+Alt+A",
+  "id": "AiNextWaiting"
+ },
+ {
+  "label": "AI: Rename Session…",
+  "shortcut": "",
+  "id": "AiRenameSession"
+ },
+ {
+  "label": "AI: Close Session",
+  "shortcut": "",
+  "id": "AiCloseSession"
+ },
+ {
+  "label": "AI: New session in worktree…",
+  "shortcut": "",
+  "id": "AiNewSessionInWorktree"
  },
  {
   "label": "Git: Stage file",
@@ -383,6 +423,26 @@
   "label": "Git: File history",
   "shortcut": "",
   "id": "GitFileHistory"
+ },
+ {
+  "label": "Git: Compare with branch or commit…",
+  "shortcut": "",
+  "id": "GitCompare"
+ },
+ {
+  "label": "Git: Compare two refs…",
+  "shortcut": "",
+  "id": "GitCompareTwo"
+ },
+ {
+  "label": "Git: Compare file with…",
+  "shortcut": "",
+  "id": "GitCompareFile"
+ },
+ {
+  "label": "Git: Toggle ignore whitespace in diffs",
+  "shortcut": "",
+  "id": "GitDiffWhitespace"
  },
  {
   "label": "Git: Create Branch…",
@@ -455,9 +515,34 @@
   "id": "GitWorktreePrune"
  },
  {
+  "label": "Git: Stash…",
+  "shortcut": "",
+  "id": "GitStash"
+ },
+ {
+  "label": "Git: Stash Including Untracked…",
+  "shortcut": "",
+  "id": "GitStashUntracked"
+ },
+ {
+  "label": "Git: Stash Pop",
+  "shortcut": "",
+  "id": "GitStashPop"
+ },
+ {
+  "label": "Git: Stashes…",
+  "shortcut": "",
+  "id": "GitStashList"
+ },
+ {
   "label": "Markdown: Open reader beside",
   "shortcut": "Ctrl+Shift+V",
   "id": "MarkdownPreview"
+ },
+ {
+  "label": "Image: Toggle preview / source (SVG)",
+  "shortcut": "",
+  "id": "ImageSource"
  },
  {
   "label": "View: Split editor right",
@@ -535,12 +620,37 @@
   "id": "ConflictBoth"
  },
  {
+  "label": "Git: Open merge editor",
+  "shortcut": "",
+  "id": "MergeEditor"
+ },
+ {
+  "label": "Merge: Next conflict",
+  "shortcut": "",
+  "id": "MergeNext"
+ },
+ {
+  "label": "Merge: Previous conflict",
+  "shortcut": "",
+  "id": "MergePrev"
+ },
+ {
+  "label": "Merge: Mark resolved (stage the file)",
+  "shortcut": "",
+  "id": "MergeResolve"
+ },
+ {
+  "label": "Merge: Close merge editor",
+  "shortcut": "",
+  "id": "MergeClose"
+ },
+ {
   "label": "Go to: Symbol in project",
   "shortcut": "Ctrl+T",
   "id": "WorkspaceSymbols"
  },
  {
-  "label": "View: Problems in open files",
+  "label": "View: Problems",
   "shortcut": "",
   "id": "Problems"
  },
@@ -685,6 +795,11 @@
   "id": "ToggleLsp"
  },
  {
+  "label": "Language servers: Toggle spell checking",
+  "shortcut": "",
+  "id": "ToggleSpellCheck"
+ },
+ {
   "label": "View: Toggle minimap",
   "shortcut": "",
   "id": "ToggleMinimap"
@@ -825,6 +940,106 @@
   "id": "About"
  },
  {
+  "label": "Search: Replace in project",
+  "shortcut": "Ctrl+Shift+H",
+  "id": "ProjectReplace"
+ },
+ {
+  "label": "Macro: Start / stop recording",
+  "shortcut": "Ctrl+Shift+R",
+  "id": "MacroRecord"
+ },
+ {
+  "label": "Macro: Replay last",
+  "shortcut": "Ctrl+Alt+R",
+  "id": "MacroReplay"
+ },
+ {
+  "label": "Macro: Replay…",
+  "shortcut": "",
+  "id": "MacroReplayTimes"
+ },
+ {
+  "label": "Macro: Save last as…",
+  "shortcut": "",
+  "id": "MacroSave"
+ },
+ {
+  "label": "Macro: Run saved…",
+  "shortcut": "",
+  "id": "MacroRunSaved"
+ },
+ {
+  "label": "View: Toggle zen mode",
+  "shortcut": "Ctrl+K Z",
+  "id": "ToggleZen"
+ },
+ {
+  "label": "View: Toggle tab bar",
+  "shortcut": "",
+  "id": "ToggleTabBar"
+ },
+ {
+  "label": "View: Toggle status bar",
+  "shortcut": "",
+  "id": "ToggleStatusBar"
+ },
+ {
+  "label": "Explorer: Sort by name",
+  "shortcut": "",
+  "id": "ExplorerSortName"
+ },
+ {
+  "label": "Explorer: Sort by type",
+  "shortcut": "",
+  "id": "ExplorerSortType"
+ },
+ {
+  "label": "Explorer: Sort by date modified",
+  "shortcut": "",
+  "id": "ExplorerSortModified"
+ },
+ {
+  "label": "Explorer: Sort mixed (folders among files)",
+  "shortcut": "",
+  "id": "ExplorerSortMixed"
+ },
+ {
+  "label": "Explorer: Toggle folders first",
+  "shortcut": "",
+  "id": "ToggleFoldersFirst"
+ },
+ {
+  "label": "Inline completion: Suggest at cursor",
+  "shortcut": "Alt+\\",
+  "id": "InlineSuggest"
+ },
+ {
+  "label": "Inline completion: Next suggestion",
+  "shortcut": "Alt+]",
+  "id": "InlineNext"
+ },
+ {
+  "label": "Inline completion: Previous suggestion",
+  "shortcut": "Alt+[",
+  "id": "InlinePrev"
+ },
+ {
+  "label": "Inline completion: Toggle on / off",
+  "shortcut": "",
+  "id": "ToggleInlineCompletion"
+ },
+ {
+  "label": "Copilot: Sign in",
+  "shortcut": "",
+  "id": "CopilotSignIn"
+ },
+ {
+  "label": "Copilot: Sign out",
+  "shortcut": "",
+  "id": "CopilotSignOut"
+ },
+ {
   "label": "Quit",
   "shortcut": "Ctrl+Q",
   "id": "Quit"
@@ -858,5 +1073,50 @@
   "label": "File: Refresh explorer and git status",
   "shortcut": "",
   "id": "RefreshExplorer"
+ },
+ {
+  "label": "Preferences: Project settings (.lumen/config.json)",
+  "shortcut": "",
+  "id": "OpenProjectSettings"
+ },
+ {
+  "label": "Project: Trust the commands of the project settings…",
+  "shortcut": "",
+  "id": "ProjectTrust"
+ },
+ {
+  "label": "Python: Select interpreter…",
+  "shortcut": "",
+  "id": "PythonSelectInterpreter"
+ },
+ {
+  "label": "View: Inline diagnostics (off / current line / all)",
+  "shortcut": "",
+  "id": "CycleInlineDiagnostics"
+ },
+ {
+  "label": "View: Problems in whole project",
+  "shortcut": "",
+  "id": "ProblemsProject"
+ },
+ {
+  "label": "File: New window",
+  "shortcut": "Ctrl+Shift+N",
+  "id": "NewWindow"
+ },
+ {
+  "label": "File: Open folder in new window…",
+  "shortcut": "",
+  "id": "OpenFolderNewWindow"
+ },
+ {
+  "label": "File: Move tab to new window",
+  "shortcut": "",
+  "id": "MoveTabToNewWindow"
+ },
+ {
+  "label": "File: Close window",
+  "shortcut": "",
+  "id": "CloseWindow"
  }
 ]

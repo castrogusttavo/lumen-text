@@ -2,25 +2,81 @@
 import Base from "../layouts/Base.astro";
 import SectionHead from "../components/SectionHead.astro";
 import releases from "../data/releases.json";
+import changelog from "../data/changelog.json";
 import { renderNotes } from "../lib/md";
-import { GITHUB } from "../lib/url";
+import { GITHUB, url } from "../lib/url";
 const fmt = (d: string) => new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+const curated = new Set(changelog.map((c) => `v${c.version}`));
+const earlier = releases.filter((r) => !curated.has(r.tag));
+const count = (c: (typeof changelog)[number]) => c.groups.reduce((n, g) => n + g.items.length, 0);
 ---
-<Base title="Changelog" description="Every Lumen release, generated from merged commits and pull requests." path="/changelog">
+<Base title="Changelog" description="What shipped in every Lumen release: features, enhancements and bug fixes." path="/changelog">
   <section class="container-x py-20 md:py-28">
-    <SectionHead eyebrow="Changelog"><Fragment slot="title">What <span class="accent-word">shipped</span></Fragment>Releases are generated automatically from merged work. Every push to main that passes CI publishes one.</SectionHead>
-    <ol class="mx-auto mt-16 max-w-3xl space-y-4">
-      {releases.length === 0 && <li class="rounded-card border border-line p-6 text-muted">The release list could not be loaded at build time. See <a class="underline" href={`${GITHUB}/releases`}>GitHub Releases</a>.</li>}
-      {releases.map((r) => (
-        <li class="rounded-card border border-line bg-card p-6" data-reveal>
-          <div class="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 class="font-mono text-lg font-medium">{r.tag}</h2>
-            <time class="text-sm text-faint" datetime={r.publishedAt}>{fmt(r.publishedAt)}</time>
+    <SectionHead eyebrow="Changelog"><Fragment slot="title">What <span class="accent-word">shipped</span></Fragment>Every release lists its features, then two folded lists: enhancements to what already existed and bug fixes. Every push to main that passes CI publishes a release. What comes next is on the <a class="underline decoration-line2 underline-offset-4" href={url("/roadmap")}>roadmap</a>.</SectionHead>
+
+    <div class="mx-auto mt-16 max-w-3xl space-y-10">
+      {changelog.map((c) => (
+        <article class="rounded-card border border-line bg-card p-6 md:p-8" data-reveal id={`v${c.version}`}>
+          <header class="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 class="font-mono text-xl font-medium">v{c.version}</h2>
+            <time class="text-sm text-faint" datetime={c.date}>{fmt(c.date)}</time>
+          </header>
+          <p class="mt-2 text-lg font-medium tracking-tight">{c.title}</p>
+          <p class="mt-1 text-[15px] text-muted">{c.summary} <span class="text-faint">{count(c)} features, {c.enhancements.length} enhancements, {c.fixes.length} bug fixes.</span></p>
+
+          {c.groups.map((g) => (
+            <section class="mt-8">
+              <h3 class="font-mono text-xs uppercase tracking-[0.14em] text-faint">{g.area}</h3>
+              <ul class="mt-3 space-y-3">
+                {g.items.map((it) => (
+                  <li class="text-[15px] leading-relaxed"><strong class="font-medium text-fg">{it.title}.</strong> <span class="text-muted">{it.text}</span></li>
+                ))}
+              </ul>
+            </section>
+          ))}
+
+          <div class="mt-8 space-y-3">
+            <details class="cl-acc rounded-xl border border-line bg-solid">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-[15px] font-medium [&::-webkit-details-marker]:hidden">
+                <span>Enhancements <span class="ml-1 rounded-full border border-line px-2 py-0.5 font-mono text-xs text-faint">{c.enhancements.length}</span></span>
+                <svg class="cl-chev shrink-0 text-faint transition-transform" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+              </summary>
+              <ul class="space-y-2 border-t border-line px-4 py-4 text-[15px] text-muted">
+                {c.enhancements.map((e) => <li class="list-disc ml-4 pl-1">{e}</li>)}
+              </ul>
+            </details>
+            <details class="cl-acc rounded-xl border border-line bg-solid">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-[15px] font-medium [&::-webkit-details-marker]:hidden">
+                <span>Bug fixes <span class="ml-1 rounded-full border border-line px-2 py-0.5 font-mono text-xs text-faint">{c.fixes.length}</span></span>
+                <svg class="cl-chev shrink-0 text-faint transition-transform" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+              </summary>
+              <ul class="space-y-2 border-t border-line px-4 py-4 text-[15px] text-muted">
+                {c.fixes.map((e) => <li class="list-disc ml-4 pl-1">{e}</li>)}
+              </ul>
+            </details>
           </div>
-          <div class="notes mt-3 text-[15px] text-muted" set:html={renderNotes(r.notes) || "<p>No notes.</p>"} />
-          <a class="mt-3 inline-block text-sm text-fg underline decoration-line2 underline-offset-4" href={r.url} rel="noopener">View release on GitHub</a>
-        </li>
+          <a class="mt-6 inline-block text-sm text-fg underline decoration-line2 underline-offset-4" href={`${GITHUB}/releases/tag/v${c.version}`} rel="noopener">View release on GitHub</a>
+        </article>
       ))}
-    </ol>
+
+      <h2 class="pt-4 font-mono text-xs uppercase tracking-[0.14em] text-faint">Earlier releases</h2>
+      <ol class="space-y-4">
+        {earlier.length === 0 && <li class="rounded-card border border-line p-6 text-muted">The release list could not be loaded at build time. See <a class="underline" href={`${GITHUB}/releases`}>GitHub Releases</a>.</li>}
+        {earlier.map((r) => (
+          <li class="rounded-card border border-line bg-card p-6" data-reveal>
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 class="font-mono text-lg font-medium">{r.tag}</h3>
+              <time class="text-sm text-faint" datetime={r.publishedAt}>{fmt(r.publishedAt)}</time>
+            </div>
+            <div class="notes mt-3 text-[15px] text-muted" set:html={renderNotes(r.notes) || "<p>No notes.</p>"} />
+            <a class="mt-3 inline-block text-sm text-fg underline decoration-line2 underline-offset-4" href={r.url} rel="noopener">View release on GitHub</a>
+          </li>
+        ))}
+      </ol>
+    </div>
   </section>
 </Base>
+
+<style>
+  .cl-acc[open] .cl-chev { transform: rotate(180deg); }
+</style>
