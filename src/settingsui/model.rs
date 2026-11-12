@@ -374,7 +374,6 @@ pub(super) fn choice_label(s: &str) -> String {
         "all" => "All".into(),
         "normal" => "Normal".into(),
         "current_line" => "Current line".into(),
-        "all" => "All".into(),
         o => o.to_string(),
     }
 }
