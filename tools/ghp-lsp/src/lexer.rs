@@ -7,6 +7,7 @@
 
 use crate::ast::{Span, Tag, TagKind};
 use crate::diagnostics::{Diagnostic, code};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Token {
@@ -73,59 +74,103 @@ enum Scan {
     Eof,
 }
 
-/// Look for the `>` closing a tag whose payload starts at `start`, ignoring any `>` inside
-/// `()`, `[]`, quotes (`"`, `'`, `` ` ``) and Go comments. `{}` are deliberately not tracked (a
-/// `<go>` block may open a brace that a later tag closes). Outside quotes, the start of another
-/// GHP tag ends the search, so a forgotten `/>` does not swallow the rest of the file.
+/// Scanning state shared by all the tags of one input.
 ///
-/// A `/* ... */` comment is skipped whole (an unterminated one is plain text). A `// ...` comment
-/// runs to the end of the line, but a `/>` or a new GHP tag inside it still ends the search, so
-/// `<go x := 1 // note />` keeps working and an apostrophe in a comment cannot open a quote.
-fn find_close(src: &str, start: usize) -> Scan {
-    let b = src.as_bytes();
-    let mut depth = 0usize;
-    let mut quote = 0u8;
-    let mut i = start;
-    while i < b.len() {
-        let c = b[i];
-        if quote != 0 {
-            if c == b'\\' && quote != b'`' && i + 1 < b.len() {
-                i += 1;
-            } else if c == quote {
-                quote = 0;
-            }
-        } else {
-            match c {
-                b'"' | b'\'' | b'`' => quote = c,
-                b'/' if b.get(i + 1) == Some(&b'*') => {
-                    if let Some(p) = src[i + 2..].find("*/") {
-                        i += p + 3; // on the closing `/`; the loop step moves past it
-                    }
-                }
-                b'/' if b.get(i + 1) == Some(&b'/') => {
-                    let mut j = i + 2;
-                    while j < b.len() && b[j] != b'\n' {
-                        if b[j] == b'>' && b[j - 1] == b'/' && depth == 0 {
-                            return Scan::Close(j);
-                        }
-                        if b[j] == b'<' && match_head(&src[j + 1..]).is_some() {
-                            return Scan::Stop(j);
-                        }
-                        j += 1;
-                    }
-                    i = j; // at the newline (or the end): the loop step moves past it
-                    continue;
-                }
-                b'(' | b'[' => depth += 1,
-                b')' | b']' => depth = depth.saturating_sub(1),
-                b'>' if depth == 0 => return Scan::Close(i),
-                b'<' if match_head(&src[i + 1..]).is_some() => return Scan::Stop(i),
-                _ => {}
+/// # Linear time
+///
+/// Every tag is scanned on its own, so input made of thousands of broken tags must not make each
+/// scan walk to the end of the file. [`Scanner`] keeps the two facts that make repeated scans
+/// cheap: from where on no `*/` exists, and which quote openings are known to run off the end.
+struct Scanner {
+    /// No `*/` at or after this offset (`usize::MAX`: not known to be absent).
+    no_comment_end_from: usize,
+    /// `(offset of an opening quote, bracket depth)` states from which a scan reaches the end of
+    /// the input without finding a close or a new tag. Any later scan entering one stops there.
+    dead: HashSet<(usize, usize)>,
+}
+
+impl Scanner {
+    fn new() -> Scanner {
+        Scanner { no_comment_end_from: usize::MAX, dead: HashSet::new() }
+    }
+
+    /// Offset of the `/` closing the `/* */` comment opened at `i`, if it is terminated.
+    fn comment_end(&mut self, src: &str, i: usize) -> Option<usize> {
+        if i + 2 >= self.no_comment_end_from {
+            return None;
+        }
+        match src[i + 2..].find("*/") {
+            Some(p) => Some(i + p + 3),
+            None => {
+                self.no_comment_end_from = i + 2;
+                None
             }
         }
-        i += 1;
     }
-    Scan::Eof
+
+    /// Look for the `>` closing a tag whose payload starts at `start`, ignoring any `>` inside
+    /// `()`, `[]`, quotes (`"`, `'`, `` ` ``) and Go comments. `{}` are deliberately not tracked (a
+    /// `<go>` block may open a brace that a later tag closes). Outside quotes, the start of another
+    /// GHP tag ends the search, so a forgotten `/>` does not swallow the rest of the file.
+    ///
+    /// A `/* ... */` comment is skipped whole (an unterminated one is plain text). A `// ...` comment
+    /// runs to the end of the line, but a `/>` or a new GHP tag inside it still ends the search, so
+    /// `<go x := 1 // note />` keeps working and an apostrophe in a comment cannot open a quote.
+    fn find_close(&mut self, src: &str, start: usize) -> Scan {
+        let b = src.as_bytes();
+        let mut depth = 0usize;
+        let mut quote = 0u8;
+        let mut i = start;
+        let mut opened: Vec<(usize, usize)> = Vec::new();
+        while i < b.len() {
+            let c = b[i];
+            if quote != 0 {
+                if c == b'\\' && quote != b'`' && i + 1 < b.len() {
+                    i += 1;
+                } else if c == quote {
+                    quote = 0;
+                }
+            } else {
+                match c {
+                    b'"' | b'\'' | b'`' => {
+                        if self.dead.contains(&(i, depth)) {
+                            self.dead.extend(opened);
+                            return Scan::Eof;
+                        }
+                        opened.push((i, depth));
+                        quote = c;
+                    }
+                    b'/' if b.get(i + 1) == Some(&b'*') => {
+                        if let Some(end) = self.comment_end(src, i) {
+                            i = end; // on the closing `/`; the loop step moves past it
+                        }
+                    }
+                    b'/' if b.get(i + 1) == Some(&b'/') => {
+                        let mut j = i + 2;
+                        while j < b.len() && b[j] != b'\n' {
+                            if b[j] == b'>' && b[j - 1] == b'/' && depth == 0 {
+                                return Scan::Close(j);
+                            }
+                            if b[j] == b'<' && match_head(&src[j + 1..]).is_some() {
+                                return Scan::Stop(j);
+                            }
+                            j += 1;
+                        }
+                        i = j; // at the newline (or the end): the loop step moves past it
+                        continue;
+                    }
+                    b'(' | b'[' => depth += 1,
+                    b')' | b']' => depth = depth.saturating_sub(1),
+                    b'>' if depth == 0 => return Scan::Close(i),
+                    b'<' if match_head(&src[i + 1..]).is_some() => return Scan::Stop(i),
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+        self.dead.extend(opened);
+        Scan::Eof
+    }
 }
 
 /// Recovery when a quote never closes: the first `/>` before the next GHP tag.
@@ -159,6 +204,7 @@ pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     let mut pos = 0;
     let mut text_start = 0;
+    let mut scanner = Scanner::new();
 
     while pos < b.len() {
         if b[pos] != b'<' {
@@ -185,7 +231,7 @@ pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
         if text_start < pos {
             toks.push(Token::Text(Span::new(text_start, pos)));
         }
-        let (tag, end) = lex_tag(src, pos, kind, head_len, &mut diags);
+        let (tag, end) = lex_tag(src, &mut scanner, pos, kind, head_len, &mut diags);
         toks.push(Token::Tag(tag));
         pos = end;
         text_start = end;
@@ -197,11 +243,18 @@ pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
 }
 
 /// Lex the tag starting at `pos` (the `<`). Returns it and the offset to resume at.
-fn lex_tag(src: &str, pos: usize, kind: TagKind, head_len: usize, diags: &mut Vec<Diagnostic>) -> (Tag, usize) {
+fn lex_tag(
+    src: &str,
+    scanner: &mut Scanner,
+    pos: usize,
+    kind: TagKind,
+    head_len: usize,
+    diags: &mut Vec<Diagnostic>,
+) -> (Tag, usize) {
     let head_end = pos + 1 + head_len;
     let head = Span::new(pos, head_end);
 
-    let (c, balanced) = match find_close(src, head_end) {
+    let (c, balanced) = match scanner.find_close(src, head_end) {
         Scan::Close(c) => (c, true),
         Scan::Stop(end) => return unterminated(src, pos, end, kind, head, diags),
         // Unbalanced quote: fall back to the first `/>` so one typo does not swallow the file.
@@ -220,6 +273,7 @@ fn lex_tag(src: &str, pos: usize, kind: TagKind, head_len: usize, diags: &mut Ve
         head,
         payload: trimmed(src, head_end, payload_end),
         closed: slash && balanced,
+        inner: Span::new(head_end, payload_end),
     };
 
     if !balanced {
@@ -247,8 +301,14 @@ fn unterminated(
     let head_end = head.end;
     let raw = src[head_end..end].trim_end();
     let payload_end = if raw.ends_with('/') { head_end + raw.len() - 1 } else { end };
-    let tag =
-        Tag { kind, span: Span::new(pos, end), head, payload: trimmed(src, head_end, payload_end), closed: false };
+    let tag = Tag {
+        kind,
+        span: Span::new(pos, end),
+        head,
+        payload: trimmed(src, head_end, payload_end),
+        closed: false,
+        inner: Span::new(head_end, payload_end),
+    };
     diags.push(Diagnostic::error(
         tag.span,
         code::UNTERMINATED_TAG,
@@ -416,5 +476,103 @@ mod tests {
         assert!(d.is_empty());
         let Token::Tag(t) = toks[0] else { panic!() };
         assert_eq!(t.payload_text(src), "x");
+    }
+
+    #[test]
+    fn inner_is_the_gap_between_head_and_closer() {
+        let cases =
+            [("<go= />", 4, 5), ("<go=/>", 4, 4), ("<go:if  x  />", 6, 11), ("<go= ", 4, 5), ("<go=\n/>", 4, 5)];
+        for (src, a, b) in cases {
+            let Token::Tag(t) = lex(src).0[0] else { panic!("{src:?}") };
+            assert_eq!((t.inner.start, t.inner.end), (a, b), "{src:?}");
+        }
+    }
+
+    /// The scan as it was before [`Scanner`] existed: no memory between tags.
+    fn find_close_naive(src: &str, start: usize) -> Scan {
+        let b = src.as_bytes();
+        let mut depth = 0usize;
+        let mut quote = 0u8;
+        let mut i = start;
+        while i < b.len() {
+            let c = b[i];
+            if quote != 0 {
+                if c == b'\\' && quote != b'`' && i + 1 < b.len() {
+                    i += 1;
+                } else if c == quote {
+                    quote = 0;
+                }
+            } else {
+                match c {
+                    b'"' | b'\'' | b'`' => quote = c,
+                    b'/' if b.get(i + 1) == Some(&b'*') => {
+                        if let Some(p) = src[i + 2..].find("*/") {
+                            i += p + 3;
+                        }
+                    }
+                    b'/' if b.get(i + 1) == Some(&b'/') => {
+                        let mut j = i + 2;
+                        while j < b.len() && b[j] != b'\n' {
+                            if b[j] == b'>' && b[j - 1] == b'/' && depth == 0 {
+                                return Scan::Close(j);
+                            }
+                            if b[j] == b'<' && match_head(&src[j + 1..]).is_some() {
+                                return Scan::Stop(j);
+                            }
+                            j += 1;
+                        }
+                        i = j;
+                        continue;
+                    }
+                    b'(' | b'[' => depth += 1,
+                    b')' | b']' => depth = depth.saturating_sub(1),
+                    b'>' if depth == 0 => return Scan::Close(i),
+                    b'<' if match_head(&src[i + 1..]).is_some() => return Scan::Stop(i),
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+        Scan::Eof
+    }
+
+    fn same(a: &Scan, b: &Scan) -> bool {
+        match (a, b) {
+            (Scan::Close(x), Scan::Close(y)) | (Scan::Stop(x), Scan::Stop(y)) => x == y,
+            (Scan::Eof, Scan::Eof) => true,
+            _ => false,
+        }
+    }
+
+    /// The memoizing scanner answers exactly like the naive one, from every start, in any order
+    /// (the memory is facts about the text, not about where a scan began).
+    #[test]
+    fn scanner_matches_the_naive_scan() {
+        const PIECES: &[&str] = &[
+            "<go= ", "<go:if ", "<go ", "\"", "'", "`", "(", ")", "[", "]", ">", "/>", "/*", "*/", "//", "\n", "\\",
+            "a", " ", "é", "<p>",
+        ];
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move |n: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % n as u64) as usize
+        };
+        for _ in 0..300 {
+            let mut src = String::new();
+            for _ in 0..next(40) + 1 {
+                src.push_str(PIECES[next(PIECES.len())]);
+            }
+            let mut scanner = Scanner::new();
+            let mut starts: Vec<usize> = (0..=src.len()).filter(|&i| src.is_char_boundary(i)).collect();
+            for i in (1..starts.len()).rev() {
+                starts.swap(i, next(i + 1));
+            }
+            for st in starts {
+                let (a, b) = (scanner.find_close(&src, st), find_close_naive(&src, st));
+                assert!(same(&a, &b), "start {st} of {src:?}");
+            }
+        }
     }
 }

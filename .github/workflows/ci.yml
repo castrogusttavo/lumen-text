@@ -206,7 +206,7 @@ jobs:
         run: |
           # Standalone package in tools/ghp-lsp. Until its binary (src/main.rs) is in the tree nothing is built or shipped.
           if [ -f tools/ghp-lsp/src/main.rs ]; then
-            cargo build --release --manifest-path tools/ghp-lsp/Cargo.toml
+            cargo build --release --locked --manifest-path tools/ghp-lsp/Cargo.toml
             ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
             bin="$PWD/tools/ghp-lsp/target/release/ghp-lsp$ext"
             test -f "$bin"
@@ -312,7 +312,7 @@ jobs:
         run: |
           # Standalone package in tools/ghp-lsp. Until its binary (src/main.rs) is in the tree nothing is built or shipped.
           if [ -f tools/ghp-lsp/src/main.rs ]; then
-            cargo build --release --manifest-path tools/ghp-lsp/Cargo.toml
+            cargo build --release --locked --manifest-path tools/ghp-lsp/Cargo.toml
             ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
             bin="$PWD/tools/ghp-lsp/target/release/ghp-lsp$ext"
             test -f "$bin"
@@ -386,7 +386,7 @@ jobs:
         run: |
           # Standalone package in tools/ghp-lsp. Until its binary (src/main.rs) is in the tree nothing is built or shipped.
           if [ -f tools/ghp-lsp/src/main.rs ]; then
-            cargo build --release --manifest-path tools/ghp-lsp/Cargo.toml
+            cargo build --release --locked --manifest-path tools/ghp-lsp/Cargo.toml
             ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
             bin="$PWD/tools/ghp-lsp/target/release/ghp-lsp$ext"
             test -f "$bin"

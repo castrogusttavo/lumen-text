@@ -81,7 +81,19 @@ struct Fmt<'a> {
 impl<'a> Fmt<'a> {
     fn new(doc: &'a Doc, opts: &Options) -> Fmt<'a> {
         let n = doc.index.line_count();
-        let raws = raw_ranges(&doc.text);
+        // Ranges sorted by start, with the furthest end seen so far: whether a line start lies in
+        // any range is then one binary search (a scan over all ranges per line is quadratic on a
+        // page with thousands of `<pre>` blocks).
+        let mut raws = raw_ranges(&doc.text);
+        raws.sort_unstable();
+        let mut reach: Vec<usize> = Vec::with_capacity(raws.len());
+        for &(_, e) in &raws {
+            reach.push(reach.last().map_or(e, |&m| m.max(e)));
+        }
+        let in_raw = |at: usize| {
+            let n = raws.partition_point(|&(s, _)| s < at);
+            n > 0 && reach[n - 1] >= at
+        };
         let mut f = Fmt {
             doc,
             unit: opts.tab_size,
@@ -99,7 +111,7 @@ impl<'a> Fmt<'a> {
             f.ws_end.push(sp.start + lead.len());
             f.width.push(measure(lead, opts.tab_size));
             f.blank.push(rest.is_empty());
-            f.raw.push(raws.iter().any(|&(s, e)| sp.start > s && sp.start <= e));
+            f.raw.push(in_raw(sp.start));
         }
         f
     }

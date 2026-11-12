@@ -36,6 +36,8 @@ pub struct LineIndex {
     /// Byte offset where each line's content ends (before its line terminator).
     ends: Vec<usize>,
     wide: Vec<Wide>,
+    /// `saved[i]`: UTF-16 units saved over UTF-8 bytes by `wide[..i]` (`wide.len() + 1` entries).
+    saved: Vec<usize>,
 }
 
 impl LineIndex {
@@ -61,13 +63,19 @@ impl LineIndex {
         }
         ends.push(b.len());
 
-        let wide = text
+        let wide: Vec<Wide> = text
             .char_indices()
             .filter(|(_, c)| c.len_utf8() > 1)
             .map(|(start, c)| Wide { start, len8: c.len_utf8() as u8, len16: c.len_utf16() as u8 })
             .collect();
 
-        LineIndex { len: b.len(), starts, ends, wide }
+        let mut saved = Vec::with_capacity(wide.len() + 1);
+        saved.push(0);
+        for w in &wide {
+            saved.push(saved[saved.len() - 1] + (w.len8 - w.len16) as usize);
+        }
+
+        LineIndex { len: b.len(), starts, ends, wide, saved }
     }
 
     /// Number of lines (an empty text has one).
@@ -93,19 +101,16 @@ impl LineIndex {
         let line = self.line_of(offset);
         let ls = self.starts[line];
 
+        // Wide characters are sorted and never straddle a line start: those wholly before `offset`
+        // shorten the column by their precomputed saving; one that straddles it rounds down.
         let lo = self.wide.partition_point(|w| w.start < ls);
+        let hi = self.wide.partition_point(|w| w.start + w.len8 as usize <= offset);
+        let saved = self.saved[hi.max(lo)] - self.saved[lo];
         let mut eff = offset;
-        let mut saved = 0usize;
-        for w in &self.wide[lo..] {
-            if w.start >= eff {
-                break;
-            }
-            if w.start + w.len8 as usize <= eff {
-                saved += (w.len8 - w.len16) as usize;
-            } else {
-                eff = w.start;
-                break;
-            }
+        if let Some(w) = self.wide.get(hi.max(lo))
+            && w.start < offset
+        {
+            eff = w.start;
         }
         Position { line: line as u32, character: (eff - ls - saved) as u32 }
     }

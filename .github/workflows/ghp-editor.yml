@@ -61,7 +61,7 @@ jobs:
         id: server
         run: |
           if [ -f tools/ghp-lsp/src/main.rs ]; then
-            cargo build --release --manifest-path tools/ghp-lsp/Cargo.toml
+            cargo build --release --locked --manifest-path tools/ghp-lsp/Cargo.toml
             echo "$PWD/tools/ghp-lsp/target/release" >> "$GITHUB_PATH"
             echo "present=1" >> "$GITHUB_OUTPUT"
           else

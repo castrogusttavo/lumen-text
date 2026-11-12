@@ -94,6 +94,9 @@ pub struct Segment {
 pub struct SourceMap {
     by_ghp: Vec<Segment>,
     by_go: Vec<Segment>,
+    /// Zero-length segments: the place where Go text would go in a tag that has none yet
+    /// (`<go= | />`). They map a cursor (and an empty edit range) but never a diagnostic.
+    slots: Vec<Segment>,
     ghp: TextIndex,
     go: TextIndex,
 }
@@ -106,7 +109,14 @@ impl SourceMap {
         by_ghp.sort_by_key(|s| s.ghp_start);
         let mut by_go = segments;
         by_go.sort_by_key(|s| s.go_start);
-        SourceMap { by_ghp, by_go, ghp: TextIndex::new(ghp_text), go: TextIndex::new(go_text) }
+        SourceMap { by_ghp, by_go, slots: Vec::new(), ghp: TextIndex::new(ghp_text), go: TextIndex::new(go_text) }
+    }
+
+    /// Add the empty-tag slots (see the field). Only zero-length segments are kept.
+    pub fn with_slots(mut self, mut slots: Vec<Segment>) -> Self {
+        slots.retain(|s| s.len == 0);
+        self.slots = slots;
+        self
     }
 
     pub fn segments(&self) -> &[Segment] {
@@ -139,11 +149,15 @@ impl SourceMap {
     }
 
     pub fn ghp_to_go(&self, off: usize) -> Option<usize> {
-        Self::find(&self.by_ghp, off, |s| s.ghp_start).map(|s| s.go_start + (off - s.ghp_start))
+        Self::find(&self.by_ghp, off, |s| s.ghp_start)
+            .map(|s| s.go_start + (off - s.ghp_start))
+            .or_else(|| self.slots.iter().find(|s| s.ghp_start == off).map(|s| s.go_start))
     }
 
     pub fn go_to_ghp(&self, off: usize) -> Option<usize> {
-        Self::find(&self.by_go, off, |s| s.go_start).map(|s| s.ghp_start + (off - s.go_start))
+        Self::find(&self.by_go, off, |s| s.go_start)
+            .map(|s| s.ghp_start + (off - s.go_start))
+            .or_else(|| self.slots.iter().find(|s| s.go_start == off).map(|s| s.ghp_start))
     }
 
     pub fn ghp_pos_to_go(&self, pos: Position) -> Option<Position> {
@@ -160,7 +174,12 @@ impl SourceMap {
     /// has no faithful counterpart.
     pub fn go_range_to_ghp(&self, r: Range) -> Option<Range> {
         let (a, b) = (self.go.offset(r.start)?, self.go.offset(r.end)?);
-        let seg = self.by_go.iter().find(|s| a >= s.go_start && b <= s.go_start + s.len)?;
+        let Some(seg) = self.by_go.iter().find(|s| a >= s.go_start && b <= s.go_start + s.len) else {
+            // An empty range at an empty tag's slot (the edit of a completion item typed there).
+            let slot = self.slots.iter().find(|s| a == b && s.go_start == a)?;
+            let at = self.ghp.position(slot.ghp_start);
+            return Some(Range { start: at, end: at });
+        };
         Some(Range {
             start: self.ghp.position(seg.ghp_start + (a - seg.go_start)),
             end: self.ghp.position(seg.ghp_start + (b - seg.go_start)),
@@ -259,6 +278,22 @@ mod tests {
         let g = m.ghp_pos_to_go(Position { line: 1, character: 7 }).unwrap();
         assert_eq!(g, Position { line: 3, character: 2 });
         assert_eq!(m.go_pos_to_ghp(g), Some(Position { line: 1, character: 7 }));
+    }
+
+    #[test]
+    fn slots_map_a_cursor_in_an_empty_tag_but_not_ranges_elsewhere() {
+        let ghp = "<go=/>";
+        let go = "pre";
+        let m = SourceMap::new(Vec::new(), ghp, go).with_slots(vec![Segment { ghp_start: 4, go_start: 3, len: 0 }]);
+        assert_eq!(m.ghp_to_go(4), Some(3));
+        assert_eq!(m.go_to_ghp(3), Some(4));
+        assert_eq!(m.ghp_to_go(3), None);
+        let at = |c| Range { start: Position { line: 0, character: c }, end: Position { line: 0, character: c } };
+        assert_eq!(m.go_range_to_ghp(at(3)), Some(at(4)));
+        assert_eq!(m.go_range_to_ghp(at(2)), None);
+        // Segments (len > 0) passed as slots are ignored.
+        let bad = SourceMap::new(Vec::new(), ghp, go).with_slots(vec![Segment { ghp_start: 1, go_start: 1, len: 2 }]);
+        assert_eq!(bad.ghp_to_go(1), None);
     }
 
     #[test]

@@ -66,7 +66,7 @@
 use crate::ast::{Span, TagKind, Tree};
 use crate::diagnostics::{Diagnostic as GhpDiagnostic, Severity};
 use crate::gopls::adapter::{live_tags, regions};
-use crate::gopls::proxy::path_to_uri;
+use crate::gopls::proxy::{LockExt, path_to_uri};
 use crate::gopls::{Bridge, CancelToken, Config, Event, Position as GoPosition, ProxyError};
 use crate::line_index::{LineIndex, Position, Range};
 use crate::parser::{Parse, parse};
@@ -101,10 +101,18 @@ pub struct GoSite {
 }
 
 /// The Go region of `tree` containing `offset` (a cursor right after the last byte counts), or
-/// `None` when the offset is in markup, in a tag head (`<go:if`) or in an empty tag.
+/// `None` when the offset is in markup or in a tag head (`<go:if`).
+///
+/// A tag that takes Go text but has none yet (`<go= />`, `<go />`) is a region too, spanning the
+/// gap between its head and its `/>`: that is where the text is about to be typed, so completion
+/// works there.
 pub fn go_site_at(tree: &Tree, offset: usize) -> Option<GoSite> {
     live_tags(tree).into_iter().find_map(|t| {
-        let p = t.payload?;
+        let p = match t.payload {
+            Some(p) => p,
+            None if t.kind.expr_kind().is_some() => t.inner,
+            None => return None,
+        };
         p.touches(offset).then_some(GoSite { tag: t.kind, span: p })
     })
 }
@@ -278,7 +286,7 @@ impl Router {
     /// The channel of [`Event`]s (status messages, "diagnostics changed", crash / restart). It can
     /// be taken once; later calls return `None`.
     pub fn take_events(&self) -> Option<Receiver<Event>> {
-        self.events.lock().unwrap().take()
+        self.events.lock_ok().take()
     }
 
     /// The underlying bridge, for hosts that need lower-level access.
@@ -296,13 +304,13 @@ impl Router {
     }
 
     fn doc(&self, resolved: &Path) -> Option<Arc<DocState>> {
-        self.docs.lock().unwrap().get(resolved).cloned()
+        self.docs.lock_ok().get(resolved).cloned()
     }
 
     fn store(&self, resolved: PathBuf, text: String) {
         let doc = Arc::new(DocState::new(text));
         self.bridge.update(&resolved, &doc.text, &regions(&doc.parse.tree));
-        self.docs.lock().unwrap().insert(resolved, doc);
+        self.docs.lock_ok().insert(resolved, doc);
     }
 
     /// `textDocument/didOpen`.
@@ -327,7 +335,7 @@ impl Router {
     /// `textDocument/didClose`.
     pub fn close(&self, path: &Path) {
         let path = self.resolve(path);
-        self.docs.lock().unwrap().remove(&path);
+        self.docs.lock_ok().remove(&path);
         self.bridge.close(&path);
     }
 
@@ -380,7 +388,8 @@ impl Router {
         match routed {
             Ok(Some(v)) if v.is_null() => Ok(None),
             Ok(Some(v)) => Ok(Some(v)),
-            Ok(None) | Err(ProxyError::Crashed) => Ok(fallback(&doc, &path, kind, offset, site)),
+            // A gopls that is gone (or went away while we wrote to it) is a missing gopls.
+            Ok(None) | Err(ProxyError::Crashed | ProxyError::Io(_)) => Ok(fallback(&doc, &path, kind, offset, site)),
             Err(e) => Err(e),
         }
     }
@@ -519,6 +528,59 @@ mod tests {
         let parse = crate::parser::parse(src);
         assert!(go_site_at_position(src, &parse, p(0, 8)).is_some());
         assert!(go_site_at_position(src, &parse, p(0, 2)).is_none());
+    }
+
+    #[test]
+    fn empty_tags_are_sites_between_head_and_closer() {
+        let src = "<go u := 1 /><a href=\"<go= />\"><go /><go:if/><go=/>";
+        let parse = parse(src);
+        let at = |needle: &str, delta: usize| src.find(needle).unwrap() + delta;
+        for (needle, delta, kind) in [
+            ("<go= />", 4, TagKind::Echo),
+            ("<go= />", 5, TagKind::Echo),
+            ("<go />", 3, TagKind::Statement),
+            ("<go:if/>", 6, TagKind::If),
+            ("<go=/>", 4, TagKind::Echo),
+        ] {
+            let site = go_site_at(&parse.tree, at(needle, delta)).unwrap_or_else(|| panic!("{needle} +{delta}"));
+            assert_eq!(site.tag, kind, "{needle} +{delta}");
+        }
+        // The head and the closer stay out.
+        assert!(go_site_at(&parse.tree, at("<go= />", 2)).is_none());
+        assert!(go_site_at(&parse.tree, at("<go= />", 6)).is_none());
+        // The parser-level lookup the server uses agrees.
+        assert!(parse.tree.expr_region_at(at("<go= />", 5)).is_some());
+        assert!(parse.tree.expr_region_at(at("<go= />", 2)).is_none());
+    }
+
+    #[test]
+    fn completion_in_an_empty_tag_offers_the_names_in_scope() {
+        let r = offline();
+        let src = "<go count := 1 />\n<p><go= /></p>\n<a href=\"<go= />\">x</a>";
+        r.open(&page(), src);
+        for (needle, delta) in [("<go= /></p>", 5), ("<go= />\">", 5)] {
+            let at = LineIndex::new(src).position(src.find(needle).unwrap() + delta);
+            let got = r.request(&page(), at, RequestKind::Completion, &CancelToken::default()).unwrap().unwrap();
+            let items = got["items"].as_array().unwrap();
+            let labels: Vec<&str> = items.iter().map(|i| i["label"].as_str().unwrap()).collect();
+            assert!(labels.contains(&"count"), "{needle}: {labels:?}");
+        }
+    }
+
+    #[test]
+    fn go_in_an_attribute_value_is_a_site_for_hover_and_completion() {
+        let r = offline();
+        let src = "<go url := \"/x\" />\n<a href=\"<go= url />\" title=\"<go= ur />\">x</a>";
+        r.open(&page(), src);
+        let at = |needle: &str, delta: usize| LineIndex::new(src).position(src.find(needle).unwrap() + delta);
+        let ask = |pos, kind| r.request(&page(), pos, kind, &CancelToken::default()).unwrap();
+        let hover = ask(at("url />", 1), RequestKind::Hover).unwrap();
+        assert!(hover.to_string().contains("url := "), "{hover}");
+        let got = ask(at("ur />", 2), RequestKind::Completion).unwrap();
+        let labels: Vec<&str> = got["items"].as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap()).collect();
+        assert_eq!(labels, vec!["url"]);
+        // The attribute text around the tag is plain markup.
+        assert!(ask(at("title=", 3), RequestKind::Hover).is_none());
     }
 
     #[test]

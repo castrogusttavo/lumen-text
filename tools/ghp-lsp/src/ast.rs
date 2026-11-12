@@ -106,6 +106,10 @@ pub struct Tag {
     pub payload: Option<Span>,
     /// Properly terminated by `/>`.
     pub closed: bool,
+    /// Everything between the head and the closing `/>` (or where an unterminated tag stops),
+    /// whitespace included. It is where a cursor sits while the payload is still being typed:
+    /// `<go= | />`.
+    pub inner: Span,
 }
 
 impl Tag {
@@ -314,8 +318,25 @@ impl Tree {
     }
 
     /// The Go region containing `offset` (a cursor right after its last byte counts).
+    ///
+    /// A tag that takes Go text but has none yet (`<go= />`, `<go />`, `<go:if/>`) counts too while
+    /// the cursor is between its head and its `/>`: that is where the text is about to be typed.
     pub fn expr_region_at(&self, offset: usize) -> Option<ExprRegion> {
-        self.expr_regions().into_iter().find(|r| r.span.touches(offset))
+        if let Some(r) = self.expr_regions().into_iter().find(|r| r.span.touches(offset)) {
+            return Some(r);
+        }
+        let mut hit = None;
+        collect_tags(&self.nodes, &mut |t, stray| {
+            if hit.is_none()
+                && !stray
+                && t.payload.is_none()
+                && t.inner.touches(offset)
+                && let Some(kind) = t.kind.expr_kind()
+            {
+                hit = Some(ExprRegion { kind, span: t.inner, tag: t.span, closed: t.closed });
+            }
+        });
+        hit
     }
 
     /// Deepest node containing `offset`.

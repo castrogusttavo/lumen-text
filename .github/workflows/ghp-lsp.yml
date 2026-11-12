@@ -20,6 +20,7 @@ jobs:
   test:
     name: Build, lint and test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: tools/ghp-lsp
@@ -33,8 +34,33 @@ jobs:
           workspaces: tools/ghp-lsp
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      # Includes the end-to-end tests of the real binary (stdio, a scripted stand-in for gopls) and
+      # the performance guards on 5 MB pages.
+      - run: cargo test --locked
+
+  # The server's own tests on Windows: line endings, drive-letter URIs, `ghp-lsp.exe`. gopls itself
+  # is covered on Linux by the job below.
+  windows:
+    name: Build and test (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: tools/ghp-lsp
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: tools/ghp-lsp
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --locked
+      - name: The release binary has the name the packaging expects
+        shell: bash
+        run: |
+          cargo build --release --locked
+          test -f target/release/ghp-lsp.exe
 
   gopls:
     name: gopls bridge (real gopls)
@@ -62,4 +88,4 @@ jobs:
         with:
           workspaces: tools/ghp-lsp
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --test gopls_integration --test router_integration -- --ignored --nocapture
+      - run: cargo test --locked --test gopls_integration --test router_integration --test gopls_server -- --ignored --nocapture

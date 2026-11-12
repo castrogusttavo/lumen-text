@@ -50,6 +50,11 @@ pub fn regions(tree: &Tree) -> Vec<ExprRegion> {
         match t.payload {
             Some(p) => out.push(ExprRegion { start: p.start, end: p.end, kind }),
             None if t.kind == TagKind::Import => {}
+            // `<go= | />`: Go text is about to be typed. The (possibly empty) gap between the head
+            // and the `/>` becomes the region, so a cursor in it maps into the virtual document.
+            None if t.kind.expr_kind().is_some() => {
+                out.push(ExprRegion { start: t.inner.start, end: t.inner.end, kind })
+            }
             None => out.push(ExprRegion { start: t.span.start, end: t.span.start, kind }),
         }
     }
@@ -123,6 +128,22 @@ mod tests {
         assert_eq!(r.len(), 3);
         let at = src.find("<go:else").unwrap();
         assert!(r[1].start == at && r[1].end == at);
+    }
+
+    #[test]
+    fn empty_tags_that_take_go_text_keep_a_slot_between_head_and_closer() {
+        let src = "<go= /><go=/><go:if/><go:else/>";
+        let r = regions_of(src);
+        let got: Vec<(RegionKind, usize, usize)> = r.iter().map(|r| (r.kind, r.start, r.end)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (RegionKind::Echo, 4, 5),
+                (RegionKind::Echo, 11, 11),
+                (RegionKind::If, 19, 19),
+                (RegionKind::Else, 21, 21),
+            ]
+        );
     }
 
     #[test]

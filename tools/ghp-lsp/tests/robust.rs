@@ -103,6 +103,13 @@ fn check(src: &str) {
             assert!(pl.start >= t.head.end && pl.end <= t.span.end);
             assert_eq!(pl.slice(src), pl.slice(src).trim());
         }
+        // The gap between head and closer: where a cursor sits while the payload is being typed.
+        assert!(ok(t.inner) && t.inner.start == t.head.end && t.inner.end <= t.span.end, "inner in {src:?}");
+        if let Some(pl) = t.payload {
+            assert!(t.inner.start <= pl.start && pl.end <= t.inner.end, "payload outside inner in {src:?}");
+        } else {
+            assert!(t.inner.slice(src).trim().is_empty(), "empty payload but text in inner, {src:?}");
+        }
     }
 
     // Go regions: ordered, disjoint, in bounds.
