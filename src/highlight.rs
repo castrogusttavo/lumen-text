@@ -586,7 +586,7 @@ pub fn comment_prefix(path: &str) -> &'static str {
         Some("vb") => "'",
         Some("viml") => "\"",
         Some("fsharp" | "ocaml") => "//",
-        Some("css" | "scss" | "less" | "html" | "xml" | "markdown" | "json" | "vue" | "svelte" | "astro") => "",
+        Some("css" | "scss" | "less" | "html" | "xml" | "markdown" | "json" | "vue" | "svelte" | "astro" | "ghp") => "",
         _ => "//",
     }
 }
@@ -689,6 +689,7 @@ pub fn language_for(path: &str) -> Option<&'static str> {
         "vue" => "vue",
         "svelte" => "svelte",
         "astro" => "astro",
+        "ghp" => "ghp",
         "sol" => "solidity",
         "wgsl" => "wgsl",
         "glsl" | "vert" | "frag" => "glsl",
@@ -736,6 +737,7 @@ mod tests {
             ("/p/.env.local", Some("dotenv")),
             ("/p/App.csproj", Some("xml")),
             ("C:\\p\\Main.java", Some("java")),
+            ("/p/pages/home.ghp", Some("ghp")),
             ("/p/README", None),
             ("/p/go.mod", None),
         ] {

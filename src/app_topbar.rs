@@ -1267,7 +1267,7 @@ pub fn comment_for_lang(lang: Option<&str>) -> &'static str {
             | "powershell" | "properties" | "ini" | "nix" | "elixir" | "julia",
         ) => "#",
         Some("lua" | "sql" | "haskell" | "ada" | "plsql") => "--",
-        Some("css" | "scss" | "less" | "html" | "markdown" | "json" | "xml" | "jsonc") => "",
+        Some("css" | "scss" | "less" | "html" | "markdown" | "json" | "xml" | "jsonc" | "ghp") => "",
         _ => "//",
     }
 }
@@ -1617,7 +1617,8 @@ impl App {
         d.lang = lang;
         d.hl = hl;
         d.ed.comment = comment_for_lang(lang).to_string();
-        d.ed.jsx = matches!(lang, Some("tsx" | "jsx" | "html" | "vue" | "svelte"));
+        d.ed.jsx = matches!(lang, Some("tsx" | "jsx" | "html" | "vue" | "svelte" | "ghp"));
+        d.ed.ghp = lang == Some("ghp");
         d.sem.clear();
         self.lsp_language_changed(i, old, lang);
         if remember {

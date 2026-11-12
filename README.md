@@ -22,7 +22,7 @@ and no GPU driver:
 
 - Everything is drawn on the CPU (`softbuffer` + `tiny-skia`), so it runs anywhere a Wayland or X11 window does.
 - Highlighting uses the same TextMate grammars and VS Code themes as [Shiki](https://shiki.style)
-  (65 themes, 260 grammar files), through a port of the `vscode-textmate` core on top of `onig`.
+  (65 themes, 261 grammar files), through a port of the `vscode-textmate` core on top of `onig`.
 - TypeScript is served by [`tsgo`](https://github.com/microsoft/typescript-go) (the native TypeScript
   compiler) started on demand with full project awareness (like VS Code or Zed); an opt-in *lean mode* only loads open files and their imports for low-RAM machines.
 - Any language server works: a built-in table (rust-analyzer, pyright, gopls, clangd, jdtls (Java), csharp-ls (C#),

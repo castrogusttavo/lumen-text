@@ -7,6 +7,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 prefix="${PREFIX:-$HOME/.local}"
 
 install -Dm755 "$here/bin/lumen-text" "$prefix/bin/lumen-text"
+[ -f "$here/bin/ghp-lsp" ] && install -Dm755 "$here/bin/ghp-lsp" "$prefix/bin/ghp-lsp"
 rm -rf "$prefix/share/lumen-text/assets"
 mkdir -p "$prefix/share/lumen-text"
 cp -r "$here/share/lumen-text/assets" "$prefix/share/lumen-text/assets"

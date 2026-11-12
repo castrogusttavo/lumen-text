@@ -28,6 +28,8 @@ pub struct Editor {
     pub comment: String, // line-comment prefix, "" if none
     pub tab_w: usize,
     pub jsx: bool, // auto-close tags (tsx/jsx/html)
+    /// GHP template: `<go:if .../>` blocks indent their body and `else`/`end*` tags line up with their opener.
+    pub ghp: bool,
     /// The last column selection, so Ctrl+Shift+Alt+arrows and Shift+Alt+click keep growing it.
     boxsel: Option<BoxSel>,
 }
@@ -101,6 +103,7 @@ impl Editor {
             comment: comment.to_string(),
             tab_w: default_tab_w(),
             jsx: false,
+            ghp: false,
             boxsel: None,
         }
     }
@@ -752,6 +755,9 @@ impl Editor {
         }
         let mut tmp = [0u8; 4];
         self.insert_text(buf, ch.encode_utf8(&mut tmp));
+        if ch == '>' && self.ghp && self.sel.is_empty() {
+            self.ghp_align_tag(buf);
+        }
         if ch == '>'
             && self.jsx
             && self.sel.is_empty()
@@ -768,6 +774,48 @@ impl Editor {
         buf.line(l).chars().take_while(|c| *c == ' ' || *c == '\t').collect()
     }
 
+    /// After `>` closes a GHP tag: `else`/`elif`/`end*`/`case`/`default` move to the indent of the
+    /// `<go:if|for|switch>` they belong to (one level deeper for `case`/`default`).
+    fn ghp_align_tag(&mut self, buf: &mut Buffer) {
+        let head = self.sel.head;
+        let (l, _) = buf.line_col(head);
+        let Some(kind) = ghp_tag_kind(&buf.line(l)) else { return };
+        if !matches!(kind, "elif" | "else" | "endif" | "endfor" | "endswitch" | "case" | "default") {
+            return;
+        }
+        // Walk up to the opener this tag belongs to, skipping nested, already closed blocks.
+        let mut depth = 0usize;
+        let mut target = None;
+        for k in (0..l).rev() {
+            match ghp_tag_kind(&buf.line(k)) {
+                Some("endif" | "endfor" | "endswitch") => depth += 1,
+                Some("if" | "for" | "switch") if depth > 0 => depth -= 1,
+                Some(o @ ("if" | "for" | "switch")) => {
+                    target = Some((k, o));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some((k, opener)) = target else { return };
+        let mut want = Self::line_indent(buf, k);
+        if matches!(kind, "case" | "default") {
+            if opener != "switch" {
+                return;
+            }
+            want.push_str(&self.indent);
+        }
+        let have = Self::line_indent(buf, l);
+        if have == want {
+            return;
+        }
+        let start = buf.line_start(l);
+        let before = self.sel;
+        buf.replace(start, start + have.chars().count(), &want, EditKind::Typing, before);
+        let shifted = head - have.chars().count() + want.chars().count();
+        self.set_caret_keep_group(buf, shifted);
+    }
+
     pub fn newline(&mut self, buf: &mut Buffer) {
         let (s, e) = (self.sel.start(), self.sel.end());
         let (l, col) = buf.line_col(s);
@@ -780,6 +828,7 @@ impl Editor {
         let before = self.sel;
         let opens = matches!(prev, Some('{') | Some('[') | Some('('));
         let between_tags = self.jsx && prev == Some('>') && next == Some('<') && buf.char_at(e + 1) == Some('/');
+        let ghp_opens = self.ghp && ghp_opens_block(&buf.slice(buf.line_start(l), s));
         let opens = opens || between_tags;
         let between = (opens && prev.and_then(closer) == next) || between_tags;
         if between {
@@ -788,7 +837,7 @@ impl Editor {
             let caret = s + eol.chars().count() + indent.chars().count() + self.indent.chars().count();
             self.set_caret_keep_group(buf, caret);
         } else {
-            let extra = if opens { self.indent.as_str() } else { "" };
+            let extra = if opens || ghp_opens { self.indent.as_str() } else { "" };
             let text = format!("{eol}{indent}{extra}");
             buf.replace(s, e, &text, EditKind::Other, before);
             self.set_caret_keep_group(buf, s + text.chars().count());
@@ -1117,12 +1166,31 @@ pub fn closing_tag_for(buf: &Buffer, caret: usize) -> Option<String> {
     if VOID_TAGS.contains(&name.to_lowercase().as_str()) {
         return None;
     }
+    // GHP tags (`<go:if x>`, `<go x>`) are self-closing statements, never elements.
+    if name == "go" || name.starts_with("go:") {
+        return None;
+    }
     // Already closed right after the caret?
     let rest = buf.slice(caret, (caret + name.chars().count() + 3).min(buf.len_chars()));
     if rest.starts_with(&format!("</{name}")) {
         return None;
     }
     Some(format!("</{name}>"))
+}
+
+/// Name of the GHP block tag a line starts with (`if`, `else`, `endfor`...), when it is one.
+fn ghp_tag_kind(line: &str) -> Option<&'static str> {
+    let rest = line.trim_start().strip_prefix("<go:")?;
+    let name: String = rest.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    const KINDS: [&str; 11] =
+        ["if", "elif", "else", "endif", "for", "endfor", "switch", "case", "default", "endswitch", "import"];
+    KINDS.iter().find(|k| **k == name).copied()
+}
+
+/// Does the text of the line before the caret end a tag that opens a GHP block body?
+fn ghp_opens_block(before_caret: &str) -> bool {
+    let t = before_caret.trim_end();
+    t.ends_with("/>") && matches!(ghp_tag_kind(t), Some("if" | "elif" | "else" | "for" | "switch" | "case" | "default"))
 }
 
 /// Matching bracket for the one just before or at `pos` (naive: ignores strings/comments).
@@ -1488,6 +1556,31 @@ mod tests {
         e.jsx = false;
         typ(&mut b, &mut e, "<div>");
         assert_eq!(b.to_string(), "<div>", "off outside jsx files");
+    }
+
+    #[test]
+    fn ghp_blocks_indent_and_align() {
+        let ghp = || {
+            let (b, mut e) = setup("");
+            e.jsx = true;
+            e.ghp = true;
+            (b, e)
+        };
+        let (mut b, mut e) = ghp();
+        typ(&mut b, &mut e, "<go:if a > b/>\nx\n<go:else/>\ny\n<go:endif/>");
+        assert_eq!(b.to_string(), "<go:if a > b/>\n  x\n<go:else/>\n  y\n<go:endif/>");
+        let (mut b, mut e) = ghp();
+        typ(&mut b, &mut e, "<go:switch v/>\n<go:case 1/>\na\n<go:case 2/>\nb\n<go:endswitch/>");
+        assert_eq!(b.to_string(), "<go:switch v/>\n  <go:case 1/>\n    a\n  <go:case 2/>\n    b\n<go:endswitch/>");
+        let (mut b, mut e) = ghp();
+        typ(&mut b, &mut e, "<go:for x/>\n<go:if y/>\nz\n<go:endif/>\n<go:endfor/>");
+        assert_eq!(b.to_string(), "<go:for x/>\n  <go:if y/>\n    z\n  <go:endif/>\n<go:endfor/>");
+        let (mut b, mut e) = ghp();
+        typ(&mut b, &mut e, "<go:if a>");
+        assert_eq!(b.to_string(), "<go:if a>", "no </go:if> element is inserted");
+        let (mut b, mut e) = ghp();
+        typ(&mut b, &mut e, "<div>");
+        assert_eq!(b.to_string(), "<div></div>", "plain HTML still closes");
     }
 
     #[test]

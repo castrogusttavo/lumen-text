@@ -390,8 +390,7 @@ impl App {
         let mut out = std::collections::BTreeMap::new();
         let Some(s) = self.dbg.as_ref().and_then(Debugger::session) else { return out };
         for (path, results) in &s.bp_results {
-            let Some(sent) = s.bp_specs.get(path) else { continue };
-            out.insert(PathBuf::from(path), dm::verified_by_line(sent, results));
+            out.insert(PathBuf::from(path), dm::verified_by_line(results));
         }
         out
     }
@@ -616,6 +615,17 @@ impl App {
         } else {
             self.root.clone()
         };
+        // A build step first (`ghp build --debug` for pages): the program to debug is its output.
+        if adapter.prelaunch.is_some() {
+            self.say(format!("building for {}…", adapter.name));
+            if let Err(e) = adapter.run_prelaunch(path, &root) {
+                let msg = e.to_string();
+                self.panel.open = true;
+                self.panel.tab = PanelTab::Output;
+                self.panel.title = format!("{} build", adapter.name);
+                return self.say_for(format!("debug build failed: {}", msg.lines().next().unwrap_or("")), 6);
+            }
+        }
         let mut dap = match adapter.start(&root, self.wake()) {
             Ok(d) => d,
             Err(e) => return self.say(format!("could not start {}: {e}", adapter.command)),

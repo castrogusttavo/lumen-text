@@ -1,4 +1,5 @@
 /target
+/tools/ghp-lsp/target
 # HugeIcons Pro masks are licensed, not redistributable: generate locally with tools/setup-hugeicons.sh
 /assets/icons/hugeicons/
 /assets/icons/hugeicons_bulk/

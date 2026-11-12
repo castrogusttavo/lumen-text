@@ -132,10 +132,9 @@ pub fn specs_for(lines: &[usize], meta: Option<&BTreeMap<usize, BpMeta>>) -> Vec
         .collect()
 }
 
-/// 0-based requested line -> verified, from the adapter's answer to the specs sent for a file
-/// (answers come back in request order).
-pub fn verified_by_line(sent: &[BpSpec], results: &[BpResult]) -> BTreeMap<usize, bool> {
-    sent.iter().zip(results).map(|(s, r)| (s.line.saturating_sub(1), r.verified)).collect()
+/// 0-based requested line -> verified, from the adapter's answer for a file.
+pub fn verified_by_line(results: &[BpResult]) -> BTreeMap<usize, bool> {
+    results.iter().map(|r| (r.requested.saturating_sub(1), r.verified)).collect()
 }
 
 /// Add `line` to the sorted `lines`, or remove it. True when it is now set.
@@ -624,10 +623,10 @@ mod tests {
             ]
         );
         let results = vec![
-            BpResult { line: 2, verified: true, message: None },
-            BpResult { line: 11, verified: false, message: None },
+            BpResult { requested: 2, line: 2, verified: true, message: String::new() },
+            BpResult { requested: 10, line: 11, verified: false, message: String::new() },
         ];
-        let v = verified_by_line(&specs, &results);
+        let v = verified_by_line(&results);
         assert_eq!(v.get(&1), Some(&true));
         assert_eq!(v.get(&9), Some(&false), "keyed by the line that was asked for, not where it landed");
     }
