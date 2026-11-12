@@ -550,9 +550,7 @@ impl App {
             Some(p) if p.exists() => self.open_path(&p, None)?,
             path => {
                 // Untitled, or a file deleted since: an unsaved document with its text.
-                if text.is_none() {
-                    return None;
-                }
+                text?;
                 let buf = crate::buffer::Buffer::from_rope(ropey::Rope::new(), path);
                 let lang = buf.path.as_ref().and_then(|p| crate::highlight::language_for(&p.to_string_lossy()));
                 let hl = lang.and_then(|l| self.tokenizer_for(l)).map(crate::highlight::Highlighter::new);
