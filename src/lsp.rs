@@ -170,6 +170,12 @@ pub enum Pending {
         ver: u64,
         at: usize,
     },
+    /// `textDocument/inlineCompletion` number `serial` (see `inline`).
+    InlineCompletion {
+        serial: u64,
+    },
+    /// A step of GitHub Copilot's sign-in (see `app_inline`).
+    Copilot(crate::inline::CopilotStep),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -613,6 +619,7 @@ fn initialize_params(root: &Path, generic: Option<&Value>) -> Value {
         td["rename"] = json!({"prepareSupport": false, "dynamicRegistration": true});
         td["completion"]["completionItem"]["deprecatedSupport"] = json!(true);
         td["codeAction"]["isPreferredSupport"] = json!(true);
+        td["inlineCompletion"] = json!({"dynamicRegistration": true});
         td["documentSymbol"]["symbolKind"] = json!({});
         td["publishDiagnostics"] =
             json!({"relatedInformation": false, "versionSupport": true, "codeDescriptionSupport": true});

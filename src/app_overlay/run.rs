@@ -7,6 +7,9 @@ impl App {
         if self.run_display_cmd(c) || self.run_view_cmd(c) {
             return;
         }
+        if self.run_inline_cmd(c) {
+            return;
+        }
         match c {
             Cmd::Save => self.save_active(),
             Cmd::CloseTab => {
@@ -324,6 +327,13 @@ impl App {
                 self.set_problems_scope(true);
                 self.open_problems();
             }
+            // Handled by `run_inline_cmd` before this match.
+            Cmd::InlineSuggest
+            | Cmd::InlineNext
+            | Cmd::InlinePrev
+            | Cmd::ToggleInlineCompletion
+            | Cmd::CopilotSignIn
+            | Cmd::CopilotSignOut => {}
             Cmd::Quit => {
                 if self.try_quit() {
                     std::process::exit(0);

@@ -61,6 +61,10 @@ pub(super) fn hint_decor<'a>(
     labels: &mut Vec<(i32, i32, &'a str)>,
 ) {
     for (h, (v, w)) in hs.iter().zip(crate::inlay::hint_cells(text, hs, tab_w)) {
+        // Inline-completion ghost text is part of the row's text pieces: no pill, no label.
+        if h.kind == crate::inlay::HintKind::Ghost {
+            continue;
+        }
         let pill = Rect::new(vx(v), y + 1, vx(v + w) - vx(v), lh - 2);
         if pill.x >= clip.x && pill.right() <= clip.right() && pill.y >= clip.y && pill.bottom() <= clip.bottom() {
             cv.fill_round(pill, 3, hint_fg.with_alpha(0x26));

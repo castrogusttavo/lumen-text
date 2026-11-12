@@ -189,6 +189,10 @@ pub struct Doc {
     pub fileconf: crate::editorconfig::Props,
     /// Rulers, inline diagnostics, document highlights and linked editing (see `assist`).
     pub assist: crate::assist::Assist,
+    /// Inline-completion ghost text at the cursor (see `inline::GhostView` and `Doc::set_ghost`).
+    pub ghost: Option<crate::inline::GhostView>,
+    /// Last frame's virtual ghost rows: `n` rows drawn after document row `g`, as `(g, n)`.
+    pub ghost_rows: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Debug)]
@@ -306,6 +310,8 @@ impl Doc {
             pinned: false,
             fileconf: Default::default(),
             assist: Default::default(),
+            ghost: None,
+            ghost_rows: None,
         }
     }
 
@@ -665,6 +671,8 @@ impl Doc {
         let lh = line_h() as f64;
         let rel_y = y - self.rect.y as f64;
         let row = ((rel_y + self.top * lh) / lh).floor().max(0.0) as usize;
+        // Rows below a multi-line inline suggestion are drawn lower by its extra lines.
+        let row = crate::inline::unshift_row(row, self.ghost_rows);
         let tx = (self.rect.x + self.gutter_w()) as f64;
         let cw = self.cell_w as f64;
         let docx = x - tx + self.left;
@@ -712,6 +720,7 @@ impl Doc {
     /// Window position (x, y of the cell's top-left) of a char index, if visible.
     pub fn screen_pos(&self, c: usize) -> Option<(i32, i32)> {
         let (row, v) = self.caret_geom(c);
+        let row = crate::inline::shift_row(row, self.ghost_rows);
         let x = self.rect.x + self.gutter_w() + (v as f32 * self.cell_w).round() as i32 - self.left.round() as i32;
         let y = self.rect.y + (row as f64 * line_h() as f64 - self.top * line_h() as f64).round() as i32;
         (y >= self.rect.y - line_h() as i32 && y < self.rect.bottom()).then_some((x, y))

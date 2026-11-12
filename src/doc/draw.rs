@@ -132,6 +132,20 @@ impl Doc {
         }
 
         crate::perf::lap!("doc.rows");
+        // Inline completion: the lines after the first of a multi-line suggestion are virtual rows
+        // right below the last row of the cursor line; the rows after them move down that much.
+        let ghost_n = self.ghost.as_ref().map_or(0, |g| g.rest.len());
+        let ghost_after: Option<usize> = if ghost_n == 0 {
+            None
+        } else {
+            self.ghost.as_ref().and_then(|g| vlines.binary_search(&g.line).ok()).map(|lk| row_range[lk].1.max(1) - 1)
+        };
+        let ghost_rest: Vec<String> = match (ghost_after, &self.ghost) {
+            (Some(_), Some(g)) => g.rest.clone(),
+            _ => Vec::new(),
+        };
+        self.ghost_rows = ghost_after.map(|r| (first_row + r, ghost_n));
+        let vshift = |r: usize| if ghost_after.is_some_and(|g| r > g) { ghost_n } else { 0 };
         // Caret glide, in document pixel space (rows, so wrapped lines and folds are accounted for).
         let (crow, cvcol) = self.caret_geom(self.ed.head());
         let target_c = (cvcol as f64 * cell_w as f64, crow as f64 * lh_f as f64);
@@ -169,7 +183,7 @@ impl Doc {
         } else {
             Vec::new()
         };
-        let ry = |r: usize| rect.y + (r as f32 * lh_f) as i32 + y_off;
+        let ry = |r: usize| rect.y + ((r + vshift(r)) as f32 * lh_f) as i32 + y_off;
         let vx = |vc: usize| body.x + (vc as f32 * cell_w).round() as i32 - left.round() as i32;
         let rt = |r: usize| row_text(&rows, &lines, r);
         // Visual column of char `col` of row `r` (text + the hint cells before it).
@@ -503,6 +517,16 @@ impl Doc {
                 );
             }
             pieces.push(("\n".to_string(), fg, 0));
+            if Some(r) == ghost_after {
+                let gc = fg.with_alpha(crate::inlay::GHOST_ALPHA);
+                for gl in &ghost_rest {
+                    let s: String = gl.chars().skip(vc0).take(vc1.saturating_sub(vc0)).collect();
+                    if !s.is_empty() {
+                        pieces.push((s, gc, crate::ui::ITALIC));
+                    }
+                    pieces.push(("\n".to_string(), fg, 0));
+                }
+            }
         }
         let body_x = body.x + (vc0 as f32 * cell_w).round() as i32 - left.round() as i32;
         tx.draw_styled(cv, body_x, rect.y + y_off, &pieces, body);
@@ -612,6 +636,10 @@ impl Doc {
         if self.assist.inline != crate::assist::InlineDiags::Off && !self.diags.is_empty() {
             let only = (self.assist.inline == crate::assist::InlineDiags::CurrentLine).then_some(cur_line);
             for (line, di) in crate::assist::worst_per_line(&self.diags, first, last, only) {
+                // Ghost text owns the end of its line: no diagnostic message under or over it.
+                if self.ghost.as_ref().is_some_and(|g| g.line == line) {
+                    continue;
+                }
                 let Some((r, vend)) = at_end(line) else { continue };
                 let mut end = vx(vend);
                 for (pill, l) in &self.fold_pills {
@@ -697,9 +725,12 @@ impl Doc {
         cv.fill(Rect::new(rect.x, rect.y, gutter_w, rect.h), theme.background);
         let mut gutter: Vec<(String, Rgba)> = Vec::with_capacity(rows.len());
         let digits = self.gutter_digits();
-        for row in rows.iter() {
+        for (r, row) in rows.iter().enumerate() {
             let color = if row.line == cur_line { theme.line_number_active } else { theme.line_number };
             gutter.push((if row.sub == 0 { format!("{:>digits$}\n", row.line + 1) } else { "\n".to_string() }, color));
+            if Some(r) == ghost_after {
+                gutter.extend((0..ghost_n).map(|_| ("\n".to_string(), color)));
+            }
         }
         if crate::display::show_line_numbers() {
             tx.draw(

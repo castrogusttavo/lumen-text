@@ -40,6 +40,7 @@ Lumen speaks the Language Server Protocol to as many servers as you like. TypeSc
 | TS / JS / CSS / HTML | companion `tailwindcss-language-server`, only in a project with a Tailwind config | `tailwind.config.*` |
 | TS / JS | `deno lsp` replaces `tsgo`, only in a project with `deno.json` | `deno.json` |
 | Prose (spell checking, off by default) | companions `harper-ls --stdio` and `typos-lsp`, only with `spell_check` on; see below | `.git` (typos-lsp: also `typos.toml`) |
+| every file | companion `copilot-language-server --stdio` (GitHub Copilot inline completions), only with the setting `inline_completion` on | the project folder |
 
 For a language the **first installed** server of the list is the *primary* one; the others of that language are ignored, so installing `pyright` is enough. A *companion* (`ruff`, `tailwindcss`) runs next to the primary and adds to it.
 
@@ -48,6 +49,25 @@ Executables are looked for in `<project>/node_modules/.bin` (and its parents), `
 The home folder is never a workspace root for a file below it (a stray `~/package.json` or `~/.git` would otherwise make a server index the whole home). Python servers are given the project's virtualenv so installed dependencies resolve: `.venv`, `venv`, `env` or any folder holding a `pyvenv.cfg` in the project or a parent folder (uv and `python -m venv` layouts), `$UV_PROJECT_ENVIRONMENT`, `$VIRTUAL_ENV`, then Poetry's cache folder (matched by project name). pyright and basedpyright get `python.pythonPath`, `python.venvPath` and `python.venv` (in `workspace/configuration` and the initialization options), every Python server runs with `VIRTUAL_ENV` set and the venv's `bin` first on its `PATH`, and a ruff or basedpyright installed in the venv is used instead of the one on the `PATH`. *Python: Select interpreter…* lists the venvs found and the system pythons and pins one per project (remembered in the state folder); the tooltip of the language item in the status bar shows the active interpreter. Your own `settings.python.pythonPath` always wins.
 
 The table is data, not code: it is `src/lsp_servers.json` in the repository, embedded in the program.
+
+### Inline completions (ghost text)
+
+With the setting `inline_completion` on (Settings, or the palette: *Inline completion: Toggle on / off*), Lumen asks
+the servers of the file for `textDocument/inlineCompletion` (LSP 3.18) after a 250 ms typing pause and shows the
+first suggestion as faded text at the cursor; the lines after the first one appear as extra rows below the cursor
+line. `Tab` accepts it (one undo step; a command that comes with it is then run with `workspace/executeCommand`),
+`Ctrl+Right` accepts the next word, `Esc` dismisses it, `Alt+]` / `Alt+[` show the other suggestions and `Alt+\`
+asks right away. Nothing is asked while the completion popup is open, with several cursors or with a selection;
+moving the cursor or typing something else cancels the request in flight. A status bar item shows the state (on,
+off, signed out, loading, no server); a click pauses it, or signs in when Copilot is signed out.
+
+Any server that offers inline completions works. For **GitHub Copilot**, install its language server
+(`npm i -g @github/copilot-language-server`) and run *Copilot: Sign in*: Lumen shows the device code (and copies
+it), opens `github.com/login/device` in your browser and finishes when you confirm there. The login is stored by the
+server itself; Lumen never sees a token or an API key. *Copilot: Sign out* signs out. Copilot only serves inline
+completions in Lumen (its other features are not merged into hover, completion or code actions). The sign-in uses
+Copilot's own requests (`checkStatus`, `signIn`, `signOut`); if a future server changes them, only the sign-in is
+affected. Switch Copilot off while keeping other servers' suggestions with `"language_servers": {"copilot": {"enabled": false}}`.
 
 ## Your own servers
 

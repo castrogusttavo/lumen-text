@@ -555,6 +555,9 @@ impl App {
                         self.ai.badge().map_or_else(|| "Agent".to_string(), |(b, _)| b)
                     )),
                 ),
+                StatusBtn::Inline => {
+                    t("Inline completion", self.shortcut_text("InlineSuggest"), Some(self.inline_status_tip()))
+                }
                 StatusBtn::Language => self.language_tip(),
                 StatusBtn::Encoding => t(
                     "Reopen or save with another encoding…",
