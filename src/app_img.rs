@@ -61,11 +61,9 @@ impl App {
         let (ctrl, shift) = (self.mods.control_key(), self.mods.shift_key());
         let Some(v) = self.img_shown_mut().filter(|v| v.rect.contains(x, y)) else { return false };
         if ctrl {
-            let factor = match delta {
-                MouseScrollDelta::LineDelta(_, dy) => 1.15f32.powf(dy),
-                MouseScrollDelta::PixelDelta(p) => (p.y as f32 / 300.0).exp(),
-            };
-            v.zoom_at(factor, x, y);
+            // Through the shared wheel physics: a notch is 120 px here, about +14% zoom.
+            let (_, dy) = crate::scroller::wheel_px_xy(delta, PAN_STEP);
+            v.zoom_at((-dy as f32 * 0.0012).exp(), x, y);
         } else {
             let (mut dx, mut dy) = crate::scroller::wheel_px_xy(delta, PAN_STEP);
             if shift && dx == 0.0 {
