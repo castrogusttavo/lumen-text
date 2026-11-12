@@ -1,0 +1,27 @@
+name: Set up Inno Setup
+description: >
+  Make Inno Setup 6 available on a Windows runner and export ISCC (absolute path of ISCC.exe) for
+  packaging/windows/build-setup.sh. The runner image ships it; if a future image does not, it is
+  installed with chocolatey (pinned version first). Shared by the release job in ci.yml and the PR
+  dry run in packaging.yml.
+
+runs:
+  using: composite
+  steps:
+    - name: Find or install Inno Setup 6
+      shell: bash
+      run: |
+        set -uo pipefail
+        find_iscc() {
+          for c in "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/c/Program Files/Inno Setup 6/ISCC.exe"; do
+            [ -f "$c" ] && { echo "$c"; return 0; }
+          done
+          return 1
+        }
+        if ! iscc="$(find_iscc)"; then
+          choco install innosetup --version=6.4.3 -y --no-progress || choco install innosetup -y --no-progress
+          iscc="$(find_iscc)" || { echo "ISCC.exe not found after installing Inno Setup" >&2; exit 1; }
+        fi
+        echo "ISCC=$iscc" >> "$GITHUB_ENV"
+        echo "Inno Setup: $iscc"
+        ls -l "$(dirname "$iscc")/ISCC.exe"

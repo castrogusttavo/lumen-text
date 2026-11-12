@@ -184,6 +184,9 @@ pub enum InstallKind {
     AppImage(PathBuf),
     /// `<data>/lumen-text/<version>/bin/lumen-text` with a `current` symlink; the path is `<data>/lumen-text`.
     User(PathBuf),
+    /// Windows: installed per user by the Inno Setup installer (`lumen-text-<v>-windows-x86_64-setup.exe`);
+    /// the path is the install directory (it holds `unins000.exe`). Updates by running the newer setup silently.
+    Setup(PathBuf),
     /// Installed by a package manager under /usr/bin: only notify.
     System,
     /// A tarball run in place, a local build, /usr/local...: only notify.
@@ -192,13 +195,14 @@ pub enum InstallKind {
 
 impl InstallKind {
     pub fn can_self_update(&self) -> bool {
-        matches!(self, InstallKind::AppImage(_) | InstallKind::User(_))
+        matches!(self, InstallKind::AppImage(_) | InstallKind::User(_) | InstallKind::Setup(_))
     }
     /// Short description for the UI (Portuguese until the UI is translated).
     pub fn label(&self) -> &'static str {
         match self {
             InstallKind::AppImage(_) => "AppImage",
             InstallKind::User(_) => "user install",
+            InstallKind::Setup(_) => "installer",
             InstallKind::System => "system package",
             InstallKind::Other => "manual",
         }
@@ -208,6 +212,7 @@ impl InstallKind {
         match self {
             InstallKind::AppImage(_) => "AppImage",
             InstallKind::User(_) => "user install",
+            InstallKind::Setup(_) => "installed with the Windows installer",
             InstallKind::System => "system package",
             InstallKind::Other => "manual install",
         }
@@ -216,6 +221,7 @@ impl InstallKind {
     pub fn format_key(&self, pkg: PkgFormat) -> &'static str {
         match self {
             InstallKind::AppImage(_) => "appimage",
+            InstallKind::Setup(_) => "setup",
             InstallKind::System => pkg.format_key().unwrap_or("tarball"),
             // Windows and macOS builds are portable archives: the update is announced, not applied.
             _ if cfg!(windows) => "zip",
@@ -229,6 +235,11 @@ impl InstallKind {
 pub fn detect_kind(exe: &Path, appimage_env: Option<&str>, data_home: Option<&Path>) -> InstallKind {
     if let Some(a) = appimage_env.filter(|a| !a.is_empty()) {
         return InstallKind::AppImage(PathBuf::from(a));
+    }
+    if cfg!(windows)
+        && let Some(dir) = setup_install_dir(exe, crate::paths::home().as_deref())
+    {
+        return InstallKind::Setup(dir);
     }
     if let Some(data) = data_home {
         let root = data.join("lumen-text");
@@ -247,6 +258,62 @@ pub fn detect_kind(exe: &Path, appimage_env: Option<&str>, data_home: Option<&Pa
         return InstallKind::System;
     }
     InstallKind::Other
+}
+
+/// The install directory when `exe` is `lumen-text.exe` from the per-user Windows installer: the
+/// directory holds the uninstaller (`unins000.exe`) and sits under the user's profile. A portable
+/// zip has no uninstaller; an all-users install (Program Files) is left alone because updating it
+/// would need elevation, so neither self-updates (they announce the release instead).
+pub fn setup_install_dir(exe: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    if !exe.file_name()?.to_string_lossy().eq_ignore_ascii_case("lumen-text.exe") || !dir.join("unins000.exe").is_file()
+    {
+        return None;
+    }
+    let lower = |p: &Path| PathBuf::from(p.to_string_lossy().to_lowercase());
+    if !lower(dir).starts_with(lower(home?)) {
+        return None;
+    }
+    Some(dir.to_path_buf())
+}
+
+/// Command-line switches for a silent in-place upgrade with the setup (`relaunch`: start Lumen again afterwards).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn setup_args(dir: &Path, relaunch: bool) -> Vec<String> {
+    let mut a: Vec<String> = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/CLOSEAPPLICATIONS"]
+        .map(String::from)
+        .to_vec();
+    a.push(format!("/DIR=\"{}\"", dir.display()));
+    if relaunch {
+        a.push("/RELAUNCH=1".into());
+    }
+    a
+}
+
+/// Start the verified setup silently, detached from this process (which is about to exit: the
+/// installer closes any remaining Lumen through Restart Manager, replaces the files, keeps the
+/// settings, and with `relaunch` starts the new Lumen).
+#[cfg(windows)]
+pub fn spawn_setup(setup: &Path, dir: &Path, relaunch: bool) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    let mut cmd = Command::new(setup);
+    for a in setup_args(dir, relaunch) {
+        cmd.raw_arg(a);
+    }
+    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("cannot start the installer {}: {e}", setup.display()))
+}
+
+#[cfg(not(windows))]
+pub fn spawn_setup(_setup: &Path, _dir: &Path, _relaunch: bool) -> Result<(), String> {
+    Err("the Windows installer only runs on Windows".into())
 }
 
 /// Package format of the running distribution (`/etc/os-release`).
@@ -694,6 +761,9 @@ pub fn install(env: &Env, rel: &Release, staged: &Path) -> Result<PathBuf, Strin
             apply_user(staged, &rel.version, root, running_version_dir(&env.exe, root).as_deref())?;
             Ok(root.join("current/bin/lumen-text"))
         }
+        // The installer replaces the running exe, so it runs only after this process exits
+        // (`spawn_setup`, on "Restart" / `--update`); here the verified file just stays in the cache.
+        InstallKind::Setup(_) => Ok(staged.to_path_buf()),
         _ => Err("this installation is managed by something else".into()),
     }
 }
@@ -703,6 +773,7 @@ pub fn update(env: &Env, rel: &Release, progress: Option<&AtomicU64>) -> Result<
     let staged = stage(env, rel, progress)?;
     let res = install(env, rel, &staged);
     if res.is_ok()
+        && !matches!(env.kind, InstallKind::Setup(_))
         && let Some(dir) = staged.parent()
     {
         let _ = fs::remove_dir_all(dir);
@@ -1028,14 +1099,35 @@ pub fn cli_check(apply: bool) -> i32 {
         match (&rel.command, env.kind.can_self_update()) {
             (Some(c), _) => println!("This installation is managed by your package manager. Run:\n  {c}"),
             (None, false) => println!(
-                "This installation can't update itself. Download {} or run `lumen-text --install-user` from it for automatic updates.",
-                rel.page
+                "This installation can't update itself. Download {} {}.",
+                rel.page,
+                if cfg!(windows) {
+                    "and install lumen-text-<version>-windows-x86_64-setup.exe for automatic updates"
+                } else {
+                    "or run `lumen-text --install-user` from it for automatic updates"
+                }
             ),
             _ => println!("This release has no file for this installation: {}", rel.page),
         }
         return 10;
     }
     match update(&env, &rel, None) {
+        Ok(setup) if matches!(env.kind, InstallKind::Setup(_)) => {
+            let InstallKind::Setup(dir) = &env.kind else { unreachable!() };
+            match spawn_setup(&setup, dir, false) {
+                Ok(()) => {
+                    println!(
+                        "Installing {v} in the background; Lumen {v} replaces this one in a few seconds.",
+                        v = rel.version
+                    );
+                    0
+                }
+                Err(e) => {
+                    eprintln!("Update failed: {e}");
+                    1
+                }
+            }
+        }
         Ok(exe) => {
             println!("Updated to {}. Start it with: {}", rel.version, exe.display());
             0
@@ -1439,6 +1531,13 @@ mod tests {
 mod integration_tests {
     use super::*;
 
+    fn tmpd(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("lumen-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
     #[test]
     fn register_desktop_rewrites_stale_icons() {
         let data = std::env::temp_dir().join(format!("lumen-integ-{}", std::process::id()));
@@ -1451,5 +1550,60 @@ mod integration_tests {
         assert_eq!(fs::read(icon.join("lumen-text.svg")).unwrap(), ICON_SVG.as_bytes());
         assert!(data.join("icons/hicolor/256x256/apps/lumen-text.png").is_file());
         let _ = fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn setup_install_is_recognised_by_its_uninstaller_under_the_user_profile() {
+        let home = tmpd("setup-home");
+        let dir = home.join("AppData/Local/Programs/Lumen");
+        fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("lumen-text.exe");
+        fs::write(&exe, b"x").unwrap();
+        assert_eq!(setup_install_dir(&exe, Some(&home)), None, "portable copy: no uninstaller");
+        fs::write(dir.join("unins000.exe"), b"x").unwrap();
+        assert_eq!(setup_install_dir(&exe, Some(&home)), Some(dir.clone()));
+        assert_eq!(
+            setup_install_dir(&exe, Some(&tmpd("setup-other"))),
+            None,
+            "outside the profile (all users): not self-updated"
+        );
+        assert_eq!(setup_install_dir(&exe, None), None);
+        assert_eq!(setup_install_dir(&dir.join("ghp-lsp.exe"), Some(&home)), None);
+    }
+
+    #[test]
+    fn setup_kind_updates_from_the_signed_setup_entry() {
+        let key = platform_key("x86_64", "setup");
+        let zip = platform_key("x86_64", "zip");
+        let json = format!(
+            r#"{{"version":"2026.11.10.2","notes":"n","pub_date":"d","platforms":{{
+              "{key}":{{"url":"https://h/lumen-text-2026.11.10.2-windows-x86_64-setup.exe","signature":"c2ln"}},
+              "{zip}":{{"url":"https://h/lumen-text-2026.11.10.2-windows-x86_64.zip","signature":"c2ln"}}}}}}"#
+        );
+        let m = parse_manifest(&json).unwrap();
+        let setup = InstallKind::Setup(PathBuf::from("C:/Users/u/AppData/Local/Programs/Lumen"));
+        assert!(setup.can_self_update());
+        let r = evaluate(&m, "2026.11.10.1", &setup, "x86_64", PkgFormat::Unknown, true).unwrap();
+        assert_eq!(r.asset.unwrap().name, "lumen-text-2026.11.10.2-windows-x86_64-setup.exe");
+        assert!(
+            evaluate(&m, "2026.11.10.2", &setup, "x86_64", PkgFormat::Unknown, true).is_none(),
+            "same version: nothing to do"
+        );
+        assert!(evaluate(&m, "2026.11.10.3", &setup, "x86_64", PkgFormat::Unknown, true).is_none(), "never downgrade");
+        // A portable copy keeps announcing only.
+        let r = evaluate(&m, "2026.11.10.1", &InstallKind::Other, "x86_64", PkgFormat::Unknown, true).unwrap();
+        assert!(r.asset.is_none());
+    }
+
+    #[test]
+    fn setup_switches_are_silent_per_user_and_target_the_install_dir() {
+        let dir = Path::new("C:\\Users\\u\\AppData\\Local\\Programs\\Lumen");
+        let a = setup_args(dir, false);
+        for f in ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER"] {
+            assert!(a.iter().any(|x| x == f), "{f}");
+        }
+        assert!(a.iter().any(|x| x.starts_with("/DIR=\"") && x.ends_with('"')));
+        assert!(!a.iter().any(|x| x.starts_with("/RELAUNCH")));
+        assert!(setup_args(dir, true).iter().any(|x| x == "/RELAUNCH=1"));
     }
 }

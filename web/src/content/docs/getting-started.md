@@ -12,15 +12,19 @@ Lumen is a lean, CPU-rendered code editor for Linux, Windows and macOS, written 
 | Platform | Package | Notes |
 |---|---|---|
 | Linux x86_64 and aarch64 | `.deb`, `.rpm`, Arch package, AppImage, tarball | Wayland and X11; self-updating AppImage and user install |
-| Windows x86_64 | `lumen-text-<v>-windows-x86_64.zip` | Portable: unzip and run `lumen-text.exe`; not code-signed |
+| Windows x86_64 | `lumen-text-<v>-windows-x86_64-setup.exe`, `lumen-text-<v>-windows-x86_64.zip` | Installer (per user, self-updating) or portable zip; not code-signed |
 | macOS Apple Silicon | `lumen-text-<v>-macos-aarch64.dmg` | Not notarized, see below |
 | macOS Intel | `lumen-text-<v>-macos-x86_64.dmg` | Not notarized, see below |
 
-The Windows and macOS builds are new: they are built and unit-tested by CI, but have had much less real-world use than Linux. On those systems the update check announces new versions with a link to the release page; you install them by hand.
+The Windows and macOS builds are new: they are built and unit-tested by CI, but have had much less real-world use than Linux. On macOS and for the Windows portable zip the update check announces new versions with a link to the release page; you install them by hand. The Windows installer updates itself like the Linux user install.
 
 ### Windows
 
-Unzip the archive anywhere and run `lumen-text.exe` (keep `assets/` next to it). The executable is not signed, so Windows SmartScreen may show "Windows protected your PC": choose *More info*, then *Run anyway*. The integrated terminal uses PowerShell through ConPTY (set `LUMEN_SHELL` to use another shell).
+Run `lumen-text-<v>-windows-x86_64-setup.exe`. It installs for your user only (`%LOCALAPPDATA%\Programs\Lumen`, no administrator rights; the dialog can switch to all users), adds a Start Menu shortcut and an entry in *Installed apps*, and offers optional tasks (add Lumen to your `PATH` and the Explorer context menus *Open with Lumen* / *Open folder in Lumen* are ticked by default; a desktop icon and *Open with* entries for common file types are not). Later versions are downloaded, verified (minisign) and installed by the app itself: when you choose *Restart now*, Lumen closes, the installer upgrades it in place, and Lumen starts again with your tabs. Uninstalling keeps your settings unless you answer *Yes* to the question about deleting them (settings live in `%APPDATA%\lumen-text`, caches in `%LOCALAPPDATA%\lumen-text`).
+
+Silent install, for scripts and deployment tools: `lumen-text-<v>-windows-x86_64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER`. Useful switches: `/DIR="C:\Tools\Lumen"`, `/TASKS="addtopath,contextmenu"` (also `desktopicon`, `fileassoc`; `/TASKS=` for none), `/ALLUSERS` (needs administrator rights), `/LOG="setup.log"`. Silent uninstall: `"%LOCALAPPDATA%\Programs\Lumen\unins000.exe" /VERYSILENT`.
+
+The installer and the executable are not code-signed, so Windows SmartScreen may show "Windows protected your PC": choose *More info*, then *Run anyway*. The portable zip works as before: unzip anywhere and run `lumen-text.exe` (keep `assets/` next to it); it does not update itself. The integrated terminal uses PowerShell through ConPTY (set `LUMEN_SHELL` to use another shell).
 
 ### macOS
 

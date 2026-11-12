@@ -10,6 +10,9 @@ on:
     paths:
       - "packaging/**"
       - "tools/ghp-lsp/**"
+      - "src/update.rs"
+      - "src/app_update.rs"
+      - "src/update_key.pub"
       - "tools/ci-debian.sh"
       - ".github/actions/**"
       - ".github/workflows/packaging.yml"
@@ -96,6 +99,57 @@ jobs:
           d="$(mktemp -d)"
           unzip -q dist/lumen-text-*-windows-x86_64.zip -d "$d/pkg"
           test -f "$d"/pkg/lumen-text-*/ghp-lsp.exe
+
+  windows-installer:
+    name: Windows installer and in-app update (real exe)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Four numbers like a real release: the updater test needs "next version" to be a CalVer.
+      E2E_VERSION: "2099.1.1.1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: packaging-windows-installer
+          workspaces: |
+            .
+            tools/ghp-lsp
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Git defaults for the tests (no CRLF conversion on Windows)
+        run: git config --global core.autocrlf false
+      - name: Build lumen-text.exe (stamped with a CalVer version)
+        env:
+          LUMEN_VERSION: ${{ env.E2E_VERSION }}
+        run: |
+          cargo build --release --locked
+          got="$(target/release/lumen-text.exe --version | tr -d '\r')"
+          [ "$got" = "lumen-text ${E2E_VERSION}" ] || { echo "version stamp mismatch: $got" >&2; exit 1; }
+          ! grep -qa 'VCRUNTIME140' target/release/lumen-text.exe || { echo "lumen-text.exe imports VCRUNTIME140.dll: crt-static is not in effect" >&2; exit 1; }
+      - name: Updater unit tests on Windows
+        run: "cargo test --release --locked update::"
+      - uses: ./.github/actions/build-ghp-lsp
+      - uses: ./.github/actions/setup-innosetup
+      - name: Package (zip and installer)
+        run: |
+          mkdir -p dist
+          packaging/windows/build-zip.sh target/release/lumen-text.exe "$E2E_VERSION" x86_64 dist
+          packaging/windows/build-setup.sh target/release/lumen-text.exe "$E2E_VERSION" x86_64 dist
+          ls -l dist
+      - name: Installer test (silent install, upgrade, uninstall)
+        shell: pwsh
+        run: packaging/windows/test-installer.ps1 -Setup "dist/lumen-text-$env:E2E_VERSION-windows-x86_64-setup.exe" -Version "$env:E2E_VERSION" -ExpectVersionOutput "lumen-text $env:E2E_VERSION"
+      - name: Updater test (install, serve a signed next version, update in place)
+        run: packaging/windows/test-update.sh "dist/lumen-text-${E2E_VERSION}-windows-x86_64-setup.exe" target/release/lumen-text.exe "$E2E_VERSION"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-installer-dry-run
+          path: dist/
+          retention-days: 3
 
   macos:
     name: ghp-lsp in the macOS app (${{ matrix.arch }})
