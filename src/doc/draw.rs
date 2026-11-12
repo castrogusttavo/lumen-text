@@ -437,7 +437,7 @@ impl Doc {
                     continue;
                 }
                 placed.clear();
-                if hints_for(inl, &row_hs, wrap_cols, r, row.line).is_empty() {
+                if bidi[r].is_none() && hints_for(inl, &row_hs, wrap_cols, r, row.line).is_empty() {
                     // One pass over the row: tabs run to the next tab stop, everything else is one cell.
                     let (mut v, mut mi) = (0usize, m0);
                     for (k, ch) in rt(r).chars().enumerate() {
@@ -506,12 +506,10 @@ impl Doc {
         let hint_fg = theme.line_number;
         let mut labels: Vec<(i32, i32, &str)> = Vec::new();
         for (r, row) in rows.iter().enumerate() {
-            if bidi[r].is_some() {
-                pieces.push(("\n".to_string(), fg, 0)); // drawn on its own below
-                continue;
-            }
             let hs = hints_for(inl, &row_hs, wrap_cols, r, row.line);
-            if hs.is_empty() {
+            if bidi[r].is_some() {
+                // Drawn on its own below; the blank line keeps the rows (and any ghost rows) aligned.
+            } else if hs.is_empty() {
                 window_pieces(
                     &lines[row.lk],
                     line_spans.get(row.lk).and_then(|s| s.as_ref()),
