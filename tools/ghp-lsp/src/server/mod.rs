@@ -7,9 +7,18 @@
 //! Everything outside the Go expressions is answered here. Requests whose cursor sits inside a
 //! Go region (`<go= .../>`, `<go:if .../>`, ...) go through [`Server::route_go`].
 
+pub mod actions;
+pub mod completion;
 pub mod conv;
 pub mod docs;
+pub mod folding;
+pub mod format;
+pub mod highlight;
+pub mod hover;
 pub mod rpc;
+pub mod selection;
+pub mod semantic;
+pub mod symbols;
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -187,7 +196,7 @@ impl Server {
     }
 
     /// Route a request to its feature. `None` means the method is unknown.
-    fn dispatch(&mut self, method: &str, params: &Value) -> Option<Value> {
+    fn dispatch(&self, method: &str, params: &Value) -> Option<Value> {
         let go = match method {
             "textDocument/completion" => Some(GoMethod::Completion),
             "textDocument/hover" => Some(GoMethod::Hover),
@@ -197,7 +206,42 @@ impl Server {
         if let Some(go) = go {
             return Some(self.position_request(go, params));
         }
-        None
+        let known = matches!(
+            method,
+            "textDocument/documentSymbol"
+                | "textDocument/foldingRange"
+                | "textDocument/selectionRange"
+                | "textDocument/formatting"
+                | "textDocument/rangeFormatting"
+                | "textDocument/documentHighlight"
+                | "textDocument/semanticTokens/full"
+                | "textDocument/codeAction"
+        );
+        if !known {
+            return None;
+        }
+        let Some(uri) = uri_of(params) else { return Some(Value::Null) };
+        let Some(doc) = self.docs.get(uri) else { return Some(Value::Null) };
+        Some(match method {
+            "textDocument/documentSymbol" => symbols::document_symbols(doc),
+            "textDocument/foldingRange" => folding::folding_ranges(doc),
+            "textDocument/selectionRange" => selection::selection_ranges(doc, params),
+            "textDocument/formatting" => {
+                let edits = format::format(doc, &format::Options::from_params(params));
+                format::edits_json(doc, &edits)
+            }
+            "textDocument/rangeFormatting" => {
+                let edits = format::format(doc, &format::Options::from_params(params));
+                let edits = format::restrict(doc, edits, &params["range"]);
+                format::edits_json(doc, &edits)
+            }
+            "textDocument/documentHighlight" => match params.get("position").and_then(pos_from) {
+                Some(p) => highlight::highlights(doc, doc.offset(p)),
+                None => Value::Null,
+            },
+            "textDocument/semanticTokens/full" => semantic::full(doc),
+            _ => actions::code_actions(doc, uri, params),
+        })
     }
 
     /// Requests that depend on a cursor position: Go regions go to the router, the rest is ours.
@@ -210,7 +254,11 @@ impl Server {
             let req = GoRequest { method, uri, doc, offset, region, params };
             return self.route_go(&req).unwrap_or(Value::Null);
         }
-        Value::Null
+        match method {
+            GoMethod::Completion => completion::complete(doc, offset),
+            GoMethod::Hover => hover::hover(doc, offset),
+            GoMethod::Definition => Value::Null,
+        }
     }
 
     /// ROUTER HOOK: completion/hover/definition inside Go regions.
@@ -227,6 +275,17 @@ fn initialize_result() -> Value {
     json!({
         "capabilities": {
             "textDocumentSync": {"openClose": true, "change": 2},
+            "completionProvider": {"triggerCharacters": ["<", ":", "=", "."]},
+            "hoverProvider": true,
+            "definitionProvider": true,
+            "documentSymbolProvider": true,
+            "foldingRangeProvider": true,
+            "selectionRangeProvider": true,
+            "documentFormattingProvider": true,
+            "documentRangeFormattingProvider": true,
+            "documentHighlightProvider": true,
+            "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+            "semanticTokensProvider": {"legend": semantic::legend(), "full": true},
         },
         "serverInfo": {"name": "ghp-lsp", "version": env!("CARGO_PKG_VERSION")},
     })
@@ -284,5 +343,168 @@ where
         if let Some(code) = server.exit_code() {
             return code;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const URI: &str = "file:///t/page.ghp";
+
+    fn req(id: i64, method: &str, params: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+    }
+
+    fn note(method: &str, params: Value) -> Value {
+        json!({"jsonrpc": "2.0", "method": method, "params": params})
+    }
+
+    fn started(text: &str) -> Server {
+        let mut s = Server::new();
+        s.handle(req(1, "initialize", json!({"capabilities": {}})));
+        s.handle(note("initialized", json!({})));
+        s.handle(note(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": URI, "languageId": "ghp", "version": 1, "text": text}}),
+        ));
+        s
+    }
+
+    fn ask(s: &mut Server, method: &str, extra: Value) -> Value {
+        let mut params = json!({"textDocument": {"uri": URI}});
+        for (k, v) in extra.as_object().unwrap() {
+            params[k] = v.clone();
+        }
+        let out = s.handle(req(9, method, params));
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].get("error").is_none(), "{out:?}");
+        out[0]["result"].clone()
+    }
+
+    fn pos(line: u32, character: u32) -> Value {
+        json!({"line": line, "character": character})
+    }
+
+    #[test]
+    fn lifecycle() {
+        let mut s = Server::new();
+        let out = s.handle(req(1, "textDocument/hover", json!({})));
+        assert_eq!(out[0]["error"]["code"], rpc::SERVER_NOT_INITIALIZED);
+        let out = s.handle(req(2, "initialize", json!({})));
+        assert!(out[0]["result"]["capabilities"]["completionProvider"].is_object());
+        assert_eq!(s.handle(req(3, "initialize", json!({})))[0]["error"]["code"], rpc::INVALID_REQUEST);
+        assert_eq!(s.handle(req(4, "no/such", json!({})))[0]["error"]["code"], rpc::METHOD_NOT_FOUND);
+        assert_eq!(s.handle(req(5, "shutdown", Value::Null))[0]["result"], Value::Null);
+        assert_eq!(s.handle(req(6, "textDocument/hover", json!({})))[0]["error"]["code"], rpc::INVALID_REQUEST);
+        assert_eq!(s.exit_code(), None);
+        s.handle(note("exit", Value::Null));
+        assert_eq!(s.exit_code(), Some(0));
+    }
+
+    #[test]
+    fn exit_without_shutdown_is_an_error() {
+        let mut s = Server::new();
+        s.handle(note("exit", Value::Null));
+        assert_eq!(s.exit_code(), Some(1));
+    }
+
+    #[test]
+    fn garbage_gets_an_error_reply() {
+        let mut s = Server::new();
+        assert_eq!(s.handle(Value::Null)[0]["error"]["code"], rpc::INVALID_REQUEST);
+        assert_eq!(s.handle(json!({"jsonrpc": "2.0"}))[0]["error"]["code"], rpc::INVALID_REQUEST);
+    }
+
+    #[test]
+    fn open_publishes_immediately_and_change_is_debounced() {
+        let mut s = Server::new();
+        s.handle(req(1, "initialize", json!({})));
+        let out = s.handle(note(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": URI, "version": 1, "text": "<go:if a/>"}}),
+        ));
+        assert_eq!(out[0]["method"], "textDocument/publishDiagnostics");
+        assert_eq!(out[0]["params"]["diagnostics"][0]["code"], "unclosed-if");
+        assert_eq!(out[0]["params"]["diagnostics"][0]["source"], "ghp");
+
+        let out = s.handle(note(
+            "textDocument/didChange",
+            json!({"textDocument": {"uri": URI, "version": 2},
+                   "contentChanges": [{"range": {"start": pos(0, 10), "end": pos(0, 10)}, "text": "<go:endif/>"}]}),
+        ));
+        assert!(out.is_empty());
+        assert!(s.next_deadline().is_some());
+        let out = s.flush_all();
+        assert_eq!(out[0]["params"]["version"], 2);
+        assert_eq!(out[0]["params"]["diagnostics"], json!([]));
+        assert!(s.next_deadline().is_none());
+        assert!(s.flush_all().is_empty());
+    }
+
+    #[test]
+    fn due_flush_after_the_delay() {
+        let mut s = started("x");
+        s.handle(note(
+            "textDocument/didChange",
+            json!({"textDocument": {"uri": URI, "version": 2}, "contentChanges": [{"text": "<go:endif/>"}]}),
+        ));
+        let out = s.flush_due(Instant::now() + DEBOUNCE * 2);
+        assert_eq!(out[0]["params"]["diagnostics"][0]["code"], "unmatched-endif");
+    }
+
+    #[test]
+    fn close_clears_diagnostics() {
+        let mut s = started("<go:endif/>");
+        let out = s.handle(note("textDocument/didClose", json!({"textDocument": {"uri": URI}})));
+        assert_eq!(out[0]["params"]["diagnostics"], json!([]));
+        assert_eq!(ask(&mut s, "textDocument/documentSymbol", json!({})), Value::Null);
+    }
+
+    #[test]
+    fn features_answer_over_the_document() {
+        let text = "<go:if a/>\n    <go:for x/>\n        <p/>\n    <go:endfor/>\n<go:endif/>\n<go= name />\n";
+        let mut s = started(text);
+        let c = ask(&mut s, "textDocument/completion", json!({"position": pos(5, 1)}));
+        let _ = c;
+        let syms = ask(&mut s, "textDocument/documentSymbol", json!({}));
+        assert_eq!(syms[0]["name"], "if a");
+        assert!(!ask(&mut s, "textDocument/foldingRange", json!({})).as_array().unwrap().is_empty());
+        let sel = ask(&mut s, "textDocument/selectionRange", json!({"positions": [pos(0, 3)]}));
+        assert!(sel[0]["parent"].is_object());
+        let hl = ask(&mut s, "textDocument/documentHighlight", json!({"position": pos(0, 3)}));
+        assert_eq!(hl.as_array().unwrap().len(), 2);
+        let h = ask(&mut s, "textDocument/hover", json!({"position": pos(0, 3)}));
+        assert!(h["contents"]["value"].as_str().unwrap().contains("go:if"));
+        let f = ask(&mut s, "textDocument/formatting", json!({"options": {"tabSize": 4, "insertSpaces": true}}));
+        assert!(f.as_array().unwrap().is_empty(), "already formatted: {f}");
+        let t = ask(&mut s, "textDocument/semanticTokens/full", json!({}));
+        assert!(!t["data"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn go_regions_go_to_the_router_hook() {
+        let mut s = started("<go= user.Na");
+        // Inside the (unterminated) Go expression the stub router answers null.
+        let r = ask(&mut s, "textDocument/hover", json!({"position": pos(0, 8)}));
+        assert_eq!(r, Value::Null);
+        let r = ask(&mut s, "textDocument/completion", json!({"position": pos(0, 12)}));
+        assert_eq!(r, Value::Null);
+        let r = ask(&mut s, "textDocument/definition", json!({"position": pos(0, 8)}));
+        assert_eq!(r, Value::Null);
+    }
+
+    #[test]
+    fn code_action_round_trip() {
+        let mut s = started("<go:if a/>\nx");
+        let r = ask(
+            &mut s,
+            "textDocument/codeAction",
+            json!({
+                "range": {"start": pos(0, 1), "end": pos(0, 1)},
+                "context": {"diagnostics": []},
+            }),
+        );
+        assert_eq!(r[0]["kind"], "quickfix");
     }
 }
