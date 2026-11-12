@@ -860,7 +860,7 @@ mod tests {
         let scaffold = json!({"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}}, "message": "m"});
         assert!(translate_diagnostic(&d, &scaffold).is_none());
         // Straddling scaffolding and Go text.
-        let wide = json!({"range": {"start": pos, "end": {"line": pos.line + 1, "character": 0}}, "message": "m"});
+        let wide = json!({"range": {"start": {"line": pos.line, "character": pos.character}, "end": {"line": pos.line + 1, "character": 0}}, "message": "m"});
         assert!(translate_diagnostic(&d, &wide).is_none());
     }
 
