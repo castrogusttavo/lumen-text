@@ -55,6 +55,7 @@ impl App {
     /// Back up unsaved buffers a moment after the last edit, and drop the backups of buffers that
     /// were saved, closed or undone back to the saved text (from `tick`).
     pub fn backup_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        let dir = self.backup_dir();
         let st = &mut self.backup;
         st.flush_deferred();
         if st.failed.swap(false, Ordering::AcqRel) {
@@ -104,7 +105,7 @@ impl App {
             want(due.max(now + Duration::from_millis(100)));
             return;
         }
-        let Some(dir) = self.backup_dir() else { return };
+        let Some(dir) = dir else { return };
         let mut jobs = Vec::new();
         for (order, d) in self.docs.iter().enumerate() {
             let (g, v) = (d.buf.gen_id(), d.buf.version());
