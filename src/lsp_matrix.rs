@@ -420,6 +420,41 @@ fn lsp_matrix() {
     assert!(failed.is_empty(), "failing languages: {failed:?}");
 }
 
+/// GHP templates (`.ghp`): Lumen starts `ghp-lsp` for a broken template and shows its diagnostics.
+/// Skips (passes) while `ghp-lsp` is not installed, unless `LUMEN_REQUIRE_GHP_LSP` is set (CI does
+/// once the server is in the tree). Build it with `cargo build --release --manifest-path tools/ghp-lsp/Cargo.toml`
+/// and put `tools/ghp-lsp/target/release` on PATH.
+#[test]
+#[ignore = "needs ghp-lsp installed"]
+fn lsp_ghp() {
+    let _g = lock();
+    let Some(exe) = crate::lspreg::installed_anywhere("ghp-lsp") else {
+        assert!(
+            !std::env::var("LUMEN_REQUIRE_GHP_LSP").is_ok_and(|v| !v.is_empty()),
+            "ghp-lsp is required but not installed"
+        );
+        eprintln!("ghp-lsp not installed: skipped");
+        return;
+    };
+    eprintln!("ghp-lsp: {}", exe.display());
+    let dir = std::env::temp_dir().join(format!("lumen-lsp-ghp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("pages")).unwrap();
+    std::fs::write(dir.join("go.mod"), "module demo\n\ngo 1.22\n").unwrap();
+    // `<go:if>` is never closed: the server must say so.
+    let page = "<!doctype html>\n<html>\n<body>\n    <go:if user.Admin/>\n        <p>admin</p>\n</body>\n</html>\n";
+    std::fs::write(dir.join("pages/home.ghp"), page).unwrap();
+    let dir = crate::paths::canonical(&dir).unwrap();
+    let mut app = test_app(&dir);
+    let o = exercise(&mut app, &dir.join("pages/home.ghp"), Some("user.Admin"), true, 60);
+    stop(&mut app);
+    eprintln!("\n===== GHP =====\n{}\n", row("ghp", &o));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(o.started, "ghp-lsp did not start: {}", o.note);
+    assert_eq!(o.server, "ghp-lsp");
+    assert!(!o.diags.is_empty(), "no diagnostics for an unclosed <go:if>");
+}
+
 /// The spell checkers (companions, off unless `spell_check` is on): each one, alone, must start
 /// for a plain-text file and a Markdown file, flag the misspelled words as "info" (never an error)
 /// and put its fixes in the `Ctrl+.` menu ("receive" for "recieve"; harper-ls also offers to add

@@ -37,6 +37,7 @@ Lumen speaks the Language Server Protocol to as many servers as you like. TypeSc
 | Ruby | `ruby-lsp`, `solargraph stdio` | `Gemfile`, `.git` |
 | PHP | `phpactor language-server`, `intelephense --stdio` | `composer.json`, `.git` |
 | Svelte, Astro, Vue | `svelteserver`, `astro-ls`, `vue-language-server` | the framework's config file, `package.json` |
+| GHP templates (`.ghp`) | `ghp-lsp` (ships with Lumen; Go expressions go through `gopls`) | `go.mod`, `.git` |
 | TS / JS / CSS / HTML | companion `tailwindcss-language-server`, only in a project with a Tailwind config | `tailwind.config.*` |
 | TS / JS | `deno lsp` replaces `tsgo`, only in a project with `deno.json` | `deno.json` |
 | Prose (spell checking, off by default) | companions `harper-ls --stdio` and `typos-lsp`, only with `spell_check` on; see below | `.git` (typos-lsp: also `typos.toml`) |

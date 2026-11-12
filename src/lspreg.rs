@@ -56,6 +56,7 @@ const EDITOR_LANGS: &[&str] = &[
     "cmake",
     "terraform",
     "astro",
+    "ghp",
     "less",
     "xml",
     "objective-c",
@@ -558,6 +559,8 @@ pub fn search_dirs(root: &Path) -> Vec<PathBuf> {
         dirs.extend(std::env::split_paths(&p));
     }
     dirs.extend(user_tool_dirs());
+    // Servers shipped next to Lumen (`ghp-lsp` in the release packages: bin/, the zip root, Contents/MacOS).
+    dirs.extend(std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)));
     dirs
 }
 
@@ -692,6 +695,8 @@ mod tests {
         // extension only: the editor has no language id for `.astro` files
         assert_eq!(ids(None, "/x/a.astro"), vec!["astro"]);
         assert_eq!(ids(Some("cpp"), "/x/a.hpp"), vec!["clangd"]);
+        assert_eq!(ids(Some("ghp"), "/x/pages/home.ghp"), vec!["ghp-lsp"]);
+        assert_eq!(crate::highlight::language_for("/x/pages/home.ghp"), Some("ghp"));
         assert!(ids(Some("typescript"), "/nonexistent-project/a.ts").is_empty(), "tailwind/deno need their files");
     }
 
@@ -942,6 +947,7 @@ mod tests {
             "a.vue",
             "a.svelte",
             "a.astro",
+            "a.ghp",
             "Dockerfile",
         ]
         .iter()

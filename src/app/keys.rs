@@ -304,7 +304,7 @@ impl App {
                     if !shift && d.ed.extra.is_empty() && d.ed.sel.is_empty() && self.completion.is_none() && {
                         // Emmet abbreviation right before the cursor (HTML/Vue/Svelte/JSX/TSX)?
                         let flavor = match d.lang {
-                            Some("html" | "vue" | "svelte") => Some((crate::emmet::Flavor::Html, false)),
+                            Some("html" | "vue" | "svelte" | "ghp") => Some((crate::emmet::Flavor::Html, false)),
                             Some("tsx" | "jsx") => Some((crate::emmet::Flavor::Jsx, true)),
                             _ => None,
                         };

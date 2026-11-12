@@ -1030,6 +1030,60 @@ mod tests {
         assert!(r[0].iter().any(|(txt, sc)| txt == "b" && sc.contains("meta.template.expression")), "{:?}", r[0]);
     }
 
+    /// First token with this exact text on the line: its scope stack as one string.
+    fn scope_of(line: &[(String, String)], text: &str) -> String {
+        line.iter().find(|(t, _)| t == text).map(|(_, sc)| sc.clone()).unwrap_or_else(|| panic!("{text:?} in {line:?}"))
+    }
+
+    #[test]
+    fn ghp_tags_inject_go_and_keep_html() {
+        let mut t = tk("ghp");
+        let r = dump(
+            &mut t,
+            &[
+                "<div class=\"a\">",
+                "<go:if user.Age >= 18/>",
+                "<p><go= user.Name /></p>",
+                "<go:else/>",
+                "<go:endif/>",
+                "<go:for _, item := range items/>",
+                "<go:endfor/>",
+            ],
+        );
+        // Plain HTML is still HTML.
+        assert!(scope_of(&r[0], "div").contains("entity.name.tag"), "{:?}", r[0]);
+        assert!(scope_of(&r[0], "div").contains("text.html.ghp"), "{:?}", r[0]);
+        // Control tags: tag-name scopes, then the Go expression.
+        let s = scope_of(&r[1], "go:if");
+        assert!(s.contains("entity.name.tag.ghp") && s.contains("keyword.control.ghp"), "{s}");
+        assert!(scope_of(&r[1], "<").contains("punctuation.definition.tag.begin.ghp"), "{:?}", r[1]);
+        assert!(scope_of(&r[1], "user").contains("meta.embedded.expression.ghp"), "{:?}", r[1]);
+        assert!(scope_of(&r[1], "18").contains("constant.numeric"), "{:?}", r[1]);
+        assert!(scope_of(&r[1], "/>").contains("punctuation.definition.tag.end.ghp"), "{:?}", r[1]);
+        // Print tag inside an HTML element, and the HTML after it.
+        let s = scope_of(&r[2], "go=");
+        assert!(s.contains("entity.name.tag.ghp") && s.contains("keyword.operator.ghp"), "{s}");
+        assert!(scope_of(&r[2], "Name").contains("meta.embedded.expression.ghp"), "{:?}", r[2]);
+        assert!(!scope_of(&r[2], "/>").contains("meta.embedded"), "{:?}", r[2]);
+        // Tags without an expression.
+        assert!(scope_of(&r[3], "go:else").contains("keyword.control.ghp"), "{:?}", r[3]);
+        assert!(scope_of(&r[4], "go:endif").contains("keyword.control.ghp"), "{:?}", r[4]);
+        assert!(scope_of(&r[5], "range").contains("keyword"), "{:?}", r[5]);
+        assert!(scope_of(&r[6], "go:endfor").contains("entity.name.tag.ghp"), "{:?}", r[6]);
+    }
+
+    #[test]
+    fn ghp_statement_and_import_span_lines() {
+        let mut t = tk("ghp");
+        let r = dump(&mut t, &["<go:import (", "    \"fmt\"", ")/>", "<go", "    total := 1 + 2", "/>", "<h1>x</h1>"]);
+        assert!(scope_of(&r[0], "go:import").contains("keyword.control.import.ghp"), "{:?}", r[0]);
+        assert!(r[1].iter().any(|(txt, sc)| txt.contains("fmt") && sc.contains("string.quoted")), "{:?}", r[1]);
+        assert!(scope_of(&r[3], "go").contains("entity.name.tag.ghp"), "{:?}", r[3]);
+        assert!(scope_of(&r[4], "total").contains("meta.embedded.expression.ghp"), "{:?}", r[4]);
+        assert!(!scope_of(&r[6], "h1").contains("meta.embedded"), "{:?}", r[6]);
+        assert!(scope_of(&r[6], "h1").contains("entity.name.tag"), "{:?}", r[6]);
+    }
+
     #[test]
     fn json_and_rust_load() {
         let mut j = tk("json");

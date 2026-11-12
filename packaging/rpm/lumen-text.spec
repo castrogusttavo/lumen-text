@@ -42,7 +42,7 @@ install -Dm644 %{buildroot}%{_docdir}/lumen-text/LICENSE %{buildroot}%{_licensed
 rm -f %{buildroot}%{_docdir}/lumen-text/LICENSE
 
 %files
-%{_bindir}/lumen-text
+%{_bindir}/*
 %{_datadir}/lumen-text
 %{_datadir}/applications/lumen-text.desktop
 %{_datadir}/icons/hicolor/scalable/apps/lumen-text.svg
