@@ -248,7 +248,19 @@ impl App {
             return;
         }
         self.diff = None; // it would cover the result
-        self.merge = Some(Box::new(MergeView::new(top, rel, path, stages, op, labels, titles)));
+        let mv = MergeView::new(top, rel, path, stages, op, labels, titles);
+        // git joins conflicts that sit a few lines apart into one block; the editor splits them
+        // like diff3 does. When the unedited file disagrees, rewrite it with the editor's blocks
+        // (one undo step) so every conflict has its own markers.
+        if let Some(i) = self.docs.iter().position(|d| d.path() == Some(mv.path.as_path())) {
+            let d = &mut self.docs[i];
+            let text = d.buf.to_string();
+            if !d.buf.is_dirty() && crate::gitx::parse_conflicts(&text).len() != mv.conflicts.len() {
+                let fresh = mv.m.assemble(&[], (&mv.labels.0, &mv.labels.1));
+                d.replace_text(&fresh);
+            }
+        }
+        self.merge = Some(Box::new(mv));
         self.merge_sync();
         let Some(mv) = self.merge.as_ref() else { return };
         let (n, first) = (mv.conflicts.len(), mv.states.iter().position(|s| !s.resolved()).unwrap_or(0));
