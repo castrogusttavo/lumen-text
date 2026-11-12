@@ -226,6 +226,20 @@ pub fn defs() -> Vec<SettingDef> {
             "Side-by-side diffs ignore changes in spaces, tabs and line endings (git diff -w): such lines do not count as changed and are not highlighted. Staging a hunk or lines still stages their real text. Also a toggle in the diff header (key W).",
             Bool,
         ),
+        d(
+            "debug_hover_evaluate",
+            "Build",
+            "Evaluate on hover",
+            "While a program is stopped at a breakpoint, resting the pointer on a variable or expression in the editor shows its current value.",
+            Bool,
+        ),
+        d(
+            "debug_open_panel",
+            "Build",
+            "Open the Debug panel on start",
+            "Starting a debug session (F5) opens the Debug tab of the bottom panel: call stack, variables, breakpoints, watch and the Debug Console.",
+            Bool,
+        ),
     ]
 }
 
@@ -240,7 +254,7 @@ pub fn defaults() -> Value {
         "markdown_remote_images": true, "hot_exit": true, "persistent_undo": true, "spell_check": false,
         "render_whitespace": "none", "trim_trailing_whitespace": false, "insert_final_newline": false,
         "ai_notifications": true,
-        "diff_ignore_whitespace": false,
+        "diff_ignore_whitespace": false, "debug_hover_evaluate": true, "debug_open_panel": true,
         "rulers": "", "inline_diagnostics": "current_line",
         "problems_scope": "open_files",
         "inline_completion": false,
@@ -264,6 +278,7 @@ pub fn values(c: &Config) -> Value {
         "insert_final_newline": c.insert_final_newline,
         "ai_notifications": c.ai_notifications,
         "diff_ignore_whitespace": c.diff_ignore_whitespace,
+        "debug_hover_evaluate": c.debug_hover_evaluate, "debug_open_panel": c.debug_open_panel,
         "rulers": crate::assist::rulers_text(&c.rulers), "inline_diagnostics": c.inline_diagnostics,
         "problems_scope": c.problems_scope,
         "inline_completion": c.inline_completion,

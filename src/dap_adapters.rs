@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use crate::dap::{Dap, Session, Wake};
+use crate::debug_model::LaunchOverride;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
@@ -87,18 +88,34 @@ impl Registry {
     }
 }
 
-fn substitute(v: &Value, file: &Path, root: &Path) -> Value {
+/// Where `ghp build --debug` writes the program the `ghp` adapter debugs: `<root>/.lumen/ghp-debug/app`,
+/// with the platform's executable suffix (`.exe` on Windows) and native path separators.
+pub fn debug_binary(root: &Path) -> PathBuf {
+    root.join(".lumen").join("ghp-debug").join(format!("app{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Replace `${file}`, `${dir}`, `${root}` and `${debug_bin}` (see [`debug_binary`]) in `s`.
+fn substitute_str(s: &str, file: &Path, root: &Path) -> String {
     let dir = file.parent().unwrap_or(root);
+    s.replace("${file}", &file.to_string_lossy())
+        .replace("${dir}", &dir.to_string_lossy())
+        .replace("${root}", &root.to_string_lossy())
+        .replace("${debug_bin}", &debug_binary(root).to_string_lossy())
+}
+
+fn substitute(v: &Value, file: &Path, root: &Path) -> Value {
     match v {
-        Value::String(s) => Value::String(
-            s.replace("${file}", &file.to_string_lossy())
-                .replace("${dir}", &dir.to_string_lossy())
-                .replace("${root}", &root.to_string_lossy()),
-        ),
+        Value::String(s) => Value::String(substitute_str(s, file, root)),
         Value::Array(a) => Value::Array(a.iter().map(|x| substitute(x, file, root)).collect()),
         Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), substitute(x, file, root))).collect()),
         other => other.clone(),
     }
+}
+
+/// A path from `launch.json` (placeholders replaced); relative ones are taken from the project root.
+fn project_path(s: &str, file: &Path, root: &Path) -> String {
+    let s = substitute_str(s, file, root);
+    if Path::new(&s).is_relative() { root.join(&s).to_string_lossy().into_owned() } else { s }
 }
 
 impl Adapter {
@@ -109,12 +126,33 @@ impl Adapter {
 
     /// `(request, arguments)` of the launch/attach request for debugging `file`.
     pub fn launch_request(&self, file: &Path, root: &Path) -> (String, Value) {
+        self.launch_request_with(file, root, None)
+    }
+
+    /// `launch_request` with the project's `.lumen/launch.json` entry applied (program, args, env, cwd).
+    pub fn launch_request_with(&self, file: &Path, root: &Path, ov: Option<&LaunchOverride>) -> (String, Value) {
         let mut args = substitute(&self.launch, file, root);
         let request = args
             .as_object_mut()
             .and_then(|o| o.remove("request"))
             .and_then(|r| r.as_str().map(str::to_string))
             .unwrap_or_else(|| "launch".into());
+        if let (Some(ov), Some(o)) = (ov, args.as_object_mut()) {
+            if let Some(p) = &ov.program {
+                o.insert("program".into(), Value::String(project_path(p, file, root)));
+            }
+            if let Some(a) = &ov.args {
+                let list = a.iter().map(|x| Value::String(substitute_str(x, file, root)));
+                o.insert("args".into(), Value::Array(list.collect()));
+            }
+            if !ov.env.is_empty() {
+                let env = ov.env.iter().map(|(k, v)| (k.clone(), Value::String(substitute_str(v, file, root))));
+                o.insert("env".into(), Value::Object(env.collect()));
+            }
+            if let Some(c) = &ov.cwd {
+                o.insert("cwd".into(), Value::String(project_path(c, file, root)));
+            }
+        }
         (request, args)
     }
 
@@ -125,7 +163,18 @@ impl Adapter {
 
     /// `session` with program arguments (`args` of the launch request) set, e.g. a listen address.
     pub fn session_with_args(&self, file: &Path, root: &Path, program_args: &[String]) -> Session {
-        let (request, mut args) = self.launch_request(file, root);
+        self.session_with(file, root, program_args, None)
+    }
+
+    /// `session_with_args` with the project's `launch.json` entry applied; `program_args` win over its `args`.
+    pub fn session_with(
+        &self,
+        file: &Path,
+        root: &Path,
+        program_args: &[String],
+        ov: Option<&LaunchOverride>,
+    ) -> Session {
+        let (request, mut args) = self.launch_request_with(file, root, ov);
         if !program_args.is_empty()
             && let Some(o) = args.as_object_mut()
         {
@@ -141,6 +190,11 @@ impl Adapter {
 
     /// Run the prelaunch step, if any, and fail with its output when it does not succeed.
     pub fn run_prelaunch(&self, file: &Path, root: &Path) -> io::Result<()> {
+        self.run_prelaunch_with(file, root, None)
+    }
+
+    /// `run_prelaunch`; a `program` override of `launch.json` becomes the build's output too.
+    pub fn run_prelaunch_with(&self, file: &Path, root: &Path, ov: Option<&LaunchOverride>) -> io::Result<()> {
         let Some(p) = &self.prelaunch else { return Ok(()) };
         let exe = crate::lspreg::resolve_command(&p.command, root).ok_or_else(|| {
             io::Error::new(
@@ -152,11 +206,28 @@ impl Adapter {
                 ),
             )
         })?;
+        let default_prog = self.launch.get("program").and_then(Value::as_str).map(|s| substitute_str(s, file, root));
+        let program = ov.and_then(|o| o.program.as_deref()).map(|s| project_path(s, file, root));
         let args: Vec<String> = p
             .args
             .iter()
-            .map(|a| a.replace("${file}", &file.to_string_lossy()).replace("${root}", &root.to_string_lossy()))
+            .map(|a| {
+                let a = substitute_str(a, file, root);
+                match (&default_prog, &program) {
+                    (Some(d), Some(n)) if !d.is_empty() => a.replace(d.as_str(), n),
+                    _ => a,
+                }
+            })
             .collect();
+        if let Some(dir) = debug_binary(root).parent() {
+            // The output folder keeps itself out of git: a `*` .gitignore inside it.
+            if std::fs::create_dir_all(dir).is_ok() && !dir.join(".gitignore").exists() {
+                let _ = std::fs::write(dir.join(".gitignore"), "*\n");
+            }
+        }
+        if let Some(dir) = program.as_deref().and_then(|p| Path::new(p).parent()) {
+            let _ = std::fs::create_dir_all(dir);
+        }
         let out = std::process::Command::new(exe)
             .args(&args)
             .current_dir(root)
@@ -219,7 +290,9 @@ mod tests {
         let (req, args) = r.get("ghp").unwrap().launch_request(Path::new("/p/pages/index.ghp"), Path::new("/p"));
         assert_eq!(req, "launch");
         assert_eq!(args["mode"], "exec");
-        assert_eq!(args["program"], "/p/.lumen/ghp-debug/app");
+        let want = debug_binary(Path::new("/p")).to_string_lossy().into_owned();
+        assert_eq!(args["program"], want.as_str());
+        assert!(want.ends_with(&format!("app{}", std::env::consts::EXE_SUFFIX)), "{want}");
         assert_eq!(args["cwd"], "/p");
         let s = r.get("ghp").unwrap().session_with_args(
             Path::new("/p/index.ghp"),
@@ -254,5 +327,36 @@ mod tests {
         assert_eq!(args["program"], "/p/cmd");
         assert_eq!(args["cwd"], "/p");
         assert!(args.get("request").is_none());
+    }
+
+    #[test]
+    fn ghp_binary_has_the_platform_suffix_and_separators() {
+        let b = debug_binary(Path::new("/p"));
+        let dir: PathBuf = ["/p", ".lumen", "ghp-debug"].iter().collect();
+        assert_eq!(b, dir.join(format!("app{}", std::env::consts::EXE_SUFFIX)));
+        let g = Registry::builtin().get("ghp").unwrap().clone();
+        let pre = g.prelaunch.as_ref().unwrap();
+        let out = substitute_str(&pre.args[3], Path::new("/p/a.ghp"), Path::new("/p"));
+        assert_eq!(out, b.to_string_lossy(), "the build writes where the debugger execs");
+    }
+
+    #[test]
+    fn launch_json_overrides_program_args_env_cwd() {
+        let g = Registry::builtin().get("ghp").unwrap().clone();
+        let ov = LaunchOverride {
+            config: "ghp".into(),
+            program: Some("out/site".into()),
+            args: Some(vec!["-addr=:${root}".into()]),
+            env: [("PORT".to_string(), "8081".to_string())].into(),
+            cwd: Some("web".into()),
+            ..Default::default()
+        };
+        let (_, a) = g.launch_request_with(Path::new("/p/i.ghp"), Path::new("/p"), Some(&ov));
+        assert_eq!(Path::new(a["program"].as_str().unwrap()), Path::new("/p").join("out/site"));
+        assert_eq!(a["args"][0], "-addr=:/p");
+        assert_eq!(a["env"]["PORT"], "8081");
+        assert_eq!(Path::new(a["cwd"].as_str().unwrap()), Path::new("/p").join("web"));
+        let (_, plain) = g.launch_request_with(Path::new("/p/i.ghp"), Path::new("/p"), None);
+        assert!(plain.get("env").is_none());
     }
 }

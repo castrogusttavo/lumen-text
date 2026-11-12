@@ -198,7 +198,15 @@ impl App {
             | Cmd::ClearBreakpoints
             | Cmd::StepOver
             | Cmd::StepInto
-            | Cmd::StepOut => self.run_debug_cmd(c),
+            | Cmd::StepOut
+            | Cmd::DebugPause
+            | Cmd::DebugRestart
+            | Cmd::DebugSelectConfig
+            | Cmd::DebugAddWatch
+            | Cmd::DebugConsole
+            | Cmd::DebugBpCondition
+            | Cmd::DebugBpLog
+            | Cmd::DebugBpToggleEnabled => self.run_debug_cmd(c),
             Cmd::CreateTheme => self.create_custom_theme(),
             Cmd::ImportZedThemes => {
                 let n = self.import_zed_themes();

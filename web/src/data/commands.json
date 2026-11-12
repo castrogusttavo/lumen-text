@@ -895,6 +895,46 @@
   "id": "ClearBreakpoints"
  },
  {
+  "label": "Debug: Pause",
+  "shortcut": "F6",
+  "id": "DebugPause"
+ },
+ {
+  "label": "Debug: Restart",
+  "shortcut": "",
+  "id": "DebugRestart"
+ },
+ {
+  "label": "Debug: Select launch configuration…",
+  "shortcut": "",
+  "id": "DebugSelectConfig"
+ },
+ {
+  "label": "Debug: Add watch expression…",
+  "shortcut": "",
+  "id": "DebugAddWatch"
+ },
+ {
+  "label": "Debug: Focus the Debug Console",
+  "shortcut": "",
+  "id": "DebugConsole"
+ },
+ {
+  "label": "Debug: Edit breakpoint condition…",
+  "shortcut": "",
+  "id": "DebugBpCondition"
+ },
+ {
+  "label": "Debug: Edit logpoint message…",
+  "shortcut": "",
+  "id": "DebugBpLog"
+ },
+ {
+  "label": "Debug: Enable / disable breakpoint",
+  "shortcut": "",
+  "id": "DebugBpToggleEnabled"
+ },
+ {
   "label": "Edit: Expand selection",
   "shortcut": "Shift+Alt+→",
   "id": "ExpandSelection"

@@ -228,6 +228,34 @@
     {
       "status": "shipped",
       "type": "feature",
+      "release": "2026.11.12.1",
+      "title": "GHP pages",
+      "text": "Highlighting, indentation, the ghp-lsp language server and debugging that stops in the .ghp file."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.12.1",
+      "title": "Debug panel",
+      "text": "Call stack, variables, breakpoints, watch and console, with conditional breakpoints and hover to evaluate."
+    },
+    {
+      "status": "shipped",
+      "type": "enhancement",
+      "release": "2026.11.12.1",
+      "title": "Breakpoints follow edits",
+      "text": "Lines move with the text and a running session is told."
+    },
+    {
+      "status": "shipped",
+      "type": "enhancement",
+      "release": "2026.11.12.1",
+      "title": "launch.json",
+      "text": "Per-project program, args, env, cwd and adapter for Go and GHP launches."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
       "release": "earlier",
       "title": "Markdown preview extras",
       "text": "GitHub extras, Mermaid, remote images, selection and TeX math."

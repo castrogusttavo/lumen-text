@@ -1,5 +1,5 @@
 {
-  "_comment": "Built-in debug adapters (DAP). An adapter only starts when its command is found (same search path as language servers). transport: 'stdio' = the adapter speaks DAP on stdin/stdout; 'tcp-listen' = the adapter prints 'listening at: host:port' and the editor connects. In 'launch' and 'prelaunch', ${file}, ${dir} (the file's directory, launch only) and ${root} (the project root) are replaced. 'prelaunch' is a build step that must succeed before the adapter starts. 'normalize_paths' maps the source paths the adapter reports (and the editor sends) back to the project. 'experimental' adapters are listed but never chosen automatically.",
+  "_comment": "Built-in debug adapters (DAP). An adapter only starts when its command is found (same search path as language servers). transport: 'stdio' = the adapter speaks DAP on stdin/stdout; 'tcp-listen' = the adapter prints 'listening at: host:port' and the editor connects. In 'launch' and 'prelaunch', ${file}, ${dir} (the file's directory, launch only) and ${root} (the project root) and ${debug_bin} (the ghp debug binary: .lumen/ghp-debug/app, app.exe on Windows) are replaced. 'prelaunch' is a build step that must succeed before the adapter starts. 'normalize_paths' maps the source paths the adapter reports (and the editor sends) back to the project. 'experimental' adapters are listed but never chosen automatically.",
   "adapters": [
     {
       "id": "delve",
@@ -22,10 +22,10 @@
       "adapter_id": "go",
       "prelaunch": {
         "command": "ghp",
-        "args": ["build", "--debug", "-o", "${root}/.lumen/ghp-debug/app", "${root}"],
+        "args": ["build", "--debug", "-o", "${debug_bin}", "${root}"],
         "install": "download a release from https://github.com/GHP-GoLang-Framework/ghp/releases"
       },
-      "launch": {"request": "launch", "type": "go", "mode": "exec", "program": "${root}/.lumen/ghp-debug/app", "cwd": "${root}", "stopOnEntry": false},
+      "launch": {"request": "launch", "type": "go", "mode": "exec", "program": "${debug_bin}", "cwd": "${root}", "stopOnEntry": false},
       "normalize_paths": true,
       "install": "go install github.com/go-delve/delve/cmd/dlv@latest"
     }

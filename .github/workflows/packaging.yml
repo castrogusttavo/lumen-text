@@ -1,0 +1,129 @@
+name: packaging
+
+# Dry run of the release packaging, on pull requests. The release jobs in ci.yml only run on a push to
+# main, so without this the first release would be the first time the packaging scripts meet ghp-lsp.
+# Here the real ghp-lsp is built for each OS/arch a PR host can run, and the real packaging scripts
+# wrap it; a copy of ghp-lsp stands in for the editor binary (the editor itself is built and
+# smoke-tested by ci.yml). Every package must contain ghp-lsp.
+on:
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "tools/ghp-lsp/**"
+      - "tools/ci-debian.sh"
+      - ".github/actions/**"
+      - ".github/workflows/packaging.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Any CalVer-shaped number: the scripts only check the format.
+  VERSION: "2099.1.1"
+
+concurrency:
+  group: packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: ghp-lsp in the Linux packages (x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: tools/ghp-lsp
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/build-ghp-lsp
+      - name: Package (tar.gz, deb, rpm, AppDir, Arch)
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "$GHP_LSP_BIN" dist/standin-editor
+          bin=dist/standin-editor
+          packaging/tarball/build-tarball.sh "$bin" "$VERSION" x86_64 dist
+          packaging/deb/build-deb.sh "$bin" "$VERSION" x86_64 dist
+          tools/ci-debian.sh debian:bookworm-slim "rpm" packaging/rpm/build-rpm.sh "$bin" "$VERSION" x86_64 dist
+          # Only the AppDir (appimagetool is a download; the layout is what matters here).
+          LUMEN_NO_APPIMAGETOOL=1 packaging/appimage/build-appimage.sh "$bin" "$VERSION" x86_64 dist
+          packaging/arch/build-arch.sh "dist/lumen-text-${VERSION}-linux-x86_64.tar.gz" "$VERSION" dist
+      - name: Every package carries ghp-lsp
+        run: |
+          set -euo pipefail
+          ls -l dist
+          dpkg-deb --contents dist/*.deb | grep '/usr/bin/ghp-lsp$' >/dev/null
+          tar tzf dist/*-linux-*.tar.gz | grep '/bin/ghp-lsp$' >/dev/null
+          tar -I zstd -tf dist/*.pkg.tar.zst | grep '^usr/bin/ghp-lsp$' >/dev/null
+          test -x dist/AppDir/usr/bin/ghp-lsp
+          tools/ci-debian.sh debian:bookworm-slim "rpm" bash -c '
+            set -ex
+            rpm -qpl dist/*.rpm | grep -q "^/usr/bin/ghp-lsp$"'
+      - name: The packaged copy still speaks LSP (tar.gz layout)
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          tar xzf dist/*-linux-*.tar.gz -C "$d"
+          bin="$(echo "$d"/lumen-text-*/bin/ghp-lsp)"
+          msg() { printf 'Content-Length: %d\r\n\r\n%s' "${#1}" "$1"; }
+          out="$({
+            msg '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
+            msg '{"jsonrpc":"2.0","id":2,"method":"shutdown"}'
+            msg '{"jsonrpc":"2.0","method":"exit"}'
+          } | "$bin")" || true
+          echo "$out" | grep '"capabilities"' >/dev/null
+
+  windows:
+    name: ghp-lsp.exe in the Windows zip
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: tools/ghp-lsp
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/build-ghp-lsp
+      - name: Package (zip)
+        run: |
+          mkdir -p dist
+          cp "$GHP_LSP_BIN" dist/standin-editor.exe
+          packaging/windows/build-zip.sh dist/standin-editor.exe "$VERSION" x86_64 dist
+          unzip -l dist/*.zip | grep 'ghp-lsp.exe' >/dev/null
+          d="$(mktemp -d)"
+          unzip -q dist/lumen-text-*-windows-x86_64.zip -d "$d/pkg"
+          test -f "$d"/pkg/lumen-text-*/ghp-lsp.exe
+
+  macos:
+    name: ghp-lsp in the macOS app (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, runner: macos-latest }
+          - { arch: x86_64, runner: macos-15-intel }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: tools/ghp-lsp
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/build-ghp-lsp
+      - name: Package (.app in a .dmg, ad-hoc signed)
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "$GHP_LSP_BIN" dist/standin-editor
+          # The binary must be the architecture of its runner (the app is not universal).
+          file dist/standin-editor | grep "${{ matrix.arch == 'aarch64' && 'arm64' || 'x86_64' }}" >/dev/null
+          packaging/macos/build-app.sh dist/standin-editor "$VERSION" "${{ matrix.arch }}" dist
+          mnt="$(mktemp -d)"
+          hdiutil attach dist/*.dmg -mountpoint "$mnt" -nobrowse -quiet
+          trap 'hdiutil detach "$mnt" -quiet || true' EXIT
+          test -x "$mnt/Lumen Text.app/Contents/MacOS/ghp-lsp"
+          codesign --verify --deep --strict "$mnt/Lumen Text.app"

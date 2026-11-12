@@ -953,9 +953,23 @@ impl Doc {
 
         // Breakpoints and the execution arrow, in the gutter.
         if crate::display::show_breakpoints() {
-            for &bl in &self.bps {
+            for (k, &bl) in self.bps.iter().enumerate() {
                 if let Some(y) = line_y(bl) {
-                    cv.fill_round(Rect::new(rect.x + 2, y + (lh - 10) / 2, 10, 10), 5, c.error);
+                    use crate::debug_model::BpGlyph;
+                    let dot = Rect::new(rect.x + 2, y + (lh - 10) / 2, 10, 10);
+                    match self.bp_glyphs.get(k).copied().unwrap_or_default() {
+                        BpGlyph::Normal => cv.fill_round(dot, 5, c.error),
+                        // A hollow dot: the adapter could not place it.
+                        BpGlyph::Unverified => cv.ring(dot, 5, c.error),
+                        BpGlyph::Disabled => cv.ring(dot, 5, c.tab_inactive_fg),
+                        // A dot with a smaller one cut out of it: stops only when the condition holds.
+                        BpGlyph::Conditional => {
+                            cv.fill_round(dot, 5, c.error);
+                            cv.fill_round(Rect::new(dot.x + 3, dot.y + 3, 4, 4), 2, theme.background);
+                        }
+                        // A square mark: prints a message instead of stopping.
+                        BpGlyph::Log => cv.fill_round(Rect::new(dot.x + 1, dot.y + 1, 8, 8), 2, c.accent),
+                    }
                 }
             }
         }

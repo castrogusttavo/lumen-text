@@ -80,6 +80,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("f10", "StepOver"),
     ("f11", "StepInto"),
     ("shift+f11", "StepOut"),
+    ("f6", "DebugPause"),
     ("shift+alt+right", "ExpandSelection"),
     ("shift+alt+left", "ShrinkSelection"),
     ("ctrl+shift+alt+up", "ColumnSelectUp"),

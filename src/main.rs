@@ -69,6 +69,7 @@ mod dap;
 mod dap_adapters;
 #[cfg(test)]
 mod dap_tests;
+mod debug_model;
 mod display;
 mod doc;
 mod doc_scroll;

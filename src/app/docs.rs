@@ -56,6 +56,7 @@ impl App {
             let comment = comment_prefix(&path.to_string_lossy());
             let mut doc = Doc::new(buf, hl, lang, comment, self.tx.cell_w);
             doc.bps = self.breakpoints.get(&path).cloned().unwrap_or_default();
+            doc.bp_glyphs = self.bp_glyphs_for(&path, &doc.bps);
             doc.minimap = self.config.minimap;
             doc.indent_guides = self.config.indent_guides;
             doc.sticky = self.config.sticky_scroll;

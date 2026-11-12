@@ -114,8 +114,13 @@ is in the [changelog](https://castrogusttavo.github.io/lumen-text/changelog), an
 - Right-to-left text: lines with Arabic, Hebrew or Persian are shown in visual order (Unicode bidirectional algorithm, joined Arabic shaping), with caret, click and selection mapped to the logical text; the Markdown preview and hover cards reorder and right-align RTL paragraphs. Lines without RTL letters never leave the fast path
 
 **Debugging**
-- Breakpoints in the gutter, step over/into/out, stack, variables and output tab
-- TypeScript/JavaScript through js-debug; Rust and C through `gdb` DAP
+- Breakpoints: click the gutter or `F9`; right click the gutter for a conditional breakpoint or a logpoint (prints a message instead of stopping), disable or remove. Verified breakpoints are solid dots, ones the adapter could not place are hollow. Breakpoints, watches and the launch choice are remembered per project
+- Debug toolbar (continue `F5`, step over `F10` / into `F11` / out `Shift+F11`, pause `F6`, restart, stop) over a panel with Call Stack (threads, click a frame to jump to it), Variables (lazy expandable tree; what you opened stays open while stepping), Breakpoints, Watch and the Debug Console (program output plus an evaluate prompt with history)
+- The execution line is highlighted, and the file opens and scrolls to it on every stop; while stopped, resting the pointer on a variable or expression shows its value (`debug_hover_evaluate`)
+- Launch configurations are detected: Go `package main` through delve, TypeScript/JavaScript through js-debug, Rust and C through `gdb` DAP, and `.ghp` projects through the `ghp` adapter. `Debug: Select launch configuration…` (or the toolbar) picks one when several apply
+- Breakpoints follow edits like bookmarks (lines inserted above move them, a running session gets the new lines). Watch values with fields expand into their children. Builds before a session (`ghp build --debug`) run in the background: the toolbar shows *Building…* and a failed build prints its output in the Debug Console
+- `.lumen/launch.json` overrides `program`, `args`, `env`, `cwd` and `adapter` of the Go (delve) and GHP launches per project. GHP debug binaries go to `.lumen/ghp-debug/` (`app.exe` on Windows), which ignores itself in git
+- GHP pages (`.ghp`): highlighting, tag indentation, the bundled `ghp-lsp` language server (Go expressions through `gopls`) and debugging that stops in the page; setup and troubleshooting in the docs page *GHP pages*
 
 **Terminal**
 - Integrated PTY terminal with an xterm-compatible emulator (`vte`): truecolor, bold / dim / italic / underline / strikethrough, wide characters, 5,000-line scrollback, alternate screen (`vim`, `less`), bracketed paste, mouse and focus reporting, synchronized output, OSC titles, hyperlinks (`Ctrl+click`), clipboard and notifications
@@ -333,6 +338,7 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Debug: start / stop / breakpoint | `F5` / `Shift+F5` / `F9` (or click the gutter) |
 | Bookmark: toggle / next / previous | `Ctrl+F2` / `Ctrl+Alt+F2` / `Ctrl+Alt+Shift+F2` |
 | Debug: step over / into / out | `F10` / `F11` / `Shift+F11` |
+| Debug: pause | `F6` |
 | Zoom in / out / reset | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` (or `Ctrl+wheel`; on an image tab: the picture) |
 | Navigate back / forward | `Alt+Left` / `Alt+Right` (or the mouse back / forward buttons) |
 | Zen mode | `Ctrl+K Z` (leave: `Esc Esc` or `Ctrl+K Z`) |
