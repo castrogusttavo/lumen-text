@@ -28,6 +28,12 @@ Add an expression with `+` in the Watch list. A value with fields (a struct, sli
 
 Configurations that need a build step run it in the background: the toolbar shows *Building…*, the window stays responsive and *Stop* cancels. A failed build prints its output in the Debug Console. (GHP pages build with `ghp build --debug`; Rust builds with `cargo build` as a task.)
 
+## Program output, Stop and Restart
+
+The Debug Console shows what the program prints: with Delve (Go and GHP pages) its stdout as plain lines and its stderr in the error colour, next to the adapter's own messages (prefixed `[dlv]`). When the program ends the console says *Program exited with code N* and the status bar repeats the code and the last line it printed, so a server that dies on start (a busy port, a database that is down) explains itself.
+
+*Stop*, *Restart*, closing the project and quitting end the debugged program too. Lumen asks the adapter to disconnect and terminate it, waits for that (the toolbar shows *Stopping…* and Restart starts afterwards), and kills anything still left, including the program's own child processes, so the port is free for the next session. Where the adapter's process tree cannot be listed (Windows), the process id the adapter reports is used.
+
 ## Overriding a launch: `.lumen/launch.json`
 
 Go and GHP launches can be overridden per project with `.lumen/launch.json`: `program`, `args`, `env`, `cwd`, and `adapter`, for the configuration named by `config` (`delve` or `ghp`). The format is described in [GHP pages](/docs/ghp#overriding-the-launch-lumenlaunchjson). The file runs what it names when you press `F5`: keep it only in projects you trust.

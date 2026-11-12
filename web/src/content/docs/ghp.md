@@ -75,4 +75,6 @@ For a page that needs arguments, an environment or another binary, create `.lume
 | *dlv not found* | `go install github.com/go-delve/delve/cmd/dlv@latest`; `~/go/bin` is searched. |
 | *debug build failed* | The Debug Console has the output of `ghp build --debug`; fix the template or Go error it names and press `F5` again. |
 | Breakpoints are hollow and never hit | The adapter could not place them (Breakpoints list: *not placed by the adapter*). Check that the file is part of a page that is built, and that you restarted after editing. |
+| *bind: address already in use* on a new session | Stop and Restart end the program with the session (and wait for it to be gone). If it still happens, something outside Lumen holds the port, for example a server started from a terminal; the Debug Console shows the program's own output, including this error. |
+| *execution finished* with no output | The Debug Console shows what the program printed (stdout, and stderr in red) and *Program exited with code N*; the status bar repeats the code and the last line. |
 | Windows: the program is not found | The binary is `.lumen\ghp-debug\app.exe`; if you set `program` in `launch.json`, include `.exe`. |

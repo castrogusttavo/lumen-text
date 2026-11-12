@@ -485,6 +485,7 @@ impl App {
         }
         self.save_session();
         self.win_close();
+        self.debug_shutdown();
         self.stop_task();
         for l in &mut self.lsps {
             l.shutdown();

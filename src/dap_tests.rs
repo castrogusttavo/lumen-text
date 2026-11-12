@@ -148,6 +148,7 @@ fn pump(dap: &mut Dap, s: &mut Session, until: impl Fn(&Session) -> bool, secs: 
         if let Ok(m) = dap.rx.recv_timeout(Duration::from_millis(50)) {
             s.handle(&m, dap);
         }
+        s.output.extend(dap.drain_program_output());
     }
     until(s)
 }
@@ -517,4 +518,279 @@ fn ghp_breakpoint_in_page_is_hit_by_http_request() {
     dap.disconnect(true);
     drop(dap);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ───────────────────────── program output, exit code, debuggee lifecycle ─────────────────────────
+
+#[test]
+fn exit_code_process_pid_and_launch_failure_are_reported() {
+    use crate::debug_model::{ConsoleKind, classify};
+    let (c2a_tx, _c2a_rx) = channel::<Vec<u8>>();
+    let (_a2c_tx, a2c_rx) = channel::<Vec<u8>>();
+    let mut dap = Dap::from_io(PipeR(a2c_rx, Vec::new()), PipeW(c2a_tx), Arc::new(|| {}));
+    let mut s = Session::new("x", &[], Path::new("."), false);
+    let ev = |event: &str, body: Value| DapMsg::Event { event: event.into(), body };
+    s.handle(&ev("process", json!({"name": "app", "systemProcessId": 4242})), &mut dap);
+    assert_eq!(dap.debuggee_pid, Some(4242));
+    s.handle(&ev("exited", json!({"exitCode": 1})), &mut dap);
+    assert_eq!((s.state.clone(), s.exit_code), (State::Terminated, Some(1)));
+    let last = s.output.last().expect("a line about the exit");
+    assert_eq!(classify(last), (ConsoleKind::Error, "Program exited with code 1"));
+
+    // A refused `launch` ends the session with the reason in the console, so F5 can try again.
+    let mut s = Session::new("x", &[], Path::new("."), false);
+    let seq = dap.request("launch", json!({}), crate::dap::Pending::Launch);
+    let resp = DapMsg::Response {
+        seq_for: seq,
+        command: "launch".into(),
+        success: false,
+        body: Value::Null,
+        message: Some("listen tcp: bind: address already in use".into()),
+    };
+    s.handle(&resp, &mut dap);
+    assert_eq!(s.state, State::Terminated);
+    let want = (ConsoleKind::Error, "could not launch: listen tcp: bind: address already in use");
+    assert!(s.output.iter().any(|l| classify(l) == want), "{:?}", s.output);
+}
+
+/// A stand-in adapter (`sh`) that announces a port, writes program-looking lines on stdout/stderr and
+/// leaves a child behind (the "debuggee"). Dropping the `Dap` must end both, and the lines must reach
+/// the console buffer, stderr marked as such, dlv-looking chatter tagged.
+#[cfg(unix)]
+#[test]
+fn dropping_a_dap_kills_the_adapter_and_its_orphan_debuggee_and_forwards_output() {
+    use crate::dap::pid_alive;
+    use crate::debug_model::{ConsoleKind, classify};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let _hold = thread::spawn(move || {
+        let c = l.accept();
+        thread::sleep(Duration::from_secs(30));
+        drop(c);
+    });
+    let script = format!(
+        "sleep 300 & echo \"child $!\"; echo \"DAP server listening at: 127.0.0.1:{port}\"; echo prog-out; echo prog-err >&2; echo \"2024/01/01 debug layer=dap x\"; wait"
+    );
+    let mut dap = Dap::spawn_listening("sh", &["-c", &script], Path::new("."), Arc::new(|| {})).expect("spawn");
+    let mut lines = Vec::new();
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end && lines.len() < 4 {
+        lines.extend(dap.drain_program_output());
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(lines.iter().any(|l| l == "prog-out"), "{lines:?}");
+    assert!(lines.iter().any(|l| classify(l) == (ConsoleKind::Stderr, "prog-err")), "{lines:?}");
+    assert!(lines.iter().any(|l| classify(l).0 == ConsoleKind::Echo && l.contains("[dlv]")), "{lines:?}");
+    let child: u32 = lines.iter().find_map(|l| l.strip_prefix("child ")).expect("child pid").trim().parse().unwrap();
+    let adapter = dap.adapter_pid().unwrap();
+    assert!(pid_alive(child) && pid_alive(adapter));
+    drop(dap);
+    let end = Instant::now() + Duration::from_secs(5);
+    while (pid_alive(child) || pid_alive(adapter)) && Instant::now() < end {
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!pid_alive(child), "the debuggee outlived its adapter");
+    assert!(!pid_alive(adapter), "the adapter is still running");
+}
+
+// Real delve, `mode: exec` on a Go server that binds a port: the lifecycle bugs seen with GHP projects.
+
+const SERVER_GO: &str = r#"package main
+
+import (
+	"fmt"
+	"net"
+	"os"
+)
+
+func main() {
+	addr := "127.0.0.1:0"
+	if len(os.Args) > 1 {
+		addr = os.Args[1]
+	}
+	if addr == "exit1" {
+		fmt.Println("about to fail")
+		fmt.Fprintln(os.Stderr, "fatal: listen tcp: bind: address already in use")
+		os.Exit(1)
+	}
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "listen failed:", err)
+		os.Exit(1)
+	}
+	fmt.Println("listening on", l.Addr())
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		c.Close()
+	}
+}
+"#;
+
+type Dbg = crate::app_debug::Debugger;
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+/// Build the server fixture; returns `(dir, binary)`.
+fn build_server(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("lumen-dap-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("go.mod"), "module srv\n\ngo 1.21\n").unwrap();
+    std::fs::write(dir.join("main.go"), SERVER_GO).unwrap();
+    let bin = dir.join("app");
+    let st = std::process::Command::new("go")
+        .args(["build", "-gcflags=all=-N -l", "-o"])
+        .arg(&bin)
+        .current_dir(&dir)
+        .status()
+        .expect("go build");
+    assert!(st.success());
+    (dir, bin)
+}
+
+/// dlv in exec mode on `bin` with `args`, like the `ghp` adapter, wrapped the way the UI holds it.
+fn start_exec(dir: &Path, bin: &Path, args: &[&str]) -> Dbg {
+    let reg = Registry::builtin();
+    let adapter = reg.get("ghp").unwrap();
+    let mut dap = adapter.start(dir, Arc::new(|| {})).expect("start dlv (is it installed?)");
+    let mut s = Session::with_request(
+        "launch",
+        json!({"type": "go", "mode": "exec", "program": bin, "cwd": dir, "args": args, "stopOnEntry": false}),
+    );
+    s.exception_bps = false;
+    s.start(&mut dap);
+    Dbg::Native { dap: Box::new(dap), session: Box::new(s) }
+}
+
+fn pump_debugger(d: &mut Dbg, until: impl Fn(&Dbg) -> bool) -> bool {
+    let end = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < end && !until(d) {
+        d.pump();
+        thread::sleep(Duration::from_millis(30));
+    }
+    until(d)
+}
+
+fn said(d: &Dbg, what: &str) -> bool {
+    d.output().iter().any(|l| l.contains(what))
+}
+
+#[cfg(unix)]
+fn debuggee_of(d: &Dbg) -> Vec<u32> {
+    match d {
+        Dbg::Native { dap, .. } => crate::dap::descendants(dap.adapter_pid().unwrap()),
+        _ => Vec::new(),
+    }
+}
+
+/// The port can be bound again within a few seconds (nothing holds it any more).
+fn port_free(port: u16) -> bool {
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+#[cfg(unix)]
+fn assert_gone(pids: &[u32], port: u16, what: &str) {
+    let end = Instant::now() + Duration::from_secs(10);
+    while pids.iter().any(|p| crate::dap::pid_alive(*p)) && Instant::now() < end {
+        thread::sleep(Duration::from_millis(50));
+    }
+    for p in pids {
+        assert!(!crate::dap::pid_alive(*p), "{what}: process {p} is still alive (orphaned debuggee)");
+    }
+    assert!(port_free(port), "{what}: port {port} is still taken");
+}
+
+/// The UI's Stop: the debuggee is gone and its port free soon after, and its output reached the console.
+#[cfg(unix)]
+#[test]
+#[ignore = "needs go and dlv installed"]
+fn delve_exec_stop_leaves_no_debuggee_and_shows_its_output() {
+    let (dir, bin) = build_server("stop");
+    let port = free_port();
+    let addr = format!("127.0.0.1:{port}");
+    let mut d = start_exec(&dir, &bin, &[&addr]);
+    let shown = pump_debugger(&mut d, |d| said(d, "listening on"));
+    assert!(shown, "program output never reached the console: {:?}", d.output());
+    let pids = debuggee_of(&d);
+    assert!(!pids.is_empty(), "no debuggee below dlv");
+    assert!(std::net::TcpListener::bind(&addr[..]).is_err(), "the server should hold the port");
+
+    let t = Instant::now();
+    d.stop_and_wait();
+    assert!(t.elapsed() < Duration::from_secs(15), "stop took {:?}", t.elapsed());
+    assert_gone(&pids, port, "stop");
+    drop(d);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Restart: stop, then launch the same server on the same port at once; no "address already in use".
+#[cfg(unix)]
+#[test]
+#[ignore = "needs go and dlv installed"]
+fn delve_exec_restart_reuses_the_port() {
+    let (dir, bin) = build_server("restart");
+    let port = free_port();
+    let addr = format!("127.0.0.1:{port}");
+    let mut first = start_exec(&dir, &bin, &[&addr]);
+    assert!(pump_debugger(&mut first, |d| said(d, "listening on")), "{:?}", first.output());
+    let pids = debuggee_of(&first);
+    first.stop_and_wait();
+    drop(first);
+    let mut second = start_exec(&dir, &bin, &[&addr]);
+    let up = pump_debugger(&mut second, |d| said(d, "listening on") || said(d, "address already in use"));
+    assert!(up, "{:?}", second.output());
+    assert!(said(&second, "listening on") && !said(&second, "already in use"), "{:?}", second.output());
+    let pids2 = debuggee_of(&second);
+    second.stop_and_wait();
+    drop(second);
+    assert_gone(&pids, port, "first run");
+    assert_gone(&pids2, port, "second run");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// App exit / dropping the session without an explicit stop must not leave the program behind either.
+#[cfg(unix)]
+#[test]
+#[ignore = "needs go and dlv installed"]
+fn delve_exec_drop_leaves_no_debuggee() {
+    let (dir, bin) = build_server("drop");
+    let port = free_port();
+    let addr = format!("127.0.0.1:{port}");
+    let mut d = start_exec(&dir, &bin, &[&addr]);
+    assert!(pump_debugger(&mut d, |d| said(d, "listening on")), "{:?}", d.output());
+    let pids = debuggee_of(&d);
+    assert!(!pids.is_empty());
+    drop(d);
+    assert_gone(&pids, port, "drop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program that dies at once: exit code and its last lines (stdout plain, stderr marked) reach the console.
+#[cfg(unix)]
+#[test]
+#[ignore = "needs go and dlv installed"]
+fn delve_exec_quick_exit_reports_code_and_output() {
+    use crate::debug_model::{ConsoleKind, classify};
+    let (dir, bin) = build_server("exit1");
+    let mut d = start_exec(&dir, &bin, &["exit1"]);
+    let done = |d: &Dbg| d.state() == State::Terminated && said(d, "about to fail") && said(d, "address already in use");
+    assert!(pump_debugger(&mut d, done), "{:?}", d.output());
+    let exit = (ConsoleKind::Error, "Program exited with code 1");
+    assert!(d.output().iter().any(|l| classify(l) == exit), "{:?}", d.output());
+    assert_eq!(d.session().and_then(|s| s.exit_code), Some(1));
+    assert!(d.output().iter().any(|l| classify(l).0 == ConsoleKind::Stderr && l.contains("address already in use")));
+    d.stop_and_wait();
+    let _ = std::fs::remove_dir_all(&dir);
 }
