@@ -38,8 +38,8 @@ encodings (nothing is lost, any file opens); several AI agent sessions, worktree
 keyboard protocol; replace in project, macros, column selection and jump to character; stashes, a commit graph, line
 staging and a 3-way merge editor; per-project settings, zen mode and an image viewer; project-wide problems, inline
 completions and test coverage; right-to-left text and multiple windows. The full list, with enhancements and bug fixes,
-is in the [changelog](https://castrogusttavo.github.io/lumen-text/changelog); what comes next is on the
-[roadmap](https://castrogusttavo.github.io/lumen-text/roadmap).
+is in the [changelog](https://castrogusttavo.github.io/lumen-text/changelog), and the
+[roadmap](https://castrogusttavo.github.io/lumen-text/roadmap) shows it as a board.
 
 ## Features
 
@@ -595,7 +595,7 @@ Each conflict has two checkboxes: *Accept incoming* and *Accept current*; checki
 
 ## Known limitations
 
-- The interface is English only for now; other languages need a string layer (see the [roadmap](https://castrogusttavo.github.io/lumen-text/roadmap)).
+- The interface is English only for now; other languages need a string layer first.
 - RTL editing is logical (arrows, Home/End walk the text order, the caret shows a small direction flag); a Hebrew/Arabic line is reordered but not right-aligned to the window, and inlay hints are not shown on those lines. Selecting with the mouse across direction runs highlights separate pieces.
 - No TextMate `injections` (code embedded in Markdown/HTML gets only the outer grammar).
 - Opening a very large file and jumping to its end leaves that stretch uncolored for a few seconds.

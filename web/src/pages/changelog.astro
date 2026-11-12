@@ -12,7 +12,7 @@ const count = (c: (typeof changelog)[number]) => c.groups.reduce((n, g) => n + g
 ---
 <Base title="Changelog" description="What shipped in every Lumen release: features, enhancements and bug fixes." path="/changelog">
   <section class="container-x py-20 md:py-28">
-    <SectionHead eyebrow="Changelog"><Fragment slot="title">What <span class="accent-word">shipped</span></Fragment>Every release lists its features, then two folded lists: enhancements to what already existed and bug fixes. Every push to main that passes CI publishes a release. What comes next is on the <a class="underline decoration-line2 underline-offset-4" href={url("/roadmap")}>roadmap</a>.</SectionHead>
+    <SectionHead eyebrow="Changelog"><Fragment slot="title">What <span class="accent-word">shipped</span></Fragment>Every release lists its features, then two folded lists: enhancements to what already existed and bug fixes. Every push to main that passes CI publishes a release. The <a class="underline decoration-line2 underline-offset-4" href={url("/roadmap")}>roadmap</a> shows what has shipped as a board.</SectionHead>
 
     <div class="mx-auto mt-16 max-w-3xl space-y-10">
       {changelog.map((c) => (

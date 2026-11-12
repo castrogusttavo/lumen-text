@@ -11,7 +11,7 @@ const shippedHref = (release?: string) => (release && release !== "earlier" ? `$
 ---
 <Base title="Roadmap" description="Every feature, enhancement and bug we are exploring, planning, working on or have shipped, as a board." path="/roadmap">
   <section class="container-x py-20 md:py-28">
-    <SectionHead eyebrow="Roadmap"><Fragment slot="title">Where Lumen is <span class="accent-word">going</span></Fragment>A board of what we are exploring, planning, working on and have shipped. It is not a promise or a schedule: items move right as they are done, and shipped ones link to the changelog.</SectionHead>
+    <SectionHead eyebrow="Roadmap"><Fragment slot="title">Where Lumen is <span class="accent-word">going</span></Fragment>A board of what we have shipped, and where upcoming work will appear. Only things that are real are listed: exploring, planned and in-progress items show up here once we commit to them, and shipped ones link to the changelog.</SectionHead>
 
     <div class="mt-12 flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Filter by type" data-rm-filters>
       {types.map(([id, label], i) => (
@@ -29,6 +29,7 @@ const shippedHref = (release?: string) => (release && release !== "earlier" ? `$
             </h2>
             <p class="mt-1 text-xs text-faint">{col.hint}</p>
           </header>
+          {items(col.id).length === 0 && <p class="rounded-xl border border-dashed border-line px-4 py-6 text-center text-sm text-faint">Nothing here yet.</p>}
           <ul class="space-y-2.5">
             {items(col.id).map((it) => (
               <li class="rm-card rounded-xl border border-line bg-solid p-3.5" data-type={it.type}>
@@ -47,7 +48,7 @@ const shippedHref = (release?: string) => (release && release !== "earlier" ? `$
     </div>
 
     <p class="mx-auto mt-12 max-w-2xl text-center text-[15px] text-muted">
-      Missing something, or something broken? <a class="text-fg underline decoration-line2 underline-offset-4" href={`${GITHUB}/issues/new`} rel="noopener">Open an issue</a> and it lands in <em>Exploring</em> or <em>Planned</em>. Releases are listed in the <a class="text-fg underline decoration-line2 underline-offset-4" href={url("/changelog")}>changelog</a>.
+      Missing something, or something broken? <a class="text-fg underline decoration-line2 underline-offset-4" href={`${GITHUB}/issues/new`} rel="noopener">Open an issue</a> and tell us. Releases are listed in the <a class="text-fg underline decoration-line2 underline-offset-4" href={url("/changelog")}>changelog</a>.
     </p>
   </section>
 </Base>
