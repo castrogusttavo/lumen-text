@@ -128,6 +128,7 @@ pub const EXPLORER: &str = "explorer:";
 
 /// Mouse "keys" a combo can end with: `click` (left button, together with Ctrl or Alt), `middle`,
 /// the side buttons `mouse4` (back) and `mouse5` (forward), and the wheel (`wheelup`, `wheeldown`).
+#[cfg(test)]
 pub const MOUSE_KEYS: &[&str] = &["click", "middle", "mouse4", "mouse5", "wheelup", "wheeldown"];
 
 /// Built-in mouse bindings (normalized combo -> command id or mouse action). Clicks only count in
@@ -144,9 +145,11 @@ pub const MOUSE_DEFAULTS: &[(&str, &str)] = &[
 
 /// Mouse-only actions a mouse combo can name besides the palette commands: a new cursor at the
 /// pointer (dragging makes a column selection) and pasting the primary selection there.
+#[cfg(test)]
 pub const MOUSE_ACTIONS: &[&str] = &["AddCursor", "PastePrimary"];
 
 /// Is `combo` (normalized) a mouse combination?
+#[cfg(test)]
 pub fn is_mouse_combo(combo: &str) -> bool {
     !combo.contains(' ')
         && !combo.starts_with(EXPLORER)
