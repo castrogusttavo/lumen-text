@@ -308,6 +308,14 @@
   "default": true
  },
  {
+  "key": "status_encoding",
+  "section": "Status bar",
+  "label": "Encoding",
+  "help": "Encoding of the active file (UTF-8, UTF-16, Windows-1252…); click to reopen or save it in another one.",
+  "kind": "bool",
+  "default": true
+ },
+ {
   "key": "status_terminal",
   "section": "Status bar",
   "label": "Terminal",
@@ -383,7 +391,7 @@
   "kind": "number",
   "range": [
    1,
-   7
+   8
   ],
   "default": null
  },
@@ -395,7 +403,19 @@
   "kind": "number",
   "range": [
    1,
-   7
+   8
+  ],
+  "default": null
+ },
+ {
+  "key": "status_pos_encoding",
+  "section": "Status bar",
+  "label": "Order: Encoding",
+  "help": "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+  "kind": "number",
+  "range": [
+   1,
+   8
   ],
   "default": null
  },
@@ -407,7 +427,7 @@
   "kind": "number",
   "range": [
    1,
-   7
+   8
   ],
   "default": null
  },
@@ -419,7 +439,7 @@
   "kind": "number",
   "range": [
    1,
-   7
+   8
   ],
   "default": null
  },
@@ -431,7 +451,7 @@
   "kind": "number",
   "range": [
    1,
-   7
+   8
   ],
   "default": null
  },
@@ -443,7 +463,7 @@
   "kind": "number",
   "range": [
    1,
-   7
+   8
   ],
   "default": null
  },
@@ -455,7 +475,7 @@
   "kind": "number",
   "range": [
    1,
-   7
+   8
   ],
   "default": null
  },
@@ -617,6 +637,36 @@
   "default": true
  },
  {
+  "key": "render_whitespace",
+  "section": "Editor display",
+  "label": "Render whitespace",
+  "help": "Draws spaces as faint dots and tabs as arrows. Boundary shows all but single spaces between words, Trailing only the whitespace at line ends. The palette command \"Toggle render whitespace\" switches it on and off.",
+  "kind": "choice",
+  "options": [
+   "none",
+   "boundary",
+   "trailing",
+   "all"
+  ],
+  "default": "none"
+ },
+ {
+  "key": "trim_trailing_whitespace",
+  "section": "Editor",
+  "label": "Trim trailing whitespace on save",
+  "help": "Removes spaces and tabs at the end of lines when saving, as one undo step. Markdown files are left alone (two trailing spaces are a line break there); an .editorconfig can decide per file.",
+  "kind": "bool",
+  "default": false
+ },
+ {
+  "key": "insert_final_newline",
+  "section": "Editor",
+  "label": "Insert final newline on save",
+  "help": "Ends the file with a line break when saving, if it has none. An .editorconfig can decide per file.",
+  "kind": "bool",
+  "default": false
+ },
+ {
   "key": "build_command",
   "section": "Build",
   "label": "Build command",
@@ -631,5 +681,21 @@
   "help": "A run command of your own for the Build panel's Run (Ctrl+F5), run by the shell in the project folder.",
   "kind": "text",
   "default": ""
+ },
+ {
+  "key": "hot_exit",
+  "section": "Files",
+  "label": "Hot exit",
+  "help": "Quitting keeps unsaved changes (untitled tabs too) and reopens them next time instead of asking to save. Unsaved changes are also backed up a few seconds after each edit, so a crash loses almost nothing. Off asks before quitting, as before.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "persistent_undo",
+  "section": "Files",
+  "label": "Persistent undo",
+  "help": "Keeps each file's undo history after it is closed (and across restarts), as long as the file was not changed elsewhere. Up to 2 MB per file; the oldest histories are dropped first.",
+  "kind": "bool",
+  "default": true
  }
 ]

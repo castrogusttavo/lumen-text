@@ -357,6 +357,70 @@ impl Doc {
             }
         }
 
+        // Whitespace (`render_whitespace`): a faint dot per space, an arrow per tab. Only marks in
+        // the visible columns are placed, so a long line costs no more than a short one.
+        let ws_mode = crate::display::whitespace();
+        if ws_mode != crate::whitespace::Render::Off {
+            let ink = theme.whitespace;
+            let wv0 = (left / cell_w as f64).floor().max(0.0) as usize;
+            let wv1 = wv0 + (body.w as f32 / cell_w).ceil() as usize + 2;
+            let cw = cell_w.round() as i32;
+            let dot = ((cell_w / 7.0).round() as i32).clamp(2, 4);
+            let mut marks: Vec<(usize, bool)> = Vec::new();
+            let mut marks_lk = usize::MAX;
+            let mut placed: Vec<(usize, usize, bool)> = Vec::new(); // (visual column, cells, is tab)
+            for (r, row) in rows.iter().enumerate() {
+                if marks_lk != row.lk {
+                    crate::whitespace::marks(&lines[row.lk], ws_mode, &mut marks);
+                    marks_lk = row.lk;
+                }
+                let m0 = marks.partition_point(|m| m.0 < row.c0);
+                if marks.get(m0).is_none_or(|m| m.0 >= row.c1) {
+                    continue;
+                }
+                placed.clear();
+                if hints_for(inl, &row_hs, wrap_cols, r, row.line).is_empty() {
+                    // One pass over the row: tabs run to the next tab stop, everything else is one cell.
+                    let (mut v, mut mi) = (0usize, m0);
+                    for (k, ch) in rt(r).chars().enumerate() {
+                        if v > wv1 || marks.get(mi).is_none_or(|m| m.0 >= row.c1) {
+                            break;
+                        }
+                        let w = if ch == '\t' { tab_w - v % tab_w } else { 1 };
+                        if marks[mi].0 == row.c0 + k {
+                            placed.push((v, w, marks[mi].1));
+                            mi += 1;
+                        }
+                        v += w;
+                    }
+                } else {
+                    for &(col, tab) in marks[m0..].iter().take_while(|m| m.0 < row.c1 && m.0 - row.c0 <= wv1) {
+                        let v = vc(r, col - row.c0, true);
+                        let w = if tab { vc(r, col - row.c0 + 1, false).saturating_sub(v).max(1) } else { 1 };
+                        placed.push((v, w, tab));
+                    }
+                }
+                let y = ry(r);
+                for &(v, w, tab) in &placed {
+                    if v + w < wv0 || v > wv1 {
+                        continue;
+                    }
+                    let x = vx(v);
+                    if tab {
+                        let pad = (cell_w * 0.25).round() as i32;
+                        let (x0, x1) = (x + pad, vx(v + w) - pad);
+                        let ym = y + lh / 2;
+                        cv.fill_clip(Rect::new(x0, ym, (x1 - x0).max(1), 1), ink, body);
+                        for k in 1..=2 {
+                            cv.fill_clip(Rect::new(x1 - k, ym - k, 1, 2 * k + 1), ink, body);
+                        }
+                    } else {
+                        cv.fill_clip(Rect::new(x + (cw - dot) / 2, y + (lh - dot) / 2, dot, dot), ink, body);
+                    }
+                }
+            }
+        }
+
         // Matching bracket.
         if sel.is_empty()
             && let Some((a, b)) = crate::editor::match_bracket(&self.buf, self.ed.head())

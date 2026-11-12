@@ -54,6 +54,7 @@ impl App {
             doc.lens_refs = self.config.code_lens_refs;
             doc.lens_impls = self.config.code_lens_impls;
             doc.set_word_wrap(self.config.word_wrap);
+            crate::app_filefmt::apply_editorconfig(&mut doc);
             doc.git_base = git::head_text(&path);
             self.docs.push(doc);
             self.docs.len() - 1
@@ -211,6 +212,7 @@ impl App {
             return self.ask_save_as(self.active, Vec::new(), None, String::new());
         }
         let warn = self.format_for_save(self.active);
+        self.whitespace_on_save(self.active);
         let Some(d) = self.docs.get_mut(self.active) else { return };
         let name = d.name.clone();
         match d.buf.save() {

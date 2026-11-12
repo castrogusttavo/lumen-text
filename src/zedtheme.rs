@@ -340,6 +340,7 @@ fn template_value(name: &str) -> Value {
             "editorCursor.foreground": "#aeafad",
             "editor.lineHighlightBackground": "#ffffff12",
             "editorLineNumber.foreground": "#858585",
+            "editorWhitespace.foreground": "#3b3b3b",
             "editorLineNumber.activeForeground": "#c6c6c6",
             "sideBar.background": "#181818",
             "sideBar.foreground": "#cccccc",

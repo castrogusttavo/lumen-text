@@ -1,7 +1,7 @@
 # Third-party licenses
 
 
-lumen-text itself is MIT licensed (see [LICENSE](LICENSE)). It is built from the Rust crates below (normal and build dependencies, including platform-specific ones for other OSes, 275 crates). Data assets are covered at the end of this file.
+lumen-text itself is MIT licensed (see [LICENSE](LICENSE)). It is built from the Rust crates below (normal and build dependencies, including platform-specific ones for other OSes, 278 crates). Data assets are covered at the end of this file.
 
 Regenerate: `cargo metadata --format-version 1 --offline` and list `name`, `version`, `license` of every package reachable from the root through non-dev dependencies.
 
@@ -42,6 +42,7 @@ Regenerate: `cargo metadata --format-version 1 --offline` and list `name`, `vers
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 |
 | core-graphics | 0.23.2 | MIT OR Apache-2.0 |
 | core-graphics-types | 0.1.3 | MIT OR Apache-2.0 |
+| core_detect | 1.0.0 | MIT/Apache-2.0 |
 | core_maths | 0.1.1 | MIT |
 | cosmic-text | 0.19.0 | MIT OR Apache-2.0 |
 | crc32fast | 1.5.4 | MIT OR Apache-2.0 |
@@ -61,6 +62,7 @@ Regenerate: `cargo metadata --format-version 1 --offline` and list `name`, `vers
 | drm-sys | 0.8.1 | MIT |
 | dtor | 0.8.1 | Apache-2.0 OR MIT |
 | either | 1.19.0 | MIT OR Apache-2.0 |
+| encoding_rs | 0.8.44 | (Apache-2.0 OR MIT) AND BSD-3-Clause |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT |
 | errno | 0.3.14 | MIT OR Apache-2.0 |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
@@ -112,6 +114,7 @@ Regenerate: `cargo metadata --format-version 1 --offline` and list `name`, `vers
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
+| multiversion_no_op | 1.0.0 | Apache-2.0 OR MIT |
 | ndk | 0.9.0 | MIT OR Apache-2.0 |
 | ndk-context | 0.1.1 | MIT OR Apache-2.0 |
 | ndk-sys | 0.6.0+11769913 | MIT OR Apache-2.0 |

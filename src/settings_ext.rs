@@ -122,6 +122,27 @@ pub fn defs() -> Vec<SettingDef> {
             Bool,
         ),
         d(
+            "render_whitespace",
+            "Editor display",
+            "Render whitespace",
+            "Draws spaces as faint dots and tabs as arrows. Boundary shows all but single spaces between words, Trailing only the whitespace at line ends. The palette command \"Toggle render whitespace\" switches it on and off.",
+            Choice(&["none", "boundary", "trailing", "all"]),
+        ),
+        d(
+            "trim_trailing_whitespace",
+            "Editor",
+            "Trim trailing whitespace on save",
+            "Removes spaces and tabs at the end of lines when saving, as one undo step. Markdown files are left alone (two trailing spaces are a line break there); an .editorconfig can decide per file.",
+            Bool,
+        ),
+        d(
+            "insert_final_newline",
+            "Editor",
+            "Insert final newline on save",
+            "Ends the file with a line break when saving, if it has none. An .editorconfig can decide per file.",
+            Bool,
+        ),
+        d(
             "build_command",
             "Build",
             "Build command",
@@ -161,6 +182,7 @@ pub fn defaults() -> Value {
         "show_line_numbers": true, "show_bookmarks": true, "show_breakpoints": true,
         "scrollbar": "never", "enable_lsp": true, "build_command": "", "run_command": "",
         "markdown_remote_images": true, "hot_exit": true, "persistent_undo": true,
+        "render_whitespace": "none", "trim_trailing_whitespace": false, "insert_final_newline": false,
     })
 }
 
@@ -176,6 +198,8 @@ pub fn values(c: &Config) -> Value {
         "build_command": c.build_command, "run_command": c.run_command,
         "markdown_remote_images": c.markdown_remote_images,
         "hot_exit": c.hot_exit, "persistent_undo": c.persistent_undo,
+        "render_whitespace": c.render_whitespace, "trim_trailing_whitespace": c.trim_trailing_whitespace,
+        "insert_final_newline": c.insert_final_newline,
     })
 }
 

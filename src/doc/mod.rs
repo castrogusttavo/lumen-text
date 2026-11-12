@@ -180,6 +180,8 @@ pub struct Doc {
     pub inlay: crate::inlay::InlayState,
     /// Pinned tab (drawn first, kept by "Close all").
     pub pinned: bool,
+    /// What `.editorconfig` says about this file (see `app_filefmt`); empty when nothing.
+    pub fileconf: crate::editorconfig::Props,
 }
 
 #[derive(Clone, Debug)]
@@ -293,6 +295,7 @@ impl Doc {
             md: None,
             inlay: Default::default(),
             pinned: false,
+            fileconf: Default::default(),
         }
     }
 
@@ -378,9 +381,16 @@ impl Doc {
     }
 
     /// Replace the text with what is on disk, keeping cursor (clamped) and scroll. Clears undo.
+    /// An encoding the bytes cannot reveal (picked by the user or `.editorconfig`) is kept.
     pub fn reload_from_disk(&mut self) -> std::io::Result<()> {
+        let keep = self.buf.encoding.sticky().then_some(self.buf.encoding);
+        self.reload_as(keep)
+    }
+
+    /// [`reload_from_disk`](Self::reload_from_disk) decoding the file as `enc` (`None` = detect).
+    pub fn reload_as(&mut self, enc: Option<crate::encoding::TextEncoding>) -> std::io::Result<()> {
         let Some(path) = self.path().map(Path::to_path_buf) else { return Ok(()) };
-        let fresh = Buffer::open(&path)?;
+        let fresh = Buffer::open_as(&path, enc)?;
         let sel = self.ed.sel;
         self.buf = fresh;
         let len = self.buf.len_chars();

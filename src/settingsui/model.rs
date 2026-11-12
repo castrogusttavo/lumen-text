@@ -217,6 +217,13 @@ pub fn default_settings() -> Vec<SettingDef> {
         d("status_position", "Status bar", "Line and column", "Cursor position (Ln, Col) and number of cursors.", Bool),
         d("status_indent", "Status bar", "Indentation", "The file's spaces or tabs.", Bool),
         d("status_language", "Status bar", "Language", "Language of the active file.", Bool),
+        d(
+            "status_encoding",
+            "Status bar",
+            "Encoding",
+            "Encoding of the active file (UTF-8, UTF-16, Windows-1252…); click to reopen or save it in another one.",
+            Bool,
+        ),
         d("status_terminal", "Status bar", "Terminal", "Button that opens the integrated terminal.", Bool),
         d("status_debug", "Status bar", "Debug", "Button that opens the debug panel.", Bool),
         d("status_git", "Status bar", "Git", "Git panel button with the changed-file count.", Bool),
@@ -249,49 +256,56 @@ pub fn default_settings() -> Vec<SettingDef> {
             "Status bar",
             "Order: Line and column",
             "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
-            Number { min: 1.0, max: 7.0, step: 1.0 },
+            Number { min: 1.0, max: 8.0, step: 1.0 },
         ),
         d(
             "status_pos_indent",
             "Status bar",
             "Order: Indentation",
             "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
-            Number { min: 1.0, max: 7.0, step: 1.0 },
+            Number { min: 1.0, max: 8.0, step: 1.0 },
+        ),
+        d(
+            "status_pos_encoding",
+            "Status bar",
+            "Order: Encoding",
+            "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
+            Number { min: 1.0, max: 8.0, step: 1.0 },
         ),
         d(
             "status_pos_language",
             "Status bar",
             "Order: Language",
             "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
-            Number { min: 1.0, max: 7.0, step: 1.0 },
+            Number { min: 1.0, max: 8.0, step: 1.0 },
         ),
         d(
             "status_pos_terminal",
             "Status bar",
             "Order: Terminal",
             "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
-            Number { min: 1.0, max: 7.0, step: 1.0 },
+            Number { min: 1.0, max: 8.0, step: 1.0 },
         ),
         d(
             "status_pos_debug",
             "Status bar",
             "Order: Debug",
             "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
-            Number { min: 1.0, max: 7.0, step: 1.0 },
+            Number { min: 1.0, max: 8.0, step: 1.0 },
         ),
         d(
             "status_pos_git",
             "Status bar",
             "Order: Git",
             "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
-            Number { min: 1.0, max: 7.0, step: 1.0 },
+            Number { min: 1.0, max: 8.0, step: 1.0 },
         ),
         d(
             "status_pos_ram",
             "Status bar",
             "Order: Memory",
             "Position in the right group (1 = leftmost); − and + move it, skipping hidden items.",
-            Number { min: 1.0, max: 7.0, step: 1.0 },
+            Number { min: 1.0, max: 8.0, step: 1.0 },
         ),
         d(
             "ram_display",
@@ -318,11 +332,11 @@ pub fn default_values() -> Value {
     });
     // Split in two: one `json!` this long hits the macro recursion limit.
     let bar = json!({
-        "status_search": true, "status_problems": true, "status_position": true, "status_indent": true, "status_language": true,
+        "status_search": true, "status_problems": true, "status_position": true, "status_indent": true, "status_language": true, "status_encoding": true,
         "status_terminal": true, "status_debug": true, "status_git": true, "status_ram": true,
         "status_pos_sidebar": 1, "status_pos_search": 2, "status_pos_problems": 3,
-        "status_pos_position": 1, "status_pos_indent": 2, "status_pos_language": 3, "status_pos_terminal": 4,
-        "status_pos_debug": 5, "status_pos_git": 6, "status_pos_ram": 7,
+        "status_pos_position": 1, "status_pos_indent": 2, "status_pos_encoding": 3, "status_pos_language": 4,
+        "status_pos_terminal": 5, "status_pos_debug": 6, "status_pos_git": 7, "status_pos_ram": 8,
     });
     if let (Some(dst), Some(src)) = (v.as_object_mut(), bar.as_object()) {
         dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
@@ -354,6 +368,10 @@ pub(super) fn choice_label(s: &str) -> String {
         "rebase" => "Rebase".into(),
         "ff-only" => "Fast-forward only".into(),
         "subtle" => "Subtle".into(),
+        "none" => "None".into(),
+        "boundary" => "Boundary".into(),
+        "trailing" => "Trailing".into(),
+        "all" => "All".into(),
         "normal" => "Normal".into(),
         o => o.to_string(),
     }

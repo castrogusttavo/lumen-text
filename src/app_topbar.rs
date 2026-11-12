@@ -825,6 +825,8 @@ pub enum StatusBtn {
     Position,
     Indent,
     Language,
+    /// The file's encoding: picker to reopen or save it in another one.
+    Encoding,
     /// An update is ready or available (left group, only then).
     Update,
     /// A build is running, or the last one failed (left group, only then).
@@ -897,6 +899,7 @@ impl App {
         let (v_search, v_problems, v_term, v_dbg, v_git, v_ram) =
             (vis("search"), vis("problems"), vis("terminal"), vis("debug"), vis("git"), vis("ram"));
         let (v_pos, v_indent, v_lang) = (vis("position"), vis("indent"), vis("language"));
+        let v_enc = vis("encoding");
 
         // Left group, in `config.status_left_order` (the sidebar toggle is always shown).
         let mut x = r.x + 6;
@@ -993,6 +996,7 @@ impl App {
                 d.lang.unwrap_or("text").to_string(),
             )
         });
+        let enc_text: Option<String> = self.docs.get(self.active).map(|d| d.buf.encoding.short());
         let mut items: Vec<(StatusBtn, i32)> = Vec::new();
         for id in self.config.status_order.clone() {
             let item = match id.as_str() {
@@ -1001,6 +1005,7 @@ impl App {
                 "language" if v_lang => {
                     doc_texts.as_ref().map(|t| (StatusBtn::Language, self.tx.ui_width(&t.2, false)))
                 }
+                "encoding" if v_enc => enc_text.as_ref().map(|t| (StatusBtn::Encoding, self.tx.ui_width(t, false))),
                 "terminal" if v_term => Some((StatusBtn::Terminal, self.status_btn_width(""))),
                 "debug" if v_dbg => Some((StatusBtn::Debug, self.status_btn_width(""))),
                 "git" if v_git => Some((StatusBtn::Git, self.status_btn_width(&git_label))),
@@ -1073,12 +1078,15 @@ impl App {
                         }
                         self.layout.status_info.push((Rect::new(ix - 4, r.y + 3, w + 8, r.h - 6), kind));
                     }
-                    StatusBtn::Position | StatusBtn::Indent | StatusBtn::Language => {
-                        let t = doc_texts.as_ref().map(|t| match kind {
-                            StatusBtn::Position => &t.0,
-                            StatusBtn::Indent => &t.1,
-                            _ => &t.2,
-                        });
+                    StatusBtn::Position | StatusBtn::Indent | StatusBtn::Language | StatusBtn::Encoding => {
+                        let t = match kind {
+                            StatusBtn::Encoding => enc_text.as_ref(),
+                            _ => doc_texts.as_ref().map(|t| match kind {
+                                StatusBtn::Position => &t.0,
+                                StatusBtn::Indent => &t.1,
+                                _ => &t.2,
+                            }),
+                        };
                         let b = Rect::new(ix - 4, r.y + 3, w + 8, r.h - 6);
                         if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
                             cv.fill_round(b, 6, c.list_hover_bg);
@@ -1165,6 +1173,7 @@ impl App {
             StatusBtn::Position => self.open_goto_line(),
             StatusBtn::Indent => self.open_indent_picker(),
             StatusBtn::Language => self.open_language_picker(),
+            StatusBtn::Encoding => self.open_encoding_menu(),
             StatusBtn::Update => self.update_indicator_click(),
             StatusBtn::Build => self.build_toggle_panel(),
             StatusBtn::Ai => self.ai_show(),
