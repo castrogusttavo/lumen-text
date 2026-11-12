@@ -205,6 +205,7 @@ pub enum Cmd {
     ProjectTrust,
     PythonSelectInterpreter,
     CycleInlineDiagnostics,
+    ProblemsProject,
 }
 
 impl Cmd {
@@ -337,7 +338,7 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Git: Conflict — accept incoming", "", Cmd::ConflictTheirs),
     ("Git: Conflict — accept both", "", Cmd::ConflictBoth),
     ("Go to: Symbol in project", "Ctrl+T", Cmd::WorkspaceSymbols),
-    ("View: Problems in open files", "", Cmd::Problems),
+    ("View: Problems", "", Cmd::Problems),
     ("View: Zoom in", "Ctrl+=", Cmd::ZoomIn),
     ("View: Zoom out", "Ctrl+-", Cmd::ZoomOut),
     ("View: Reset zoom", "Ctrl+0", Cmd::ZoomReset),
@@ -420,4 +421,5 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Project: Trust the commands of the project settings…", "", Cmd::ProjectTrust),
     ("Python: Select interpreter…", "", Cmd::PythonSelectInterpreter),
     ("View: Inline diagnostics (off / current line / all)", "", Cmd::CycleInlineDiagnostics),
+    ("View: Problems in whole project", "", Cmd::ProblemsProject),
 ];

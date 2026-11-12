@@ -1,8 +1,15 @@
-//! Formatting: one chain for "Format document" and format-on-save.
+//! Formatting: one chain for "Format document" and format-on-save, plus code actions on save.
 //!
-//! Order: the project's own formatter (Biome / Prettier, run on stdin) → the file's language
-//! server (`textDocument/formatting`, tsgo for TS/JS) → a built-in JSON re-indenter. When nothing
-//! applies the user is told, once per file type and session.
+//! Order (`formatter: "auto"`, the default): the project's own formatter (Biome / Prettier, run on
+//! stdin) → the file's language server (`textDocument/formatting`, tsgo for TS/JS) → a built-in
+//! JSON re-indenter. When nothing applies the user is told, once per file type and session. The
+//! `formatter` setting can force one of them per language ("biome", "prettier", "lsp",
+//! "lsp:<server>") or switch formatting off ("none").
+//!
+//! `code_actions_on_save` kinds (`source.organizeImports`, `source.fixAll`, ...) run before the
+//! formatter, in order, on every server of the file that offers them; each request waits at most
+//! [`ACTION_WAIT`] and a server that did not answer is skipped for the rest of that save, so a hung
+//! server never blocks saving.
 
 use crate::{
     app::App,
@@ -19,6 +26,8 @@ use std::{
 pub const SAVE_WAIT: Duration = Duration::from_millis(1500);
 /// Same wait for the explicit "Format document" command.
 pub const MANUAL_WAIT: Duration = Duration::from_secs(5);
+/// How long one on-save code action request (and its resolve) may take.
+pub const ACTION_WAIT: Duration = Duration::from_millis(1000);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Fmt {
@@ -32,6 +41,8 @@ pub enum Fmt {
     /// The project's formatter config leaves this file out (e.g. Biome's `files.includes`).
     Ignored(String),
     NoFormatter,
+    /// The `formatter` setting is "none" for this language.
+    Off,
 }
 
 impl App {
@@ -56,18 +67,28 @@ impl App {
         let Some(path) = self.docs.get(i).and_then(|d| d.path().map(Path::to_path_buf)) else {
             return Fmt::NoFormatter;
         };
+        let choice = self.config.formatter_for(self.docs[i].lang).to_string();
+        match choice.as_str() {
+            "none" => return Fmt::Off,
+            "biome" | "prettier" => {
+                return match crate::format::detect_named(&path, &choice) {
+                    Some(f) => self.format_external(i, &f, &path),
+                    None => Fmt::Failed(format!(
+                        "{choice} is not set up for this file (needs its config and node_modules/.bin/{choice})"
+                    )),
+                };
+            }
+            "lsp" => {
+                return self
+                    .format_with_lsp(i, wait)
+                    .or_else(|| self.format_with_companion(i, wait))
+                    .unwrap_or_else(|| Fmt::Failed("no language server of this file can format it".into()));
+            }
+            c if c.starts_with("lsp:") => return self.format_with_named(i, &c["lsp:".len()..], wait),
+            _ => {}
+        }
         if let Some(f) = crate::format::detect(&path) {
-            let text = self.docs[i].buf.to_string();
-            return match crate::format::run(&f, &text) {
-                // Unchanged may also mean "not one of mine": Biome says nothing about ignored files.
-                Ok(new) if new == text && crate::format::biome_ignores(&f, &path) => Fmt::Ignored(f.name.into()),
-                Ok(new) if new == text => Fmt::Same(f.name.into()),
-                Ok(new) => {
-                    self.docs[i].replace_text(&new);
-                    Fmt::Changed(f.name.into())
-                }
-                Err(e) => Fmt::Failed(e),
-            };
+            return self.format_external(i, &f, &path);
         }
         if let Some(r) = self.format_with_lsp(i, wait) {
             return r;
@@ -89,6 +110,36 @@ impl App {
             };
         }
         Fmt::NoFormatter
+    }
+
+    /// Biome / Prettier on stdin.
+    fn format_external(&mut self, i: usize, f: &crate::format::Formatter, path: &Path) -> Fmt {
+        let text = self.docs[i].buf.to_string();
+        match crate::format::run(f, &text) {
+            // Unchanged may also mean "not one of mine": Biome says nothing about ignored files.
+            Ok(new) if new == text && crate::format::biome_ignores(f, path) => Fmt::Ignored(f.name.into()),
+            Ok(new) if new == text => Fmt::Same(f.name.into()),
+            Ok(new) => {
+                self.docs[i].replace_text(&new);
+                Fmt::Changed(f.name.into())
+            }
+            Err(e) => Fmt::Failed(e),
+        }
+    }
+
+    /// `formatter: "lsp:<name>"`: the document's primary server or one of its companions, by name.
+    fn format_with_named(&mut self, i: usize, name: &str, wait: Duration) -> Fmt {
+        // Start the primary server if needed (a fresh file may not be open on it yet).
+        let primary = self.ensure_lsp(i);
+        if primary.is_some_and(|li| self.lsps[li].name == name) {
+            return self
+                .format_with_lsp(i, wait)
+                .unwrap_or_else(|| Fmt::Failed(format!("{name} cannot format this file")));
+        }
+        match self.lspx_open_companions(i).into_iter().find(|&c| self.lsps[c].name == name) {
+            Some(c) => self.format_via(i, c, wait),
+            None => Fmt::Failed(format!("language server \"{name}\" is not running for this file")),
+        }
     }
 
     /// `textDocument/formatting` from the language server of this file; `None` when there is no
@@ -173,16 +224,25 @@ impl App {
         out
     }
 
-    /// Format-on-save step for document `i`. Returns what to tell the user *after* saving
-    /// (formatting problems must not be overwritten by the plain "Saved" message).
+    /// Save step for document `i`: code actions on save, then format-on-save. Returns what to tell
+    /// the user *after* saving (problems must not be overwritten by the plain "Saved" message).
     pub fn format_for_save(&mut self, i: usize) -> Option<String> {
+        let actions = self.code_actions_for_save(i);
+        let fmt = self.format_step_for_save(i);
+        match (actions, fmt) {
+            (Some(a), Some(f)) => Some(format!("{a}; {f}")),
+            (a, f) => a.or(f),
+        }
+    }
+
+    fn format_step_for_save(&mut self, i: usize) -> Option<String> {
         // `languages.<id>.format_on_save` overrides the global switch for that language.
         if !self.config.format_on_save_for(self.docs.get(i).and_then(|d| d.lang)) {
             return None;
         }
         let path = self.docs.get(i)?.path()?.to_path_buf();
         match self.format_doc(i, SAVE_WAIT) {
-            Fmt::Changed(_) | Fmt::Same(_) => None,
+            Fmt::Changed(_) | Fmt::Same(_) | Fmt::Off => None,
             Fmt::Failed(e) => Some(format!("formatting failed: {e}")),
             Fmt::TimedOut(n) => Some(format!("{n} did not answer in time, so it was saved unformatted")),
             // Once per file: saving it again must not keep repeating it.
@@ -209,6 +269,10 @@ impl App {
             Fmt::Failed(e) => self.say_for(format!("failed to format — {e}"), 8),
             Fmt::TimedOut(n) => self.say_for(format!("{n} did not answer in time — try again"), 8),
             Fmt::Ignored(n) => self.say_for(ignored_msg(&n), 8),
+            Fmt::Off => {
+                let lang = self.docs[i].lang.unwrap_or("this file");
+                self.say_for(format!("formatting is off for {lang} (\"formatter\": \"none\" in config.json)"), 8)
+            }
             Fmt::NoFormatter => {
                 let key = crate::format::type_key(&path);
                 self.fmt_told.insert(key.clone());
@@ -219,6 +283,166 @@ impl App {
 }
 
 pub(crate) const TIMEOUT: &str = "timeout";
+
+/// Does an action of kind `got` belong to the requested kind `want` (`source.fixAll.eslint` is a
+/// `source.fixAll`)? An action without a kind is taken (the server already filtered by `only`).
+pub(crate) fn kind_matches(want: &str, got: Option<&str>) -> bool {
+    match got {
+        None | Some("") => true,
+        Some(g) => g == want || g.strip_prefix(want).is_some_and(|rest| rest.starts_with('.')),
+    }
+}
+
+/// Does a server's `codeActionProvider` capability allow kind `want`? `true` / an object without
+/// `codeActionKinds` allows everything; a listed kind allows itself and its sub-kinds and parents
+/// (asking for `source` is answered with `source.organizeImports`).
+pub(crate) fn offers_kind(cap: &Value, want: &str) -> bool {
+    if cap.is_null() || cap.as_bool() == Some(false) {
+        return false;
+    }
+    match cap["codeActionKinds"].as_array() {
+        Some(kinds) => {
+            kinds.iter().filter_map(Value::as_str).any(|k| kind_matches(want, Some(k)) || kind_matches(k, Some(want)))
+        }
+        None => true,
+    }
+}
+
+impl App {
+    /// Run the `code_actions_on_save` kinds of document `i`'s language, in order, on every server
+    /// of the document that offers them. Returns a message when something timed out.
+    pub(crate) fn code_actions_for_save(&mut self, i: usize) -> Option<String> {
+        let kinds = self.config.code_actions_for(self.docs.get(i)?.lang).to_vec();
+        if kinds.is_empty() || !self.lsp_enabled() || self.docs[i].path().is_none() {
+            return None;
+        }
+        if self.docs[i].buf.line_count() > crate::bigfile::BIG_LINES {
+            return None;
+        }
+        // Primary (tsgo or the registry primary), then companions, then Biome's server.
+        let mut servers: Vec<usize> = Vec::new();
+        if let Some(li) = self.doc_lsp(i).filter(|_| self.docs[i].lsp_open) {
+            servers.push(li);
+        }
+        servers.extend(self.lspx_open_companions(i));
+        if let Some(lb) = self.biome_index(i).filter(|_| self.docs[i].biome_open) {
+            servers.push(lb);
+        }
+        servers.dedup();
+        let mut slow: Vec<String> = Vec::new();
+        let mut hung: Vec<usize> = Vec::new();
+        for kind in &kinds {
+            for &li in &servers {
+                if hung.contains(&li) || li >= self.lsps.len() || !self.lsps[li].ready {
+                    continue;
+                }
+                if !offers_kind(&self.lsps[li].caps["codeActionProvider"], kind) {
+                    continue;
+                }
+                if !self.run_save_action(i, li, kind) {
+                    hung.push(li);
+                    slow.push(format!("{kind} ({})", self.lsps[li].name));
+                }
+            }
+        }
+        (!slow.is_empty()).then(|| format!("{} timed out", slow.join(", ")))
+    }
+
+    /// One on-save code action kind on server `li`. False when the server did not answer in time.
+    fn run_save_action(&mut self, i: usize, li: usize, kind: &str) -> bool {
+        self.sync_for_action(i, li);
+        let d = &self.docs[i];
+        let tsgo = self.lsps[li].name == "tsgo";
+        let Some(uri) = (if tsgo { d.uri() } else { d.real_uri() }) else { return true };
+        let last = d.buf.line_count().saturating_sub(1);
+        let (el, ec) = d.lsp_pos(d.buf.pos(last, d.buf.line_len(last)));
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": el, "character": ec}},
+            "context": {"diagnostics": [], "only": [kind], "triggerKind": 2}
+        });
+        let version = d.version;
+        let v = match self.lsp_request_wait(li, "textDocument/codeAction", params, ACTION_WAIT) {
+            Ok(v) => v,
+            Err(e) => return e != TIMEOUT,
+        };
+        if li >= self.lsps.len() || self.docs.get(i).is_none_or(|d| d.version != version) {
+            return true;
+        }
+        let Some(action) = v
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|a| a["command"].is_string() || kind_matches(kind, a["kind"].as_str()))
+            .cloned()
+        else {
+            return true;
+        };
+        // A bare `Command` (no edit, `command` is the id).
+        if let Some(cmd) = action["command"].as_str() {
+            let params = json!({"command": cmd, "arguments": action["arguments"]});
+            return self.lsp_request_wait(li, "workspace/executeCommand", params, ACTION_WAIT).err().as_deref()
+                != Some(TIMEOUT);
+        }
+        let mut action = action;
+        if !action["edit"].is_object() && action["data"].is_object() && !action["command"].is_object() {
+            match self.lsp_request_wait(li, "codeAction/resolve", action.clone(), ACTION_WAIT) {
+                Ok(r) => action = r,
+                Err(e) => return e != TIMEOUT,
+            }
+        }
+        if action["edit"].is_object() {
+            self.apply_edit_to_doc(i, &action["edit"]);
+        }
+        if action["command"].is_object() && li < self.lsps.len() {
+            let c = &action["command"];
+            let params = json!({"command": c["command"], "arguments": c["arguments"]});
+            // The server applies its edit through `workspace/applyEdit`, handled while waiting.
+            return self.lsp_request_wait(li, "workspace/executeCommand", params, ACTION_WAIT).err().as_deref()
+                != Some(TIMEOUT);
+        }
+        true
+    }
+
+    /// Make sure server `li` has the document's current text before asking it for actions.
+    fn sync_for_action(&mut self, i: usize, li: usize) {
+        if self.lsps[li].name == "biome" {
+            if self.docs[i].lint_changed_at.is_some()
+                && let Some(uri) = self.docs[i].real_uri()
+            {
+                let d = &mut self.docs[i];
+                d.lint_changed_at = None;
+                let params = json!({"textDocument": {"uri": uri, "version": d.version}, "contentChanges": [{"text": d.buf.to_string()}]});
+                self.lsps[li].notify("textDocument/didChange", params);
+            }
+            return;
+        }
+        if self.docs[i].changed_at.is_some() {
+            self.send_change(i);
+        }
+    }
+
+    /// Apply the part of a `WorkspaceEdit` that touches document `i` (on-save actions never open
+    /// or change other files).
+    fn apply_edit_to_doc(&mut self, i: usize, edit: &Value) {
+        let Some(path) = self.docs[i].path().map(Path::to_path_buf) else { return };
+        let mine = |uri: &str| crate::doc::uri_to_path(uri).is_some_and(|p| p == path);
+        let mut edits = Vec::new();
+        for (uri, e) in edit["changes"].as_object().into_iter().flatten() {
+            if mine(uri) {
+                edits.extend(parse_edits(e));
+            }
+        }
+        for dc in edit["documentChanges"].as_array().into_iter().flatten() {
+            if dc["textDocument"]["uri"].as_str().is_some_and(mine) {
+                edits.extend(parse_edits(&dc["edits"]));
+            }
+        }
+        if !edits.is_empty() {
+            self.docs[i].apply_lsp_edits(&edits);
+        }
+    }
+}
 
 fn ignored_msg(name: &str) -> String {
     let cfg = if name == "biome" { " (files.includes / ignore in biome.json)" } else { "" };
@@ -463,5 +687,179 @@ esac
             l.shutdown();
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The fake server built from `examples/fake_lsp.rs` (cargo builds examples for `cargo test`).
+    fn fake_exe() -> Option<std::path::PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        let p = exe.parent()?.parent()?.join("examples").join(format!("fake_lsp{}", std::env::consts::EXE_SUFFIX));
+        p.exists().then_some(p)
+    }
+
+    fn fake_server(exe: &Path, env: Value) -> Value {
+        let mut env = env;
+        env["FAKE_NAME"] = json!("a");
+        json!({"fake-a": {"command": exe, "languages": ["fk"], "role": "primary", "env": env}})
+    }
+
+    /// Open `f` and wait until the fake server has it open.
+    fn open_on_server(app: &mut App, f: &Path, text: &str) -> usize {
+        let i = open(app, f, text);
+        let end = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < end {
+            app.lsp_tick(Instant::now(), &mut |_| {});
+            app.pump_lsp();
+            if app.lsps.first().is_some_and(|l| l.ready && !l.open_uris.is_empty()) {
+                return i;
+            }
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        panic!("the fake server never opened the file: {:?}", app.status);
+    }
+
+    #[test]
+    fn formatter_setting_picks_the_winner_or_turns_formatting_off() {
+        let _g = lock();
+        let dir = project("choice");
+        let mut app = test_app(&dir);
+        app.apply_setting("format_on_save", &json!(true));
+        // Both are set up; Biome would win on its own.
+        fake_prettier(&dir, "sed 's/  */ /g'");
+        std::fs::write(dir.join("biome.json"), "{}").unwrap();
+        let bin = dir.join("node_modules/.bin/biome");
+        std::fs::write(&bin, "#!/bin/sh\ntr a-z A-Z\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let f = dir.join("src/a.css");
+        let i = open(&mut app, &f, "a   {  }\n");
+        assert_eq!(app.format_doc(i, MANUAL_WAIT), Fmt::Changed("biome".into()), "auto: Biome first");
+        app.docs[i].replace_text("a   {  }\n");
+        app.config.formatter = [("*".to_string(), "prettier".to_string())].into();
+        assert_eq!(app.format_doc(i, MANUAL_WAIT), Fmt::Changed("prettier".into()));
+        assert_eq!(app.docs[i].buf.to_string(), "a { }\n");
+        // "none": saved as typed, silently; the explicit command says why.
+        app.config.formatter = [("*".to_string(), "none".to_string())].into();
+        app.docs[i].replace_text("b   {  }\n");
+        app.save_active();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "b   {  }\n");
+        assert_eq!(status(&app), "Saved a.css");
+        app.format_document();
+        assert!(status(&app).contains("formatting is off"), "{}", status(&app));
+        // A forced formatter that is not set up is an error, not a silent fallback.
+        std::fs::remove_file(dir.join("node_modules/.bin/prettier")).unwrap();
+        app.config.formatter = [("*".to_string(), "prettier".to_string())].into();
+        let r = app.format_doc(i, MANUAL_WAIT);
+        assert!(matches!(&r, Fmt::Failed(m) if m.contains("prettier is not set up")), "{r:?}");
+        // A server that is not running.
+        app.config.formatter = [("*".to_string(), "lsp:nope".to_string())].into();
+        let r = app.format_doc(i, MANUAL_WAIT);
+        assert!(matches!(&r, Fmt::Failed(m) if m.contains("\"nope\" is not running")), "{r:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn formatter_lsp_name_beats_the_project_formatter() {
+        let _g = lock();
+        let Some(exe) = fake_exe() else { return eprintln!("fake_lsp example not built, skipping") };
+        let dir = project("lspname");
+        let mut app = test_app(&dir);
+        fake_prettier(&dir, "sed 's/  */ /g'");
+        app.config.language_servers = fake_server(&exe, json!({"FAKE_FORMAT": "1"}));
+        let i = open_on_server(&mut app, &dir.join("src/x.fk"), "x   y\n");
+        assert_eq!(app.format_doc(i, MANUAL_WAIT), Fmt::Changed("prettier".into()), "auto: the project's formatter");
+        app.config.formatter = [("*".to_string(), "lsp:fake-a".to_string())].into();
+        assert_eq!(app.format_doc(i, MANUAL_WAIT), Fmt::Changed("fake-a".into()));
+        assert!(app.docs[i].buf.to_string().starts_with("// formatted by a\n"));
+        app.config.formatter = [("*".to_string(), "lsp".to_string())].into();
+        assert_eq!(app.format_doc(i, MANUAL_WAIT), Fmt::Changed("fake-a".into()));
+        for l in &mut app.lsps {
+            l.shutdown();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn code_actions_run_in_order_before_saving() {
+        let _g = lock();
+        let Some(exe) = fake_exe() else { return eprintln!("fake_lsp example not built, skipping") };
+        let dir = project("onsave");
+        let mut app = test_app(&dir);
+        app.config.language_servers = fake_server(&exe, json!({"FAKE_ACTIONS": "1"}));
+        app.config.code_actions_on_save =
+            [("*".to_string(), vec!["source.organizeImports".to_string(), "source.fixAll".to_string()])].into();
+        let f = dir.join("src/x.fk");
+        let i = open_on_server(&mut app, &f, "x\n");
+        app.docs[i].replace_text("y\n");
+        app.save_active();
+        // organizeImports (an edit) first, then fixAll (resolved): each saw the other's result.
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "// fixed\n// imports organized\ny\n");
+        assert_eq!(app.docs[i].buf.to_string(), "// fixed\n// imports organized\ny\n");
+        assert_eq!(status(&app), "Saved x.fk");
+        assert!(app.lsps[0].log_text().contains("codeAction/resolve"));
+        // One undo step per action, never a save of something else.
+        let d = &mut app.docs[i];
+        d.ed.undo(&mut d.buf);
+        assert_eq!(app.docs[i].buf.to_string(), "// imports organized\ny\n");
+        // A language whose list is empty runs nothing.
+        let lang = app.docs[i].lang.unwrap_or("*").to_string();
+        app.config.code_actions_on_save.insert(lang, Vec::new());
+        app.config.code_actions_on_save.insert("*".into(), Vec::new());
+        app.docs[i].replace_text("z\n");
+        app.save_active();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "z\n");
+        for l in &mut app.lsps {
+            l.shutdown();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hung_server_never_blocks_saving_and_big_files_are_skipped() {
+        let _g = lock();
+        let Some(exe) = fake_exe() else { return eprintln!("fake_lsp example not built, skipping") };
+        let dir = project("onsavehang");
+        let mut app = test_app(&dir);
+        app.config.language_servers = fake_server(&exe, json!({"FAKE_HANG_ACTIONS": "1"}));
+        app.config.code_actions_on_save =
+            [("*".to_string(), vec!["source.organizeImports".to_string(), "source.fixAll".to_string()])].into();
+        let f = dir.join("src/x.fk");
+        let i = open_on_server(&mut app, &f, "x\n");
+        app.docs[i].replace_text("typed\n");
+        let t0 = Instant::now();
+        app.save_active();
+        let took = t0.elapsed();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "typed\n", "saved as typed");
+        assert!(took < ACTION_WAIT * 2, "the hung server was asked once, then skipped: {took:?}");
+        let m = status(&app);
+        assert!(m.starts_with("Saved x.fk, but source.organizeImports (fake-a) timed out"), "{m}");
+        assert!(app.status.as_ref().unwrap().1 > Instant::now() + Duration::from_secs(5), "shown for long enough");
+        // Above the big-file threshold nothing is asked at all.
+        let big = "line\n".repeat(crate::bigfile::BIG_LINES + 10);
+        app.docs[i].replace_text(&big);
+        let t0 = Instant::now();
+        app.save_active();
+        assert!(t0.elapsed() < ACTION_WAIT, "no wait for a big file");
+        assert_eq!(status(&app), "Saved x.fk");
+        for l in &mut app.lsps {
+            l.shutdown();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn action_kinds_match_sub_kinds_and_capabilities() {
+        assert!(kind_matches("source.fixAll", Some("source.fixAll.eslint")));
+        assert!(kind_matches("source.fixAll", Some("source.fixAll")));
+        assert!(!kind_matches("source.fixAll", Some("source.fixAllX")));
+        assert!(!kind_matches("source.fixAll", Some("source.organizeImports")));
+        assert!(kind_matches("source.fixAll", None));
+        assert!(offers_kind(&json!(true), "source.fixAll"));
+        assert!(!offers_kind(&Value::Null, "source.fixAll"));
+        assert!(!offers_kind(&json!(false), "source.fixAll"));
+        assert!(offers_kind(&json!({"resolveProvider": true}), "source.fixAll"));
+        let ruff = json!({"codeActionKinds": ["quickfix", "source.fixAll.ruff", "source.organizeImports.ruff"]});
+        assert!(offers_kind(&ruff, "source.fixAll"));
+        assert!(offers_kind(&ruff, "source.organizeImports"));
+        assert!(!offers_kind(&json!({"codeActionKinds": ["quickfix"]}), "source.fixAll"));
+        assert!(offers_kind(&json!({"codeActionKinds": ["source"]}), "source.organizeImports"));
     }
 }

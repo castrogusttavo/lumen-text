@@ -121,6 +121,15 @@ impl App {
                 field.end();
                 Next::Nothing
             }
+            Key::Character(c)
+                if alt
+                    && c.to_lowercase() == "w"
+                    && matches!(&self.overlay, Overlay::Picker(p) if p.kind == PickKind::Problems) =>
+            {
+                let project = !self.problems_project();
+                self.set_problems_scope(project);
+                Next::Changed
+            }
             Key::Character(c) if alt && (c.as_str() == "c" || c.as_str() == "r") => {
                 if let Overlay::Picker(p) = &mut self.overlay {
                     if c.as_str() == "c" { p.case = !p.case } else { p.regex = !p.regex }
@@ -328,6 +337,10 @@ impl App {
         }
         if matches!(self.overlay, Overlay::Font(_)) {
             return self.fontpicker_mouse(x, y);
+        }
+        if self.problems_chip_click(self.picker_rect(), INPUT_H, x, y) {
+            self.request_redraw();
+            return true;
         }
         let rows = self.layout.overlay_rows.clone();
         if let Some((_, idx)) = rows.iter().find(|(r, _)| r.contains(x, y)) {

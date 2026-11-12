@@ -833,25 +833,6 @@ impl App {
         }
     }
 
-    /// Build problems of files that are not open, for the Problems picker (open files carry them
-    /// as diagnostics already).
-    pub fn build_problem_items(&self) -> Vec<Item> {
-        self.build
-            .problems
-            .iter()
-            .filter(|p| p.sev != Sev::Info && !self.docs.iter().any(|d| d.path() == Some(p.file.as_path())))
-            .map(|p| Item {
-                label: format!(
-                    "{} {}",
-                    if p.sev == Sev::Error { "\u{f057}" } else { "\u{f071}" },
-                    p.message.lines().next().unwrap_or("")
-                ),
-                detail: format!("{}:{} · build", self.rel(&p.file), p.line + 1),
-                action: Action::Open(p.file.clone(), Some((p.line, p.col))),
-            })
-            .collect()
-    }
-
     // ───────────── input ─────────────
 
     fn build_hit_at(&self, x: f64, y: f64) -> Option<&Hit> {
@@ -1840,7 +1821,8 @@ mod tests {
             .collect();
         assert_eq!(diags, vec![(1, 8, 9, 2, "unused".to_string()), (2, 16, 20, 1, "boom".to_string())]);
         // ...and the Problems picker lists nothing twice for an open file.
-        assert!(app.build_problem_items().is_empty());
+        let (_, items) = app.problem_items(false);
+        assert_eq!(items.iter().filter(|it| it.label.ends_with("boom")).count(), 1, "listed once");
         // Clean without a clean command clears the problems and the diagnostics.
         app.build_clean();
         app.build_sync_diags();

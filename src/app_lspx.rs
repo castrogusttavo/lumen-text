@@ -62,6 +62,10 @@ pub struct LspX {
     /// Last check for URIs no open document has (see `lspx_close_strays`).
     strays_at: Option<Instant>,
     pub timing: lspsup::Timing,
+    /// Diagnostics of files that are not open (Problems panel, whole-project scope).
+    pub problems: crate::problems::ProjectDiags,
+    /// In-flight `workspace/diagnostic` requests and the panel's refresh bookkeeping.
+    pub ws: crate::app_problems::WsState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -392,6 +396,7 @@ impl App {
     /// Documents that were open on a server that is gone lose its diagnostics and must reopen.
     fn lspx_forget_docs(&mut self, l: &Lsp) {
         let Some(g) = &l.generic else { return };
+        self.lspx.problems.clear_source(&g.id);
         for i in 0..self.docs.len() {
             let Some(uri) = self.docs[i].real_uri() else { continue };
             if !l.open_uris.contains(&uri) {
@@ -706,6 +711,12 @@ impl App {
                 self.lspx_rearm(li);
                 Value::Null
             }
+            "workspace/diagnostic/refresh" => {
+                self.lspx_rearm(li);
+                self.lsp_refresh_at = Some(Instant::now() + Duration::from_millis(100));
+                self.ws_refresh_requested();
+                Value::Null
+            }
             // window/workDoneProgress/create, window/showMessageRequest, window/showDocument...
             _ => Value::Null,
         };
@@ -1008,17 +1019,22 @@ impl App {
 impl App {
     /// Formatting from a companion server (ruff, a formatter-only server) when the primary has none.
     pub(crate) fn format_with_companion(&mut self, i: usize, wait: Duration) -> Option<crate::app_format::Fmt> {
-        use crate::app_format::Fmt;
         let cs: Vec<usize> = self
             .lspx_open_companions(i)
             .into_iter()
             .filter(|&c| self.lsps[c].has_cap("documentFormattingProvider"))
             .collect();
         let li = *cs.first()?;
+        Some(self.format_via(i, li, wait))
+    }
+
+    /// `textDocument/formatting` of document `i` by registry server `li` (which has it open).
+    pub(crate) fn format_via(&mut self, i: usize, li: usize, wait: Duration) -> crate::app_format::Fmt {
+        use crate::app_format::Fmt;
         let name = self.lsps[li].name.clone();
         self.flush(i);
         let d = &self.docs[i];
-        let uri = d.real_uri()?;
+        let Some(uri) = d.real_uri() else { return Fmt::NoFormatter };
         let tab = if d.ed.indent.contains('\t') { d.ed.tab_w } else { d.ed.indent.len().max(1) };
         let params = json!({
             "textDocument": {"uri": uri},
@@ -1028,19 +1044,19 @@ impl App {
         let version = d.version;
         let v = match self.lsp_request_wait(li, "textDocument/formatting", params, wait) {
             Ok(v) => v,
-            Err(e) if e == crate::app_format::TIMEOUT => return Some(Fmt::TimedOut(name)),
-            Err(e) => return Some(Fmt::Failed(format!("{name}: {e}"))),
+            Err(e) if e == crate::app_format::TIMEOUT => return Fmt::TimedOut(name),
+            Err(e) => return Fmt::Failed(format!("{name}: {e}")),
         };
         if self.docs.get(i).is_none_or(|d| d.version != version) {
-            return Some(Fmt::Failed("the text changed during formatting".into()));
+            return Fmt::Failed("the text changed during formatting".into());
         }
         let edits = crate::app_lsp::parse_edits(&v);
         if edits.is_empty() {
-            return Some(Fmt::Same(name));
+            return Fmt::Same(name);
         }
         let before = self.docs[i].buf.to_string();
         self.docs[i].apply_lsp_edits(&edits);
-        Some(if self.docs[i].buf.to_string() == before { Fmt::Same(name) } else { Fmt::Changed(name) })
+        if self.docs[i].buf.to_string() == before { Fmt::Same(name) } else { Fmt::Changed(name) }
     }
 }
 
@@ -1542,6 +1558,10 @@ impl App {
 
     /// A change made on the settings page that belongs to this module. True when handled.
     pub fn lspx_apply_setting(&mut self, key: &str, v: &Value) -> bool {
+        if key == "problems_scope" {
+            self.set_problems_scope(v.as_str() == Some("project"));
+            return true;
+        }
         let Some(rest) = key.strip_prefix("language_servers.") else { return false };
         if let Some(id) = rest.strip_suffix(".enabled")
             && let Some(on) = v.as_bool()

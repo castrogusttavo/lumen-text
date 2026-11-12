@@ -164,6 +164,13 @@ pub fn defs() -> Vec<SettingDef> {
             Choice(crate::assist::InlineDiags::NAMES),
         ),
         d(
+            "problems_scope",
+            "Editor display",
+            "Problems scope",
+            "What the Problems panel lists: open_files (the diagnostics of the open documents) or project (also what the language servers report for files that are not open, asked with workspace pull diagnostics where supported). Alt+W in the panel switches it.",
+            Choice(&["open_files", "project"]),
+        ),
+        d(
             "build_command",
             "Build",
             "Build command",
@@ -221,6 +228,7 @@ pub fn defaults() -> Value {
         "ai_notifications": true,
         "diff_ignore_whitespace": false,
         "rulers": "", "inline_diagnostics": "current_line",
+        "problems_scope": "open_files",
     })
 }
 
@@ -241,6 +249,7 @@ pub fn values(c: &Config) -> Value {
         "ai_notifications": c.ai_notifications,
         "diff_ignore_whitespace": c.diff_ignore_whitespace,
         "rulers": crate::assist::rulers_text(&c.rulers), "inline_diagnostics": c.inline_diagnostics,
+        "problems_scope": c.problems_scope,
     })
 }
 

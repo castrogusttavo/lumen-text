@@ -147,6 +147,59 @@ pub struct Config {
     pub view: ViewPrefs,
     /// Spell checking through the companion servers harper-ls and typos-lsp (when installed).
     pub spell_check: bool,
+    /// Problems panel scope: "open_files" (default) or "project" (whole-project diagnostics).
+    pub problems_scope: String,
+    /// Which formatter wins per language id ("*" = every language): "auto" (default: the project's
+    /// Biome / Prettier, then the language server), "biome", "prettier", "lsp", "lsp:<server>",
+    /// "none". See [`clean_formatter`].
+    pub formatter: BTreeMap<String, String>,
+    /// Code action kinds run (in order) before formatting on save, per language id ("*" = every
+    /// language), e.g. `["source.organizeImports", "source.fixAll"]`.
+    pub code_actions_on_save: BTreeMap<String, Vec<String>>,
+}
+
+/// `problems_scope` values; anything else is "open_files".
+pub fn normalize_problems_scope(v: Option<&str>) -> String {
+    if v == Some("project") { "project".into() } else { "open_files".into() }
+}
+
+/// A `formatter` value, or `None` when it names no known formatter.
+pub fn clean_formatter(v: &str) -> Option<String> {
+    let v = v.trim();
+    match v {
+        "auto" | "none" | "biome" | "prettier" | "lsp" => Some(v.to_string()),
+        _ => v.strip_prefix("lsp:").map(str::trim).filter(|n| !n.is_empty()).map(|n| format!("lsp:{n}")),
+    }
+}
+
+/// `formatter` from config.json: one string for every language or a map of language id to value.
+fn parse_formatter(v: &Value) -> BTreeMap<String, String> {
+    match v {
+        Value::String(s) => clean_formatter(s).map(|f| BTreeMap::from([("*".to_string(), f)])).unwrap_or_default(),
+        Value::Object(o) => {
+            o.iter().filter_map(|(k, x)| Some((k.trim().to_string(), clean_formatter(x.as_str()?)?))).collect()
+        }
+        _ => BTreeMap::new(),
+    }
+}
+
+/// `code_actions_on_save` from config.json: a list for every language or a map of language id to list.
+fn parse_code_actions(v: &Value) -> BTreeMap<String, Vec<String>> {
+    let list = |a: &Value| -> Option<Vec<String>> {
+        let kinds: Vec<String> = a
+            .as_array()?
+            .iter()
+            .filter_map(|k| k.as_str().map(str::trim).filter(|k| !k.is_empty()).map(str::to_string))
+            .collect();
+        Some(kinds)
+    };
+    match v {
+        Value::Array(_) => {
+            list(v).filter(|l| !l.is_empty()).map(|l| BTreeMap::from([("*".to_string(), l)])).unwrap_or_default()
+        }
+        Value::Object(o) => o.iter().filter_map(|(k, x)| Some((k.trim().to_string(), list(x)?))).collect(),
+        _ => BTreeMap::new(),
+    }
 }
 
 /// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
@@ -328,6 +381,9 @@ impl Default for Config {
             inline_diagnostics: "current_line".into(),
             view: ViewPrefs::default(),
             spell_check: false,
+            problems_scope: "open_files".into(),
+            formatter: BTreeMap::new(),
+            code_actions_on_save: BTreeMap::new(),
         }
     }
 }
@@ -457,6 +513,20 @@ impl Config {
             return slot + 1;
         }
         list[..slot].iter().filter(|s| self.status_visible(s)).count() + 1
+    }
+
+    /// The `formatter` choice for a language id: its own entry, else "*", else "auto".
+    pub fn formatter_for(&self, lang: Option<&str>) -> &str {
+        lang.and_then(|l| self.formatter.get(l)).or_else(|| self.formatter.get("*")).map_or("auto", String::as_str)
+    }
+
+    /// The code action kinds to run on save for a language id: its own list (an empty one switches
+    /// them off), else the "*" list.
+    pub fn code_actions_for(&self, lang: Option<&str>) -> &[String] {
+        lang.and_then(|l| self.code_actions_on_save.get(l))
+            .or_else(|| self.code_actions_on_save.get("*"))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Does the sidebar / tab bar / status bar use the theme's own colors?
@@ -621,6 +691,9 @@ impl Config {
                 .to_string(),
             view: ViewPrefs::from_json(v),
             spell_check: v["spell_check"].as_bool().unwrap_or(false),
+            problems_scope: normalize_problems_scope(v["problems_scope"].as_str()),
+            formatter: parse_formatter(&v["formatter"]),
+            code_actions_on_save: parse_code_actions(&v["code_actions_on_save"]),
         }
     }
 
@@ -669,6 +742,15 @@ impl Config {
         v["inline_diagnostics"] = json!(self.inline_diagnostics);
         if !self.languages.is_null() {
             v["languages"] = self.languages.clone();
+        }
+        v["problems_scope"] = json!(self.problems_scope);
+        if !self.formatter.is_empty() {
+            v["formatter"] = json!(self.formatter);
+        }
+        match self.code_actions_on_save.get("*") {
+            Some(all) if self.code_actions_on_save.len() == 1 => v["code_actions_on_save"] = json!(all),
+            _ if !self.code_actions_on_save.is_empty() => v["code_actions_on_save"] = json!(self.code_actions_on_save),
+            _ => {}
         }
         self.view.write_json(&mut v);
         v
@@ -795,6 +877,9 @@ mod tests {
                 buffer_letter_spacing: 0.5,
             },
             spell_check: true,
+            problems_scope: "project".into(),
+            formatter: [("python".to_string(), "lsp:ruff".to_string())].into(),
+            code_actions_on_save: [("*".to_string(), vec!["source.fixAll".to_string()])].into(),
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);
@@ -1117,6 +1202,50 @@ mod tests {
         let c = Config { sidebar_width: 312, ..Config::default() };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p).sidebar_width, 312, "persisted");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn formatter_code_actions_and_problems_scope_load_clean_and_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("lumen-cfg-fmtchoice-{}", std::process::id()));
+        let p = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let load = |raw: &str| {
+            std::fs::write(&p, raw).unwrap();
+            Config::load_from(&p)
+        };
+        let c = load("{}");
+        assert_eq!(c.problems_scope, "open_files");
+        assert_eq!(c.formatter_for(Some("python")), "auto");
+        assert!(c.code_actions_for(Some("python")).is_empty());
+        let c = load(
+            r#"{"problems_scope": "project",
+                "formatter": {"python": "lsp:ruff", "typescript": "biome", "go": "gofmt?", "*": "prettier", "rust": " lsp: "},
+                "code_actions_on_save": {"python": ["source.organizeImports", " source.fixAll ", ""], "go": [], "*": ["source.fixAll"]}}"#,
+        );
+        assert_eq!(c.problems_scope, "project");
+        assert_eq!(c.formatter_for(Some("python")), "lsp:ruff");
+        assert_eq!(c.formatter_for(Some("typescript")), "biome");
+        assert_eq!(c.formatter_for(Some("go")), "prettier", "an unknown value is dropped: the default entry applies");
+        assert_eq!(c.formatter_for(Some("rust")), "prettier", "`lsp:` without a name is not a choice");
+        assert_eq!(c.formatter_for(None), "prettier");
+        assert_eq!(c.code_actions_for(Some("python")), ["source.organizeImports", "source.fixAll"]);
+        assert!(c.code_actions_for(Some("go")).is_empty(), "an empty list switches them off for that language");
+        assert_eq!(c.code_actions_for(Some("css")), ["source.fixAll"]);
+        c.save_to(&p).unwrap();
+        assert_eq!(Config::load_from(&p), c, "round trip");
+        // The short forms: one formatter and one list for every language.
+        let c =
+            load(r#"{"formatter": "none", "code_actions_on_save": ["source.organizeImports"], "problems_scope": "x"}"#);
+        assert_eq!(c.formatter_for(Some("anything")), "none");
+        assert_eq!(c.code_actions_for(Some("anything")), ["source.organizeImports"]);
+        assert_eq!(c.problems_scope, "open_files");
+        c.save_to(&p).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("\"code_actions_on_save\": [") && text.contains("\"*\": \"none\""), "{text}");
+        assert_eq!(Config::load_from(&p), c);
+        assert_eq!(clean_formatter("lsp:rust-analyzer").as_deref(), Some("lsp:rust-analyzer"));
+        assert_eq!(clean_formatter("black"), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

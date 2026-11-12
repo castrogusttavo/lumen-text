@@ -82,6 +82,8 @@ pub enum PickKind {
     Themes,
     /// Short list of choices opened from the bottom bar (indentation, language).
     Choice,
+    /// The Problems panel (see `app_problems`): grouped rows and a scope switch.
+    Problems,
 }
 
 pub struct Picker {
@@ -240,7 +242,7 @@ pub fn typed_picker(title: &str, items: Vec<Item>, make: std::rc::Rc<dyn Fn(&str
 }
 
 impl Picker {
-    fn new(kind: PickKind, title: &str, items: Vec<Item>) -> Self {
+    pub(crate) fn new(kind: PickKind, title: &str, items: Vec<Item>) -> Self {
         let mut p = Picker {
             kind,
             title: title.to_string(),
@@ -278,6 +280,7 @@ impl Picker {
                 | PickKind::CodeActions
                 | PickKind::Themes
                 | PickKind::Choice
+                | PickKind::Problems
         );
         if !filter || q.is_empty() {
             self.filtered = (0..self.items.len().min(search::MAX_REPLACE_HITS)).map(|i| (i, Vec::new())).collect();
