@@ -500,7 +500,10 @@ impl App {
         let Some(v) = self.tab_handoff(idx, geom) else { return };
         let name = self.docs[idx].name.clone();
         let Some(dir) = self.win.handoff_dir() else { return self.say("no state folder to hand the tab over") };
-        let file = dir.join(format!("{}-{}.json", std::process::id(), instance::now_ms()));
+        // Two moves within the same millisecond must not share a file: a counter makes the name unique.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let file = dir.join(format!("{}-{}-{seq}.json", std::process::id(), instance::now_ms()));
         let written = std::fs::create_dir_all(&dir).and_then(|_| {
             let mut f = std::fs::File::create(&file)?;
             f.write_all(v.to_string().as_bytes())?;
