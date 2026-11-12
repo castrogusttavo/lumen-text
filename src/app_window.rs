@@ -571,10 +571,10 @@ impl App {
             d.replace_text(t);
         }
         // Encoding and BOM travel with the text: saving the moved tab must not change the file's bytes.
-        if let Some(enc) = v["encoding"].as_str().and_then(crate::encoding::TextEncoding::from_id) {
-            if d.img.is_none() {
-                d.buf.encoding = enc;
-            }
+        if let Some(enc) = v["encoding"].as_str().and_then(crate::encoding::TextEncoding::from_id)
+            && d.img.is_none()
+        {
+            d.buf.encoding = enc;
         }
         let (line, col) = (v["line"].as_u64().unwrap_or(0) as usize, v["col"].as_u64().unwrap_or(0) as usize);
         let line = line.min(d.buf.line_count().saturating_sub(1));
