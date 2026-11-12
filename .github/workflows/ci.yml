@@ -414,6 +414,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write # to dispatch the Web workflow after publishing (see the last step)
     env:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
@@ -477,14 +478,32 @@ jobs:
           # one release, so this is the whole changelog). Written once, used for the GitHub release
           # and (first lines) for latest.json.
           prev="$(gh release view --repo "${GITHUB_REPOSITORY}" --json tagName --jq .tagName 2>/dev/null || true)"
+          # Grouped by type: Conventional Commit prefix (feat/fix/perf/docs/ci/...) or, for free-form
+          # subjects, the first words. Keep in sync with web/src/lib/changelog.ts (the site's changelog).
+          group() { # group <heading> <regex of kinds> <jq-filtered lines> prints a "### heading" block when it has lines
+            [ -n "$3" ] && { echo "### $1"; echo; echo "$3"; echo; }
+            return 0
+          }
           {
             if [ -n "$prev" ] && commits="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${prev}...${GITHUB_SHA}" \
-                --jq '.commits | reverse | map("- " + (.commit.message | split("\n")[0]) + " (`" + .sha[0:7] + "`)") | .[]')" \
+                --jq '.commits | reverse | map({s: (.commit.message | split("\n")[0]), h: .sha[0:7]}) | map(. + {k: (
+                    if (.s | test("^(feat|feature)(\\([^)]*\\))?!?:"; "i")) then "feature"
+                    elif (.s | test("^fix(\\([^)]*\\))?!?:"; "i")) or (.s | test("^(fix(es|ed)?|hotfix|bug)\\b"; "i")) then "fix"
+                    elif (.s | test("^perf(\\([^)]*\\))?!?:"; "i")) then "perf"
+                    elif (.s | test("^(docs?|readme|changelog|roadmap)(\\([^)]*\\))?!?[: ]"; "i")) then "docs"
+                    elif (.s | test("^(ci|build|release|packaging)(\\([^)]*\\))?!?[: ]"; "i")) then "ci"
+                    else "other" end)}) | map({k: .k, line: ("- " + (.s | sub("^(feat|feature|fix|perf|docs|ci|build|chore|refactor|test|style|revert)(\\([^)]*\\))?!?:\\s*"; "")) + " (`" + .h + "`)")}) | .[] | .k + "\t" + .line')" \
                 && [ -n "$commits" ]; then
-              echo "## What changed ($(wc -l <<<"$commits") commits)"
+              n="$(wc -l <<<"$commits")"
+              pick() { grep -P "^$1\t" <<<"$commits" | cut -f2- || true; }
+              echo "## What changed ($n commits)"
               echo
-              echo "$commits"
-              echo
+              group "Features" x "$(pick feature)"
+              group "Bug fixes" x "$(pick fix)"
+              group "Performance" x "$(pick perf)"
+              group "Other changes" x "$(pick other)"
+              group "Docs" x "$(pick docs)"
+              group "Build and CI" x "$(pick ci)"
               echo "**Full diff:** https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...v${VERSION}"
             else
               echo "lumen-text ${VERSION}"
@@ -529,3 +548,9 @@ jobs:
             --target "${GITHUB_SHA}" \
             --title "lumen-text ${VERSION}" \
             --notes-file release-notes.md
+      # A release created with GITHUB_TOKEN does not fire the Web workflow's `release: published`
+      # trigger (GitHub never starts workflows from token-made events), so the site kept showing the
+      # previous version. workflow_dispatch is the one event a token may start: rebuild the site, whose
+      # build reads the latest release.
+      - name: Refresh the website (download page and release notes)
+        run: gh workflow run web.yml --repo "${GITHUB_REPOSITORY}" --ref main
