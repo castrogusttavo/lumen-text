@@ -1,0 +1,7 @@
+<go:import (
+    "fmt"
+    str "strings"
+    "example.com/demo/models"
+)/>
+<p><go= str.ToUpper("x") /></p>
+<p><go= fmt.Sprint(1) /></p>

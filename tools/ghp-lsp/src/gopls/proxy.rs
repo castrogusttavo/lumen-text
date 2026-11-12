@@ -12,7 +12,7 @@
 //! restarted on the next call and its open documents are replayed; after repeated crashes the
 //! bridge gives up with a single status message and degrades to no-ops.
 
-use super::sourcemap::{Position, Range};
+use super::sourcemap::{Position, Range, TextIndex};
 use super::virtual_doc::{ExprRegion, Options, VirtualDoc, build};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -66,13 +66,20 @@ pub fn read_message(r: &mut impl BufRead) -> io::Result<Option<Value>> {
 // URIs
 // ---------------------------------------------------------------------------------------------
 
+/// `file://` URI of a path. A Windows drive path becomes `file:///C:/dir/x`, a UNC path
+/// becomes `file://host/share/x`; backslashes turn into slashes on any host OS.
 pub fn path_to_uri(p: &Path) -> String {
     let s = p.to_string_lossy().replace('\\', "/");
     let mut out = String::from("file://");
-    if !s.starts_with('/') {
-        out.push('/');
-    }
-    for b in s.bytes() {
+    let body = if let Some(unc) = s.strip_prefix("//") {
+        unc
+    } else {
+        if !s.starts_with('/') {
+            out.push('/');
+        }
+        s.as_str()
+    };
+    for b in body.bytes() {
         if b.is_ascii_alphanumeric() || b"-._~/:".contains(&b) {
             out.push(b as char);
         } else {
@@ -82,9 +89,8 @@ pub fn path_to_uri(p: &Path) -> String {
     out
 }
 
-pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
-    let rest = uri.strip_prefix("file://")?;
-    let bytes = rest.as_bytes();
+fn percent_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -97,7 +103,52 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
             i += 1;
         }
     }
-    String::from_utf8(out).ok().map(PathBuf::from)
+    String::from_utf8(out).ok()
+}
+
+/// Path of a `file://` URI, using the conventions of the running OS.
+pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    uri_to_path_for(uri, cfg!(windows))
+}
+
+/// [`uri_to_path`] with the target OS chosen explicitly (so Windows handling is testable
+/// everywhere). On Windows `file:///C:/x` and `file:///c%3A/x` give `C:\x`, and
+/// `file://host/share/x` gives the UNC path `\\host\share\x`.
+pub fn uri_to_path_for(uri: &str, windows: bool) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    let decoded = percent_decode(rest)?;
+    if !windows {
+        let local = decoded.strip_prefix("localhost").filter(|r| r.starts_with('/')).unwrap_or(&decoded);
+        return Some(PathBuf::from(local));
+    }
+    let b = decoded.as_bytes();
+    let path = if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        decoded[1..].to_string()
+    } else if decoded.starts_with('/') {
+        decoded
+    } else {
+        format!("//{decoded}")
+    };
+    Some(PathBuf::from(path.replace('/', "\\")))
+}
+
+/// Canonical form for comparing URIs that name the same file: percent-decoded, forward slashes,
+/// lower-case drive letter. gopls on Windows answers with `file:///c%3A/...` for a document we
+/// opened as `file:///C:/...`.
+pub fn normalize_uri(uri: &str) -> String {
+    let rest = uri.strip_prefix("file://").unwrap_or(uri);
+    let mut s = percent_decode(rest).unwrap_or_else(|| rest.to_string()).replace('\\', "/");
+    let b = s.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        let lower = b[1].to_ascii_lowercase() as char;
+        s.replace_range(1..2, &lower.to_string());
+    }
+    s
+}
+
+/// Whether two URIs name the same file (see [`normalize_uri`]).
+pub fn uri_eq(a: &str, b: &str) -> bool {
+    a == b || normalize_uri(a) == normalize_uri(b)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -114,6 +165,8 @@ pub struct Config {
     pub restart_window: Duration,
     /// Package clause for the virtual file; detected from sibling `.go` files when `None`.
     pub package: Option<String>,
+    /// Never look for or start gopls (the host falls back to its own scope analysis).
+    pub disabled: bool,
 }
 
 impl Default for Config {
@@ -124,6 +177,7 @@ impl Default for Config {
             max_restarts: 3,
             restart_window: Duration::from_secs(60),
             package: None,
+            disabled: false,
         }
     }
 }
@@ -198,10 +252,17 @@ struct Doc {
     vdoc: VirtualDoc,
 }
 
+/// What `update` needs to sync one document to a server.
+struct Snapshot {
+    uri: String,
+    version: i64,
+    text: String,
+}
+
 #[derive(Default)]
 struct Shared {
     docs: Mutex<HashMap<PathBuf, Doc>>,
-    /// Latest raw diagnostics per virtual-document URI.
+    /// Latest raw diagnostics per virtual-document URI ([`normalize_uri`] form).
     diags: Mutex<HashMap<String, Vec<Value>>>,
 }
 
@@ -213,6 +274,9 @@ struct Server {
     pending: Pending,
     alive: Arc<AtomicBool>,
     next_id: AtomicI64,
+    /// Text of every document as last sent to this process, by URI. Changes are sent as a
+    /// minimal edit against it, so a fresh (restarted) process always starts from `didOpen`.
+    synced: Mutex<HashMap<String, String>>,
 }
 
 impl Drop for Server {
@@ -247,6 +311,7 @@ impl Server {
             pending: Arc::new(Mutex::new(HashMap::new())),
             alive: Arc::new(AtomicBool::new(true)),
             next_id: AtomicI64::new(1),
+            synced: Mutex::new(HashMap::new()),
         });
 
         let pending = server.pending.clone();
@@ -295,6 +360,30 @@ impl Server {
         self.send(&json!({"jsonrpc": "2.0", "method": method, "params": params}))
     }
 
+    /// Bring this process up to date with `snap`: `didOpen` the first time, afterwards a single
+    /// incremental `didChange` (nothing at all when the text is unchanged).
+    fn sync_doc(&self, snap: &Snapshot) -> Result<(), ProxyError> {
+        let mut synced = self.synced.lock().unwrap();
+        match synced.get(&snap.uri) {
+            None => self.notify(
+                "textDocument/didOpen",
+                json!({"textDocument": {
+                    "uri": snap.uri, "languageId": "go", "version": snap.version, "text": snap.text
+                }}),
+            )?,
+            Some(prev) if *prev == snap.text => return Ok(()),
+            Some(prev) => self.notify(
+                "textDocument/didChange",
+                json!({
+                    "textDocument": {"uri": snap.uri, "version": snap.version},
+                    "contentChanges": [incremental_change(prev, &snap.text)]
+                }),
+            )?,
+        }
+        synced.insert(snap.uri.clone(), snap.text.clone());
+        Ok(())
+    }
+
     fn request(
         &self,
         method: &str,
@@ -302,6 +391,9 @@ impl Server {
         cancel: &CancelToken,
         timeout: Duration,
     ) -> Result<Value, ProxyError> {
+        if cancel.is_cancelled() {
+            return Err(ProxyError::Cancelled);
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = channel();
         self.pending.lock().unwrap().insert(id, tx);
@@ -309,10 +401,21 @@ impl Server {
             self.pending.lock().unwrap().remove(&id);
             return Err(ProxyError::Crashed);
         }
-        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
+        if let Err(e) = self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})) {
+            self.pending.lock().unwrap().remove(&id);
+            return Err(e);
+        }
         let started = Instant::now();
         loop {
-            match rx.recv_timeout(Duration::from_millis(10)) {
+            let cancelled = cancel.is_cancelled();
+            let elapsed = started.elapsed();
+            if cancelled || elapsed >= timeout {
+                self.pending.lock().unwrap().remove(&id);
+                let _ = self.notify("$/cancelRequest", json!({"id": id}));
+                return Err(if cancelled { ProxyError::Cancelled } else { ProxyError::Timeout });
+            }
+            let wait = Duration::from_millis(10).min(timeout - elapsed);
+            match rx.recv_timeout(wait) {
                 Ok(resp) => {
                     if let Some(err) = resp.get("error") {
                         let m = err.get("message").and_then(Value::as_str).unwrap_or("unknown");
@@ -321,14 +424,7 @@ impl Server {
                     return Ok(resp.get("result").cloned().unwrap_or(Value::Null));
                 }
                 Err(RecvTimeoutError::Disconnected) => return Err(ProxyError::Crashed),
-                Err(RecvTimeoutError::Timeout) => {
-                    let cancelled = cancel.is_cancelled();
-                    if cancelled || started.elapsed() > timeout {
-                        self.pending.lock().unwrap().remove(&id);
-                        let _ = self.notify("$/cancelRequest", json!({"id": id}));
-                        return Err(if cancelled { ProxyError::Cancelled } else { ProxyError::Timeout });
-                    }
-                }
+                Err(RecvTimeoutError::Timeout) => {}
             }
         }
     }
@@ -359,8 +455,8 @@ fn dispatch(
         (Some("textDocument/publishDiagnostics"), None) => {
             let uri = msg["params"]["uri"].as_str().unwrap_or_default().to_string();
             let list = msg["params"]["diagnostics"].as_array().cloned().unwrap_or_default();
-            shared.diags.lock().unwrap().insert(uri.clone(), list);
-            let ghp = shared.docs.lock().unwrap().iter().find(|(_, d)| d.go_uri == uri).map(|(p, _)| p.clone());
+            shared.diags.lock().unwrap().insert(normalize_uri(&uri), list);
+            let ghp = shared.docs.lock().unwrap().iter().find(|(_, d)| uri_eq(&d.go_uri, &uri)).map(|(p, _)| p.clone());
             if let Some(p) = ghp {
                 let _ = events.send(Event::Diagnostics(p));
             }
@@ -457,7 +553,7 @@ impl Bridge {
     /// absent the bridge reports one [`Event::Status`] on first use and answers `None` after.
     pub fn new(cfg: Config) -> (Bridge, Receiver<Event>) {
         let (tx, rx) = channel();
-        let bin = find_gopls(&cfg);
+        let bin = if cfg.disabled { None } else { find_gopls(&cfg) };
         (
             Bridge {
                 cfg,
@@ -478,7 +574,7 @@ impl Bridge {
     fn server(&self, root: &Path) -> Option<Arc<Server>> {
         let Some(bin) = self.bin.as_ref() else {
             let mut sup = self.sup.lock().unwrap();
-            if !sup.notified_missing {
+            if !sup.notified_missing && !self.cfg.disabled {
                 sup.notified_missing = true;
                 let _ = self.events.send(Event::Status(
                     "gopls not found: Go expression intelligence in .ghp files is disabled \
@@ -537,18 +633,19 @@ impl Bridge {
 
     /// Re-open every document of `root` on a fresh server.
     fn replay(&self, root: &Path, s: &Server) {
-        let opens: Vec<Value> = {
+        let snaps: Vec<Snapshot> = {
             let docs = self.shared.docs.lock().unwrap();
-            docs.values().filter(|d| d.root == root).map(did_open).collect()
+            docs.values().filter(|d| d.root == root).map(Doc::snapshot).collect()
         };
-        for p in opens {
-            let _ = s.notify("textDocument/didOpen", p);
+        for snap in &snaps {
+            let _ = s.sync_doc(snap);
         }
     }
 
     // ---- document lifecycle ------------------------------------------------------------------
 
-    /// Open or update a page. Cheap to call on every edit.
+    /// Open or update a page. Cheap to call on every edit: gopls receives one minimal
+    /// incremental edit of the virtual document, or nothing when it did not change.
     pub fn update(&self, ghp_path: &Path, text: &str, regions: &[ExprRegion]) {
         let dir = ghp_path.parent().unwrap_or(Path::new("."));
         let root = module_root(dir);
@@ -557,46 +654,52 @@ impl Bridge {
         let vdoc = build(text, regions, &Options::for_page(stem, &package));
         let go_uri = path_to_uri(&PathBuf::from(format!("{}.go", ghp_path.display())));
 
-        let (first, version) = {
+        let snap = {
             let mut docs = self.shared.docs.lock().unwrap();
-            match docs.get_mut(ghp_path) {
-                Some(d) => {
-                    d.version += 1;
-                    d.vdoc = vdoc.clone();
-                    (false, d.version)
-                }
-                None => {
-                    docs.insert(
-                        ghp_path.to_path_buf(),
-                        Doc { root: root.clone(), go_uri: go_uri.clone(), version: 1, vdoc: vdoc.clone() },
-                    );
-                    (true, 1)
-                }
-            }
+            let d = docs.entry(ghp_path.to_path_buf()).or_insert_with(|| Doc {
+                root: root.clone(),
+                go_uri: go_uri.clone(),
+                version: 0,
+                vdoc: vdoc.clone(),
+            });
+            d.version += 1;
+            d.vdoc = vdoc;
+            d.snapshot()
         };
         let Some(server) = self.server(&root) else { return };
-        let _ = if first {
-            let open = did_open(&self.shared.docs.lock().unwrap()[ghp_path]);
-            server.notify("textDocument/didOpen", open)
-        } else {
-            server.notify(
-                "textDocument/didChange",
-                json!({
-                    "textDocument": {"uri": go_uri, "version": version},
-                    "contentChanges": [{"text": vdoc.text}]
-                }),
-            )
-        };
+        let _ = server.sync_doc(&snap);
     }
 
     pub fn close(&self, ghp_path: &Path) {
         let doc = self.shared.docs.lock().unwrap().remove(ghp_path);
         if let Some(d) = doc {
-            self.shared.diags.lock().unwrap().remove(&d.go_uri);
+            self.shared.diags.lock().unwrap().remove(&normalize_uri(&d.go_uri));
             let server = self.sup.lock().unwrap().servers.get(&d.root).cloned();
             if let Some(s) = server {
                 let _ = s.notify("textDocument/didClose", json!({"textDocument": {"uri": d.go_uri}}));
+                s.synced.lock().unwrap().remove(&d.go_uri);
             }
+        }
+    }
+
+    /// Whether Go intelligence is currently usable for the module of `ghp_path`: gopls was found
+    /// and the bridge has not given up on that module after repeated crashes.
+    pub fn is_active(&self, ghp_path: &Path) -> bool {
+        if self.bin.is_none() {
+            return false;
+        }
+        let root = module_root(ghp_path.parent().unwrap_or(Path::new(".")));
+        !self.sup.lock().unwrap().gave_up.contains(&root)
+    }
+
+    /// Kill the gopls process serving `ghp_path`'s module, as a crash would. Test hook: the bridge
+    /// notices through [`Event::Crashed`] and restarts on the next call.
+    #[doc(hidden)]
+    pub fn kill_server_for_test(&self, ghp_path: &Path) {
+        let root = module_root(ghp_path.parent().unwrap_or(Path::new(".")));
+        let server = self.sup.lock().unwrap().servers.get(&root).cloned();
+        if let Some(s) = server {
+            let _ = s.child.lock().unwrap().kill();
         }
     }
 
@@ -659,7 +762,7 @@ impl Bridge {
     pub fn diagnostics(&self, ghp_path: &Path) -> Vec<Diagnostic> {
         let docs = self.shared.docs.lock().unwrap();
         let Some(d) = docs.get(ghp_path) else { return vec![] };
-        let raw = self.shared.diags.lock().unwrap().get(&d.go_uri).cloned().unwrap_or_default();
+        let raw = self.shared.diags.lock().unwrap().get(&normalize_uri(&d.go_uri)).cloned().unwrap_or_default();
         raw.iter().filter_map(|v| translate_diagnostic(&d.vdoc, v)).collect()
     }
 
@@ -684,10 +787,29 @@ enum Translate {
     Locations,
 }
 
-fn did_open(d: &Doc) -> Value {
-    json!({"textDocument": {
-        "uri": d.go_uri, "languageId": "go", "version": d.version, "text": d.vdoc.text
-    }})
+impl Doc {
+    fn snapshot(&self) -> Snapshot {
+        Snapshot { uri: self.go_uri.clone(), version: self.version, text: self.vdoc.text.clone() }
+    }
+}
+
+/// The smallest single edit turning `prev` into `new`, as an LSP content change: common prefix
+/// and suffix are kept, the middle is replaced. Multi-line and multi-region edits of a page come
+/// out as one range because the virtual document is regenerated as a whole.
+pub(crate) fn incremental_change(prev: &str, new: &str) -> Value {
+    let (pb, nb) = (prev.as_bytes(), new.as_bytes());
+    let mut p = pb.iter().zip(nb).take_while(|(a, b)| a == b).count();
+    while !(prev.is_char_boundary(p) && new.is_char_boundary(p)) {
+        p -= 1;
+    }
+    let max_suffix = pb.len().min(nb.len()) - p;
+    let mut s = pb.iter().rev().zip(nb.iter().rev()).take(max_suffix).take_while(|(a, b)| a == b).count();
+    while !(prev.is_char_boundary(pb.len() - s) && new.is_char_boundary(nb.len() - s)) {
+        s -= 1;
+    }
+    let idx = TextIndex::new(prev);
+    let range = Range { start: idx.position(p), end: idx.position(pb.len() - s) };
+    json!({"range": range_json(range), "text": &new[p..nb.len() - s]})
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -777,7 +899,7 @@ pub(crate) fn translate_locations(doc: &VirtualDoc, go_uri: &str, ghp_uri: &str,
         let o = loc.as_object_mut()?;
         if o.contains_key("targetUri") {
             // LocationLink
-            if o["targetUri"].as_str() == Some(go_uri) {
+            if o["targetUri"].as_str().is_some_and(|u| uri_eq(u, go_uri)) {
                 let tr = go_range_to_ghp_json(doc, &o["targetRange"])?;
                 let sel = o
                     .get("targetSelectionRange")
@@ -790,7 +912,7 @@ pub(crate) fn translate_locations(doc: &VirtualDoc, go_uri: &str, ghp_uri: &str,
             o.remove("originSelectionRange");
             return Some(loc);
         }
-        if o.get("uri").and_then(Value::as_str) == Some(go_uri) {
+        if o.get("uri").and_then(Value::as_str).is_some_and(|u| uri_eq(u, go_uri)) {
             let r = go_range_to_ghp_json(doc, o.get("range")?)?;
             o.insert("uri".into(), json!(ghp_uri));
             o.insert("range".into(), r);
@@ -807,11 +929,11 @@ pub(crate) fn translate_locations(doc: &VirtualDoc, go_uri: &str, ghp_uri: &str,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gopls::scan::scan_regions;
+    use crate::gopls::adapter::regions_of;
     use std::io::Cursor;
 
     fn doc(src: &str) -> VirtualDoc {
-        build(src, &scan_regions(src), &Options::for_page("p", "main"))
+        build(src, &regions_of(src), &Options::for_page("p", "main"))
     }
 
     #[test]
@@ -917,8 +1039,8 @@ mod tests {
         b.bin = None; // force "not installed" regardless of the host
         let p = Path::new("/nonexistent/home.ghp");
         let src = "<go= x />";
-        b.update(p, src, &scan_regions(src));
-        b.update(p, src, &scan_regions(src));
+        b.update(p, src, &regions_of(src));
+        b.update(p, src, &regions_of(src));
         let c = CancelToken::default();
         assert!(b.hover(p, Position { line: 0, character: 6 }, &c).unwrap().is_none());
         assert!(b.completion(p, Position { line: 0, character: 6 }, &c).unwrap().is_none());
@@ -934,8 +1056,113 @@ mod tests {
         b.bin = None;
         let p = Path::new("/nonexistent/home.ghp");
         let src = "<p>hi</p><go= x />";
-        b.update(p, src, &scan_regions(src));
+        b.update(p, src, &regions_of(src));
         let c = CancelToken::default();
         assert!(b.hover(p, Position { line: 0, character: 4 }, &c).unwrap().is_none());
+    }
+
+    /// Apply a change produced by `incremental_change` to `prev` the way a server would.
+    fn apply(prev: &str, change: &Value) -> String {
+        let idx = TextIndex::new(prev);
+        let r = parse_range(&change["range"]).unwrap();
+        let (a, b) = (idx.offset(r.start).unwrap(), idx.offset(r.end).unwrap());
+        format!("{}{}{}", &prev[..a], change["text"].as_str().unwrap(), &prev[b..])
+    }
+
+    #[test]
+    fn incremental_change_reproduces_the_new_text() {
+        let cases = [
+            ("", "abc"),
+            ("abc", ""),
+            ("abc", "abc"),
+            ("abc", "abXc"),
+            ("a\nb\nc", "a\nXb\nc"),
+            ("héllo wörld", "héllo wxrld"),
+            ("😀a😀", "😀b😀"),
+            ("😀", "😁"), // same first bytes, differ inside a 4-byte char
+            ("line1\nline2\nline3\nline4", "line1\nNEW\nline4"),
+            ("aaa", "aaaa"),
+            ("aaaa", "aa"),
+        ];
+        for (a, b) in cases {
+            let c = incremental_change(a, b);
+            assert_eq!(apply(a, &c), b, "{a:?} -> {b:?}: {c}");
+        }
+    }
+
+    #[test]
+    fn incremental_change_is_minimal_and_positions_are_utf16() {
+        let c = incremental_change("x😀 = 1\ny", "x😀 = 22\ny");
+        assert_eq!(c["range"]["start"], json!({"line": 0, "character": 6}));
+        assert_eq!(c["range"]["end"], json!({"line": 0, "character": 7}));
+        assert_eq!(c["text"], "22");
+        // A multi-line replacement is a single range.
+        let c = incremental_change("a\nb\nc\nd", "a\nX\nd");
+        assert_eq!(c["range"]["start"], json!({"line": 1, "character": 0}));
+        assert_eq!(c["range"]["end"], json!({"line": 2, "character": 1}));
+        assert_eq!(c["text"], "X");
+    }
+
+    #[test]
+    fn windows_uris() {
+        let p = PathBuf::from("C:\\Users\\me\\my site\\home.ghp");
+        assert_eq!(path_to_uri(&p), "file:///C:/Users/me/my%20site/home.ghp");
+        assert_eq!(uri_to_path_for("file:///C:/Users/me/my%20site/home.ghp", true), Some(p.clone()));
+        assert_eq!(
+            uri_to_path_for("file:///c%3A/Users/me/my%20site/home.ghp", true),
+            Some(PathBuf::from("c:\\Users\\me\\my site\\home.ghp"))
+        );
+        // UNC share.
+        let unc = PathBuf::from("\\\\srv\\share\\a.ghp");
+        assert_eq!(path_to_uri(&unc), "file://srv/share/a.ghp");
+        assert_eq!(uri_to_path_for("file://srv/share/a.ghp", true), Some(unc));
+        // Unix-style URIs are untouched, `localhost` authority is dropped.
+        assert_eq!(uri_to_path_for("file:///tmp/a%20b", false), Some(PathBuf::from("/tmp/a b")));
+        assert_eq!(uri_to_path_for("file://localhost/tmp/a", false), Some(PathBuf::from("/tmp/a")));
+        assert_eq!(uri_to_path_for("http://x", false), None);
+    }
+
+    #[test]
+    fn uri_equality_ignores_drive_case_and_escaping() {
+        assert!(uri_eq("file:///C:/a/p.ghp.go", "file:///c%3A/a/p.ghp.go"));
+        assert!(uri_eq("file:///tmp/a b/p.ghp.go", "file:///tmp/a%20b/p.ghp.go"));
+        assert!(!uri_eq("file:///tmp/a.go", "file:///tmp/b.go"));
+        assert_eq!(normalize_uri("file:///D:/x"), "/d:/x");
+    }
+
+    #[test]
+    fn locations_match_gopls_spelling_of_the_uri() {
+        let src = "<go\n  a := 1\n/><go= a />";
+        let d = doc(src);
+        let off = d.text.find("a := 1").unwrap();
+        let r = range_json(Range { start: d.map.go_index().position(off), end: d.map.go_index().position(off + 1) });
+        let v = json!([{"uri": "file:///c%3A/p.ghp.go", "range": r}]);
+        let out = translate_locations(&d, "file:///C:/p.ghp.go", "file:///C:/p.ghp", v);
+        assert_eq!(out[0]["uri"], "file:///C:/p.ghp");
+    }
+
+    #[test]
+    fn sync_sends_open_then_minimal_changes_and_nothing_when_unchanged() {
+        // A fake server: `cat` swallows whatever we write, so only the bookkeeping is observed.
+        let mut child = Command::new(if cfg!(windows) { "cmd" } else { "cat" })
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+        let server = Server {
+            child: Mutex::new(child),
+            stdin,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            alive: Arc::new(AtomicBool::new(true)),
+            next_id: AtomicI64::new(1),
+            synced: Mutex::new(HashMap::new()),
+        };
+        let snap = |v: i64, t: &str| Snapshot { uri: "file:///p.ghp.go".into(), version: v, text: t.into() };
+        server.sync_doc(&snap(1, "a")).unwrap();
+        assert_eq!(server.synced.lock().unwrap()["file:///p.ghp.go"], "a");
+        server.sync_doc(&snap(2, "ab")).unwrap();
+        server.sync_doc(&snap(2, "ab")).unwrap();
+        assert_eq!(server.synced.lock().unwrap()["file:///p.ghp.go"], "ab");
     }
 }

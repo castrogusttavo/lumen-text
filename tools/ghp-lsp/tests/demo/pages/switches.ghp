@@ -1,0 +1,17 @@
+<go:import ("example.com/demo/models")/>
+<go
+    u := models.User{Name: "Bob"}
+    level := 2
+/>
+<go:switch level/>
+    <go:case 1/>
+        <p><go= u.Name /></p>
+    <go:case 2, 3/>
+        <p><go= u.Email /></p>
+    <go:default/>
+        <p>none</p>
+<go:endswitch/>
+<go:switch/>
+    <go:case (level > 5)/>
+        <p>big</p>
+<go:endswitch/>

@@ -16,7 +16,7 @@ func ghp_virtual_home(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, html.EscapeString(fmt.Sprint(user.Name)))
 	if user.Admin {
 	io.WriteString(w, html.EscapeString(fmt.Sprint(user.Greeting())))
-	} else if len(items) > 2 {
+	} else if (len(items) > 2) {
 	} else {
 	}
 	for i, it := range items {

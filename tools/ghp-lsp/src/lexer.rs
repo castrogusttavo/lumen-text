@@ -74,9 +74,13 @@ enum Scan {
 }
 
 /// Look for the `>` closing a tag whose payload starts at `start`, ignoring any `>` inside
-/// `()`, `[]` or quotes (`"`, `'`, `` ` ``). `{}` are deliberately not tracked (a `<go>` block may
-/// open a brace that a later tag closes). Outside quotes, the start of another GHP tag ends the
-/// search, so a forgotten `/>` does not swallow the rest of the file.
+/// `()`, `[]`, quotes (`"`, `'`, `` ` ``) and Go comments. `{}` are deliberately not tracked (a
+/// `<go>` block may open a brace that a later tag closes). Outside quotes, the start of another
+/// GHP tag ends the search, so a forgotten `/>` does not swallow the rest of the file.
+///
+/// A `/* ... */` comment is skipped whole (an unterminated one is plain text). A `// ...` comment
+/// runs to the end of the line, but a `/>` or a new GHP tag inside it still ends the search, so
+/// `<go x := 1 // note />` keeps working and an apostrophe in a comment cannot open a quote.
 fn find_close(src: &str, start: usize) -> Scan {
     let b = src.as_bytes();
     let mut depth = 0usize;
@@ -93,6 +97,25 @@ fn find_close(src: &str, start: usize) -> Scan {
         } else {
             match c {
                 b'"' | b'\'' | b'`' => quote = c,
+                b'/' if b.get(i + 1) == Some(&b'*') => {
+                    if let Some(p) = src[i + 2..].find("*/") {
+                        i += p + 3; // on the closing `/`; the loop step moves past it
+                    }
+                }
+                b'/' if b.get(i + 1) == Some(&b'/') => {
+                    let mut j = i + 2;
+                    while j < b.len() && b[j] != b'\n' {
+                        if b[j] == b'>' && b[j - 1] == b'/' && depth == 0 {
+                            return Scan::Close(j);
+                        }
+                        if b[j] == b'<' && match_head(&src[j + 1..]).is_some() {
+                            return Scan::Stop(j);
+                        }
+                        j += 1;
+                    }
+                    i = j; // at the newline (or the end): the loop step moves past it
+                    continue;
+                }
                 b'(' | b'[' => depth += 1,
                 b')' | b']' => depth = depth.saturating_sub(1),
                 b'>' if depth == 0 => return Scan::Close(i),
@@ -268,6 +291,14 @@ mod tests {
             ("<go:if s == '>'/>", &["If:s == '>'"]),
             ("<go:if s == `a>b`/>", &["If:s == `a>b`"]),
             ("<go:if f(\"\\\")\")/>", &["If:f(\"\\\")\")"]),
+            ("<go= `a/>b` />", &["Echo:`a/>b`"]),
+            ("<go= f('\"', \"/>\") />", &["Echo:f('\"', \"/>\")"]),
+            ("<go= \"it's\" + `\"` />", &["Echo:\"it's\" + `\"`"]),
+            ("<go x := 1 /* don't > */ />", &["Statement:x := 1 /* don't > */"]),
+            ("<go x := 1 /* \" */ y := 2 />", &["Statement:x := 1 /* \" */ y := 2"]),
+            ("<go x := 1 // it's a note\n y := 2\n/>", &["Statement:x := 1 // it's a note\n y := 2"]),
+            ("<go x := 1 // note />", &["Statement:x := 1 // note"]),
+            ("<go= \"http://x\" />", &["Echo:\"http://x\""]),
         ];
         for (src, want) in cases {
             assert_eq!(kinds(src), *want, "src {src:?}");

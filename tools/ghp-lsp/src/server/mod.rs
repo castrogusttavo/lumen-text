@@ -22,12 +22,17 @@ pub mod symbols;
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use crate::ast::ExprRegion;
+use crate::gopls::CancelToken;
+use crate::gopls::proxy::uri_to_path;
+use crate::router::{RequestKind, Router};
 use conv::{diag_json, pos_from, uri_of};
 use docs::Doc;
 
@@ -54,8 +59,38 @@ pub struct GoRequest<'a> {
     pub params: &'a Value,
 }
 
+/// The Go side: one [`Router`] (gopls per module) fed lazily with the server's documents.
+#[derive(Default)]
+struct GoSide {
+    router: OnceLock<Router>,
+    /// Document versions already handed to the router, by URI.
+    synced: Mutex<HashMap<String, i64>>,
+}
+
+impl GoSide {
+    /// The router with `doc` brought up to date, and the page path.
+    fn sync(&self, uri: &str, doc: &Doc) -> Option<(&Router, PathBuf)> {
+        let path = uri_to_path(uri)?;
+        let router = self.router.get_or_init(|| Router::new("/"));
+        let mut synced = self.synced.lock().unwrap();
+        if synced.get(uri) != Some(&doc.version) || router.text(&path).is_none() {
+            router.replace(&path, doc.text.clone());
+            synced.insert(uri.to_owned(), doc.version);
+        }
+        Some((router, path))
+    }
+
+    fn close(&self, uri: &str) {
+        self.synced.lock().unwrap().remove(uri);
+        if let (Some(router), Some(path)) = (self.router.get(), uri_to_path(uri)) {
+            router.close(&path);
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Server {
+    go: GoSide,
     docs: HashMap<String, Doc>,
     /// Documents whose diagnostics are stale, with the time they become due.
     pending: HashMap<String, Instant>,
@@ -123,7 +158,11 @@ impl Server {
 
     fn diagnostics_message(&self, uri: &str) -> Option<Value> {
         let doc = self.docs.get(uri)?;
-        let diags: Vec<Value> = doc.parse.diagnostics.iter().map(|d| diag_json(d, &doc.index)).collect();
+        let mut diags: Vec<Value> = doc.parse.diagnostics.iter().map(|d| diag_json(d, &doc.index)).collect();
+        // Go diagnostics from gopls (already filtered against the parser's errors by the router).
+        if let Some((router, path)) = self.go.sync(uri, doc) {
+            diags.extend(router.diagnostics(&path).iter().filter(|d| d.source == "gopls").map(|d| d.to_lsp()));
+        }
         Some(rpc::notification(
             "textDocument/publishDiagnostics",
             json!({"uri": uri, "version": doc.version, "diagnostics": diags}),
@@ -185,6 +224,7 @@ impl Server {
             "textDocument/didClose" => {
                 let Some(uri) = uri_of(params) else { return Vec::new() };
                 self.pending.remove(uri);
+                self.go.close(uri);
                 if self.docs.remove(uri).is_some() {
                     vec![rpc::notification("textDocument/publishDiagnostics", json!({"uri": uri, "diagnostics": []}))]
                 } else {
@@ -266,8 +306,14 @@ impl Server {
     /// Called when the cursor is inside a Go expression. Return the LSP result for the request,
     /// or `None` to answer `null`. The Go-expression router plugs in here.
     fn route_go(&self, req: &GoRequest) -> Option<Value> {
-        let _ = req;
-        None
+        let (router, path) = self.go.sync(req.uri, req.doc)?;
+        let kind = match req.method {
+            GoMethod::Completion => RequestKind::Completion,
+            GoMethod::Hover => RequestKind::Hover,
+            GoMethod::Definition => RequestKind::Definition,
+        };
+        let pos = req.doc.index.position(req.offset);
+        router.request(&path, pos, kind, &CancelToken::default()).ok().flatten()
     }
 }
 
