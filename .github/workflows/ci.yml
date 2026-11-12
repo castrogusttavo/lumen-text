@@ -201,6 +201,19 @@ jobs:
           got="$(target/release/lumen-text --version)"
           echo "$got"
           [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
+      - name: Build ghp-lsp (GHP language server, shipped next to the editor)
+        shell: bash
+        run: |
+          # Standalone package in tools/ghp-lsp. Until its binary (src/main.rs) is in the tree nothing is built or shipped.
+          if [ -f tools/ghp-lsp/src/main.rs ]; then
+            cargo build --release --manifest-path tools/ghp-lsp/Cargo.toml
+            ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
+            bin="$PWD/tools/ghp-lsp/target/release/ghp-lsp$ext"
+            test -f "$bin"
+            echo "GHP_LSP_BIN=$bin" >> "$GITHUB_ENV"
+          else
+            echo "ghp-lsp has no binary yet: not shipped"
+          fi
       - name: Package (tar.gz, deb, rpm, AppImage)
         shell: bash
         run: |
@@ -225,6 +238,10 @@ jobs:
           dpkg-deb --contents dist/*.deb | head -30
           # Licensed HugeIcons masks live inside the binary only, never as loose package files.
           ! dpkg-deb --contents dist/*.deb | grep -q hugeicons
+          if [ -n "${GHP_LSP_BIN:-}" ]; then
+            dpkg-deb --contents dist/*.deb | grep -q '/usr/bin/ghp-lsp$'
+            tar tzf dist/*-linux-*.tar.gz | grep -q '/bin/ghp-lsp$'
+          fi
           ! tar tzf dist/*-linux-*.tar.gz | grep -q hugeicons
           tools/ci-debian.sh debian:bookworm-slim "rpm" bash -c '
             set -ex
@@ -240,6 +257,7 @@ jobs:
           sudo dpkg -i ./dist/lumen-text_*.deb
           lumen-text --version
           test -f /usr/share/lumen-text/assets/language-manifest.json
+          if [ -n "${GHP_LSP_BIN:-}" ]; then test -x /usr/bin/ghp-lsp; fi
           # Headless render: proves fonts, assets lookup and the CPU renderer work from the installed layout.
           d="$(mktemp -d)"; echo hello > "$d/f.txt"
           HOME="$d" XDG_CONFIG_HOME="$d/c" XDG_STATE_HOME="$d/s" \
@@ -289,6 +307,19 @@ jobs:
           got="$(target/release/lumen-text.exe --version)"
           echo "$got"
           [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
+      - name: Build ghp-lsp (GHP language server, shipped next to the editor)
+        shell: bash
+        run: |
+          # Standalone package in tools/ghp-lsp. Until its binary (src/main.rs) is in the tree nothing is built or shipped.
+          if [ -f tools/ghp-lsp/src/main.rs ]; then
+            cargo build --release --manifest-path tools/ghp-lsp/Cargo.toml
+            ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
+            bin="$PWD/tools/ghp-lsp/target/release/ghp-lsp$ext"
+            test -f "$bin"
+            echo "GHP_LSP_BIN=$bin" >> "$GITHUB_ENV"
+          else
+            echo "ghp-lsp has no binary yet: not shipped"
+          fi
       - name: Package (zip)
         run: |
           mkdir -p dist
@@ -350,6 +381,19 @@ jobs:
           got="$(target/release/lumen-text --version)"
           echo "$got"
           [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
+      - name: Build ghp-lsp (GHP language server, shipped next to the editor)
+        shell: bash
+        run: |
+          # Standalone package in tools/ghp-lsp. Until its binary (src/main.rs) is in the tree nothing is built or shipped.
+          if [ -f tools/ghp-lsp/src/main.rs ]; then
+            cargo build --release --manifest-path tools/ghp-lsp/Cargo.toml
+            ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
+            bin="$PWD/tools/ghp-lsp/target/release/ghp-lsp$ext"
+            test -f "$bin"
+            echo "GHP_LSP_BIN=$bin" >> "$GITHUB_ENV"
+          else
+            echo "ghp-lsp has no binary yet: not shipped"
+          fi
       - name: Package (.app in a .dmg, ad-hoc signed)
         shell: bash
         run: |

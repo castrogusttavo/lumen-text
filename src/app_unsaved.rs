@@ -335,7 +335,8 @@ impl App {
         d.lang = lang;
         d.hl = hl;
         d.ed.comment = crate::highlight::comment_prefix(&path.to_string_lossy()).to_string();
-        d.ed.jsx = matches!(lang, Some("tsx" | "jsx" | "html" | "vue" | "svelte"));
+        d.ed.jsx = matches!(lang, Some("tsx" | "jsx" | "html" | "vue" | "svelte" | "ghp"));
+        d.ed.ghp = lang == Some("ghp");
         d.sem.clear();
         d.lsp_open = false;
         d.git_base = crate::git::head_text(path);

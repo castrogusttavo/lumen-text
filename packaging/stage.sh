@@ -7,6 +7,7 @@
 # Layout (config::assets_dir() looks at <exe dir>/../share/lumen-text/assets, so the
 # binary and the assets must keep this relative position in every package format):
 #   <prefix>/bin/lumen-text
+#   <prefix>/bin/ghp-lsp                                (only when GHP_LSP_BIN is set)
 #   <prefix>/share/lumen-text/assets/
 #   <prefix>/share/applications/lumen-text.desktop
 #   <prefix>/share/icons/hicolor/scalable/apps/lumen-text.svg
@@ -31,6 +32,14 @@ install -d "$p/bin" "$p/share/lumen-text" "$p/share/applications" \
 install -m755 "$bin" "$p/bin/lumen-text"
 if command -v "${STRIP:-strip}" >/dev/null 2>&1; then
   "${STRIP:-strip}" --strip-unneeded "$p/bin/lumen-text" || true
+fi
+# The GHP language server ships next to the editor when CI built it (GHP_LSP_BIN=path/to/ghp-lsp).
+if [ -n "${GHP_LSP_BIN:-}" ]; then
+  [ -f "$GHP_LSP_BIN" ] || { echo "stage.sh: GHP_LSP_BIN not found: $GHP_LSP_BIN" >&2; exit 1; }
+  install -m755 "$GHP_LSP_BIN" "$p/bin/ghp-lsp"
+  if command -v "${STRIP:-strip}" >/dev/null 2>&1; then
+    "${STRIP:-strip}" --strip-unneeded "$p/bin/ghp-lsp" || true
+  fi
 fi
 cp -r "$root/assets" "$p/share/lumen-text/assets"
 # Licensed HugeIcons Pro masks are embedded in the binary (build.rs); never ship them as loose files.
