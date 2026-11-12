@@ -4,10 +4,17 @@ import SectionHead from "../components/SectionHead.astro";
 import releases from "../data/releases.json";
 import changelog from "../data/changelog.json";
 import { renderNotes } from "../lib/md";
+import { byDay, KIND_LABEL, parseNotes } from "../lib/changelog";
 import { GITHUB, url } from "../lib/url";
 const fmt = (d: string) => new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
 const curated = new Set(changelog.map((c) => `v${c.version}`));
 const earlier = releases.filter((r) => !curated.has(r.tag));
+// Releases whose notes list commit subjects are grouped per day automatically; the rest (GitHub's
+// "Full Changelog" link only) keep the plain list below.
+const parsed = earlier.filter((r) => parseNotes(r.notes, r.tag).length > 0);
+const plain = earlier.filter((r) => parseNotes(r.notes, r.tag).length === 0);
+const days = byDay(parsed);
+const OPEN = new Set(["feature", "fix"]);
 const count = (c: (typeof changelog)[number]) => c.groups.reduce((n, g) => n + g.items.length, 0);
 ---
 <Base title="Changelog" description="What shipped in every Lumen release: features, enhancements and bug fixes." path="/changelog">
@@ -59,10 +66,35 @@ const count = (c: (typeof changelog)[number]) => c.groups.reduce((n, g) => n + g
         </article>
       ))}
 
-      <h2 class="pt-4 font-mono text-xs uppercase tracking-[0.14em] text-faint">Earlier releases</h2>
+      <h2 class="pt-4 font-mono text-xs uppercase tracking-[0.14em] text-faint">Every release, day by day</h2>
+      <p class="-mt-6 text-[15px] text-muted">Generated from the commits of each release, grouped by type (<code>feat:</code>, <code>fix:</code>, <code>perf:</code>, <code>docs:</code>, <code>ci:</code> prefixes; other subjects are sorted by their first words).</p>
       <ol class="space-y-4">
         {earlier.length === 0 && <li class="rounded-card border border-line p-6 text-muted">The release list could not be loaded at build time. See <a class="underline" href={`${GITHUB}/releases`}>GitHub Releases</a>.</li>}
-        {earlier.map((r) => (
+        {days.map((d) => (
+          <li class="rounded-card border border-line bg-card p-6" data-reveal id={`d${d.date}`}>
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 class="font-mono text-lg font-medium">{fmt(d.date)}</h3>
+              <span class="text-sm text-faint">{d.releases.length === 1 ? d.first : `${d.first} to ${d.last}`} · {d.count} changes</span>
+            </div>
+            <div class="mt-4 space-y-3">
+              {d.groups.map((g) => (
+                <details class="cl-acc rounded-xl border border-line bg-solid" open={OPEN.has(g.kind)}>
+                  <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-[15px] font-medium [&::-webkit-details-marker]:hidden">
+                    <span>{KIND_LABEL[g.kind]} <span class="ml-1 rounded-full border border-line px-2 py-0.5 font-mono text-xs text-faint">{g.items.length}</span></span>
+                    <svg class="cl-chev shrink-0 text-faint transition-transform" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                  </summary>
+                  <ul class="space-y-2 border-t border-line px-4 py-4 text-[15px] text-muted">
+                    {g.items.map((it) => (
+                      <li class="list-disc ml-4 pl-1">{it.text}{it.sha && <> <a class="font-mono text-xs text-faint underline decoration-line2 underline-offset-2" href={`${GITHUB}/commit/${it.sha}`} rel="noopener">{it.sha.slice(0, 7)}</a></>}</li>
+                    ))}
+                  </ul>
+                </details>
+              ))}
+            </div>
+            <p class="mt-4 text-sm text-faint">{d.releases.map((r, i) => <>{i > 0 && " · "}<a class="text-fg underline decoration-line2 underline-offset-4" href={r.url} rel="noopener">{r.tag}</a></>)}</p>
+          </li>
+        ))}
+        {plain.map((r) => (
           <li class="rounded-card border border-line bg-card p-6" data-reveal>
             <div class="flex flex-wrap items-baseline justify-between gap-2">
               <h3 class="font-mono text-lg font-medium">{r.tag}</h3>
