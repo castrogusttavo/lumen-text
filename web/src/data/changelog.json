@@ -76,6 +76,15 @@
           { "title": "Font features", "text": "OpenType features (zero, ss01...) and letter spacing for the code font, previewed in the font picker." },
           { "title": "Image viewer", "text": "PNG, JPEG, GIF, WebP and SVG open as a picture with zoom and pan; SVG has a Preview | Source switch." }
         ]
+      },
+      {
+        "area": "GHP pages",
+        "items": [
+          { "title": "GHP language support", "text": "Highlighting for .ghp templates (HTML, go: tags and Go expressions) and indentation that lines up <go:else/>, <go:endif/> and friends with their opener." },
+          { "title": "ghp-lsp", "text": "A bundled language server for .ghp files: diagnostics, completion, hover, definition, symbols, folding, formatting and quick fixes. Go expressions are forwarded to gopls." },
+          { "title": "Debugging GHP pages", "text": "F5 builds with ghp build --debug in the background and debugs with Delve, stopping in the .ghp file itself." },
+          { "title": "Debug panel", "text": "A toolbar and panel with Call Stack, Variables, Breakpoints, Watch and Debug Console, conditional breakpoints, logpoints and hover to evaluate." }
+        ]
       }
     ],
     "enhancements": [
@@ -91,7 +100,12 @@
       "Language servers can open a document or web page (window/showDocument).",
       "Git commit message files get their own language so the spell checkers apply.",
       "The settings window gained Files, AI and Git rows, and a User | Project scope.",
-      "Pull requests now verify in about 3.5 minutes (was 6.7) and a release publishes in about 6.6 minutes (was 12.3)."
+      "Pull requests now verify in about 3.5 minutes (was 6.7) and a release publishes in about 6.6 minutes (was 12.3).",
+      "Breakpoints follow edits in their file like bookmarks do, and a running debug session is sent the new lines.",
+      "Watch expressions with structured values expand into their fields.",
+      "The ghp build before a debug session runs in the background (Building... in the toolbar, errors in the Debug Console) instead of freezing the window.",
+      ".lumen/launch.json overrides program, args, env, cwd and adapter of the Go and GHP launches.",
+      "The ghp debug binary is app.exe on Windows and its folder ignores itself in git."
     ],
     "fixes": [
       "Ctrl+X with several cursors no longer cuts the character before a cursor that sits at the end of a shorter line.",

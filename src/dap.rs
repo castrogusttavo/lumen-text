@@ -668,6 +668,8 @@ pub struct Session {
     pub watch: Vec<String>,
     /// Watch expression -> `(value, type)` or the error text.
     pub watch_results: HashMap<String, Result<(String, String), String>>,
+    /// Watch expression -> `variablesReference` of its value when it has children (tree key `Watch/<expr>`).
+    pub watch_refs: HashMap<String, i64>,
     /// The last hover evaluation: `(expression, value or error)`.
     pub hover_result: Option<(String, Result<String, String>)>,
     locals_ref: i64,
@@ -706,6 +708,7 @@ impl Session {
             collapsed: HashSet::new(),
             watch: Vec::new(),
             watch_results: HashMap::new(),
+            watch_refs: HashMap::new(),
             hover_result: None,
             locals_ref: 0,
             last_thread: 1,
@@ -824,6 +827,7 @@ impl Session {
     /// Replace the watch list and evaluate it in the selected frame.
     pub fn set_watch(&mut self, list: Vec<String>, dap: &mut Dap) {
         self.watch_results.retain(|k, _| list.contains(k));
+        self.watch_refs.retain(|k, _| list.contains(k));
         self.watch = list;
         self.refresh_watch(dap);
     }
@@ -1114,6 +1118,17 @@ impl Session {
                     }
                     Pending::EvalWatch(e) => {
                         let (res, ty) = eval_text(body);
+                        let r = body.get("variablesReference").and_then(Value::as_i64).unwrap_or(0);
+                        if r > 0 {
+                            let key = format!("Watch/{e}");
+                            if self.expanded.contains(&key) {
+                                dap.variables(r);
+                            }
+                            self.ref_path.insert(r, key);
+                            self.watch_refs.insert(e.clone(), r);
+                        } else {
+                            self.watch_refs.remove(&e);
+                        }
                         self.watch_results.insert(e, Ok((res, ty)));
                     }
                     Pending::EvalHover(e) => {

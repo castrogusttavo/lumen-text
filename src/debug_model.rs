@@ -327,7 +327,7 @@ pub fn flatten(s: &Session) -> Vec<TreeRow> {
     out
 }
 
-fn walk(s: &Session, r: i64, base: &str, depth: usize, out: &mut Vec<TreeRow>) {
+pub fn walk(s: &Session, r: i64, base: &str, depth: usize, out: &mut Vec<TreeRow>) {
     let Some(vars) = s.var_children.get(&r) else { return };
     for v in vars {
         if out.len() >= MAX_ROWS {
@@ -340,6 +340,41 @@ fn walk(s: &Session, r: i64, base: &str, depth: usize, out: &mut Vec<TreeRow>) {
             walk(s, v.vars_ref, &key, depth + 1, out);
         }
     }
+}
+
+/// The Watch view: each expression as a root row (key `Watch/<expr>`) and, for structured values
+/// the user opened, its children. `error` rows carry the message in `value` and cannot expand.
+pub fn flatten_watch(s: &Session) -> Vec<(usize, TreeRow)> {
+    let mut out = Vec::new();
+    for (i, e) in s.watch.iter().enumerate() {
+        let key = format!("Watch/{e}");
+        let (value, type_, vars_ref) = match s.watch_results.get(e) {
+            Some(Ok((v, t))) => (v.clone(), t.clone(), s.watch_refs.get(e).copied().unwrap_or(0)),
+            Some(Err(m)) => (m.clone(), String::new(), 0),
+            None => ("not available".to_string(), String::new(), 0),
+        };
+        let open = vars_ref > 0 && s.expanded.contains(&key);
+        out.push((
+            i,
+            TreeRow {
+                depth: 0,
+                key: key.clone(),
+                name: e.clone(),
+                value,
+                type_,
+                vars_ref,
+                open,
+                loading: open && !s.var_children.contains_key(&vars_ref),
+                scope: None,
+            },
+        ));
+        if open {
+            let mut kids = Vec::new();
+            walk(s, vars_ref, &key, 1, &mut kids);
+            out.extend(kids.into_iter().map(|r| (i, r)));
+        }
+    }
+    out
 }
 
 fn row_of(v: &Var, depth: usize, key: String, open: bool, loading: bool) -> TreeRow {
@@ -579,6 +614,114 @@ pub fn expr_at(line: &str, col: usize) -> Option<(usize, usize)> {
 
 // ───────────────────────────── tests ─────────────────────────────
 
+// ───────────────────────────── breakpoints follow edits ─────────────────────────────
+
+/// Where the breakpoint on `line` is after the edits `recs`, or `None` when its line was removed.
+/// The same bookkeeping as bookmarks (`bookmarks::on_edits`).
+pub fn follow_line(line: usize, recs: &[crate::buffer::EditRec]) -> Option<usize> {
+    let mut one = vec![line];
+    crate::bookmarks::on_edits(&mut one, recs);
+    one.first().copied()
+}
+
+/// Move a file's breakpoint lines (and their metadata) through `recs`. Returns true when anything moved.
+pub fn follow_edits(
+    lines: &mut Vec<usize>,
+    meta: Option<&mut BTreeMap<usize, BpMeta>>,
+    recs: &[crate::buffer::EditRec],
+) -> bool {
+    let moved: Vec<(usize, Option<usize>)> = lines.iter().map(|&l| (l, follow_line(l, recs))).collect();
+    if moved.iter().all(|(a, b)| Some(*a) == *b) {
+        return false;
+    }
+    if let Some(m) = meta {
+        let old = std::mem::take(m);
+        for (l, mv) in old {
+            let to = moved.iter().find(|(a, _)| *a == l).and_then(|(_, b)| *b);
+            if let Some(t) = to {
+                m.insert(t, mv);
+            }
+        }
+    }
+    let mut next: Vec<usize> = moved.into_iter().filter_map(|(_, b)| b).collect();
+    next.sort_unstable();
+    next.dedup();
+    *lines = next;
+    true
+}
+
+// ───────────────────────────── .lumen/launch.json ─────────────────────────────
+
+/// One entry of `.lumen/launch.json`: overrides for a built-in launch configuration (`delve`, `ghp`).
+///
+/// ```json
+/// { "configurations": [
+///   { "config": "ghp", "program": "build/site", "args": ["-addr=:8081"],
+///     "env": {"GHP_ENV": "dev"}, "cwd": "site", "adapter": "ghp" } ] }
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LaunchOverride {
+    /// The launch configuration id it applies to (`ghp`, `delve`); defaults to `adapter`.
+    pub config: String,
+    /// Debug with another adapter of the registry (`dap_adapters.json`) instead of the config's own.
+    pub adapter: Option<String>,
+    pub program: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub env: BTreeMap<String, String>,
+    pub cwd: Option<String>,
+}
+
+pub const LAUNCH_FILE: &str = "launch.json";
+
+/// Parse the text of a `launch.json` (whole-line `//` comments are allowed).
+pub fn parse_launch(text: &str) -> Result<Vec<LaunchOverride>, String> {
+    let clean: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+    if clean.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let v: Value = serde_json::from_str(&clean).map_err(|e| format!("{LAUNCH_FILE}: {e}"))?;
+    let list = match v.get("configurations") {
+        Some(Value::Array(a)) => a.as_slice(),
+        None => return Ok(Vec::new()),
+        Some(_) => return Err(format!("{LAUNCH_FILE}: \"configurations\" must be a list")),
+    };
+    let text_of = |x: &Value, k: &str| x.get(k).and_then(Value::as_str).map(str::to_string);
+    let mut out = Vec::new();
+    for (i, c) in list.iter().enumerate() {
+        let adapter = text_of(c, "adapter");
+        let Some(config) = text_of(c, "config").or_else(|| adapter.clone()) else {
+            return Err(format!("{LAUNCH_FILE}: configuration {} needs \"config\" (ghp, delve) or \"adapter\"", i + 1));
+        };
+        let args = c.get("args").and_then(Value::as_array).map(|a| {
+            a.iter().map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).collect::<Vec<_>>()
+        });
+        let env = c
+            .get("env")
+            .and_then(Value::as_object)
+            .map(|o| {
+                o.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(LaunchOverride { config, adapter, program: text_of(c, "program"), args, env, cwd: text_of(c, "cwd") });
+    }
+    Ok(out)
+}
+
+/// The project's `.lumen/launch.json`: no file is no overrides; a broken one is an error to show.
+pub fn load_launch(root: &Path) -> Result<Vec<LaunchOverride>, String> {
+    match std::fs::read_to_string(root.join(".lumen").join(LAUNCH_FILE)) {
+        Ok(t) => parse_launch(&t),
+        Err(_) => Ok(Vec::new()),
+    }
+}
+
+/// The override that applies to launch configuration `id`.
+pub fn launch_override<'a>(list: &'a [LaunchOverride], id: &str) -> Option<&'a LaunchOverride> {
+    list.iter().find(|o| o.config == id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,5 +957,75 @@ mod tests {
         assert_eq!(s(expr_at(line, at("42", 0))), None, "numbers are not evaluated");
         assert_eq!(s(expr_at(line, 0)), None, "blank");
         assert_eq!(expr_at("p->next->val", 10), Some((0, 12)));
+    }
+    #[test]
+    fn breakpoints_follow_line_edits_with_their_metadata() {
+        use crate::buffer::{EditRec, EditShape};
+        let rec = |line, col, rem, ins| EditRec {
+            at: 0,
+            removed: 0,
+            inserted: 0,
+            line,
+            col,
+            rem_lines: rem,
+            ins_lines: ins,
+            tail_empty: false,
+            shape: EditShape::Splice,
+        };
+        let mut lines = vec![3, 10];
+        let mut meta: BTreeMap<usize, BpMeta> = BTreeMap::new();
+        meta.insert(10, BpMeta { condition: Some("x > 1".into()), ..Default::default() });
+        // A line break inserted above both.
+        assert!(follow_edits(&mut lines, Some(&mut meta), &[rec(1, 0, 0, 1)]));
+        assert_eq!(lines, [4, 11]);
+        assert_eq!(meta.get(&11).and_then(|m| m.condition.as_deref()), Some("x > 1"));
+        assert!(!meta.contains_key(&10));
+        // Typing inside a line moves nothing.
+        assert!(!follow_edits(&mut lines, Some(&mut meta), &[rec(4, 2, 0, 0)]));
+        // The line break before line 11 removed: the breakpoint moves up one.
+        assert!(follow_edits(&mut lines, Some(&mut meta), &[rec(9, 3, 1, 0)]));
+        assert_eq!(lines, [4, 10]);
+    }
+
+    #[test]
+    fn launch_json_parses_overrides_and_reports_mistakes() {
+        let t = "// comment\n{\"configurations\": [{\"config\": \"ghp\", \"program\": \"out/app\", \"args\": [\"-v\", 3], \"env\": {\"A\": \"1\", \"B\": 2}, \"cwd\": \"site\"}, {\"adapter\": \"delve\"}]}";
+        let l = parse_launch(t).unwrap();
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].args.as_deref(), Some(&["-v".to_string(), "3".to_string()][..]));
+        assert_eq!(l[0].env["B"], "2");
+        assert_eq!(l[1].config, "delve", "config defaults to the adapter");
+        assert_eq!(launch_override(&l, "ghp").and_then(|o| o.cwd.as_deref()), Some("site"));
+        assert!(launch_override(&l, "node").is_none());
+        assert!(parse_launch("").unwrap().is_empty());
+        assert!(parse_launch("{}").unwrap().is_empty());
+        assert!(parse_launch("{").unwrap_err().contains("launch.json"));
+        assert!(parse_launch("{\"configurations\": [{}]}").unwrap_err().contains("needs"));
+        assert!(parse_launch("{\"configurations\": 1}").is_err());
+    }
+
+    #[test]
+    fn watch_rows_expand_structured_values() {
+        let mut s = Session::new("x", &[], Path::new("."), false);
+        s.state = State::Stopped { thread: 1 };
+        s.watch = vec!["obj".into(), "n".into(), "bad".into()];
+        s.watch_results.insert("obj".into(), Ok(("{...}".into(), "T".into())));
+        s.watch_results.insert("n".into(), Ok(("1".into(), String::new())));
+        s.watch_results.insert("bad".into(), Err("nope".into()));
+        s.watch_refs.insert("obj".into(), 40);
+        let rows = flatten_watch(&s);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].1.expandable() && !rows[0].1.open && !rows[1].1.expandable() && !rows[2].1.expandable());
+        s.expanded.insert("Watch/obj".into());
+        assert!(flatten_watch(&s)[0].1.loading, "open but the children have not arrived");
+        s.var_children.insert(40, vec![Var { name: "x".into(), value: "5".into(), type_: "int".into(), vars_ref: 0 }]);
+        let rows = flatten_watch(&s);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(
+            (rows[1].1.depth, rows[1].1.name.as_str(), rows[1].0),
+            (1, "x", 0),
+            "children belong to their watch"
+        );
+        assert_eq!(rows[2].0, 1);
     }
 }
