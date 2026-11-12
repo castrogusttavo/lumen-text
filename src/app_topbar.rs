@@ -756,10 +756,38 @@ impl App {
         self.switch_project_now(path);
     }
 
+    /// Drop everything live that belongs to the project being left: the debug session (the
+    /// debuggee is terminated), the terminals and the AI panel's agents (their process groups are
+    /// hung up when dropped) and the Git panel. Runs before the root changes; not for a re-open of
+    /// the same root. Build / test jobs and LSP clients are reset by the caller.
+    fn reset_for_project_switch(&mut self) {
+        // Keep the old project's breakpoints / watches on disk, then forget the session.
+        self.debug_save();
+        if self.dbg.is_some() {
+            self.debug_stop();
+        }
+        self.dbg_last_stop = None;
+        // Pending prelaunch build, console, history and the rest of the panel's state.
+        self.dbgui = Default::default();
+        // Terminals: every tab and split goes, with its shell.
+        let ids: Vec<u32> = self.terms.tabs.iter().map(|t| t.id).collect();
+        for id in ids {
+            self.close_terminal_id(id);
+        }
+        // AI panel: end the agents and hide it; it is re-scoped to the new root.
+        self.ai_close_all();
+        self.ai.open = false;
+        self.ai.focused = false;
+        if self.gitpanel.is_some() {
+            self.close_git_panel();
+        }
+    }
+
     /// Close everything of the current project and open `path` as the new one (no questions).
     pub fn switch_project_now(&mut self, path: PathBuf) {
         self.save_session();
         remember_project(&self.root);
+        self.reset_for_project_switch();
         while !self.docs.is_empty() {
             self.close_tab(0, true);
         }
@@ -780,6 +808,7 @@ impl App {
         self.eslint_busy.clear();
         self.git_status.clear();
         self.root = path;
+        self.ai.root = self.root.clone();
         self.win_root_changed();
         // Breakpoints, watches and the launch choice belong to the project.
         self.debug_load();

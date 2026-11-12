@@ -378,7 +378,7 @@ impl App {
     }
 
     /// End every session (another project took over).
-    fn ai_close_all(&mut self) {
+    pub(crate) fn ai_close_all(&mut self) {
         for s in std::mem::take(&mut self.ai.sessions) {
             self.ai.bridge.forget_session(s.id);
         }
