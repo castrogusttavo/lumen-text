@@ -762,8 +762,18 @@ mod tests {
 
         // Check Current then Incoming on the first conflict: both, current first.
         app.merge_toggle(0, false);
+        let mv = app.merge.as_ref().unwrap();
+        assert_eq!(mv.states[0], State::Current, "{:?} {:?} {:?}", mv.states, mv.loc, app.docs[di].buf.to_string());
         app.merge_toggle(0, true);
-        assert_eq!(app.merge.as_ref().unwrap().states[0], State::CurrentIncoming);
+        let mv = app.merge.as_ref().unwrap();
+        assert_eq!(
+            mv.states[0],
+            State::CurrentIncoming,
+            "{:?} {:?} {:?}",
+            mv.states,
+            mv.loc,
+            app.docs[di].buf.to_string()
+        );
         // Undo goes back one choice.
         app.docs[di].buf.close_group();
         app.run_cmd(crate::app_overlay::Cmd::Undo);
