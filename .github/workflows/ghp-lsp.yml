@@ -62,4 +62,4 @@ jobs:
         with:
           workspaces: tools/ghp-lsp
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --test gopls_integration -- --ignored --nocapture
+      - run: cargo test --test gopls_integration --test router_integration -- --ignored --nocapture
