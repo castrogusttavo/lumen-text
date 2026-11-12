@@ -57,6 +57,8 @@ pub enum Action {
     Git(crate::app_gitpanel::GitPick),
     /// A macro saved in `macros.json` (see `macros`).
     Macro(String),
+    /// Launch configuration picked for debugging (its id, see `debug_model::LaunchConfig`).
+    DebugConfig(String),
     /// "Compare with branch or commit" pickers (see `app_gitcmp`).
     Compare(crate::app_gitcmp::CmpPick),
     /// Trust prompt of the project settings and the Python interpreter picker (see `app_projcfg`).
@@ -148,6 +150,16 @@ pub enum PromptKind {
     /// The name of AI panel session `id`.
     AiRename {
         id: u64,
+    },
+    /// Condition of the breakpoint on `line` (0-based) of `path`; empty clears it.
+    BpCondition {
+        path: PathBuf,
+        line: usize,
+    },
+    /// Log message of a logpoint on `line` (0-based) of `path`; empty turns it back into a breakpoint.
+    BpLog {
+        path: PathBuf,
+        line: usize,
     },
 }
 

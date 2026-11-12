@@ -307,6 +307,8 @@ pub enum Target {
     /// The explorer's header (Files / Outline tabs): the "Sort by" menu, with the current order
     /// and the folders-first switch.
     ExplorerHeader(crate::tree::SortMode, bool),
+    /// The breakpoint column of the gutter: line (0-based) of the active document.
+    Breakpoint(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,6 +364,8 @@ pub struct Flags {
     pub has_path: bool,
     /// A closed tab can be reopened (tab menu: "Reopen Closed Tab").
     pub reopen: bool,
+    /// Gutter menu: `None` = no breakpoint on the line, `Some(enabled)` otherwise.
+    pub bp: Option<bool>,
 }
 
 fn item(act: Act, label: &'static str, icon: &'static str, key: &'static str) -> Entry {
@@ -475,6 +479,26 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
             }
             v
         }
+        Target::Breakpoint(_) => match f.bp {
+            None => vec![
+                item(Act::Run("ToggleBreakpoint"), "Add Breakpoint", "ui/debug_breakpoint", "F9"),
+                item(Act::Run("DebugBpCondition"), "Add Conditional Breakpoint…", "ui/debug_breakpoint", ""),
+                item(Act::Run("DebugBpLog"), "Add Logpoint…", "ui/debug_log_breakpoint", ""),
+            ],
+            Some(on) => vec![
+                item(Act::Run("ToggleBreakpoint"), "Remove Breakpoint", "ui/close", "F9"),
+                sep(),
+                item(Act::Run("DebugBpCondition"), "Edit Condition…", "ui/pencil", ""),
+                item(Act::Run("DebugBpLog"), "Edit Logpoint Message…", "ui/debug_log_breakpoint", ""),
+                sep(),
+                item(
+                    Act::Run("DebugBpToggleEnabled"),
+                    if on { "Disable Breakpoint" } else { "Enable Breakpoint" },
+                    "ui/debug_disabled_breakpoint",
+                    "",
+                ),
+            ],
+        },
         Target::Editor => vec![
             item(Act::Run("AiSendSelection"), "Send Selection to Agent", "ui/at_sign", "Ctrl+Alt+K"),
             sep(),
@@ -617,6 +641,14 @@ impl App {
                 None => Target::Root(self.root.clone()),
             });
         }
+        // The breakpoint column: the caret goes to that line, so the menu's commands act on it.
+        if let Some(line) = self.gutter_bp_line_at(x, y) {
+            self.focus = Focus::Editor;
+            let d = &mut self.docs[self.active];
+            let p = d.buf.pos(line, 0);
+            d.ed.click(&mut d.buf, p, false);
+            return Some(Target::Breakpoint(line));
+        }
         // The editor's text (not under an open diff): the caret moves to the click unless it lands
         // inside the selection, like other editors.
         let ed = self.layout.editor;
@@ -644,6 +676,9 @@ impl App {
             f.has_path = d.path().is_some();
             f.reopen = !self.closed_tabs.is_empty();
             f.md = crate::app_md::is_markdown_name(&d.name).then(|| d.md.is_some());
+        }
+        if let Target::Breakpoint(line) = &target {
+            f.bp = self.breakpoint_enabled_at(*line);
         }
         let entries = entries_for(&target, &f);
         self.overlay = Overlay::Ctx(Box::new(CtxMenu {
@@ -804,7 +839,9 @@ impl App {
             Target::Tab(i) => self.docs.get(*i).and_then(|d| d.path()).map(Path::to_path_buf),
             Target::Commit(_) | Target::ExplorerHeader(..) => None,
             Target::GitFiles(v) => v.first().cloned(),
-            Target::Editor => self.docs.get(self.active).and_then(|d| d.path()).map(Path::to_path_buf),
+            Target::Editor | Target::Breakpoint(_) => {
+                self.docs.get(self.active).and_then(|d| d.path()).map(Path::to_path_buf)
+            }
         }
     }
 

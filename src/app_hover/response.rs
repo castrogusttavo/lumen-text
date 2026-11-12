@@ -97,6 +97,21 @@ impl App {
         }
     }
 
+    /// A popup of Markdown anchored on the chars `anchor` of the active document (the debugger's
+    /// value-on-hover).
+    pub fn hover_show_markdown(&mut self, text: &str, anchor: (usize, usize)) {
+        let i = self.active;
+        let Some(d) = self.docs.get(i) else { return };
+        let Some(pos) = d.screen_pos(anchor.0) else { return };
+        let (uri, ver) = (d.uri().unwrap_or_default(), d.version);
+        let mut tip = HoverTip::from_markdown(text, pos, anchor.0);
+        tip.anchor = anchor;
+        tip.has_lsp = false;
+        tip.uri = uri;
+        tip.ver = ver;
+        self.hover_show(tip);
+    }
+
     /// The `textDocument/hover` answer.
     pub fn hover_response(&mut self, uri: &str, at: usize, v: &Value) {
         let Some(i) = self.doc_by_uri(uri) else { return };

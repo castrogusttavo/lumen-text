@@ -232,6 +232,10 @@
   "id": "StepOut"
  },
  {
+  "combo": "f6",
+  "id": "DebugPause"
+ },
+ {
   "combo": "shift+alt+right",
   "id": "ExpandSelection"
  },

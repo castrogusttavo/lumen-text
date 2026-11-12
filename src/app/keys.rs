@@ -61,6 +61,10 @@ impl App {
             self.request_redraw();
             return false;
         }
+        if self.debug_key(ev) {
+            self.request_redraw();
+            return false;
+        }
         if self.md_key(ev) {
             self.request_redraw();
             return false;

@@ -1291,6 +1291,14 @@ impl App {
     }
 
     pub fn request_hover(&mut self, at: usize) {
+        // Stopped in the debugger: the value of the expression comes first.
+        if self.dbg.is_some() && self.debug_hover_request(at) {
+            return;
+        }
+        self.request_hover_lsp(at);
+    }
+
+    pub fn request_hover_lsp(&mut self, at: usize) {
         if self.hover_from_cache(at) {
             return;
         }

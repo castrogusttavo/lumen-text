@@ -28,6 +28,8 @@ pub enum Reg {
     DebugStack,
     DebugVars,
     DebugOut,
+    DebugBps,
+    DebugWatch,
     Tests,
     TestsDetail,
     Build,
@@ -168,6 +170,8 @@ impl App {
             Reg::DebugStack => Some(self.panel.dbg_scroll[0]),
             Reg::DebugVars => Some(self.panel.dbg_scroll[1]),
             Reg::DebugOut => Some(self.panel.dbg_scroll[2]),
+            Reg::DebugBps => Some(self.panel.dbg_scroll[3]),
+            Reg::DebugWatch => Some(self.panel.dbg_scroll[4]),
             Reg::Tests => Some(self.tests.scroll),
             Reg::TestsDetail => Some(self.tests.detail_scroll),
             Reg::Build => Some(self.build_region_value(false)),
@@ -358,6 +362,8 @@ impl App {
             Reg::BuildLog => self.build_set_region(true, v, max),
             Reg::DebugStack => self.panel.dbg_scroll[0] = v,
             Reg::DebugVars => self.panel.dbg_scroll[1] = v,
+            Reg::DebugBps => self.panel.dbg_scroll[3] = v,
+            Reg::DebugWatch => self.panel.dbg_scroll[4] = v,
             Reg::DebugOut => {
                 self.panel.dbg_scroll[2] = v;
                 self.panel.dbg_follow = v >= max - 1.0;

@@ -253,6 +253,8 @@ impl App {
                 PromptKind::MacroCount => self.macro_replay_answer(&p.field.text),
                 PromptKind::MacroName => self.macro_save_answer(&p.field.text),
                 PromptKind::AiRename { id } => self.ai_rename(id, &p.field.text),
+                PromptKind::BpCondition { path, line } => self.bp_set_condition(&path, line, &p.field.text),
+                PromptKind::BpLog { path, line } => self.bp_set_log(&path, line, &p.field.text),
             },
             Overlay::None => {}
         }
@@ -301,6 +303,7 @@ impl App {
             Action::LocalHist(path, None) => self.hist_list(&path),
             Action::Git(p) => self.git_pick(p),
             Action::Macro(name) => self.macro_run_saved(&name),
+            Action::DebugConfig(id) => self.debug_pick_config(&id),
             Action::Compare(p) => self.cmp_pick(p),
             Action::Project(p) => self.projcfg_pick(p),
             Action::UndoBranch(n) => {
