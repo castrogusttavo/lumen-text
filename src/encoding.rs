@@ -265,9 +265,8 @@ pub fn decode(bytes: &[u8], enc: TextEncoding) -> String {
             let le = enc.kind == Kind::Utf16Le;
             let bom: [u8; 2] = if le { [0xFF, 0xFE] } else { [0xFE, 0xFF] };
             let b = bytes.strip_prefix(&bom[..]).unwrap_or(bytes);
-            let units = b
-                .chunks_exact(2)
-                .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) });
+            let units =
+                b.as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes(*c) } else { u16::from_be_bytes(*c) });
             let mut s: String = char::decode_utf16(units).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)).collect();
             if !b.len().is_multiple_of(2) {
                 s.push(char::REPLACEMENT_CHARACTER);

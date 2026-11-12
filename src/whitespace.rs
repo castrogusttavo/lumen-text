@@ -15,6 +15,7 @@ pub enum Render {
     All,
 }
 
+#[cfg(test)]
 pub const RENDER_NAMES: &[&str] = &["none", "boundary", "trailing", "all"];
 
 impl Render {

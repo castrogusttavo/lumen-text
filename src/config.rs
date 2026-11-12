@@ -674,7 +674,7 @@ mod tests {
             git_blame: false,
             ram_display: "short".into(),
             status_items: [("terminal".to_string(), false), ("ram".to_string(), false)].into_iter().collect(),
-            status_order: ["git", "ram", "position", "indent", "language", "terminal", "debug"]
+            status_order: ["git", "ram", "position", "indent", "encoding", "language", "terminal", "debug"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
