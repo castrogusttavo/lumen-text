@@ -134,7 +134,6 @@ impl LineIndex {
                 return (byte + target - col16).min(le);
             }
             col16 += ascii;
-            byte = w.start;
             if col16 + w.len16 as usize > target {
                 return w.start;
             }
