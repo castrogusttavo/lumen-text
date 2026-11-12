@@ -19,6 +19,7 @@ use winit::keyboard::{Key, NamedKey};
 pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+s", "Save"),
     ("ctrl+w", "CloseTab"),
+    ("ctrl+shift+t", "ReopenClosedTab"),
     ("ctrl+q", "Quit"),
     ("ctrl+p", "QuickOpen"),
     ("ctrl+shift+p", "Commands"),

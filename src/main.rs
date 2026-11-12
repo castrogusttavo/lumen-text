@@ -4,11 +4,13 @@
 #![cfg_attr(all(windows, not(debug_assertions), not(test)), windows_subsystem = "windows")]
 mod app;
 mod app_aipanel;
+mod app_ask;
 mod app_backup;
 mod app_build;
 mod app_ctxmenu;
 mod app_debug;
 mod app_display;
+mod app_elevated;
 mod app_explorer;
 mod app_files;
 mod app_format;
@@ -27,6 +29,7 @@ mod app_lspx;
 mod app_md;
 mod app_overlay;
 mod app_panel;
+mod app_reopen;
 mod app_settings;
 mod app_sidebar;
 mod app_split;

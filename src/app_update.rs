@@ -336,7 +336,7 @@ impl App {
             self.say(format!("Could not find {} — reopen Lumen manually", exe.display()));
             return self.request_redraw();
         }
-        if !self.try_quit() {
+        if self.ask_before_restart() || !self.try_quit() {
             return;
         }
         let _ = std::fs::remove_file(crate::instance::socket_path());

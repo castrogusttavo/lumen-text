@@ -185,6 +185,7 @@ impl App {
             card: Rect::default(),
             confirm: None,
             unsaved: Some(Unsaved::new(pending, names, debug).with_kept(kept)),
+            ask: None,
         }));
         self.request_redraw();
     }
@@ -237,7 +238,12 @@ impl App {
                 }
                 Ok(())
             }
-            Err(e) => Err(format!("could not save {name}: {e}")),
+            Err(e) => {
+                if crate::app_elevated::is_permission_denied(&e) {
+                    self.offer_elevated_save(i);
+                }
+                Err(format!("could not save {name}: {e}"))
+            }
         }
     }
 
