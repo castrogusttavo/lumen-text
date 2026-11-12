@@ -938,7 +938,9 @@ impl App {
         let building = self.dbgui.build.is_some();
         let stopping = self.teardown_busy() || self.dbgui.start_after.is_some();
         match t {
-            Tool::Continue => !building && !stopping && (state.is_none() || stopped || state == Some(State::Terminated)),
+            Tool::Continue => {
+                !building && !stopping && (state.is_none() || stopped || state == Some(State::Terminated))
+            }
             Tool::Over | Tool::Into | Tool::Out => stopped,
             Tool::Pause => state == Some(State::Running),
             Tool::Restart => !building && !stopping && self.dbgui.last.is_some(),
@@ -974,8 +976,8 @@ impl App {
         let hover = d.session_mut().and_then(|(_, s)| s.hover_result.take());
         let watch_stale = d.session().is_some_and(|s| s.watch != self.dbgui.watch);
         let target = d.session().and_then(|s| s.selected_frame().cloned());
-        let finished = (state == State::Terminated)
-            .then(|| finish_message(d.session().and_then(|s| s.exit_code), d.output()));
+        let finished =
+            (state == State::Terminated).then(|| finish_message(d.session().and_then(|s| s.exit_code), d.output()));
         match state {
             State::Stopped { .. } => {
                 if watch_stale {

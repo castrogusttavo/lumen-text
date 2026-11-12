@@ -785,7 +785,8 @@ fn delve_exec_quick_exit_reports_code_and_output() {
     use crate::debug_model::{ConsoleKind, classify};
     let (dir, bin) = build_server("exit1");
     let mut d = start_exec(&dir, &bin, &["exit1"]);
-    let done = |d: &Dbg| d.state() == State::Terminated && said(d, "about to fail") && said(d, "address already in use");
+    let done =
+        |d: &Dbg| d.state() == State::Terminated && said(d, "about to fail") && said(d, "address already in use");
     assert!(pump_debugger(&mut d, done), "{:?}", d.output());
     let exit = (ConsoleKind::Error, "Program exited with code 1");
     assert!(d.output().iter().any(|l| classify(l) == exit), "{:?}", d.output());
