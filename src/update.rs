@@ -278,6 +278,7 @@ pub fn setup_install_dir(exe: &Path, home: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Command-line switches for a silent in-place upgrade with the setup (`relaunch`: start Lumen again afterwards).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn setup_args(dir: &Path, relaunch: bool) -> Vec<String> {
     let mut a: Vec<String> = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/CLOSEAPPLICATIONS"]
         .map(String::from)
