@@ -7,7 +7,7 @@
 #
 #   test-update.sh <setup for V> <lumen-text.exe stamped V> <V>        (Git Bash on a Windows runner)
 #
-# Needs GHP_LSP_BIN (for build-setup.sh) and Inno Setup (ISCC) like build-setup.sh.
+# Needs Inno Setup (ISCC) like build-setup.sh.
 set -uo pipefail
 [ $# -eq 3 ] || { echo "usage: $0 <setup.exe> <lumen-text.exe> <version>" >&2; exit 2; }
 SETUP="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
@@ -93,7 +93,7 @@ check "installed version became $V2" wait_for 180 is_ver "$V2"
 setup_gone() { ! nc tasklist /FI "IMAGENAME eq lumen-text-$V2-windows-x86_64-setup.exe" 2>/dev/null | grep -qi "windows-x86_64-setup"; }
 wait_for 60 setup_gone
 check "installed exe still runs" test -n "$("$LUMEN" --version | tr -d '\r')"
-check "install dir unchanged (in-place upgrade)" test -f "$W/inst/unins000.exe" -a -f "$W/inst/ghp-lsp.exe" -a -f "$W/inst/assets/language-manifest.json"
+check "install dir unchanged (in-place upgrade)" test -f "$W/inst/unins000.exe" -a -f "$W/inst/assets/language-manifest.json"
 check "settings survived" test -f "$APPDATA/lumen-text/ci-marker"
 check "one uninstall entry only" test "$(nc reg.exe query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall' | tr -d '\r' | grep -c 'B7C1E0D4-5A3F-4C8E-9E21-6F0A7D3C41B2')" = 1
 

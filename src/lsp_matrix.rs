@@ -448,9 +448,9 @@ fn complete_until(app: &mut App, i: usize, at: usize, trigger: Option<char>, wan
 /// its diagnostics, and gets hover and completion for the Go expressions through the real client:
 /// scope-based names right away, then gopls' members (`user.` -> `Name`, `Admin`) and package-level
 /// names (`Current`), also inside an empty `<go= />`.
-/// Skips (passes) while `ghp-lsp` is not installed, unless `LUMEN_REQUIRE_GHP_LSP` is set (CI does
-/// once the server is in the tree). Build it with `cargo build --release --manifest-path tools/ghp-lsp/Cargo.toml`
-/// and put `tools/ghp-lsp/target/release` on PATH.
+/// Skips (passes) while `ghp-lsp` is not installed, unless `LUMEN_REQUIRE_GHP_LSP` is set (CI does:
+/// "GHP in the editor" downloads the released `ghp-lsp` from github.com/GHP-GoLang-Framework/ghp-lsp
+/// and puts it on PATH; Lumen neither builds nor ships it).
 #[test]
 #[ignore = "needs ghp-lsp installed"]
 fn lsp_ghp() {

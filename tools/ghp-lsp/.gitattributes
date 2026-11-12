@@ -1,2 +1,0 @@
-# Fixtures and golden files are compared byte for byte: keep LF on Windows checkouts too.
-* text=auto eol=lf

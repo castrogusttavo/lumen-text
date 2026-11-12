@@ -12,7 +12,7 @@ pkgs="$2"
 shift 2
 ws="$(pwd)"
 docker run --rm -v "$ws:$ws" -w "$ws" \
-  -e HUGEICONS_TOKEN -e VERSION -e GHP_LSP_BIN -e PKGS="$pkgs" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  -e HUGEICONS_TOKEN -e VERSION -e PKGS="$pkgs" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   "$image" bash -c '
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive

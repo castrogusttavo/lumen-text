@@ -1,6 +1,6 @@
 # Windows binaries link the C runtime statically so they start on a machine without the
 # "Microsoft Visual C++ Redistributable" (otherwise: "VCRUNTIME140.dll was not found").
-# Applies to lumen-text and, when built from the repo root or below, to tools/ghp-lsp.
+# Applies to lumen-text.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
 

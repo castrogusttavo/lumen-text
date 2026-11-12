@@ -378,16 +378,15 @@ fn parse_breakpoints_pairs_requested_lines_and_flags_unverified() {
 }
 
 #[test]
-fn normalize_source_path_maps_staged_and_relative_paths_to_the_project() {
+fn normalize_source_path_maps_relative_paths_to_the_project() {
     use crate::dap::normalize_source_path as n;
     let root = Path::new("/proj");
     assert_eq!(n("/proj/pages/../a.ghp", root), "/proj/a.ghp");
     assert_eq!(n("./pages/a.ghp", root), "/proj/pages/a.ghp");
-    assert_eq!(n("/tmp/ghp-stage-123456/blog/post.ghp", root), "/proj/blog/post.ghp", "deleted staged copy");
     assert_eq!(n("/elsewhere/x.go", root), "/elsewhere/x.go");
 }
 
-/// A fake adapter for a GHP session: line 2 has no code, and frames name a staged copy.
+/// A fake adapter for a GHP session: line 2 has no code.
 fn fake_ghp_adapter(from_client: Receiver<Vec<u8>>, to_client: Sender<Vec<u8>>) {
     thread::spawn(move || {
         let mut fr = FrameReader::default();
@@ -410,7 +409,7 @@ fn fake_ghp_adapter(from_client: Receiver<Vec<u8>>, to_client: Sender<Vec<u8>>) 
                         vec![ok(json!({})), ev("stopped", json!({"reason": "breakpoint", "threadId": 1}))]
                     }
                     "stackTrace" => vec![ok(json!({"stackFrames": [{"id": 1, "name": "main.Index",
-                        "source": {"path": "/tmp/ghp-stage-99/index.ghp"}, "line": 4, "column": 0}]}))],
+                        "source": {"path": "/proj/index.ghp"}, "line": 4, "column": 0}]}))],
                     _ => vec![],
                 };
                 for o in out {
@@ -433,7 +432,7 @@ fn ghp_session_normalises_paths_and_records_unverified_breakpoints() {
     s.start(&mut dap);
 
     assert!(pump(&mut dap, &mut s, |s| matches!(s.state, State::Stopped { .. }) && !s.frames.is_empty(), 5));
-    assert_eq!(s.frames[0].path.as_deref(), Some("/proj/index.ghp"), "staged path mapped back");
+    assert_eq!(s.frames[0].path.as_deref(), Some("/proj/index.ghp"), "frame in the project page");
     assert_eq!(s.unverified("/proj/index.ghp"), vec![(2, "could not find statement".to_string())]);
     assert!(s.output.iter().any(|l| l.contains("index.ghp:2 not verified")), "{:?}", s.output);
     dap.disconnect(true);
