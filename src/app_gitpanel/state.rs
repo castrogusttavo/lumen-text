@@ -54,6 +54,8 @@ pub enum Hit {
     StashDrop(usize),
     /// A file of the expanded stash.
     SFile(usize),
+    /// Open the merge editor on conflicted file `i`.
+    Merge(usize),
 }
 
 /// Why the force-push card is showing.

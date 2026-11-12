@@ -115,6 +115,10 @@ pub struct Doc {
     pub eslint_due: Option<Instant>,
     /// Test outcomes from the last run: (0-based line, passed). Drawn in the gutter.
     pub test_marks: Vec<(usize, Option<bool>)>,
+    /// Coverage marks of the loaded report (sorted by line; they follow edits, see `coverage`).
+    pub cov: Vec<crate::coverage::Mark>,
+    /// Report generation `cov` was made from (see `app_coverage`).
+    pub cov_gen: u64,
     /// Selections to return to when shrinking after "expand selection".
     pub sel_stack: Vec<crate::buffer::Sel>,
     pub symbols: Vec<Sym>,
@@ -256,6 +260,8 @@ impl Doc {
             diag_data: Vec::new(),
             eslint_due: None,
             test_marks: Vec::new(),
+            cov: Vec::new(),
+            cov_gen: 0,
             sel_stack: Vec::new(),
             symbols: Vec::new(),
             bps: Vec::new(),
@@ -573,6 +579,7 @@ impl Doc {
         crate::bookmarks::on_edits(&mut self.marks, &recs);
         let buf = &self.buf;
         self.inlay.on_edits(&recs, l, buf.line_count(), &|p| buf.line_col(p));
+        crate::coverage::on_edits(&mut self.cov, &recs, &|n| (n < buf.line_count()).then(|| buf.line(n)));
         // Edits that add or remove no line break leave every other line's width and minimap row as they were.
         if !recs.is_empty() && recs.iter().all(|r| r.rem_lines == 0 && r.ins_lines == 0) {
             let mut lines: Vec<usize> = recs.iter().map(|r| r.line).collect();

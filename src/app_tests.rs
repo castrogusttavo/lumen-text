@@ -146,6 +146,8 @@ pub struct TestsState {
     pub cur_group: Option<String>,
     /// Height of the list viewport at the last draw (for keeping the cursor in view).
     list_view: i32,
+    /// Coverage: the loaded report and whether runs collect it (see `app_coverage`).
+    pub cov: crate::app_coverage::CovState,
 }
 
 impl Default for TestsState {
@@ -187,6 +189,7 @@ impl Default for TestsState {
             focused: false,
             cur_group: None,
             list_view: 0,
+            cov: Default::default(),
         }
     }
 }
@@ -694,6 +697,25 @@ impl App {
         self.tests_start(Last::All);
     }
 
+    /// "Tests: Run with coverage": run everything with the runner's coverage on; later runs keep
+    /// collecting it (so the gutter refreshes) until "Tests: Hide coverage".
+    pub fn tests_run_coverage(&mut self) {
+        self.tests_ensure_detect();
+        let runner = match self.tests.target() {
+            Some(t) => t.runner(),
+            None => self.tests.runner,
+        };
+        let Some(runner) = runner else {
+            return self
+                .say("coverage: no structured test runner for this project (log-only scripts cannot collect it)");
+        };
+        if let Err(e) = testrun::coverage_supported(runner) {
+            return self.say(format!("coverage: {e}"));
+        }
+        self.tests.cov.run = true;
+        self.tests_start(Last::All);
+    }
+
     pub fn tests_run_failed(&mut self) {
         if self.tests.real_failures().is_empty() {
             return self.say("tests: nothing failed");
@@ -831,7 +853,7 @@ impl App {
         };
         self.tests.seq += 1;
         let report = std::env::temp_dir().join(format!("lumen-tests-{}-{}.dat", std::process::id(), self.tests.seq));
-        let plan = match (&target, runner) {
+        let mut plan = match (&target, runner) {
             (Some(t), _) => testrun::plan_script(t, &scope, &report),
             (None, Some(r)) => {
                 testrun::plan(r, &self.root, &scope, &report, (&self.config.test_command, &self.config.test_report))
@@ -840,6 +862,11 @@ impl App {
         };
         if plan.cmd.trim().is_empty() {
             return self.say("tests: no command to run");
+        }
+        if self.tests.cov.run
+            && let Err(e) = testrun::with_coverage(&mut plan, &dir, &report)
+        {
+            self.say(format!("coverage: {e} — running without it"));
         }
         let cmd = plan.cmd.clone();
         if !self.tests_spawn(&cmd, &dir, Mode::Run) {
@@ -968,12 +995,16 @@ impl App {
         if let Mode::DebugBuild(id) = std::mem::replace(&mut self.tests.mode, Mode::Run) {
             return self.tests_finish_debug_build(&id, code);
         }
+        let mut cov_note: Option<String> = None;
         if let Some(plan) = self.tests.plan.take() {
             let since = self.tests.started_sys.unwrap_or_else(SystemTime::now);
             let dir =
                 if self.tests.run_dir.as_os_str().is_empty() { self.root.clone() } else { self.tests.run_dir.clone() };
             for c in testrun::read_report(&plan, &dir, since) {
                 self.tests.upsert(c);
+            }
+            if let Some(cov) = plan.coverage.clone() {
+                cov_note = Some(self.coverage_after_run(&cov, &dir, since));
             }
             plan.remove_temp();
         }
@@ -1031,13 +1062,14 @@ impl App {
         self.tests.scroll = 0.0;
         self.tests.detail_scroll = 0.0;
         self.tests_apply_marks();
-        self.say(if counts.total() == 0 {
+        let summary = if counts.total() == 0 {
             "tests: nothing was reported".to_string()
         } else if counts.failed == 0 {
             format!("tests: {} passed in {}", counts.passed, testrun::fmt_secs(secs))
         } else {
             format!("tests: {} passed, {} failed in {}", counts.passed, counts.failed, testrun::fmt_secs(secs))
-        });
+        };
+        self.say(summary + cov_note.as_deref().unwrap_or(""));
     }
 
     /// ✓/✗ in the gutter of every open file that has results.

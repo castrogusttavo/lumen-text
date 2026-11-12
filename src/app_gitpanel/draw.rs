@@ -374,7 +374,8 @@ impl App {
                     let (name, dir) = split_name(&ch.path);
                     let icon = self.tx.icons.file_icon(name);
                     self.tx.icon(cv, &icon, r.x + 34, y + 7, 16, dim, clip);
-                    let reserved = if ch.discardable() { 66 } else { 36 };
+                    let conflicted = ch.code == 'U';
+                    let reserved = if ch.discardable() { 66 } else { 36 } + if conflicted { 28 } else { 0 };
                     let avail = r.w - 58 - reserved;
                     let nm = fit(&mut self.tx, name, avail, false);
                     let nw = self.tx.ui_width(&nm, false);
@@ -390,6 +391,17 @@ impl App {
                     self.tx.draw_ui(cv, lx, y + 6, &letter, code_color(&c, ch.code), clip, true);
                     gp.hits.push((Rect::new(r.x + 34, vis.y, r.w - 34, vis.h).intersect(&vis), Hit::Row(i)));
                     gp.hits.push((cbhit.intersect(&vis), Hit::Check(i)));
+                    if conflicted {
+                        // Conflicted file: the merge editor is one click away (always shown).
+                        let br = Rect::new(r.right() - if ch.discardable() { 86 } else { 58 }, y + 3, 24, 24);
+                        let bh = self.hv(br) && self.hv(vis);
+                        if bh {
+                            cv.fill_round_clip(br, 8, strong.with_alpha(0x22), clip);
+                        }
+                        let tint = if bh { c.warning } else { c.warning.with_alpha(0xc0) };
+                        self.tx.icon(cv, "ui/git_merge_conflict", br.x + 4, br.y + 4, 16, tint, vis);
+                        gp.hits.push((br.intersect(&vis), Hit::Merge(i)));
+                    }
                     if ch.discardable() {
                         if gp.confirm == Some(i) {
                             let label = "Discard?";

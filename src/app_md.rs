@@ -328,6 +328,7 @@ impl App {
     /// Give the right part of `area` (the card, or the focused pane of a split) to the preview of
     /// the active document, if its reader is open and the area is wide enough.
     pub fn md_place(&mut self, area: Rect) {
+        let area = self.merge_place(area);
         self.layout.md = Rect::default();
         self.layout.divider = Rect::default();
         if (self.diff.is_some() && self.diff_area() == self.layout.editor)

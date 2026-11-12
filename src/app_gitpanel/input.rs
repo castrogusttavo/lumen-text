@@ -239,6 +239,7 @@ impl App {
         // Card buttons run once the panel is back in place (they may reopen or refresh it).
         let mut deferred: Option<GitAct> = None;
         let mut undo = false;
+        let mut merge_path: Option<PathBuf> = None;
         if !inside {
             gp.focused = false;
             gp.msg_focus = false;
@@ -271,6 +272,9 @@ impl App {
                 Some(Hit::Close) => gp.closed = true,
                 Some(Hit::Check(i)) => self.gp_toggle_stage(&mut gp, i),
                 Some(Hit::Discard(i)) => gp.confirm = Some(i),
+                Some(Hit::Merge(i)) => {
+                    merge_path = gp.top.as_ref().zip(gp.changes.get(i)).map(|(t, c)| t.join(&c.path))
+                }
                 Some(Hit::ConfirmDiscard(i)) => self.gp_discard(&mut gp, i),
                 Some(Hit::Row(i)) => {
                     if let Some(k) = gp.index_of(Row::File(i)) {
@@ -365,6 +369,9 @@ impl App {
         }
         if undo {
             self.git_undo_commit();
+        }
+        if let Some(p) = merge_path {
+            self.merge_open(&p);
         }
         inside
     }

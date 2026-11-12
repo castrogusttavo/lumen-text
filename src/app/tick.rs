@@ -27,6 +27,7 @@ impl App {
         self.md_tick(now, &mut want);
         self.img_tick(now, &mut want);
         self.tests_tick(now, &mut want);
+        self.coverage_sync_docs();
         self.build_tick(now, &mut want);
         self.ai_tick(now, &mut want);
         self.ide_tick(now, &mut want);
