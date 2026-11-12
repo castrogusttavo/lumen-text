@@ -1,0 +1,5 @@
+<go
+    n := 1
+/>
+<p><go= undefinedThing /></p>
+<p><go= n.Nope /></p>
