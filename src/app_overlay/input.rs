@@ -243,6 +243,7 @@ impl App {
                 PromptKind::RenameTerminal { id } => self.rename_terminal(id, &p.field.text),
                 PromptKind::MacroCount => self.macro_replay_answer(&p.field.text),
                 PromptKind::MacroName => self.macro_save_answer(&p.field.text),
+                PromptKind::AiRename { id } => self.ai_rename(id, &p.field.text),
             },
             Overlay::None => {}
         }
@@ -277,6 +278,7 @@ impl App {
             Action::TestTarget(id) => self.tests_set_target(&id),
             Action::BuildTarget(id) => self.build_set_target(&id),
             Action::AiAgent(id) => self.ai_pick(&id),
+            Action::AiNew(id) => self.ai_pick_new(&id),
             Action::Run(cmd) => {
                 let title = cmd.clone();
                 self.run_task(&cmd, &title)

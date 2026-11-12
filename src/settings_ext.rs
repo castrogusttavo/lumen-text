@@ -170,6 +170,13 @@ pub fn defs() -> Vec<SettingDef> {
             "Keeps each file's undo history after it is closed (and across restarts), as long as the file was not changed elsewhere. Up to 2 MB per file; the oldest histories are dropped first.",
             Bool,
         ),
+        d(
+            "ai_notifications",
+            "AI",
+            "Desktop notifications",
+            "Shows a system notification when an agent session is waiting for you or done while Lumen is in the background (once per turn).",
+            Bool,
+        ),
     ]
 }
 
@@ -183,6 +190,7 @@ pub fn defaults() -> Value {
         "scrollbar": "never", "enable_lsp": true, "build_command": "", "run_command": "",
         "markdown_remote_images": true, "hot_exit": true, "persistent_undo": true,
         "render_whitespace": "none", "trim_trailing_whitespace": false, "insert_final_newline": false,
+        "ai_notifications": true,
     })
 }
 
@@ -200,6 +208,7 @@ pub fn values(c: &Config) -> Value {
         "hot_exit": c.hot_exit, "persistent_undo": c.persistent_undo,
         "render_whitespace": c.render_whitespace, "trim_trailing_whitespace": c.trim_trailing_whitespace,
         "insert_final_newline": c.insert_final_newline,
+        "ai_notifications": c.ai_notifications,
     })
 }
 

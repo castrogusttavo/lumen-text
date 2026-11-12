@@ -46,6 +46,8 @@ pub enum Action {
     BuildTarget(String),
     /// AI panel agent (its id, see `app_aipanel::AGENTS`).
     AiAgent(String),
+    /// AI panel: a new session of this agent.
+    AiNew(String),
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),
@@ -133,6 +135,10 @@ pub enum PromptKind {
     MacroCount,
     /// "Macro: Save last as…": the name in `macros.json`.
     MacroName,
+    /// The name of AI panel session `id`.
+    AiRename {
+        id: u64,
+    },
 }
 
 pub struct Prompt {

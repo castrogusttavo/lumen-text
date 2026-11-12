@@ -343,14 +343,15 @@ fn claude_gets_the_bridge_and_its_hooks_drive_the_status() {
         s.read_exact(&mut buf).unwrap();
         String::from_utf8_lossy(&buf).into_owned()
     };
+    let st = |app: &App| app.ai.cur().map_or(Status::Starting, Session::status);
     let until = |app: &mut App, want: Status| {
         let end = Instant::now() + Duration::from_secs(10);
-        while app.ai.status != want && Instant::now() < end {
+        while st(app) != want && Instant::now() < end {
             app.pump_ide();
             app.pump_ai();
             std::thread::sleep(Duration::from_millis(10));
         }
-        app.ai.status
+        st(app)
     };
     assert_eq!(post("working", "wrong"), "HTTP/1.1 401");
     assert_eq!(post("working", &hook), "HTTP/1.1 200");
@@ -361,10 +362,157 @@ fn claude_gets_the_bridge_and_its_hooks_drive_the_status() {
     assert_eq!(until(&mut app, Status::Working), Status::Working, "an edit: still working");
     assert_eq!(post("done", &hook), "HTTP/1.1 200");
     assert_eq!(until(&mut app, Status::Done), Status::Done, "Stop: done");
-    assert_eq!(app.ai.bridge.hook, Some(Status::Done));
+    assert_eq!(app.ai.cur().unwrap().track.hook, Some(Status::Done));
     app.ai.on_input();
-    assert_eq!(app.ai.bridge.hook, None, "typing hands the chip back to the heuristic");
+    assert_eq!(app.ai.cur().unwrap().track.hook, None, "typing hands the chip back to the heuristic");
     app.ai_stop();
+    drop(app);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn clients_are_matched_to_their_sessions() {
+    let mut b = bridge::Bridge::default();
+    b.expect_session(1);
+    b.expect_session(2);
+    b.on_open(10);
+    b.on_open(11);
+    assert_eq!((b.owner_of(10), b.owner_of(11)), (Some(1), Some(2)), "by start order until they say who they are");
+    // 10 announces the pid of session 2's agent: the guess for session 1 is open again.
+    b.claim(10, Some(2));
+    assert_eq!(b.owner_of(10), Some(2));
+    assert_eq!(b.expect, vec![1]);
+    b.claim(11, Some(1));
+    assert_eq!((b.owner_of(10), b.owner_of(11)), (Some(2), Some(1)));
+    assert!(b.expect.is_empty());
+    // A Claude Code attached with /ide belongs to no session.
+    b.on_open(12);
+    b.claim(12, None);
+    assert_eq!(b.owner_of(12), None);
+    assert_eq!(b.clients_of(None), vec![12]);
+    assert_eq!(b.clients_of(Some(1)), vec![11]);
+    assert!(b.session_connected(1) && b.session_connected(2));
+    assert_eq!(b.on_closed(11), Some(1));
+    assert!(!b.session_connected(1));
+    b.forget_session(2);
+    assert_eq!(b.owner_of(10), None, "a restarted session's old client is nobody's");
+}
+
+/// A fake `claude` showing its session and whether its hook URLs name it, then echoing.
+#[cfg(unix)]
+const STUB_SESSION: &str = "#!/bin/sh\n\
+case \"$2\" in *\"/lumen/hook/done/$LUMEN_AI_SESSION\\\"\"*) mine=yes;; *) mine=no;; esac\n\
+printf 'session=%s hooks-mine=%s\\r\\n' \"$LUMEN_AI_SESSION\" \"$mine\"\n\
+exec cat\n";
+
+#[test]
+#[cfg(unix)]
+fn sessions_get_their_own_hooks_notifications_and_client() {
+    use super::tests::{stub, wait_screen};
+    let _g = lock();
+    let dir = tmp("ai-sessions");
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    stub(&bin, "claude", STUB_SESSION, true);
+    let mut app = test_app(&dir);
+    app.size = (1200, 800);
+    app.ai.search = Some(vec![bin.clone()]);
+    app.run_bound("AiPanel");
+    let s1 = app.ai.sessions[0].id;
+    let screen = wait_screen(&mut app, &format!("session={s1} hooks-mine=yes"));
+    assert!(screen.contains(&format!("session={s1} hooks-mine=yes")), "{screen:?}");
+    app.run_bound("AiNewSession");
+    app.overlay_accept(); // Claude Code: the current agent comes first
+    assert_eq!(app.ai.sessions.len(), 2, "a second session runs alongside");
+    assert_eq!(app.ai.active, 1);
+    let s2 = app.ai.sessions[1].id;
+    assert_ne!(s1, s2);
+    assert_eq!(app.ai.sessions[1].name, "Claude Code 2");
+    let screen = wait_screen(&mut app, &format!("session={s2} hooks-mine=yes"));
+    assert!(screen.contains(&format!("session={s2} hooks-mine=yes")), "{screen:?}");
+    let (port, hook, token) = {
+        let s = app.ai.bridge.server.as_ref().expect("the bridge listens");
+        (s.port(), s.hook_token().to_string(), s.token().to_string())
+    };
+    assert_eq!(app.ai.bridge.expect, vec![s1, s2], "both wait for their Claude Code to connect");
+
+    // Claude Code connects and says its pid: it is session 2's, whatever the order.
+    let pid2 = app.ai.sessions[1].term.pid().unwrap();
+    let mut c = Fake::connect(port, &token);
+    c.send(json!({"jsonrpc": "2.0", "method": "ide_connected", "params": {"pid": pid2}}));
+    pump_until(&mut app, |a| a.ai.bridge.session_connected(s2));
+    assert!(app.ai.bridge.session_connected(s2) && !app.ai.bridge.session_connected(s1));
+    assert_eq!(app.ai.bridge.expect, vec![s1]);
+    assert!(app.ai_bridge_connected(), "the session shown is connected");
+    app.ai_activate(0);
+    assert!(!app.ai_bridge_connected(), "the other one is not");
+    app.ai_activate(1);
+
+    // Hooks reach the session they name.
+    let post = |route: &str, sid: u64| {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let body = r#"{"hook_event_name":"x"}"#;
+        let req = format!(
+            "POST /lumen/hook/{route}/{sid} HTTP/1.1\r\nAuthorization: Bearer {hook}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        s.write_all(req.as_bytes()).unwrap();
+        let mut buf = [0u8; 12];
+        s.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"HTTP/1.1 200");
+    };
+    let st = |app: &App, i: usize| app.ai.sessions[i].status();
+    let until = |app: &mut App, i: usize, want: Status| {
+        let end = Instant::now() + Duration::from_secs(10);
+        while st(app, i) != want && Instant::now() < end {
+            app.pump_ide();
+            app.pump_ai();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        st(app, i)
+    };
+    app.ai_window_focus(false);
+    post("working", s1);
+    assert_eq!(until(&mut app, 0, Status::Working), Status::Working);
+    post("waiting", s1);
+    assert_eq!(until(&mut app, 0, Status::Waiting), Status::Waiting, "session 1 asks");
+    assert_ne!(st(&app, 1), Status::Waiting, "session 2 is untouched");
+    assert_eq!(app.ai.sent, vec![("Claude Code".to_string(), "Waiting for you".to_string())], "one notification");
+    assert!(app.ai.sessions[0].track.unseen, "not the session shown: its tab is marked");
+    assert_eq!(app.ai.badge().map(|b| b.0).as_deref(), Some("Waiting for you"));
+    post("working", s2);
+    assert_eq!(until(&mut app, 1, Status::Working), Status::Working);
+    post("done", s2);
+    assert_eq!(until(&mut app, 1, Status::Done), Status::Done);
+    assert_eq!(app.ai.sent.len(), 2);
+    assert_eq!(app.ai.sent[1], ("Claude Code 2".to_string(), "Done".to_string()));
+    // The idle reminder after the turn: the same turn, no second notification.
+    post("waiting", s2);
+    assert_eq!(until(&mut app, 1, Status::Waiting), Status::Waiting);
+    assert_eq!(app.ai.sent.len(), 2, "one turn, one notification");
+    // With Lumen focused nothing pops up.
+    app.ai_window_focus(true);
+    app.ai.sessions[0].track.on_input();
+    post("working", s1);
+    until(&mut app, 0, Status::Working);
+    post("done", s1);
+    assert_eq!(until(&mut app, 0, Status::Done), Status::Done);
+    assert_eq!(app.ai.sent.len(), 2);
+
+    // "AI: Next Session Waiting for You" goes to the one that asks.
+    app.ai_activate(0);
+    app.run_bound("AiNextWaiting");
+    assert_eq!(app.ai.active, 1, "session 2 waits");
+    // Closing a session ends it and forgets it in the bridge.
+    app.ai_close_session(1);
+    assert_eq!(app.ai.sessions.len(), 1);
+    assert_eq!(app.ai.active, 0);
+    assert!(!app.ai.bridge.session_connected(s2));
+    // Rename.
+    app.ai_rename(s1, "  refactor  ");
+    assert_eq!(app.ai.sessions[0].name, "refactor");
+    app.ai_rename(s1, "");
+    assert_eq!(app.ai.sessions[0].name, "Claude Code", "empty gives the agent's name back");
     drop(app);
     let _ = std::fs::remove_dir_all(&dir);
 }

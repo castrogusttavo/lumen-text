@@ -221,7 +221,6 @@ impl App {
 
     /// API for the AI panel: a picker of the worktrees; the chosen one goes to
     /// [`App::ai_session_in_worktree`].
-    #[allow(dead_code)] // called by the AI panel's "AI: New session in worktree…" (v2/ai-sessions)
     pub fn worktree_pick_for_ai(&mut self) {
         let Some(list) = self.wt_list() else { return };
         let cur = worktree::containing(&list, &self.root);
@@ -235,20 +234,11 @@ impl App {
         self.request_redraw();
     }
 
-    /// API for the AI panel: start an agent session whose working directory is the worktree
-    /// `path`. Until the AI panel runs several sessions (each with its own cwd), the single
-    /// session can only run in the project itself.
-    // INTEGRATION POINT (v2/ai-sessions): replace the body with the call that opens a new session
-    // with `cwd = path`, and add the palette entry "AI: New session in worktree…" calling
-    // `worktree_pick_for_ai`.
+    /// API for the AI panel: start a new agent session whose working directory is the worktree
+    /// `path` (the project's own worktree runs in the project).
     pub fn ai_session_in_worktree(&mut self, path: &Path) {
-        if worktree::same_path(path, &self.root) {
-            return self.ai_show();
-        }
-        self.say(format!(
-            "AI sessions in another worktree need multiple AI sessions; open {} first (Git: Worktrees…)",
-            tilde(path)
-        ));
+        let cwd = if worktree::same_path(path, &self.root) { self.root.clone() } else { path.to_path_buf() };
+        self.ai_new_session_at(cwd);
     }
 
     /// Open `path` in another window (a new `lumen-text` process).

@@ -649,7 +649,7 @@ impl App {
         let disc = Rect::new(head.x + 12, head.y + 8, 24, 24);
         cv.fill_round(disc, 12, c.accent.with_alpha(0x22).over(c.sidebar_bg));
         self.tx.icon(cv, "ui/sparkle", disc.x + 5, disc.y + 5, 14, c.accent_text, room);
-        let who = self.ai.agent.map_or("the agent", |a| a.name);
+        let who = self.ide_proposer();
         let more = self.ai.bridge.proposals.len().saturating_sub(1);
         let title =
             if more > 0 { format!("Proposed by {who}  ·  {more} more waiting") } else { format!("Proposed by {who}") };

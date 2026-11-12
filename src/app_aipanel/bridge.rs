@@ -1,6 +1,11 @@
 //! The editor side of the IDE bridge (`crate::ide`): Claude Code's tool calls answered from the
 //! editor's state, its proposed edits shown in the diff view with Accept / Reject, the selection
 //! and "AI: Send Selection to Agent" sent to it, and its hooks folded into the status chip.
+//!
+//! One listener serves every session. Hooks name their session in the URL; a WebSocket client is
+//! matched to the session that started it by the pid it announces (`ide_connected`), and until
+//! then by the order the Claude Code sessions were started in. Clients that attached with `/ide`
+//! from elsewhere belong to no session.
 
 use super::*;
 use crate::{
@@ -37,10 +42,12 @@ pub struct Bridge {
     sel_due: Option<Instant>,
     /// The last non-empty selection (`getLatestSelection`).
     pub latest_sel: Option<Value>,
-    /// What the agent's hooks last reported (cleared when the user types).
-    pub hook: Option<Status>,
-    /// The project the lock file names.
-    root: PathBuf,
+    /// Which AI panel session each client belongs to: (client, session).
+    pub owner: Vec<(u64, u64)>,
+    /// Claude Code sessions started here whose client has not connected yet, oldest first.
+    pub expect: Vec<u64>,
+    /// The workspace folders the lock file names (the project, plus folders sessions run in).
+    folders: Vec<PathBuf>,
     /// Where lock files go (`None` = decided by the build: the user's folder, none in tests).
     lock_dir: Option<Option<PathBuf>>,
 }
@@ -48,6 +55,70 @@ pub struct Bridge {
 impl Bridge {
     pub fn connected(&self) -> bool {
         !self.clients.is_empty()
+    }
+
+    /// The session client `c` belongs to.
+    pub fn owner_of(&self, c: u64) -> Option<u64> {
+        self.owner.iter().find(|(x, _)| *x == c).map(|(_, s)| *s)
+    }
+
+    /// Session `sid`'s Claude Code is connected.
+    pub fn session_connected(&self, sid: u64) -> bool {
+        self.owner.iter().any(|&(c, s)| s == sid && self.clients.contains(&c))
+    }
+
+    /// The clients of session `sid` (`None`: those started elsewhere, by `/ide`).
+    pub fn clients_of(&self, sid: Option<u64>) -> Vec<u64> {
+        self.clients.iter().copied().filter(|&c| self.owner_of(c) == sid).collect()
+    }
+
+    /// Session `sid` just started a Claude Code: the next client to connect is probably it.
+    pub fn expect_session(&mut self, sid: u64) {
+        self.expect.retain(|&s| s != sid);
+        self.expect.push(sid);
+    }
+
+    /// Session `sid` ended or restarted: its old clients are nobody's.
+    pub fn forget_session(&mut self, sid: u64) {
+        self.expect.retain(|&s| s != sid);
+        self.owner.retain(|&(_, s)| s != sid);
+    }
+
+    /// A client finished its handshake: it is the oldest session still waiting for its own.
+    pub fn on_open(&mut self, c: u64) {
+        self.clients.push(c);
+        if !self.expect.is_empty() {
+            let sid = self.expect.remove(0);
+            self.owner.push((c, sid));
+        }
+    }
+
+    /// A client went away; returns the session it belonged to.
+    pub fn on_closed(&mut self, c: u64) -> Option<u64> {
+        let sid = self.owner_of(c);
+        self.clients.retain(|&x| x != c);
+        self.owner.retain(|&(x, _)| x != c);
+        sid
+    }
+
+    /// Client `c` said which process it is: it belongs to `sid` (`None`: to no session here).
+    /// A guess made by order that was wrong goes back to the waiting list.
+    pub fn claim(&mut self, c: u64, sid: Option<u64>) {
+        let prev = self.owner_of(c);
+        if prev == sid {
+            return;
+        }
+        self.owner.retain(|&(x, _)| x != c);
+        if let Some(p) = prev
+            && !self.expect.contains(&p)
+            && !self.owner.iter().any(|&(_, s)| s == p)
+        {
+            self.expect.insert(0, p);
+        }
+        if let Some(s) = sid {
+            self.expect.retain(|&x| x != s);
+            self.owner.push((c, s));
+        }
     }
 }
 
@@ -117,7 +188,7 @@ impl App {
         match Server::start(vec![self.root.clone()], dir, self.wake()) {
             Ok(s) => {
                 self.ai.bridge.server = Some(s);
-                self.ai.bridge.root = self.root.clone();
+                self.ai.bridge.folders = vec![self.root.clone()];
             }
             Err(e) => self.say(format!("IDE bridge: could not listen on 127.0.0.1: {e}")),
         }
@@ -130,11 +201,44 @@ impl App {
         self.ide_start();
     }
 
-    /// Port, auth-free env and `--settings` for a Claude Code the panel starts.
-    pub(super) fn ide_agent_setup(&mut self) -> Option<(String, String, String)> {
+    /// Port, hook token and `--settings` (hook URLs naming session `sid`) for a Claude Code the
+    /// panel starts.
+    pub(super) fn ide_agent_setup(&mut self, sid: u64) -> Option<(String, String, String)> {
         self.ide_start();
         let s = self.ai.bridge.server.as_ref()?;
-        Some((s.port().to_string(), s.hook_token().to_string(), ide::hook_settings(s.port())))
+        Some((s.port().to_string(), s.hook_token().to_string(), ide::hook_settings(s.port(), Some(sid))))
+    }
+
+    /// The session whose agent is process `pid` (or started it).
+    fn ide_session_of_pid(&self, pid: u32) -> Option<u64> {
+        self.ai
+            .sessions
+            .iter()
+            .find(|s| s.term.alive && s.term.pid().is_some_and(|p| same_or_child(pid, p)))
+            .map(|s| s.id)
+    }
+
+    /// Who proposes, edits or is connected: the session's name (or the agent's) for client `c`.
+    pub fn ide_who(&self, client: Option<u64>) -> String {
+        let session = client.and_then(|c| self.ai.bridge.owner_of(c)).and_then(|sid| self.ai.index_of(sid));
+        match session {
+            Some(i) => self.ai.sessions[i].name.clone(),
+            None => self.ai.agent().map_or("The agent", |a| a.name).to_string(),
+        }
+    }
+
+    /// The bridge indicator of the session shown: its Claude Code is connected (or, when no
+    /// session owns a client, any client is: one attached with `/ide`).
+    pub fn ai_bridge_connected(&self) -> bool {
+        let b = &self.ai.bridge;
+        self.ai.cur().is_some_and(|s| b.session_connected(s.id)) || (b.owner.is_empty() && b.connected())
+    }
+
+    /// Who proposed the change on screen.
+    pub fn ide_proposer(&self) -> String {
+        let key = self.diff.as_ref().and_then(|d| d.proposal);
+        let client = self.ai.bridge.proposals.iter().find(|p| Some(p.key) == key).map(|p| p.client);
+        self.ide_who(client)
     }
 
     fn ide_send(&self, client: u64, msg: Value) {
@@ -169,12 +273,17 @@ impl App {
     fn ide_event(&mut self, e: Event) {
         match e {
             Event::Open(c) => {
-                self.ai.bridge.clients.push(c);
+                self.ai.bridge.on_open(c);
                 // The new client gets the current selection shortly.
                 self.ai.bridge.sel_seen = None;
             }
             Event::Closed(c) => {
-                self.ai.bridge.clients.retain(|&x| x != c);
+                // A session whose agent still runs may reconnect: its next client is it again.
+                if let Some(sid) = self.ai.bridge.on_closed(c)
+                    && self.ai.index_of(sid).is_some_and(|i| self.ai.sessions[i].term.alive)
+                {
+                    self.ai.bridge.expect_session(sid);
+                }
                 // Its pending diffs can no longer be answered: close them.
                 let gone: Vec<u64> = self.ai.bridge.proposals.iter().filter(|p| p.client == c).map(|p| p.key).collect();
                 for k in gone {
@@ -187,10 +296,16 @@ impl App {
                 }
             }
             Event::Note { client, method, params } => match method.as_str() {
-                "notifications/initialized" | "ide_connected" | "notifications/cancelled" => {}
+                "ide_connected" => {
+                    if let Some(pid) = params["pid"].as_u64().and_then(|p| u32::try_from(p).ok()) {
+                        let sid = self.ide_session_of_pid(pid);
+                        self.ai.bridge.claim(client, sid);
+                    }
+                }
+                "notifications/initialized" | "notifications/cancelled" => {}
                 _ => eprintln!("lumen ide: client {client}: unknown notification {method} {params}"),
             },
-            Event::Hook { route, body } => self.ide_hook(&route, &body),
+            Event::Hook { route, session, body } => self.ide_hook(&route, session, &body),
         }
     }
 
@@ -435,7 +550,7 @@ impl App {
         if self.diff.as_ref().is_none_or(|d| d.proposal.is_none()) {
             self.ide_show(key);
         }
-        let who = self.ai.agent.map_or("The agent", |a| a.name);
+        let who = self.ide_who(Some(client));
         self.say(format!("{who} proposes changes to {name} — Ctrl+Enter accepts, Esc rejects"));
         self.request_redraw();
         None
@@ -493,12 +608,18 @@ impl App {
         if self.ai.bridge.server.is_none() {
             return;
         }
-        if self.ai.bridge.root != self.root {
-            self.ai.bridge.root = self.root.clone();
-            let root = self.root.clone();
-            if let Some(s) = self.ai.bridge.server.as_mut() {
-                let _ = s.set_folders(&[root]);
+        // The project first, then the other folders sessions run in (worktrees).
+        let mut folders = vec![self.root.clone()];
+        for s in &self.ai.sessions {
+            if !folders.contains(&s.cwd) {
+                folders.push(s.cwd.clone());
             }
+        }
+        if self.ai.bridge.folders != folders {
+            if let Some(s) = self.ai.bridge.server.as_mut() {
+                let _ = s.set_folders(&folders);
+            }
+            self.ai.bridge.folders = folders;
         }
         if !self.ai.bridge.connected() {
             return;
@@ -534,42 +655,57 @@ impl App {
                 .say("Claude Code is not connected — start it in the AI panel (Ctrl+Shift+A) or run /ide in claude");
         }
         let (a, b) = d.ed.selected_line_range(&d.buf);
-        self.ide_broadcast(mcp::notification(
-            "at_mentioned",
-            json!({ "filePath": path, "lineStart": a, "lineEnd": b }),
-        ));
+        let msg = mcp::notification("at_mentioned", json!({ "filePath": path, "lineStart": a, "lineEnd": b }));
+        // To the session shown when its Claude Code is connected, else to the ones attached with
+        // `/ide`, else to everyone.
+        let mine = self.ai.cur().map(|s| self.ai.bridge.clients_of(Some(s.id))).unwrap_or_default();
+        let targets = if mine.is_empty() { self.ai.bridge.clients_of(None) } else { mine.clone() };
+        if targets.is_empty() {
+            self.ide_broadcast(msg);
+        } else {
+            for c in targets {
+                self.ide_send(c, msg.clone());
+            }
+        }
         let lines = if a == b { format!("L{}", a + 1) } else { format!("L{}-{}", a + 1, b + 1) };
         self.say(format!("Sent {}#{lines} to the agent", self.rel(&path)));
         // The agent of the panel gets the keyboard, ready for the question.
-        if self.ai.term.as_ref().is_some_and(|t| t.alive) {
+        if !mine.is_empty() && self.ai.term().is_some_and(|t| t.alive) {
             self.ai_show();
         }
     }
 
-    /// A hook POST from the agent: a status it reports (stronger than the output heuristic).
-    fn ide_hook(&mut self, route: &str, body: &Value) {
+    /// A hook POST from the agent of session `sid`: a status it reports (stronger than the output
+    /// heuristic). Without a session it is the session shown's, when that one is Claude Code.
+    fn ide_hook(&mut self, route: &str, sid: Option<u64>, body: &Value) {
+        let i = match sid {
+            Some(id) => self.ai.index_of(id),
+            None => self.ai.cur().filter(|s| s.agent.id == "claude").map(|_| self.ai.active),
+        };
         let s = match route {
             "working" => Status::Working,
             "waiting" => Status::Waiting,
             "done" => Status::Done,
             "edited" => {
-                self.ide_edited(body);
+                self.ide_edited(i, body);
                 Status::Working
             }
             _ => return eprintln!("lumen ide: unknown hook route {route}"),
         };
-        self.ai.bridge.hook = Some(s);
+        let Some(i) = i else { return };
+        let track = &mut self.ai.sessions[i].track;
+        track.hook = Some(s);
         if s == Status::Waiting {
-            self.ai.attention = true;
+            track.attention = true;
         }
-        if self.ai.refresh_status(Instant::now()) {
+        if self.ai_refresh(i, Instant::now()) {
             self.request_redraw();
         }
     }
 
     /// The agent edited a file (`PostToolUse` of Edit / Write / MultiEdit): reload it now when
     /// it is open and clean, and say so.
-    fn ide_edited(&mut self, body: &Value) {
+    fn ide_edited(&mut self, session: Option<usize>, body: &Value) {
         let Some(fp) = body["tool_input"]["file_path"].as_str() else { return };
         let path = self.ide_path(fp);
         if let Some(i) = self.docs.iter().position(|d| d.path() == Some(path.as_path()))
@@ -578,7 +714,10 @@ impl App {
             self.hist_snapshot(i, crate::localhist::Source::Reload);
             let _ = self.docs[i].reload_from_disk();
         }
-        let who = self.ai.agent.map_or("The agent", |a| a.name);
+        let who = match session {
+            Some(i) => self.ai.sessions[i].name.clone(),
+            None => self.ai.agent().map_or("The agent", |a| a.name).to_string(),
+        };
         self.say(format!("{who} edited {}", self.rel(&path)));
     }
 }

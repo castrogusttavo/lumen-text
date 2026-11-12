@@ -83,14 +83,14 @@ impl App {
     pub fn term_ref(&self, w: Which) -> Option<&Term> {
         match w {
             Which::Bottom(id) => self.terms.get(id).map(|t| &t.term),
-            Which::Ai => self.ai.term.as_ref(),
+            Which::Ai => self.ai.term(),
         }
     }
 
     pub fn term_mut(&mut self, w: Which) -> Option<&mut Term> {
         match w {
             Which::Bottom(id) => self.terms.get_mut(id).map(|t| &mut t.term),
-            Which::Ai => self.ai.term.as_mut(),
+            Which::Ai => self.ai.term_mut(),
         }
     }
 
@@ -122,7 +122,7 @@ impl App {
         if self.panel.open && self.panel.tab == crate::app_panel::PanelTab::Terminal {
             v.extend(self.terms.panes.iter().map(|id| Which::Bottom(*id)));
         }
-        if self.ai.open && self.ai.term.is_some() {
+        if self.ai.open && self.ai.term().is_some() {
             v.push(Which::Ai);
         }
         v
