@@ -55,6 +55,7 @@ impl App {
     /// Back up unsaved buffers a moment after the last edit, and drop the backups of buffers that
     /// were saved, closed or undone back to the saved text (from `tick`).
     pub fn backup_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        let dir = self.backup_dir();
         let st = &mut self.backup;
         st.flush_deferred();
         if st.failed.swap(false, Ordering::AcqRel) {
@@ -104,7 +105,7 @@ impl App {
             want(due.max(now + Duration::from_millis(100)));
             return;
         }
-        let Some(dir) = backup::project_dir(&self.root) else { return };
+        let Some(dir) = dir else { return };
         let mut jobs = Vec::new();
         for (order, d) in self.docs.iter().enumerate() {
             let (g, v) = (d.buf.gen_id(), d.buf.version());
@@ -123,7 +124,7 @@ impl App {
     /// Quitting with hot exit: write every unsaved buffer now and mark the set as a normal exit.
     /// False when something could not be written (the caller then asks as before).
     pub fn hot_exit_store(&mut self) -> bool {
-        let Some(dir) = backup::project_dir(&self.root) else { return false };
+        let Some(dir) = self.backup_dir() else { return false };
         self.backup.wait_idle(Duration::from_secs(3));
         self.backup.flush_deferred();
         let mut keep: Vec<PathBuf> = Vec::new();
@@ -152,7 +153,7 @@ impl App {
         for (_, e) in self.backup.written.drain() {
             let _ = fs::remove_file(e.file);
         }
-        if let Some(dir) = backup::project_dir(&self.root) {
+        if let Some(dir) = self.backup_dir() {
             backup::sweep(&dir, &[]);
             backup::take_clean_exit(&dir);
         }
@@ -166,7 +167,7 @@ impl App {
     /// Reopen, as unsaved tabs, the buffers backed up by the last run of this project (a hot exit
     /// or a crash), and say so.
     pub fn restore_backups(&mut self) {
-        let Some(dir) = backup::project_dir(&self.root) else { return };
+        let Some(dir) = self.backup_dir() else { return };
         let clean = backup::take_clean_exit(&dir);
         let items = backup::read_all(&dir);
         if items.is_empty() {

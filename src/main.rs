@@ -52,6 +52,7 @@ mod app_topbar;
 mod app_unsaved;
 mod app_update;
 mod app_view;
+mod app_window;
 mod app_worktree;
 mod assist;
 mod backup;
@@ -60,6 +61,7 @@ mod bigfile;
 mod bookmarks;
 mod buffer;
 mod buildrun;
+mod cli;
 mod clipboard;
 mod config;
 mod coverage;
@@ -190,38 +192,19 @@ fn main() -> ExitCode {
         libc::mallopt(libc::M_ARENA_MAX, 2);
         libc::mallopt(libc::M_TRIM_THRESHOLD, 4 * 1024 * 1024);
     }
-    let mut args: Vec<String> = Vec::new();
-    let (mut keys, mut snap, mut size) = (
-        None::<String>,
-        if cfg!(unix) { PathBuf::from("/tmp/lumen-snap") } else { env::temp_dir().join("lumen-snap") },
-        (1000u32, 700u32),
-    );
-    let mut scale_arg = None::<f32>;
-    // `--new-window`: never hand the arguments to a running instance (see `instance`).
-    let mut new_window = false;
-    let mut it = env::args().skip(1);
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--version" | "-V" => {
-                println!("lumen-text {}", version());
-                return ExitCode::SUCCESS;
-            }
-            "--install-user" => return exit_code(update::cli_install_user()),
-            "--check-update" => return exit_code(update::cli_check(false)),
-            "--update" => return exit_code(update::cli_check(true)),
-            "--new-window" => new_window = true,
-            "--keys" => keys = it.next(),
-            "--scale" => scale_arg = it.next().as_deref().and_then(ui::parse_scale),
-            "--snap" => snap = PathBuf::from(it.next().unwrap_or_default()),
-            "--size" => {
-                if let Some((w, h)) = it.next().as_deref().and_then(|s| s.split_once('x')) {
-                    size = (w.parse().unwrap_or(1000), h.parse().unwrap_or(700));
-                }
-            }
-            _ if a.starts_with("--") => {}
-            _ => args.push(a),
+    let cli = cli::parse(env::args().skip(1));
+    match cli.early {
+        Some(cli::Early::Version) => {
+            println!("lumen-text {}", version());
+            return ExitCode::SUCCESS;
         }
+        Some(cli::Early::InstallUser) => return exit_code(update::cli_install_user()),
+        Some(cli::Early::CheckUpdate) => return exit_code(update::cli_check(false)),
+        Some(cli::Early::Update) => return exit_code(update::cli_check(true)),
+        None => {}
     }
+    let (args, keys, snap, size, scale_arg) =
+        (cli.args.clone(), cli.keys.clone(), cli.snap.clone(), cli.size, cli.scale);
     let cfg = config::Config::load();
     theme::set_theme_chrome(cfg.own_chrome());
     let theme_path = env::var("LUMEN_THEME").map(PathBuf::from).unwrap_or_else(|_| {
@@ -250,7 +233,7 @@ fn main() -> ExitCode {
             files.push((p, at));
         }
     }
-    let root = root
+    let mut root = root
         .or_else(|| files.first().and_then(|(p, _)| paths::canonical(p).ok()).and_then(|p| lsp::project_root(&p)))
         .or_else(|| {
             // Launched without a target: reopen the project used last time.
@@ -282,14 +265,29 @@ fn main() -> ExitCode {
     let wake: lsp::Wake = std::sync::Arc::new(move || {
         let _ = proxy.send_event(app::UserEvent::Wake);
     });
-    // One window per user: hand the files to a running instance and leave.
-    // A folder other than the running window's project gets its own window (`Role::Own`).
-    let role = if new_window { instance::Role::Own } else { instance::claim(&args, wake.clone()) };
-    let inbox = match role {
+    // Files of a project that is open go to its window; an open folder raises its window (see
+    // `instance`). Otherwise this process becomes a new window.
+    let (inbox, inst) = match instance::claim(&args, cli.win.forces_new(), wake.clone()) {
         instance::Role::Secondary => return ExitCode::SUCCESS,
-        instance::Role::Primary(rx) => rx,
-        instance::Role::Own => instance::no_inbox(),
+        instance::Role::Primary(rx, inst) => (rx, inst),
     };
+    // Started without targets and no window running: reopen every window of the last run.
+    let reopen = args.is_empty() && !cli.win.forces_new();
+    let mut slot = cli.win.slot;
+    if reopen
+        && let Some((first, rest)) =
+            app_window::set_path().and_then(|p| app_window::restore_plan(&app_window::load_set(&p)))
+    {
+        root = first.root;
+        slot = Some(first.slot);
+        for a in rest {
+            let _ = app_window::spawn_window(&a);
+        }
+    }
+    let slot = slot.unwrap_or_else(|| inst.as_ref().map_or(0, |i| instance::free_slot(&i.others, &root)));
+    // "New window" and a moved tab start without the project's saved tabs.
+    let restore = cli.win.slot.is_some() || (!cli.win.new_window && cli.win.take.is_none());
+    app_window::set_launch(app_window::Launch { slot, restore });
     std::thread::spawn(update::refresh_user_integration);
     // Learn the user's shell PATH now so the first task or test run does not wait for it.
     std::thread::spawn(|| {
@@ -300,7 +298,13 @@ fn main() -> ExitCode {
         app.dpi.forced = scale_arg;
     }
     app.inbox = Some(inbox);
-    instance::set_root(&app.root);
+    app.win_attach(inst, !reopen && cli.win.slot.is_none());
+    match &cli.win.take {
+        Some(t) => {
+            app.take_handoff(t);
+        }
+        None => app.take_orphans(),
+    }
     mem::report("app ready");
     app::run(app, el);
     ExitCode::SUCCESS

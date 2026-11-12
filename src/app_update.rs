@@ -323,8 +323,8 @@ impl App {
         }
     }
 
-    /// Start the new version and quit this one (the single-instance socket is released first so
-    /// the new process doesn't hand its files over to this dying one).
+    /// Start the new version and quit this one (`try_quit` releases this window's handoff
+    /// endpoint first, so the new process doesn't hand its files over to this dying one).
     pub fn update_restart(&mut self) {
         let Some((_, exe)) = self.upd.installed.clone() else { return };
         // With hot exit the unsaved buffers come back after the restart.
@@ -339,7 +339,6 @@ impl App {
         if self.ask_before_restart() || !self.try_quit() {
             return;
         }
-        let _ = std::fs::remove_file(crate::instance::socket_path());
         spawn_detached(&exe, &self.root, matches!(self.upd.env.kind, InstallKind::AppImage(_)));
         std::process::exit(0);
     }

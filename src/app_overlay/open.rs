@@ -176,21 +176,28 @@ impl App {
         }
     }
 
-    /// Files handed over by another `lumen-text` invocation (single-instance mode).
+    /// Messages from other `lumen-text` invocations and windows (see `instance`).
     pub fn pump_inbox(&mut self) {
-        let mut batches: Vec<Vec<String>> = Vec::new();
+        let mut msgs: Vec<crate::instance::Msg> = Vec::new();
         if let Some(rx) = &self.inbox {
-            while let Ok(b) = rx.try_recv() {
-                batches.push(b);
+            while let Ok(m) = rx.try_recv() {
+                msgs.push(m);
             }
         }
-        if batches.is_empty() {
+        if msgs.is_empty() {
             return;
         }
-        for arg in batches.into_iter().flatten() {
-            let (p, at) = crate::parse_target(&arg);
-            if !p.is_dir() {
-                self.open_path(&p, at);
+        for m in msgs {
+            match m {
+                crate::instance::Msg::Open(args) => {
+                    for arg in args {
+                        let (p, at) = crate::parse_target(&arg);
+                        if !p.is_dir() {
+                            self.open_path(&p, at);
+                        }
+                    }
+                }
+                crate::instance::Msg::Quit => return self.win_quit_requested(),
             }
         }
         if let Some(g) = &self.gfx {

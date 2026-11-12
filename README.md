@@ -50,6 +50,7 @@ and no GPU driver:
 - Always up to date: a `git checkout` / `commit` / `pull` typed in a terminal refreshes the branch, gutter marks and status (the repository's `.git` is watched); on NFS, SMB, FUSE/sshfs, 9p (WSL), FAT/exFAT or when the inotify watch limit is reached, the open files and expanded folders are polled instead (status bar: *Polling (NFS)*); regaining the window focus re-checks what changed; *File: Refresh explorer and git status* (palette, or the button in the explorer header) re-reads everything
 - Reopen closed tabs (`Ctrl+Shift+T`, palette *View: Reopen closed tab*, tab menu): the last 20, each back in its split pane with its cursor, selection and scroll
 - Save as administrator: when a save is refused for lack of permission (`/etc/hosts`) a card offers to write the file in place through `pkexec` (Linux) or the macOS password prompt, keeping its owner and mode
+- Multiple windows (`Ctrl+Shift+N`, *File: Open folder in new window…*, drag a tab out of the window or *Move to New Window* on a tab, unsaved text included); `lumen-text` without arguments reopens every window of the last run with its own tabs and size
 - Fonts: separate **interface** and **buffer** (code, terminal, diffs) fonts with a searchable picker of the installed families, weight, size, line height and ligatures, all live
 - Buffer font OpenType features (`zero`, `ss01`, `cv02`...) and letter spacing, previewed in the font picker; columns and the caret stay aligned
 - Zen mode (`Ctrl+K Z`): bars, sidebar, panels and minimap hidden, the text centered in a column of `zen_max_width` columns; `Esc Esc` brings the layout back exactly. The tab bar and the status bar can also be switched off on their own
@@ -274,9 +275,12 @@ lumen-text --new-window other/      # a second window, even when one is running
 ```
 
 Press `Ctrl+P` to open files, `Ctrl+Shift+P` for the command palette, `Ctrl+,` for settings.
-A second `lumen-text` invocation hands its files to the already running window; a folder other than that window's
-project opens a new window (`--new-window` always does). The tool tips and
-palette are the reference for everything not listed below.
+A second `lumen-text` invocation hands its files to the window whose project contains them (else to the
+last focused window); `lumen-text other-folder/` raises the window that has that folder open, or opens a
+new window when none has; `lumen-text --new-window [folder]` always opens a new one. Each window is its
+own process (language servers included). `Ctrl+Q` closes every window and they all come back on the next
+start; closing one window with its close button forgets it (unless hot exit kept unsaved tabs of it). The tool tips and palette are the reference
+for everything not listed below.
 
 ## Keyboard shortcuts
 
@@ -300,8 +304,9 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Next / previous problem | `F8` / `Shift+F8` |
 | Format | `Shift+Alt+F` |
 | Expand / shrink selection | `Shift+Alt+Right` / `Shift+Alt+Left` |
-| Save / close tab / quit | `Ctrl+S` / `Ctrl+W` / `Ctrl+Q` |
+| Save / close tab / quit (every window) | `Ctrl+S` / `Ctrl+W` / `Ctrl+Q` |
 | Reopen closed tab | `Ctrl+Shift+T` |
+| New window | `Ctrl+Shift+N` (a tab: drag it out of the window; a folder: `Ctrl+Enter` in the project menu) |
 | Next / previous tab, jump to tab | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Alt+1`..`Alt+9` |
 | Sidebar / focus explorer | `Ctrl+B` / `Ctrl+Shift+E` |
 | Explorer: new file / folder / rename / delete | `A` / `Shift+A` / `F2` / `Delete` |
@@ -513,6 +518,8 @@ src/
   fuzzy.rs, snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs
   app_aipanel/, ide/, notify.rs  AI panel sessions (agent CLIs in PTYs), Claude Code IDE bridge, desktop notifications
   script.rs                headless mode for tests and screenshots
+  cli.rs, instance.rs, app_window.rs  command line; one process per window, routing of a second invocation
+                           to the right window; window set, per-window sessions and geometry, moving tabs out
 assets/   grammars, themes, language-manifest.json, icons, licenses
 packaging/  tarball, deb, rpm, Arch, AppImage, Flatpak scripts
 ```
@@ -569,6 +576,7 @@ cargo build --release                                       # build.rs embeds th
 - Full-project mode (default) can use several hundred MB on very large projects; the opt-in lean mode
   (setting `lsp_narrow`, palette "LSP: Toggle lean mode") trades that for errors and references that only see open files and their imports.
 - "Open folder" inside the app is limited; the project root normally comes from the command line.
+- Window positions are not restored on Wayland (the protocol does not let applications place windows); sizes are.
 
 ## License and credits
 

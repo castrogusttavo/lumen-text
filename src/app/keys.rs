@@ -480,6 +480,7 @@ impl App {
             self.undo_persist(i, hot);
         }
         self.save_session();
+        self.win_close();
         self.stop_task();
         for l in &mut self.lsps {
             l.shutdown();

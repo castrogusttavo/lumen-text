@@ -93,6 +93,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("alt+\\", "InlineSuggest"),
     ("alt+]", "InlineNext"),
     ("alt+[", "InlinePrev"),
+    ("ctrl+shift+n", "NewWindow"),
     // Chords: `Ctrl+K` then a letter.
     ("ctrl+k r", "RepeatTask"),
     ("ctrl+k x", "StopTask"),

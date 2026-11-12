@@ -329,6 +329,8 @@ pub enum Act {
     Markdown,
     /// Snapshots of the file kept by the local history (see `app_localhist`).
     LocalHistory,
+    /// Move the tab to a new window (see `app_window`).
+    NewWindow,
     // Commit rows (see `app_gitpanel::actions`).
     CherryPick,
     CopyHash,
@@ -456,6 +458,7 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
                 } else {
                     item(Act::TogglePin, "Pin Tab", "ui/pin", "")
                 },
+                item(Act::NewWindow, "Move to New Window", "ui/arrow_up_right", ""),
                 sep(),
             ]);
             if f.has_path {
@@ -999,6 +1002,11 @@ impl App {
                     self.hist_list(&p);
                 }
             }
+            Act::NewWindow => {
+                if let Target::Tab(i) = t {
+                    self.move_tab_to_new_window(i, None);
+                }
+            }
             Act::CherryPick
             | Act::CopyHash
             | Act::BranchHere
@@ -1394,13 +1402,26 @@ mod tests {
         assert!(labels(&entries_for(&file, &Flags { split: true, ..f })).contains(&"Open to the Side"));
         let tab = Target::Tab(0);
         let l = labels(&entries_for(&tab, &Flags { has_path: true, ..f }));
-        assert_eq!(l, ["Close", "Close Others", "Close All", "-", "Pin Tab", "-", "Copy Path", "Local History"]);
+        assert_eq!(
+            l,
+            [
+                "Close",
+                "Close Others",
+                "Close All",
+                "-",
+                "Pin Tab",
+                "Move to New Window",
+                "-",
+                "Copy Path",
+                "Local History"
+            ]
+        );
         let l = labels(&entries_for(&tab, &Flags { has_path: true, pinned: true, md: Some(false), ..f }));
         assert!(l.contains(&"Unpin Tab") && l.contains(&"Open Markdown Preview"));
         assert!(labels(&entries_for(&tab, &Flags { md: Some(true), ..f })).contains(&"Close Markdown Preview"));
         // No path (untitled): no separator left dangling.
         let l = labels(&entries_for(&tab, &f));
-        assert_eq!(l.last(), Some(&"Pin Tab"));
+        assert_eq!(l.last(), Some(&"Move to New Window"));
         // Something was closed: "Reopen Closed Tab" follows the close items and runs a command.
         let v = entries_for(&tab, &Flags { reopen: true, ..f });
         assert_eq!(labels(&v)[..5], ["Close", "Close Others", "Close All", "Reopen Closed Tab", "-"]);
@@ -1459,12 +1480,12 @@ mod tests {
     #[test]
     fn keyboard_steps_skip_separators_and_wrap() {
         let e = entries_for(&Target::Tab(0), &Flags::default());
-        // Items at 0,1,2, sep 3, item 4.
+        // Items at 0,1,2, sep 3, items 4,5.
         assert_eq!(step(&e, None, 1), Some(0));
-        assert_eq!(step(&e, None, -1), Some(4));
+        assert_eq!(step(&e, None, -1), Some(5));
         assert_eq!(step(&e, Some(2), 1), Some(4));
-        assert_eq!(step(&e, Some(4), 1), Some(0));
-        assert_eq!(step(&e, Some(0), -1), Some(4));
+        assert_eq!(step(&e, Some(5), 1), Some(0));
+        assert_eq!(step(&e, Some(0), -1), Some(5));
         assert_eq!(step(&[], None, 1), None);
     }
 

@@ -88,6 +88,9 @@ pub struct TopMenu {
     pub now: i64,
     /// Branch menu: branches checked out in another worktree, and its folder.
     pub worktrees: Vec<(String, PathBuf)>,
+    /// "Open folder in new window": the chosen folder opens in a window of its own (Ctrl+Enter
+    /// or Ctrl+click does the same from any project menu).
+    pub new_window: bool,
 }
 
 // ───────────── pure helpers ─────────────
@@ -226,6 +229,7 @@ impl TopMenu {
             trash: Vec::new(),
             now: now_secs(),
             worktrees: Vec::new(),
+            new_window: false,
         };
         m.refilter();
         m
@@ -393,6 +397,14 @@ impl App {
         self.open_topmenu(kind, r);
     }
 
+    /// "File: Open folder in new window…": the folder browser, opening its pick in a new window.
+    pub fn open_topmenu_cmd_new_window(&mut self) {
+        self.open_topmenu_cmd(MenuKind::Browse);
+        if let Overlay::TopMenu(m) = &mut self.overlay {
+            m.new_window = true;
+        }
+    }
+
     // ───────────── menus ─────────────
 
     pub fn open_topmenu(&mut self, kind: MenuKind, anchor: Rect) {
@@ -523,7 +535,11 @@ impl App {
                 }
                 Entry::UseDir(p) => {
                     self.tx.icon(cv, "ui/check", rr.x + 12, iy, 16, c.accent, rr);
-                    let label = format!("Open “{}” as a project", project_name(p));
+                    let label = if m.new_window {
+                        format!("Open “{}” in a new window", project_name(p))
+                    } else {
+                        format!("Open “{}” as a project", project_name(p))
+                    };
                     let label = fit(&mut self.tx, &label, rr.w - 60);
                     self.tx.draw_ui(cv, rr.x + 38, ly, &label, c.accent_text, rr, false);
                 }
@@ -655,8 +671,10 @@ impl App {
             Key::Named(NamedKey::Backspace) => {
                 if m.kind == MenuKind::Browse && m.field.text.is_empty() {
                     if let Some(parent) = m.dir.parent().map(Path::to_path_buf) {
-                        let anchor = m.anchor;
-                        self.overlay = Overlay::TopMenu(Box::new(browse_menu(anchor, parent)));
+                        let (anchor, nw) = (m.anchor, m.new_window);
+                        let mut up = browse_menu(anchor, parent);
+                        up.new_window = nw;
+                        self.overlay = Overlay::TopMenu(Box::new(up));
                     }
                     return;
                 }
@@ -687,10 +705,21 @@ impl App {
             self.overlay = Overlay::TopMenu(m);
             return;
         };
+        let new_window = m.new_window || self.mods.control_key();
         match entry {
+            Entry::Project(p, _) | Entry::UseDir(p) if new_window => self.open_folder_in_new_window(p),
             Entry::Project(p, _) | Entry::UseDir(p) => self.switch_project(p),
-            Entry::OpenProject => self.open_topmenu(MenuKind::Browse, m.anchor),
-            Entry::Up(p) | Entry::Dir(p) => self.overlay = Overlay::TopMenu(Box::new(browse_menu(m.anchor, p))),
+            Entry::OpenProject => {
+                self.open_topmenu(MenuKind::Browse, m.anchor);
+                if let Overlay::TopMenu(b) = &mut self.overlay {
+                    b.new_window = m.new_window;
+                }
+            }
+            Entry::Up(p) | Entry::Dir(p) => {
+                let mut b = browse_menu(m.anchor, p);
+                b.new_window = m.new_window;
+                self.overlay = Overlay::TopMenu(Box::new(b));
+            }
             Entry::Branch(b) => match m.worktrees.iter().find(|(n, _)| !b.remote && *n == b.name) {
                 // git refuses to check out a branch another worktree holds: offer that worktree.
                 Some((_, p)) => {
@@ -715,6 +744,10 @@ impl App {
         }
         if path == self.root {
             return self.say("that project is already open");
+        }
+        // Open in another window: bring that one forward instead of opening it twice.
+        if self.win_focus_existing(&path) {
+            return self.say(format!("{} is open in another window", project_name(&path)));
         }
         let names: Vec<String> = self.docs.iter().filter(|d| d.buf.is_dirty()).map(|d| d.name.clone()).collect();
         if !names.is_empty() || self.dbg.is_some() {
@@ -747,7 +780,7 @@ impl App {
         self.eslint_busy.clear();
         self.git_status.clear();
         self.root = path;
-        crate::instance::set_root(&self.root);
+        self.win_root_changed();
         // The new project's `.lumen/` settings replace the old project's.
         self.projcfg_init();
         self.tree = Tree::for_config(self.root.clone(), &self.config);

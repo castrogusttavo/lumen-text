@@ -343,6 +343,17 @@ impl App {
             | Cmd::CopilotSignIn
             | Cmd::CopilotSignOut => {}
             Cmd::Quit => {
+                if self.quit_all() {
+                    std::process::exit(0);
+                }
+            }
+            Cmd::NewWindow => self.new_window(),
+            Cmd::OpenFolderNewWindow => self.open_topmenu_cmd_new_window(),
+            Cmd::MoveTabToNewWindow => {
+                let a = self.active;
+                self.move_tab_to_new_window(a, None)
+            }
+            Cmd::CloseWindow => {
                 if self.try_quit() {
                     std::process::exit(0);
                 }
@@ -355,7 +366,7 @@ impl App {
     /// extra cursors collapse and the edit is synced/notified like any other keystroke.
     pub fn run_key_cmd(&mut self, c: Cmd) -> bool {
         match c {
-            Cmd::Quit => return self.try_quit(),
+            Cmd::Quit => return self.quit_all(),
             Cmd::Undo | Cmd::Redo | Cmd::ToggleComment => {
                 if let Some(d) = self.docs.get_mut(self.active) {
                     d.ed.clear_extra();
