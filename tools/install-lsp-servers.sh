@@ -41,6 +41,13 @@ RUBY_LSP=0.26.11
 GOPLS=v0.24.0
 KOTLIN_LSP=263.7084.0
 RUST_ANALYZER=2026-11-09   # only when rustup is not available
+# Spell checkers (companions, used when `spell_check` is on): release archives, checked against these sums.
+HARPER=3.0.0
+HARPER_SHA256_x86_64=17fd8dfea277ee9d1fc536a1baf596c6acb7172ea79f77dcd8ee2400f55a88a3
+HARPER_SHA256_aarch64=374a7a267a3c68b1ccfa1e2d489a19fc96cd48390406f9b40cb0da1a8677e3ed
+TYPOS_LSP=0.1.57
+TYPOS_LSP_SHA256_x86_64=00da356302c54cb6daeaaa7ee883a0d5a6557c9418466fcbd8d2f25fcea51779
+TYPOS_LSP_SHA256_aarch64=63e74e98e09333c94ca3454907d89c5b78ff1a8b5d5940a9136f14cea4eba84e
 
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/lumen-text"
 # lsp/bin is looked up under the home folder (src/lspreg.rs `user_tool_dirs`), whatever XDG says.
@@ -64,6 +71,7 @@ step() { printf '\n── %s\n' "$*"; }
 link() { ln -sf "$1" "$BIN/$2"; }  # link <target relative to bin/ or absolute> <name>
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 fetch() { curl -fsSL --retry 4 --retry-delay 3 "$1" -o "$2"; }
+verify() { echo "$2  $1" | sha256sum -c --quiet - || { echo "checksum mismatch: $1" >&2; exit 1; }; }  # verify <file> <sha256>
 
 if want npm; then
   step "npm servers"
@@ -184,6 +192,21 @@ if want ruby; then
   for d in "$(ruby -e 'print Gem.bindir')" "$(ruby -e 'print Gem.user_dir')/bin"; do
     if [ -x "$d/ruby-lsp" ]; then link "$d/ruby-lsp" ruby-lsp; break; fi
   done
+fi
+
+if want spell; then
+  if [ ! -x "$BIN/harper-ls" ]; then
+    step "harper-ls $HARPER"
+    fetch "https://github.com/Automattic/harper/releases/download/v$HARPER/harper-ls-$A-unknown-linux-gnu.tar.gz" "$TMP/harper.tgz"
+    sum="HARPER_SHA256_$A"; verify "$TMP/harper.tgz" "${!sum}"
+    tar -xzf "$TMP/harper.tgz" -C "$BIN" harper-ls && rm "$TMP/harper.tgz"
+  fi
+  if [ ! -x "$BIN/typos-lsp" ]; then
+    step "typos-lsp $TYPOS_LSP"
+    fetch "https://github.com/tekumara/typos-lsp/releases/download/v$TYPOS_LSP/typos-lsp-v$TYPOS_LSP-$A-unknown-linux-gnu.tar.gz" "$TMP/typos-lsp.tgz"
+    sum="TYPOS_LSP_SHA256_$A"; verify "$TMP/typos-lsp.tgz" "${!sum}"
+    tar -xzf "$TMP/typos-lsp.tgz" -C "$BIN" typos-lsp && rm "$TMP/typos-lsp.tgz"
+  fi
 fi
 
 if want clangd && ! command -v clangd >/dev/null; then

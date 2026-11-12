@@ -190,6 +190,7 @@ pub fn delete_tag(top: &Path, name: &str) -> Result<String, String> {
 
 /// Parse `for-each-ref --format=%(objectname)%09%(*objectname)%09%(refname:short) refs/tags`:
 /// commit hash -> its tags (annotated tags are peeled to the commit they point at).
+#[cfg(test)]
 pub fn parse_tag_map(out: &str) -> std::collections::HashMap<String, Vec<String>> {
     let mut m: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for l in out.lines() {
@@ -203,6 +204,7 @@ pub fn parse_tag_map(out: &str) -> std::collections::HashMap<String, Vec<String>
     m
 }
 
+#[cfg(test)]
 pub fn tag_map(top: &Path) -> std::collections::HashMap<String, Vec<String>> {
     let fmt = "--format=%(objectname)%09%(*objectname)%09%(refname:short)";
     git_run(top, &["for-each-ref", fmt, "refs/tags"]).map(|o| parse_tag_map(&o)).unwrap_or_default()
@@ -407,4 +409,47 @@ pub fn release_summary(p: &gitsync::ReleasePlan, new_tag_at: Option<&str>) -> St
         "Publish a GitHub release on github.com/{}? Title “{}”, {tag}, {notes}. Runs gh release create; it is visible to everyone who can see the repository.",
         p.slug, p.title
     )
+}
+
+// ───────────── revert / checkout (commit menu of the History tab) ─────────────
+
+/// `git revert --no-edit <hash>`: a new commit that undoes `hash` on the checked-out branch.
+pub fn revert_commit(top: &Path, hash: &str) -> Result<String, CherryFail> {
+    let st = repo_state(top);
+    if st != RepoState::Clean {
+        return Err(CherryFail::Other(format!("Cannot revert: {}", st.busy_text())));
+    }
+    let parents = git_run(top, &["rev-list", "--parents", "-n", "1", hash])
+        .map(|o| o.split_whitespace().count().saturating_sub(1))
+        .map_err(CherryFail::Other)?;
+    if parents > 1 {
+        return Err(CherryFail::Other("Merge commits cannot be reverted from here (git revert -m)".into()));
+    }
+    if git_run(top, &["merge-base", "--is-ancestor", hash, "HEAD"]).is_err() {
+        return Err(CherryFail::Other(format!("{} is not part of the current branch", short(hash))));
+    }
+    match git_run(top, &["revert", "--no-edit", hash]) {
+        Ok(o) => Ok(o.lines().next().map_or_else(|| "Revert done".into(), |l| l.trim().to_string())),
+        Err(_) if repo_state(top) == RepoState::Revert => Err(CherryFail::Conflict),
+        Err(e) => Err(CherryFail::Other(e)),
+    }
+}
+
+/// After resolving and staging the conflicts: commit the revert with its default message.
+pub fn revert_continue(top: &Path) -> Result<String, String> {
+    git_run(top, &["-c", "core.editor=true", "revert", "--continue"]).map(|_| "Revert completed".into())
+}
+
+pub fn revert_abort(top: &Path) -> Result<String, String> {
+    git_run(top, &["revert", "--abort"]).map(|_| "Revert aborted".into())
+}
+
+/// `git switch <branch>` (local changes travel along, or git refuses and says why).
+pub fn switch_branch(top: &Path, name: &str) -> Result<String, String> {
+    git_run(top, &["switch", name]).map(|_| format!("Switched to “{name}”"))
+}
+
+/// `git switch --detach <hash>`.
+pub fn checkout_detached(top: &Path, hash: &str) -> Result<String, String> {
+    git_run(top, &["switch", "--detach", hash]).map(|_| format!("HEAD is now at {} (detached)", short(hash)))
 }

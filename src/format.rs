@@ -28,9 +28,16 @@ fn local_bin(from: &Path, name: &str) -> Option<PathBuf> {
 
 /// The formatter this project is configured for, if its binary is installed.
 pub fn detect(file: &Path) -> Option<Formatter> {
+    detect_named(file, "biome").or_else(|| detect_named(file, "prettier"))
+}
+
+/// Formatter `name` ("biome" or "prettier") for `file`, when the project has its config and binary
+/// (the `formatter` setting forces one of them).
+pub fn detect_named(file: &Path, name: &str) -> Option<Formatter> {
     let dir = file.parent()?;
     let path = file.to_string_lossy().into_owned();
-    if let Some(root) = find_up(dir, &["biome.json", "biome.jsonc"])
+    if name == "biome"
+        && let Some(root) = find_up(dir, &["biome.json", "biome.jsonc"])
         && let Some(bin) = local_bin(&root, "biome")
     {
         return Some(Formatter {
@@ -53,7 +60,8 @@ pub fn detect(file: &Path) -> Option<Formatter> {
         "prettier.config.mjs",
         "prettier.config.ts",
     ];
-    if let Some(root) = find_up(dir, &prettier_cfgs)
+    if name == "prettier"
+        && let Some(root) = find_up(dir, &prettier_cfgs)
         && let Some(bin) = local_bin(&root, "prettier")
     {
         return Some(Formatter { name: "prettier", bin, args: vec![format!("--stdin-filepath={path}")], cwd: root });
@@ -343,5 +351,23 @@ mod tests {
         assert!(reports_ignored(ignored));
         assert!(!reports_ignored("Checked 1 file in 3ms. No fixes applied.\n"));
         assert!(!reports_ignored("Formatter would have printed the following content:\n"));
+    }
+
+    #[test]
+    fn a_named_formatter_is_found_even_when_the_other_one_would_win() {
+        let root = test_base("named");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
+        for f in ["biome.json", ".prettierrc", "node_modules/.bin/biome", "node_modules/.bin/prettier"] {
+            std::fs::write(root.join(f), "{}").unwrap();
+        }
+        let file = root.join("src/a.ts");
+        assert_eq!(detect(&file).unwrap().name, "biome", "auto: Biome first");
+        assert_eq!(detect_named(&file, "prettier").unwrap().name, "prettier");
+        assert_eq!(detect_named(&file, "biome").unwrap().name, "biome");
+        assert_eq!(detect_named(&file, "black"), None);
+        std::fs::remove_file(root.join("node_modules/.bin/prettier")).unwrap();
+        assert_eq!(detect_named(&file, "prettier"), None, "config without binary");
+        std::fs::remove_dir_all(&root).ok();
     }
 }

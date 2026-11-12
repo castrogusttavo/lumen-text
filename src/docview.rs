@@ -365,6 +365,9 @@ impl Doc {
     pub fn caret_geom(&self, c: usize) -> (usize, usize) {
         let (line, col) = self.buf.line_col(c);
         let text = self.buf.line(line);
+        if let Some((row, c0, b)) = self.bidi_row(line, col, &text) {
+            return (row, b.caret(col.saturating_sub(c0)));
+        }
         if !self.vm_live() {
             return (line, self.inlay.hints.vcol(line, &text, col, self.ed.tab_w, false));
         }
@@ -387,6 +390,60 @@ impl Doc {
         let rh = crate::inlay::row_hints(hs, len, r0, r1, sub >= breaks.len());
         let rowtext: String = text.chars().skip(r0).take(r1 - r0).collect();
         (row, crate::inlay::vcol_in(&rh.hints, &rowtext, col - c0, self.ed.tab_w, false))
+    }
+
+    /// Column-selection point under window position (x, y): the buffer line and the visual column
+    /// inside that line, unclamped past its end. On a wrapped continuation row the columns of the
+    /// rows above are added, so a box always means the same columns of every buffer line.
+    pub fn box_point_at(&self, x: f64, y: f64) -> (usize, usize) {
+        let (line, _) = self.buf.line_col(self.pos_at(x, y));
+        let tx = (self.rect.x + self.gutter_w()) as f64;
+        let mut vcol = ((x - tx + self.left) / self.cell_w as f64).round().max(0.0) as usize;
+        if self.vm_live() && self.view.cols > 0 {
+            let lh = crate::ui::line_h() as f64;
+            let row = ((y - self.rect.y as f64 + self.top * lh) / lh).floor().max(0.0) as usize;
+            let (l, sub) = self.view.map.line_at_row(row);
+            if l == line && sub > 0 {
+                let text = self.buf.line(line);
+                let (c0, _) = row_range(&self.view.breaks(&text), sub, text.chars().count());
+                vcol += crate::editor::visual_col(&text, c0, self.ed.tab_w);
+            }
+        }
+        (line, vcol)
+    }
+
+    /// Ctrl+Shift+Alt+arrows: grow / shrink the column selection (folded lines are skipped).
+    pub fn column_select(&mut self, dl: isize, dc: isize) {
+        self.ed.column_select(&self.buf, dl, dc, self.view.folds.hidden_ranges());
+    }
+
+    /// Bidirectional layout of the row that holds char `col` of `line` (`text`), with the row's
+    /// global index and first char. `None` for a line without right-to-left text.
+    pub fn bidi_row(&self, line: usize, col: usize, text: &str) -> Option<(usize, usize, crate::bidi::Row)> {
+        if !crate::bidi::has_rtl(text) {
+            return None;
+        }
+        let len = text.chars().count();
+        let (row, c0, c1) = if !self.vm_live() {
+            (line, 0, len)
+        } else if self.view.cols == 0 {
+            (self.view.map.row_of(line), 0, len)
+        } else {
+            let breaks = self.view.breaks(text);
+            let (sub, _) = locate(&breaks, col);
+            let sub = sub.min(self.view.map.rows_in(line).saturating_sub(1));
+            let (r0, r1) = row_range(&breaks, sub, len);
+            (self.view.map.row_of(line) + sub, r0, r1)
+        };
+        crate::bidi::row(text, c0, c1, self.ed.tab_w, crate::bidi::para()).map(|b| (row, c0, b))
+    }
+
+    /// Direction of the text at the caret position `c` when its line is bidirectional (drawn as a
+    /// flag on the caret), `None` on a plain left-to-right line.
+    pub fn caret_rtl(&self, c: usize) -> Option<bool> {
+        let (line, col) = self.buf.line_col(c);
+        let text = self.buf.line(line);
+        self.bidi_row(line, col, &text).map(|(_, c0, b)| b.caret_rtl(col.saturating_sub(c0)))
     }
 
     /// First and last logical line touched by the viewport (for LSP requests keyed by line).
@@ -936,6 +993,39 @@ mod tests {
             let y = d.rect.y as f64 + row as f64 * lh + lh / 2.0;
             assert_eq!(d.pos_at(x, y), c, "col {col}");
         }
+    }
+
+    #[test]
+    fn column_selection_with_wrap_uses_buffer_lines_and_line_columns() {
+        let long = "abcdefgh".repeat(12); // hard breaks at 30, 60, 90
+        let mut d = doc(&format!("{long}\nnext\n{long}\n"));
+        d.set_word_wrap(true);
+        d.cell_w = 8.0;
+        d.view_prepare(30);
+        let lh = crate::ui::line_h() as f64;
+        let base = (d.rect.x + d.gutter_w()) as f64;
+        // Row 1 is the second row of line 0: its columns continue after the first row's 30.
+        assert_eq!(d.box_point_at(base + 5.0 * 8.0, d.rect.y as f64 + lh * 1.5), (0, 35));
+        assert_eq!(d.box_point_at(base + 2.0 * 8.0, d.rect.y as f64 + lh * 0.5), (0, 2));
+        // Keyboard: one cursor per buffer line, never one per visual row.
+        click(&mut d, 0, 2);
+        d.column_select(1, 0);
+        d.column_select(1, 1);
+        let heads: Vec<(usize, usize)> = d.ed.all_sels().iter().map(|s| d.buf.line_col(s.head)).collect();
+        assert_eq!(heads, vec![(0, 3), (1, 3), (2, 3)]);
+    }
+
+    #[test]
+    fn column_selection_skips_folded_bodies() {
+        let mut d = doc(&code());
+        click(&mut d, 1, 4); // `if x {`: fold lines 1..2
+        assert!(d.fold_at_cursor());
+        d.view_prepare(80);
+        click(&mut d, 0, 1);
+        d.column_select(1, 0);
+        d.column_select(1, 0);
+        let lines: Vec<usize> = d.ed.all_sels().iter().map(|s| d.buf.line_col(s.head).0).collect();
+        assert_eq!(lines, vec![0, 1, 3], "line 2 is hidden inside the fold");
     }
 
     fn hint(line: usize, col: usize, label: &str, pad_left: bool, pad_right: bool) -> crate::inlay::Hint {

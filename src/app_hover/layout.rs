@@ -198,17 +198,44 @@ pub(super) fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i
         rows.pop();
     }
     let slant = env.tx.italic_works();
+    // Right-to-left text: every word is placed on its own, in visual order (see `bidi::place`),
+    // and a paragraph whose first strong char is right-to-left is right-aligned to its widest row.
+    let bidi = rows.iter().flatten().any(|p| crate::bidi::has_rtl(&p.t.text));
+    let para_rtl =
+        bidi && rows.iter().flatten().find_map(|p| crate::bidi::first_strong_rtl(&p.t.text)).unwrap_or(false);
+    let row_w =
+        |row: &Vec<P>| -> i32 { row.iter().enumerate().map(|(k, p)| p.w + if p.t.sp && k > 0 { sp } else { 0 }).sum() };
+    let avail = if bidi { rows.iter().map(row_w).max().unwrap_or(0) } else { 0 };
     for row in rows {
         let y = b.y;
         let mut segs: Vec<Seg> = Vec::new();
         let mut plain = String::new();
         let mut x = x0;
+        let pos: Option<Vec<i32>> = bidi.then(|| {
+            let (mut texts, mut widths, mut idx): (Vec<&str>, Vec<f32>, Vec<usize>) = Default::default();
+            for (k, p) in row.iter().enumerate() {
+                if p.t.sp && k > 0 {
+                    texts.push(" ");
+                    widths.push(sp as f32);
+                }
+                idx.push(texts.len());
+                texts.push(&p.t.text);
+                widths.push(p.w as f32);
+            }
+            let xs = crate::bidi::place(&texts, &widths, para_rtl);
+            let total: f32 = widths.iter().sum();
+            let off = if para_rtl { (avail as f32 - total).max(0.0) } else { 0.0 };
+            idx.iter().map(|&u| (xs[u] + off).round() as i32).collect()
+        });
         let mut i = 0;
         while i < row.len() {
             let t = &row[i].t;
             if t.sp && i > 0 {
                 x += sp;
                 plain.push(' ');
+            }
+            if let Some(p) = &pos {
+                x = x0 + p[i];
             }
             let lk = t.link.clone();
             if t.code {
@@ -238,7 +265,7 @@ pub(super) fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i
             // merge following plain tokens with the same style
             let mut text = t.text.clone();
             let mut j = i + 1;
-            while j < row.len() {
+            while j < row.len() && pos.is_none() {
                 let n = &row[j].t;
                 if n.code || n.bold != t.bold || n.italic != t.italic || n.strike != t.strike || n.link != t.link {
                     break;
@@ -278,6 +305,9 @@ pub(super) fn flow(env: &mut Env, b: &mut Builder, spans: &[Span], x0: i32, w: i
             i = j;
         }
         b.right = b.right.max(x);
+        if pos.is_some() {
+            b.right = b.right.max(x0 + avail);
+        }
         b.lines.push(LLine { y, h: prose_lh(), segs, x0: 0, runs: vec![], plain });
         b.y += prose_lh();
     }

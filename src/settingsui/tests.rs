@@ -156,11 +156,11 @@ fn bottom_bar_has_one_toggle_per_optional_item_and_none_for_the_mandatory_one() 
 fn bottom_bar_order_has_one_stepper_per_right_hand_item() {
     let defs = default_settings();
     let vals = default_values();
-    assert_eq!(crate::config::STATUS_RIGHT.len(), 7);
+    assert_eq!(crate::config::STATUS_RIGHT.len(), 8);
     for (slot, id) in crate::config::STATUS_RIGHT.iter().enumerate() {
         let key = format!("status_pos_{id}");
         let def = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("missing {key}"));
-        assert!(matches!(def.kind, SettingKind::Number { min, max, step } if min == 1.0 && max == 7.0 && step == 1.0));
+        assert!(matches!(def.kind, SettingKind::Number { min, max, step } if min == 1.0 && max == 8.0 && step == 1.0));
         assert_eq!(vals[&key], json!(slot + 1), "{key} default slot");
     }
 }
@@ -179,7 +179,19 @@ fn sections_in_order_and_visible_by_section() {
     let mut p = page_with(json!({}));
     assert_eq!(
         p.sections(),
-        vec!["General", "Editor", "Appearance", "TypeScript", "Git", "Status bar", "Fonts", "Editor display", "Build"]
+        vec![
+            "General",
+            "Editor",
+            "Appearance",
+            "TypeScript",
+            "Git",
+            "Status bar",
+            "Fonts",
+            "Editor display",
+            "Build",
+            "Files",
+            "AI"
+        ]
     );
     assert_eq!(p.visible().len(), 2);
     p.set_section(3);
@@ -913,4 +925,64 @@ fn settings_clicks_toggle_step_and_dropdown_via_hits() {
     let (x, y) = center(hit_rect(&m, Hit::DropItem(3)));
     assert_eq!(m.mouse_down(x, y), Event::Setting { key: "theme".into(), value: json!("w") });
     assert!(!m.settings.dropdown_open());
+}
+
+#[test]
+fn hidden_rows_leave_the_list_and_empty_sections() {
+    let mut p = page_with(json!({}));
+    let all = p.sections();
+    let general: Vec<String> = p.defs.iter().filter(|d| d.section == "General").map(|d| d.key.to_string()).collect();
+    assert!(!general.is_empty());
+    p.set_hidden(general.clone());
+    assert!(!p.sections().contains(&"General"), "a section with every row hidden disappears");
+    assert_eq!(p.sections().len(), all.len() - 1);
+    p.search.insert("format");
+    p.search_changed();
+    assert!(p.visible().iter().all(|&d| !general.iter().any(|k| k == p.defs[d].key)), "search skips hidden rows");
+    p.set_hidden(Vec::new());
+    assert_eq!(p.sections(), all);
+}
+
+#[test]
+fn scope_switch_keys_only_when_it_is_shown() {
+    let mut m = modal();
+    assert_eq!(m.key(&ch("p"), Some("p"), false, false, true), Event::None, "no switch: Alt+P does nothing");
+    m.scope = Some(crate::projcfg::Scope::User);
+    assert_eq!(m.key(&ch("p"), Some("p"), false, false, true), Event::Scope(crate::projcfg::Scope::Project));
+    assert_eq!(m.key(&ch("U"), Some("U"), false, true, true), Event::Scope(crate::projcfg::Scope::User));
+    m.switch_page();
+    assert_ne!(m.key(&ch("p"), Some("p"), false, false, true), Event::Scope(crate::projcfg::Scope::Project));
+}
+
+#[test]
+fn record_mouse_combos() {
+    let mut p = kb();
+    select(&mut p, "TestFile");
+    assert_eq!(p.record_mouse(true, false, false, "click"), None, "not recording: the click is a click");
+    p.begin_record();
+    assert_eq!(p.record_mouse(false, false, false, "click"), None, "a plain click picks rows");
+    assert_eq!(p.record_mouse(false, true, false, "wheelup"), None, "Shift+wheel scrolls the list");
+    assert!(p.is_recording());
+    let ev = p.record_mouse(false, false, false, "mouse4");
+    assert_eq!(ev, Some(Event::Bind { combo: "mouse4".into(), command_id: "TestFile".into() }));
+    p.begin_record();
+    let ev = p.record_mouse(true, false, false, "wheelup");
+    assert_eq!(
+        ev,
+        Some(Event::Batch(vec![
+            Event::Unbind { combo: "mouse4".into() },
+            Event::Bind { combo: "ctrl+wheelup".into(), command_id: "TestFile".into() },
+        ]))
+    );
+    assert_eq!(p.bindings_of("TestFile"), vec!["ctrl+wheelup"]);
+    // A built-in mouse combo is owned: replacing it asks first.
+    p.add_default_aliases([("alt+click".to_string(), "AddCursor".to_string())]);
+    p.begin_record();
+    assert_eq!(p.record_mouse(false, false, true, "click"), Some(Event::None));
+    assert_eq!(p.pending_conflict(), Some(("alt+click", "AddCursor")));
+    assert_eq!(combo_chips("ctrl+wheelup"), ["Ctrl", "Wheel ↑"]);
+    assert_eq!(combo_chips("mouse5"), ["Mouse forward"]);
+    // Through the modal: only on the shortcuts page.
+    let mut m = modal();
+    assert_eq!(m.record_mouse(false, false, false, "middle"), None);
 }

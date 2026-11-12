@@ -45,6 +45,16 @@ pub enum Msg {
         id: i64,
         syms: Vec<crate::doc::Sym>,
     },
+    /// A `workspace/diagnostic` response, parsed and capped on the reader thread (see `problems`).
+    WsDiag {
+        id: i64,
+        report: crate::problems::WsReport,
+    },
+    /// A partial result (`$/progress` with one of our `workspace/diagnostic` tokens).
+    WsPartial {
+        token: String,
+        report: crate::problems::WsReport,
+    },
     Notification {
         method: String,
         params: Value,
@@ -138,11 +148,34 @@ pub enum Pending {
         query: String,
     },
     ExecuteCommand,
+    /// `workspace/diagnostic` for the Problems panel's whole-project scope (see `app_problems`).
+    WorkspaceDiag {
+        token: String,
+    },
     /// One answer of a request sent to several servers of a document (see `lspmerge`).
     Multi {
         kind: crate::lspmerge::MultiKind,
         serial: u64,
     },
+    /// `textDocument/documentHighlight` for the document at (real) `uri`; `order` 0 is the primary.
+    Highlight {
+        uri: String,
+        serial: u64,
+        order: usize,
+    },
+    /// `textDocument/linkedEditingRange` for the document at (real) `uri`, buffer version `ver`.
+    LinkedEditing {
+        uri: String,
+        serial: u64,
+        ver: u64,
+        at: usize,
+    },
+    /// `textDocument/inlineCompletion` number `serial` (see `inline`).
+    InlineCompletion {
+        serial: u64,
+    },
+    /// A step of GitHub Copilot's sign-in (see `app_inline`).
+    Copilot(crate::inline::CopilotStep),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -279,7 +312,10 @@ impl Lsp {
                         if let Some(l) = &rlog {
                             lsplog::push(l, "<-", &summary(&m));
                         }
-                        if let Msg::Response { id, .. } | Msg::Tokens { id, .. } | Msg::Symbols { id, .. } = &m
+                        if let Msg::Response { id, .. }
+                        | Msg::Tokens { id, .. }
+                        | Msg::Symbols { id, .. }
+                        | Msg::WsDiag { id, .. } = &m
                             && let Ok(mut p) = reader_policies.lock()
                         {
                             p.remove(id);
@@ -382,6 +418,13 @@ impl Lsp {
         self.send_or_queue(json!({"jsonrpc":"2.0","method":method,"params":params}));
     }
 
+    /// Give up on request `id`: `$/cancelRequest`, and its answer (if one still comes) is dropped.
+    pub fn cancel(&mut self, id: i64) {
+        if self.pending.remove(&id).is_some() {
+            self.send_or_queue(json!({"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id": id}}));
+        }
+    }
+
     pub fn respond(&self, id: Value, result: Value) {
         self.write(&json!({"jsonrpc":"2.0","id":id,"result":result}));
     }
@@ -468,6 +511,8 @@ fn summary(m: &Msg) -> String {
             format!("response #{id} error: {}", e["message"].as_str().unwrap_or("?"))
         }
         Msg::Tokens { id, .. } | Msg::Symbols { id, .. } => format!("response #{id} (streamed)"),
+        Msg::WsDiag { id, report } => format!("response #{id} (workspace diagnostics, {} files)", report.files.len()),
+        Msg::WsPartial { report, .. } => format!("$/progress (workspace diagnostics, {} files)", report.files.len()),
         Msg::Notification { method, params } => match method.as_str() {
             "window/logMessage" | "window/showMessage" => {
                 format!("{method}: {}", params["message"].as_str().unwrap_or(""))
@@ -546,6 +591,8 @@ fn initialize_params(root: &Path, generic: Option<&Value>) -> Value {
                 "selectionRange": {},
                 "foldingRange": {"lineFoldingOnly": true},
                 "callHierarchy": {},
+                "documentHighlight": {"dynamicRegistration": false},
+                "linkedEditingRange": {"dynamicRegistration": false},
                 "codeLens": {},
                 "inlayHint": {"dynamicRegistration": false},
                 "semanticTokens": {
@@ -563,6 +610,7 @@ fn initialize_params(root: &Path, generic: Option<&Value>) -> Value {
         let caps = &mut p["capabilities"];
         caps["workspace"]["didChangeConfiguration"] = json!({"dynamicRegistration": false});
         caps["workspace"]["didChangeWatchedFiles"] = json!({"dynamicRegistration": true});
+        caps["workspace"]["diagnostics"] = json!({"refreshSupport": true});
         caps["window"] = json!({"workDoneProgress": true, "showMessage": {}});
         caps["general"]["positionEncodings"] = json!(["utf-16"]);
         let td = &mut caps["textDocument"];
@@ -571,6 +619,7 @@ fn initialize_params(root: &Path, generic: Option<&Value>) -> Value {
         td["rename"] = json!({"prepareSupport": false, "dynamicRegistration": true});
         td["completion"]["completionItem"]["deprecatedSupport"] = json!(true);
         td["codeAction"]["isPreferredSupport"] = json!(true);
+        td["inlineCompletion"] = json!({"dynamicRegistration": true});
         td["documentSymbol"]["symbolKind"] = json!({});
         td["publishDiagnostics"] =
             json!({"relatedInformation": false, "versionSupport": true, "codeDescriptionSupport": true});

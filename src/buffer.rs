@@ -4,9 +4,12 @@
 use ropey::Rope;
 use std::{
     fs::{self, File},
-    io::{self, BufReader, BufWriter},
+    io::{self, BufWriter},
     path::{Path, PathBuf},
 };
+
+mod undo_file;
+pub use undo_file::SavedAt;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Sel {
@@ -284,6 +287,8 @@ pub struct Buffer {
     saved_version: u64,
     dirty_line: Option<usize>,
     pub crlf: bool,
+    /// How the file's bytes encode the text: read as this, saved as this (see `encoding`).
+    pub encoding: crate::encoding::TextEncoding,
     /// Unique id of this buffer (a reloaded document gets a new one).
     gen_id: u64,
     /// Edits not yet consumed by the document (`take_edits`).
@@ -294,6 +299,10 @@ pub struct Buffer {
     log_on: bool,
     /// Shape the next edit will be recorded with.
     next_shape: Option<EditShape>,
+    /// Edits are ignored (an image tab showing its picture).
+    pub read_only: bool,
+    /// `save` refuses to write: the text is not the file (a binary image open in a tab).
+    pub no_write: bool,
 }
 
 fn is_break(c: char) -> bool {
@@ -315,12 +324,15 @@ impl Buffer {
             saved_version: 0,
             dirty_line: None,
             crlf,
+            encoding: crate::encoding::TextEncoding::UTF8,
             gen_id: NEXT_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             pending: Vec::new(),
             log: Vec::new(),
             log_base: 0,
             log_on: false,
             next_shape: None,
+            read_only: false,
+            no_write: false,
         }
     }
 
@@ -330,8 +342,16 @@ impl Buffer {
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
-        let rope = Rope::from_reader(BufReader::new(File::open(path)?))?;
-        Ok(Self::from_rope(rope, Some(path.to_path_buf())))
+        Self::open_as(path, None)
+    }
+
+    /// Open `path` decoded as `enc`, or in the encoding detected from its bytes when `None`
+    /// (valid UTF-8 streams in without a copy; binary files are refused).
+    pub fn open_as(path: &Path, enc: Option<crate::encoding::TextEncoding>) -> io::Result<Self> {
+        let (rope, encoding) = crate::encoding::read_file(path, enc)?;
+        let mut b = Self::from_rope(rope, Some(path.to_path_buf()));
+        b.encoding = encoding;
+        Ok(b)
     }
 
     /// O(1) immutable copy of the text (ropey shares its nodes), for background workers.
@@ -409,6 +429,12 @@ impl Buffer {
 
     pub fn is_dirty(&self) -> bool {
         self.version != self.saved_version
+    }
+
+    /// The text as it was at `version` reached the disk by another way than [`save`](Self::save)
+    /// (the elevated save): the buffer is clean again unless it was edited since.
+    pub fn mark_saved(&mut self, version: u64) {
+        self.saved_version = version;
     }
 
     /// Lowest line touched since the last call (for highlighter invalidation).
@@ -503,7 +529,7 @@ impl Buffer {
     /// Replace chars [start, end) with `text`, recording undo information.
     pub fn replace(&mut self, start: usize, end: usize, text: &str, kind: EditKind, before: Sel) {
         let (start, end) = (start.min(end), start.max(end).min(self.len_chars()));
-        if start == end && text.is_empty() {
+        if (start == end && text.is_empty()) || self.read_only {
             self.next_shape = None;
             return;
         }
@@ -540,6 +566,24 @@ impl Buffer {
         if let Some(g) = self.hist.cur_group_mut() {
             g.after = sel;
         }
+    }
+
+    /// Does the undo group of the last edit still accept edits (a user edit just made, not an
+    /// undo/redo or a closed group)?
+    pub fn joinable(&self) -> bool {
+        self.open && self.hist.cur_group().is_some()
+    }
+
+    /// Replace chars [start, end) inside the current undo group, whatever its kind: a change made in
+    /// answer to the user's edit (linked tag names) is undone and redone together with it.
+    pub fn replace_joined(&mut self, start: usize, end: usize, text: &str, before: Sel) {
+        let Some(kind) = self.hist.cur_group().map(|g| g.kind) else {
+            return self.replace(start, end, text, EditKind::Other, before);
+        };
+        let was = self.compound;
+        self.compound = true;
+        self.replace(start, end, text, kind, before);
+        self.compound = was;
     }
 
     /// Stop merging further edits into the current undo group.
@@ -609,6 +653,51 @@ impl Buffer {
         } else {
             self.set_after(after);
         }
+    }
+
+    /// Where the undo history stands now, for [`squash_since`](Self::squash_since).
+    pub fn undo_mark(&self) -> Option<usize> {
+        self.hist.cur
+    }
+
+    /// Join every undo step made since `mark` (a straight run of new steps, e.g. a replayed macro)
+    /// into one. Nothing changes when the history left that run (an undo past the mark, a branch).
+    pub fn squash_since(&mut self, mark: Option<usize>) {
+        self.open = false;
+        self.compound = false;
+        let mut path = Vec::new();
+        let mut c = self.hist.cur;
+        while c != mark {
+            let Some(i) = c else { return };
+            path.push(i);
+            c = self.hist.nodes[i].parent;
+        }
+        if path.len() < 2 {
+            return;
+        }
+        path.reverse();
+        // A straight run: each step has exactly the next one as its only child.
+        let straight = path.windows(2).all(|w| self.hist.nodes[w[0]].children == [w[1]])
+            && self.hist.nodes[path[path.len() - 1]].children.is_empty();
+        if !straight {
+            return;
+        }
+        let first = path[0];
+        let last = path[path.len() - 1];
+        let (after, ver_after) = (self.hist.nodes[last].group.after, self.hist.nodes[last].group.ver_after);
+        let mut edits = Vec::new();
+        for &i in &path[1..] {
+            edits.append(&mut self.hist.nodes[i].group.edits);
+        }
+        let n = &mut self.hist.nodes[first];
+        n.group.edits.append(&mut edits);
+        n.group.after = after;
+        n.group.ver_after = ver_after;
+        n.group.kind = EditKind::Other;
+        n.children.clear();
+        n.last_child = None;
+        // The emptied steps stay in `nodes` but nothing links to them any more.
+        self.hist.cur = Some(first);
     }
 
     fn apply_reverse(&mut self, idx: usize) {
@@ -691,20 +780,31 @@ impl Buffer {
 
     // ── saving ──
 
-    /// Atomic save: write a temp file next to the target, then rename over it.
+    /// The text, encoded, into a new file at `path`.
+    fn write_to_file(&self, path: &Path) -> io::Result<()> {
+        use std::io::Write;
+        let mut w = BufWriter::new(File::create(path)?);
+        crate::encoding::write_rope(&self.rope, self.encoding, &mut w)?;
+        w.flush()
+    }
+
+    /// Atomic save: write a temp file next to the target (in the buffer's encoding), then rename
+    /// over it. A failed write (a character the encoding cannot represent, a full disk) leaves
+    /// the original untouched and no temp file behind.
     pub fn save(&mut self) -> io::Result<()> {
         let Some(path) = self.path.clone() else {
             return Err(io::Error::other("buffer has no path"));
         };
+        if self.no_write {
+            return Err(io::Error::other("an image is not saved from its tab"));
+        }
         let tmp = path.with_extension(format!(
             "{}lumen-tmp",
             path.extension().map(|e| format!("{}.", e.to_string_lossy())).unwrap_or_default()
         ));
-        {
-            let mut w = BufWriter::new(File::create(&tmp)?);
-            self.rope.write_to(&mut w)?;
-            use std::io::Write;
-            w.flush()?;
+        if let Err(e) = self.write_to_file(&tmp) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
         }
         if let Ok(meta) = fs::metadata(&path) {
             let _ = fs::set_permissions(&tmp, meta.permissions());
@@ -730,6 +830,25 @@ mod edit_log_tests {
 
     fn rep(b: &mut Buffer, s: usize, e: usize, t: &str) {
         b.replace(s, e, t, EditKind::Other, Sel::caret(0));
+    }
+
+    #[test]
+    fn read_only_ignores_edits_and_no_write_refuses_to_save() {
+        let dir = std::env::temp_dir().join(format!("lumen-buf-ro-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("pic.png");
+        std::fs::write(&p, b"\x89PNG\r\n\x1a\n").unwrap();
+        let mut b = Buffer::from_rope(Rope::new(), Some(p.clone()));
+        b.read_only = true;
+        b.no_write = true;
+        rep(&mut b, 0, 0, "text");
+        assert_eq!((b.len_chars(), b.is_dirty()), (0, false), "the edit was dropped");
+        assert!(b.save().is_err());
+        assert_eq!(std::fs::read(&p).unwrap(), b"\x89PNG\r\n\x1a\n", "the picture is untouched");
+        b.read_only = false;
+        rep(&mut b, 0, 0, "x");
+        assert_eq!(b.len_chars(), 1, "editable again");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -843,5 +962,57 @@ mod edit_log_tests {
         assert!(b.edits_since(1).is_none());
         rep(&mut b, 0, 0, "d");
         assert_eq!(b.log_seq(), 2, "logging stopped");
+    }
+}
+
+#[cfg(test)]
+mod squash_tests {
+    use super::*;
+
+    #[test]
+    fn squash_joins_the_steps_since_the_mark_into_one() {
+        let mut b = Buffer::from_str("abc");
+        b.replace(0, 0, "1", EditKind::Other, Sel::caret(0));
+        b.close_group();
+        let mark = b.undo_mark();
+        // Separate steps, the way replayed keys make them.
+        b.replace(4, 4, "x", EditKind::Typing, Sel::caret(4));
+        b.close_group();
+        b.begin_compound(Sel::caret(5));
+        b.replace(0, 1, "", EditKind::Other, Sel::caret(5));
+        b.end_compound(Sel::caret(4));
+        b.replace(1, 2, "B", EditKind::Other, Sel::caret(4));
+        b.set_after(Sel::caret(2));
+        assert_eq!(b.to_string(), "aBcx");
+        b.squash_since(mark);
+        assert_eq!(b.undo(), Some(Sel::caret(4)), "one step back, to the selection before the first");
+        assert_eq!(b.to_string(), "1abc");
+        assert_eq!(b.redo(), Some(Sel::caret(2)));
+        assert_eq!(b.to_string(), "aBcx");
+        b.undo();
+        b.undo();
+        assert_eq!(b.to_string(), "abc");
+        assert!(!b.is_dirty());
+        // A new edit after the squashed step is a step of its own.
+        b.redo();
+        b.redo();
+        b.replace(0, 0, "z", EditKind::Typing, Sel::caret(0));
+        b.undo();
+        assert_eq!(b.to_string(), "aBcx");
+    }
+
+    #[test]
+    fn squash_leaves_history_alone_when_it_left_the_run() {
+        let mut b = Buffer::from_str("abc");
+        b.replace(0, 0, "1", EditKind::Other, Sel::caret(0));
+        b.close_group();
+        let mark = b.undo_mark();
+        b.undo(); // back before the mark, then a new branch
+        b.replace(0, 0, "2", EditKind::Other, Sel::caret(0));
+        b.close_group();
+        b.replace(0, 0, "3", EditKind::Other, Sel::caret(0));
+        b.squash_since(mark);
+        b.undo();
+        assert_eq!(b.to_string(), "2abc", "still two steps");
     }
 }

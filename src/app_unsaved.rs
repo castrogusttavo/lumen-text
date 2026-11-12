@@ -185,6 +185,7 @@ impl App {
             card: Rect::default(),
             confirm: None,
             unsaved: Some(Unsaved::new(pending, names, debug).with_kept(kept)),
+            ask: None,
         }));
         self.request_redraw();
     }
@@ -223,6 +224,7 @@ impl App {
     /// atomic write and the follow-ups (LSP `didSave`, git gutter, disk stamp).
     pub fn save_doc(&mut self, i: usize) -> Result<(), String> {
         let warn = self.format_for_save(i);
+        self.whitespace_on_save(i);
         let Some(d) = self.docs.get_mut(i) else { return Ok(()) };
         let name = d.name.clone();
         match d.buf.save() {
@@ -231,12 +233,18 @@ impl App {
                 d.disk_mtime = d.stat_mtime();
                 d.conflict = false;
                 self.lsp_did_save(i);
+                self.hist_snapshot(i, crate::localhist::Source::Save);
                 if let Some(w) = warn {
                     self.say_for(format!("Saved {name}, but {w}"), 8);
                 }
                 Ok(())
             }
-            Err(e) => Err(format!("could not save {name}: {e}")),
+            Err(e) => {
+                if crate::app_elevated::is_permission_denied(&e) {
+                    self.offer_elevated_save(i);
+                }
+                Err(format!("could not save {name}: {e}"))
+            }
         }
     }
 
@@ -492,6 +500,8 @@ pub(crate) mod testkit {
         let theme = crate::theme::Theme::load(&assets.join("themes").join("github-dark-default.json")).expect("theme");
         // Settings written by the code under test land here, not in the user's config.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.join(".config")) };
+        // Session, backups and undo histories too.
+        unsafe { std::env::set_var("XDG_STATE_HOME", dir.join(".state")) };
         let seed = dir.join("seed.txt");
         std::fs::write(&seed, "seed\n").unwrap();
         let wake: crate::lsp::Wake = std::sync::Arc::new(|| {});

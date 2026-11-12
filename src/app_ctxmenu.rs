@@ -300,8 +300,13 @@ pub enum Target {
     Tab(usize),
     /// A commit row of the Git panel's History tab.
     Commit(crate::app_gitpanel::CommitRef),
+    /// Changed files of the Git panel (the selection, or the file right-clicked).
+    GitFiles(Vec<PathBuf>),
     /// The text of the active document.
     Editor,
+    /// The explorer's header (Files / Outline tabs): the "Sort by" menu, with the current order
+    /// and the folders-first switch.
+    ExplorerHeader(crate::tree::SortMode, bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,12 +327,20 @@ pub enum Act {
     CloseAll,
     TogglePin,
     Markdown,
+    /// Snapshots of the file kept by the local history (see `app_localhist`).
+    LocalHistory,
+    /// Move the tab to a new window (see `app_window`).
+    NewWindow,
     // Commit rows (see `app_gitpanel::actions`).
     CherryPick,
     CopyHash,
     BranchHere,
     TagHere,
     UndoCommit,
+    Checkout,
+    Revert,
+    /// Changed files of the Git panel: stash them.
+    StashFiles,
     /// Run a palette command by id (the editor's menu).
     Run(&'static str),
 }
@@ -347,6 +360,8 @@ pub struct Flags {
     pub md: Option<bool>,
     pub pinned: bool,
     pub has_path: bool,
+    /// A closed tab can be reopened (tab menu: "Reopen Closed Tab").
+    pub reopen: bool,
 }
 
 fn item(act: Act, label: &'static str, icon: &'static str, key: &'static str) -> Entry {
@@ -409,6 +424,7 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
                 delete(),
                 sep(),
                 item(Act::CopyPath, "Copy Path", "hugeicons/link", ""),
+                item(Act::LocalHistory, "Local History", "ui/clock", ""),
             ];
             if f.split {
                 v.push(item(Act::OpenSide, "Open to the Side", "ui/split", ""));
@@ -431,16 +447,23 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
                 item(Act::CloseTab, "Close", "ui/close", "Ctrl+W"),
                 item(Act::CloseOthers, "Close Others", "ui/x_circle", ""),
                 item(Act::CloseAll, "Close All", "ui/list_x", ""),
+            ];
+            if f.reopen {
+                v.push(item(Act::Run("ReopenClosedTab"), "Reopen Closed Tab", "ui/undo", "Ctrl+Shift+T"));
+            }
+            v.extend([
                 sep(),
                 if f.pinned {
                     item(Act::TogglePin, "Unpin Tab", "ui/unpin", "")
                 } else {
                     item(Act::TogglePin, "Pin Tab", "ui/pin", "")
                 },
+                item(Act::NewWindow, "Move to New Window", "ui/arrow_up_right", ""),
                 sep(),
-            ];
+            ]);
             if f.has_path {
                 v.push(item(Act::CopyPath, "Copy Path", "hugeicons/link", ""));
+                v.push(item(Act::LocalHistory, "Local History", "ui/clock", ""));
             }
             if let Some(open) = f.md {
                 v.push(item(
@@ -461,13 +484,34 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
             sep(),
             item(Act::Run("Format"), "Format Document", "ui/text_snippet", "Shift+Alt+F"),
         ],
+        Target::GitFiles(v) => vec![
+            item(Act::StashFiles, if v.len() == 1 { "Stash File…" } else { "Stash Selected Files…" }, "ui/archive", ""),
+            sep(),
+            item(Act::CopyPath, "Copy Path", "hugeicons/link", ""),
+        ],
+        Target::ExplorerHeader(mode, first) => {
+            use crate::tree::SortMode;
+            let mark = |on: bool| if on { "ui/check" } else { "" };
+            vec![
+                item(Act::Run("ExplorerSortName"), "Sort by Name", mark(*mode == SortMode::Name), ""),
+                item(Act::Run("ExplorerSortType"), "Sort by Type", mark(*mode == SortMode::Type), ""),
+                item(Act::Run("ExplorerSortModified"), "Sort by Date Modified", mark(*mode == SortMode::Modified), ""),
+                item(Act::Run("ExplorerSortMixed"), "Mixed: Folders Among Files", mark(*mode == SortMode::Mixed), ""),
+                sep(),
+                item(Act::Run("ToggleFoldersFirst"), "Folders First", mark(*first && *mode != SortMode::Mixed), ""),
+            ]
+        }
         Target::Commit(c) => {
             let mut v = vec![
-                item(Act::CherryPick, "Cherry-pick", "ui/git_commit", ""),
-                item(Act::CopyHash, "Copy Hash", "hugeicons/copy", ""),
+                item(Act::Checkout, "Checkout", "ui/git_branch", ""),
                 sep(),
                 item(Act::BranchHere, "Create Branch Here…", "ui/git_branch_plus", ""),
                 item(Act::TagHere, "Create Tag Here…", "ui/hash", ""),
+                sep(),
+                item(Act::CherryPick, "Cherry-pick", "ui/git_commit", ""),
+                item(Act::Revert, "Revert", "ui/rotate_ccw", ""),
+                sep(),
+                item(Act::CopyHash, "Copy Hash", "hugeicons/copy", ""),
             ];
             if c.head {
                 v.extend([sep(), item(Act::UndoCommit, "Undo Last Commit", "ui/undo", "")]);
@@ -521,6 +565,8 @@ pub struct CtxMenu {
     pub confirm: Option<Confirm>,
     /// "Save all / Discard / Cancel" card (see `app_unsaved.rs`).
     pub unsaved: Option<crate::app_unsaved::Unsaved>,
+    /// Two-button question: running processes, "Save as administrator" (see `app_ask.rs`).
+    pub ask: Option<crate::app_ask::Ask>,
 }
 
 // ───────────────────────── App integration ─────────────────────────
@@ -552,7 +598,7 @@ impl App {
         let sb = self.layout.sidebar;
         if self.sidebar_open && sb.contains(x, y) && self.sidebar_mode == crate::app::SidebarMode::Files {
             if y < (sb.y + TAB_H) as f64 {
-                return None;
+                return Some(Target::ExplorerHeader(self.tree.sort(), self.tree.folders_first()));
             }
             let rel = y - (sb.y + TAB_H) as f64 + self.tree.scroll;
             let row = (rel >= 0.0).then(|| (rel / ROW_H as f64) as usize).filter(|&i| i < self.tree.rows.len());
@@ -596,6 +642,7 @@ impl App {
             let Some(d) = self.docs.get(*i) else { return };
             f.pinned = d.pinned;
             f.has_path = d.path().is_some();
+            f.reopen = !self.closed_tabs.is_empty();
             f.md = crate::app_md::is_markdown_name(&d.name).then(|| d.md.is_some());
         }
         let entries = entries_for(&target, &f);
@@ -608,6 +655,7 @@ impl App {
             card: Rect::default(),
             confirm: None,
             unsaved: None,
+            ask: None,
         }));
     }
 
@@ -615,6 +663,9 @@ impl App {
         let Overlay::Ctx(m) = &mut self.overlay else { return };
         if m.unsaved.is_some() {
             return self.unsaved_key(&ev.key);
+        }
+        if m.ask.is_some() {
+            return self.ask_key(&ev.key);
         }
         if let Some(c) = m.confirm.as_mut() {
             match &ev.key {
@@ -666,6 +717,10 @@ impl App {
             self.unsaved_mouse(x, y);
             return true;
         }
+        if m.ask.is_some() {
+            self.ask_mouse(x, y);
+            return true;
+        }
         if let Some(c) = m.confirm.as_ref() {
             let (no, yes, paths) = (c.rects[0], c.rects[1], c.paths.clone());
             if yes.contains(x, y) {
@@ -692,6 +747,9 @@ impl App {
         let Overlay::Ctx(m) = &mut self.overlay else { return false };
         if m.unsaved.is_some() {
             return self.unsaved_hover(x, y);
+        }
+        if m.ask.is_some() {
+            return self.ask_hover(x, y);
         }
         if let Some(c) = m.confirm.as_mut() {
             if c.rects[1].contains(x, y) && !c.yes {
@@ -744,7 +802,8 @@ impl App {
             Target::Folder(p) | Target::File(p) | Target::Root(p) => Some(p.clone()),
             Target::Multi(v) => v.first().cloned(),
             Target::Tab(i) => self.docs.get(*i).and_then(|d| d.path()).map(Path::to_path_buf),
-            Target::Commit(_) => None,
+            Target::Commit(_) | Target::ExplorerHeader(..) => None,
+            Target::GitFiles(v) => v.first().cloned(),
             Target::Editor => self.docs.get(self.active).and_then(|d| d.path()).map(Path::to_path_buf),
         }
     }
@@ -796,6 +855,7 @@ impl App {
                     card: Rect::default(),
                     confirm: Some(Confirm { paths, yes: false, rects: [Rect::default(); 2] }),
                     unsaved: None,
+                    ask: None,
                 }));
             }
             Act::CopyPath => {
@@ -813,6 +873,9 @@ impl App {
         }
         if let Target::Commit(c) = t {
             return self.git_commit_menu_act(act, c);
+        }
+        if let (Target::GitFiles(paths), Act::StashFiles) = (&t, act) {
+            return self.git_stash_files(paths);
         }
         if let Act::Run(id) = act {
             self.run_bound(id);
@@ -891,6 +954,7 @@ impl App {
                     card: Rect::default(),
                     confirm: Some(Confirm { paths: vec![p], yes: false, rects: [Rect::default(); 2] }),
                     unsaved: None,
+                    ask: None,
                 }));
             }
             Act::CopyPath => {
@@ -933,7 +997,25 @@ impl App {
                     self.toggle_md_reader();
                 }
             }
-            Act::CherryPick | Act::CopyHash | Act::BranchHere | Act::TagHere | Act::UndoCommit | Act::Run(_) => {}
+            Act::LocalHistory => {
+                if let Some(p) = path {
+                    self.hist_list(&p);
+                }
+            }
+            Act::NewWindow => {
+                if let Target::Tab(i) = t {
+                    self.move_tab_to_new_window(i, None);
+                }
+            }
+            Act::CherryPick
+            | Act::CopyHash
+            | Act::BranchHere
+            | Act::TagHere
+            | Act::UndoCommit
+            | Act::Checkout
+            | Act::Revert
+            | Act::StashFiles
+            | Act::Run(_) => {}
         }
     }
 
@@ -1037,6 +1119,11 @@ impl App {
 
         if m.unsaved.is_some() {
             self.draw_unsaved(cv, &mut m);
+            self.overlay = Overlay::Ctx(m);
+            return;
+        }
+        if m.ask.is_some() {
+            self.draw_ask(cv, &mut m);
             self.overlay = Overlay::Ctx(m);
             return;
         }
@@ -1295,18 +1382,52 @@ mod tests {
         assert!(labels(&entries_for(&folder, &with_clip)).contains(&"Paste"));
         let file = Target::File("/p/a.ts".into());
         let l = labels(&entries_for(&file, &f));
-        assert_eq!(l, ["Cut", "Copy", "-", "Duplicate", "Rename", "-", "Move to Trash", "Delete", "-", "Copy Path"]);
+        assert_eq!(
+            l,
+            [
+                "Cut",
+                "Copy",
+                "-",
+                "Duplicate",
+                "Rename",
+                "-",
+                "Move to Trash",
+                "Delete",
+                "-",
+                "Copy Path",
+                "Local History"
+            ]
+        );
         assert!(!l.contains(&"Open to the Side") && !l.contains(&"Paste"));
         assert!(labels(&entries_for(&file, &Flags { split: true, ..f })).contains(&"Open to the Side"));
         let tab = Target::Tab(0);
         let l = labels(&entries_for(&tab, &Flags { has_path: true, ..f }));
-        assert_eq!(l, ["Close", "Close Others", "Close All", "-", "Pin Tab", "-", "Copy Path"]);
+        assert_eq!(
+            l,
+            [
+                "Close",
+                "Close Others",
+                "Close All",
+                "-",
+                "Pin Tab",
+                "Move to New Window",
+                "-",
+                "Copy Path",
+                "Local History"
+            ]
+        );
         let l = labels(&entries_for(&tab, &Flags { has_path: true, pinned: true, md: Some(false), ..f }));
         assert!(l.contains(&"Unpin Tab") && l.contains(&"Open Markdown Preview"));
         assert!(labels(&entries_for(&tab, &Flags { md: Some(true), ..f })).contains(&"Close Markdown Preview"));
         // No path (untitled): no separator left dangling.
         let l = labels(&entries_for(&tab, &f));
-        assert_eq!(l.last(), Some(&"Pin Tab"));
+        assert_eq!(l.last(), Some(&"Move to New Window"));
+        // Something was closed: "Reopen Closed Tab" follows the close items and runs a command.
+        let v = entries_for(&tab, &Flags { reopen: true, ..f });
+        assert_eq!(labels(&v)[..5], ["Close", "Close Others", "Close All", "Reopen Closed Tab", "-"]);
+        assert!(
+            matches!(v[3], Entry::Item { act: Act::Run(id), .. } if crate::app_overlay::Cmd::from_id(id).is_some())
+        );
         // Root: only creation (+ paste).
         assert_eq!(labels(&entries_for(&Target::Root("/p".into()), &f)), ["New File", "New Folder"]);
         // Several rows: no rename / new / open-beside, plural "Copy Paths".
@@ -1359,12 +1480,12 @@ mod tests {
     #[test]
     fn keyboard_steps_skip_separators_and_wrap() {
         let e = entries_for(&Target::Tab(0), &Flags::default());
-        // Items at 0,1,2, sep 3, item 4.
+        // Items at 0,1,2, sep 3, items 4,5.
         assert_eq!(step(&e, None, 1), Some(0));
-        assert_eq!(step(&e, None, -1), Some(4));
+        assert_eq!(step(&e, None, -1), Some(5));
         assert_eq!(step(&e, Some(2), 1), Some(4));
-        assert_eq!(step(&e, Some(4), 1), Some(0));
-        assert_eq!(step(&e, Some(0), -1), Some(4));
+        assert_eq!(step(&e, Some(5), 1), Some(0));
+        assert_eq!(step(&e, Some(0), -1), Some(5));
         assert_eq!(step(&[], None, 1), None);
     }
 

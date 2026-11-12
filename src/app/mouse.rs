@@ -9,12 +9,20 @@ impl App {
 
     pub fn mouse_down(&mut self, button: MouseButton) {
         let (x, y) = self.mouse;
+        // The shortcuts page recording a combo takes Ctrl/Alt+click and the middle button.
+        if button != MouseButton::Right
+            && matches!(self.overlay, Overlay::Settings(_))
+            && self.settings_record_mouse(if button == MouseButton::Middle { "middle" } else { "click" })
+        {
+            return self.request_redraw();
+        }
         if self.hover_mouse_down(button) {
             return self.request_redraw();
         }
         self.hover = None;
         self.dismiss_tooltip();
         self.chord = None;
+        self.jump = None; // a click gives up a pending "Jump to…"
         self.tests.focused = false; // a click in the Tests panel gives it back
         self.build.focused = false; // likewise for the Build panel
         self.aipanel_mouse_pre(); // and for the AI panel
@@ -40,7 +48,7 @@ impl App {
         if button == MouseButton::Left && self.sidebar_edge_press(x, y) {
             return self.request_redraw();
         }
-        if self.topbar_click(x, y) || self.status_click(x, y) {
+        if self.topbar_click(x, y) || self.fswatch_click(x, y) || self.status_click(x, y) {
             return self.request_redraw();
         }
         if self.completion_click(x, y) {
@@ -110,12 +118,18 @@ impl App {
         if self.panel_mouse(x, y) {
             return self.request_redraw();
         }
+        if self.merge_mouse(x, y) {
+            return self.request_redraw();
+        }
         if self.split_mouse_down(x, y) {
             return self.request_redraw();
         }
         if self.diff.is_some() && self.diff_area().contains(x, y) {
             // The diff's keys (n / p, Accept / Reject) need the keyboard off the terminal.
             self.focus = Focus::Editor;
+            if button == MouseButton::Left {
+                self.diff_press(x, y); // starts a line selection (line staging)
+            }
             return self.request_redraw();
         }
         if self.conflict_click(x, y) {
@@ -129,17 +143,26 @@ impl App {
         if self.docs.is_empty() {
             return;
         }
-        if button == MouseButton::Middle {
-            // Middle click: paste the primary selection at the pointer.
-            let text = self.clip.get_primary();
-            let d = &mut self.docs[self.active];
-            let p = d.pos_at(x, y);
-            d.ed.click(&mut d.buf, p, false);
-            d.ed.paste(&mut d.buf, &text);
-            d.reveal = true;
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        if self.img_mouse_down(x, y) {
             return self.request_redraw();
         }
-        let ctrl = self.mods.control_key();
+        if button == MouseButton::Middle {
+            // A user binding for the middle button runs instead; by default a middle drag is a column
+            // selection and a click pastes the primary selection on release.
+            let bound = self.keymap.lookup_mouse(ctrl, shift, alt, "middle").map(str::to_string);
+            match bound.as_deref() {
+                Some("PastePrimary") | None => self.drag_press_middle(),
+                Some("none") => {}
+                Some(id) => {
+                    let d = &mut self.docs[self.active];
+                    let p = d.pos_at(x, y);
+                    d.ed.click(&mut d.buf, p, false);
+                    self.run_mouse_action(id);
+                }
+            }
+            return self.request_redraw();
+        }
         let near = (x - self.last_click_pos.0).abs() < 5.0 && (y - self.last_click_pos.1).abs() < 5.0;
         self.clicks =
             if near && self.last_click.elapsed() < Duration::from_millis(400) { self.clicks % 3 + 1 } else { 1 };
@@ -177,9 +200,14 @@ impl App {
             }
             return self.request_redraw();
         }
-        let shift = self.mods.shift_key();
-        let alt = self.mods.alt_key();
         let clicks = self.clicks;
+        // Modifier + single click: what keybindings.json binds to it (`alt+click` adds a cursor,
+        // `ctrl+click` goes to the definition by default; see `keymap::MOUSE_DEFAULTS`).
+        let bound = if clicks == 1 && (ctrl || alt) {
+            self.keymap.lookup_mouse(ctrl, shift, alt, "click").filter(|id| *id != "none").map(str::to_string)
+        } else {
+            None
+        };
         let d = &mut self.docs[self.active];
         if clicks == 1 && !alt && d.click_fold(x, y) {
             return self.request_redraw();
@@ -189,8 +217,12 @@ impl App {
         }
         let d = &mut self.docs[self.active];
         let (p, hint) = d.hit_at(x, y);
-        if alt && clicks == 1 {
-            self.drag_press_block(p);
+        if bound.as_deref() == Some("AddCursor") {
+            if shift {
+                self.drag_press_box(p);
+            } else {
+                self.drag_press_block(p);
+            }
             return self.request_redraw();
         }
         d.ed.clear_extra();
@@ -202,7 +234,7 @@ impl App {
         // Inlay hints: Ctrl+click on a label part with a location goes there; a double click on a
         // type hint inserts the annotation (one undo step). A plain click only places the cursor.
         if let Some(hit) = hint {
-            if ctrl && clicks == 1 {
+            if bound.as_deref() == Some("GotoDefinition") {
                 d.ed.click(&mut d.buf, p, false);
                 if let Some(l) = d.hint_link(hit) {
                     self.goto_location(&(l.uri, l.line, l.character));
@@ -214,9 +246,10 @@ impl App {
                 return self.request_redraw();
             }
         }
-        if ctrl && clicks == 1 {
+        if let Some(id) = bound {
+            // The caret goes to the click, then the bound command runs there.
             d.ed.click(&mut d.buf, p, false);
-            self.goto_definition(crate::lsp::DefKind::Definition);
+            self.run_mouse_action(&id);
             return self.request_redraw();
         }
         d.reveal = true;
@@ -291,16 +324,22 @@ impl App {
         if let Some(c) = self.md_cursor(x, y) {
             return c;
         }
+        if let Some(c) = self.img_cursor(x, y) {
+            return c;
+        }
         if l.top_btns.iter().any(|(r, _)| r.contains(x, y))
             || l.status_btns.iter().any(|(r, _)| r.contains(x, y))
             || l.tabs.iter().any(|(r, _, _)| r.contains(x, y))
             || l.sidebar_tabs.iter().any(|(r, _)| r.contains(x, y))
             || l.crumbs.iter().any(|(r, _)| r.contains(x, y))
             || l.panel_tabs.iter().any(|(r, _)| r.contains(x, y))
+            || self.terms_hit_at(x, y).is_some()
             || self.tests_clickable_at(x, y)
             || self.build_clickable_at(x, y)
+            || self.fswatch_clickable_at(x, y)
             || l.completion_rows.iter().any(|(r, _)| r.contains(x, y))
             || self.diff_btn_at(x, y).is_some()
+            || self.merge_btn_at(x, y)
         {
             return CursorIcon::Pointer;
         }
@@ -378,6 +417,9 @@ impl App {
         }
         if let Some((r, _)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((*r, 6));
+        }
+        if let Some(h) = self.terms_hover_target() {
+            return Some(h);
         }
         if let Some(h) = self.aipanel_hover_target() {
             return Some(h);
@@ -494,6 +536,9 @@ impl App {
         if self.regions_drag() {
             return self.request_redraw();
         }
+        if self.diff_drag_move(x, y) {
+            return self.request_redraw();
+        }
         if self.aipanel_move() {
             return self.request_redraw();
         }
@@ -531,6 +576,9 @@ impl App {
             return self.request_redraw();
         }
         if self.md_mouse_move(x, y) {
+            return;
+        }
+        if self.img_mouse_move(x, y) {
             return;
         }
         if self.dragging_minimap {

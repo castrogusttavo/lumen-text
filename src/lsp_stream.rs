@@ -38,6 +38,8 @@ pub enum Policy {
     Tokens,
     /// `foldingRange`: only `startLine`/`endLine` of at most [`Limits::max_folds`] ranges.
     Folds,
+    /// `workspace/diagnostic`: a capped report (delivered as [`Msg::WsDiag`], see `problems`).
+    WsDiag,
 }
 
 pub fn policy_for(method: &str) -> Policy {
@@ -45,6 +47,7 @@ pub fn policy_for(method: &str) -> Policy {
         "textDocument/documentSymbol" => Policy::Symbols,
         "textDocument/foldingRange" => Policy::Folds,
         m if m.starts_with("textDocument/semanticTokens/") => Policy::Tokens,
+        "workspace/diagnostic" => Policy::WsDiag,
         _ => Policy::Value,
     }
 }
@@ -122,9 +125,10 @@ pub fn read_message<R: BufRead>(r: &mut R, lim: &Limits, policy_of: &dyn Fn(i64)
             Some(Msg::Response { id, result: Ok(v) }) => match policy_of(id) {
                 Policy::Tokens => Msg::Tokens { id, data: tokens_from_value(&v) }.into(),
                 Policy::Symbols => Msg::Symbols { id, syms: crate::doc::flatten_symbols(&v) }.into(),
+                Policy::WsDiag => Msg::WsDiag { id, report: crate::problems::WsReport::from_value(v) }.into(),
                 _ => Msg::Response { id, result: Ok(v) }.into(),
             },
-            Some(m) => m.into(),
+            Some(m) => partial_report(m).into(),
             None => Frame::Skipped,
         });
     }
@@ -138,7 +142,10 @@ pub fn read_message<R: BufRead>(r: &mut R, lim: &Limits, policy_of: &dyn Fn(i64)
     };
     io::copy(&mut body, &mut io::sink())?;
     match parsed {
-        Ok(p) => Ok(p.into_frame(len)),
+        Ok(p) => Ok(match p.into_frame(len) {
+            Frame::Msg(m) => partial_report(m).into(),
+            f => f,
+        }),
         Err(e) if e.is_io() => Err(e.into()),
         Err(_) => Ok(Frame::Skipped),
     }
@@ -147,6 +154,23 @@ pub fn read_message<R: BufRead>(r: &mut R, lim: &Limits, policy_of: &dyn Fn(i64)
 impl From<Msg> for Frame {
     fn from(m: Msg) -> Frame {
         Frame::Msg(m)
+    }
+}
+
+/// A `$/progress` notification carrying a partial result of one of our `workspace/diagnostic`
+/// requests (token [`crate::problems::WS_TOKEN_PREFIX`]) becomes [`Msg::WsPartial`], parsed here
+/// on the reader thread; anything else passes through.
+fn partial_report(m: Msg) -> Msg {
+    match m {
+        Msg::Notification { method, mut params }
+            if method == "$/progress"
+                && params["token"].as_str().is_some_and(|t| t.starts_with(crate::problems::WS_TOKEN_PREFIX)) =>
+        {
+            let token = params["token"].as_str().unwrap_or_default().to_string();
+            let value = params.get_mut("value").map(Value::take).unwrap_or(Value::Null);
+            Msg::WsPartial { token, report: crate::problems::WsReport::from_value(value) }
+        }
+        m => m,
     }
 }
 
@@ -160,6 +184,7 @@ enum Res {
     Value(Value),
     Symbols(Vec<Sym>),
     Tokens(Vec<u32>),
+    WsDiag(crate::problems::WsReport),
     TooLarge,
 }
 
@@ -193,6 +218,7 @@ impl Parsed {
                     Some(Res::Value(v)) => Msg::Response { id, result: Ok(v) }.into(),
                     Some(Res::Tokens(data)) => Msg::Tokens { id, data }.into(),
                     Some(Res::Symbols(syms)) => Msg::Symbols { id, syms }.into(),
+                    Some(Res::WsDiag(report)) => Msg::WsDiag { id, report }.into(),
                     Some(Res::TooLarge) => Msg::Response { id, result: Err(too_large(len)) }.into(),
                     None => Msg::Response { id, result: Ok(Value::Null) }.into(),
                 }
@@ -247,6 +273,7 @@ impl<'de> Visitor<'de> for Envelope<'_> {
                         Policy::Symbols => map.next_value_seed(SymbolsSeed { lim: self.lim })?,
                         Policy::Tokens => map.next_value_seed(TokensSeed { lim: self.lim })?,
                         Policy::Folds => map.next_value_seed(FoldsSeed { max: self.lim.max_folds })?,
+                        Policy::WsDiag => Res::WsDiag(map.next_value_seed(crate::problems::WsSeed)?),
                         Policy::Value if small_enough => Res::Value(map.next_value()?),
                         Policy::Value => {
                             map.next_value::<IgnoredAny>()?;
@@ -953,5 +980,54 @@ mod tests {
         let Frame::Msg(Msg::Response { id: 2, result: Err(e) }) = frame else { panic!() };
         assert_eq!(e["data"]["tooLarge"], true);
         assert!(peak < 1024 * 1024, "peak {peak} bytes");
+    }
+
+    fn ws_body(files: usize, per_file: usize) -> String {
+        let d = json!({"range": {"start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 4}}, "severity": 2, "message": "w"});
+        let items: Vec<Value> = (0..files)
+            .map(|f| json!({"uri": format!("file:///p/f{f}.rs"), "kind": "full", "resultId": "r", "items": vec![d.clone(); per_file]}))
+            .collect();
+        json!({"jsonrpc": "2.0", "id": 7, "result": {"items": items}}).to_string()
+    }
+
+    #[test]
+    fn workspace_diagnostics_come_capped_on_both_paths() {
+        let ws = |_: i64| Policy::WsDiag;
+        // Small: parsed as a Value, then converted.
+        let mut r = Cursor::new(framed(&ws_body(2, 3)));
+        let Msg::WsDiag { id: 7, report } = next(&mut r, &Limits::default(), &ws) else { panic!("expected WsDiag") };
+        assert_eq!(report.files.len(), 2);
+        assert_eq!(report.files[1].diags.len(), 3);
+        // Big (well past `max_value`): streamed, never a Value, and capped.
+        let body = ws_body(60, crate::problems::FILE_CAP + 50);
+        assert!(body.len() > small_lim().max_value);
+        let mut r = Cursor::new(framed(&body));
+        let Msg::WsDiag { report, .. } = next(&mut r, &small_lim(), &ws) else { panic!("expected WsDiag") };
+        assert_eq!(report.files.len(), 60);
+        assert!(report.files.iter().all(|f| f.diags.len() == crate::problems::FILE_CAP));
+        assert_eq!(report.dropped, 60 * 50);
+        // An error answer is still an error.
+        let err = json!({"jsonrpc": "2.0", "id": 7, "error": {"code": -32800, "message": "cancelled"}}).to_string();
+        let mut r = Cursor::new(framed(&err));
+        assert!(matches!(next(&mut r, &Limits::default(), &ws), Msg::Response { id: 7, result: Err(_) }));
+    }
+
+    #[test]
+    fn partial_workspace_results_are_parsed_on_the_reader_thread() {
+        let value = json!({"items": [{"uri": "file:///p/a.rs", "kind": "full", "items": [
+            {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}, "message": "e"}]}]});
+        let body =
+            json!({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "lumen-wsdiag:3", "value": value}});
+        let mut r = Cursor::new(framed(&body.to_string()));
+        let Msg::WsPartial { token, report } = next(&mut r, &Limits::default(), &never) else {
+            panic!("expected WsPartial")
+        };
+        assert_eq!(token, "lumen-wsdiag:3");
+        assert_eq!(report.files[0].diags[0].message, "e");
+        // Other progress (work done) is left alone.
+        let other =
+            json!({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "t1", "value": {"kind": "end"}}});
+        let mut r = Cursor::new(framed(&other.to_string()));
+        assert!(matches!(next(&mut r, &Limits::default(), &never), Msg::Notification { .. }));
     }
 }

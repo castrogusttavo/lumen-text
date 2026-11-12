@@ -17,8 +17,12 @@ fn keybindings_path() -> Option<std::path::PathBuf> {
 }
 
 impl App {
-    fn config_values(&self) -> Value {
-        let c = &self.config;
+    pub(crate) fn config_values(&self) -> Value {
+        self.config_values_of(&self.config)
+    }
+
+    /// The settings page's values for configuration `c` (the effective one, or the user layer).
+    pub(crate) fn config_values_of(&self, c: &crate::config::Config) -> Value {
         let mut v = json!({
             "format_on_save": c.format_on_save, "updates": c.updates, "auto_import": c.auto_import,
             "lsp_narrow": c.lsp_narrow, "code_lens": c.code_lens, "code_lens_refs": c.code_lens_refs, "code_lens_impls": c.code_lens_impls, "inlay_hints": c.inlay_hints, "inlay_hints_params": c.inlay_hints_params, "inlay_hints_types": c.inlay_hints_types, "appearance": c.appearance, "theme_chrome": c.theme_chrome,
@@ -41,12 +45,16 @@ impl App {
             "status_pos_position": c.status_rank("position"), "status_pos_indent": c.status_rank("indent"),
             "status_pos_language": c.status_rank("language"), "status_pos_terminal": c.status_rank("terminal"),
             "status_pos_debug": c.status_rank("debug"), "status_pos_git": c.status_rank("git"),
-            "status_pos_ram": c.status_rank("ram"),
+            "status_pos_ram": c.status_rank("ram"), "status_pos_encoding": c.status_rank("encoding"),
+            "status_encoding": c.status_visible("encoding"),
         });
         if let (Some(dst), Some(src)) = (v.as_object_mut(), pos.as_object()) {
             dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
         }
         if let (Some(dst), Some(src)) = (v.as_object_mut(), crate::settings_ext::values(c).as_object()) {
+            dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
+        }
+        if let (Some(dst), Some(src)) = (v.as_object_mut(), crate::app_view::values(c).as_object()) {
             dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
         }
         v
@@ -99,7 +107,13 @@ impl App {
             .filter(|(c, id)| keymap::default_combo(id) != Some(*c))
             .map(|(c, id)| (c.to_string(), id.to_string()));
         kb.add_default_aliases(aliases);
-        self.overlay = Overlay::Settings(Box::new(Modal::new(sp, kb, page)));
+        // Built-in mouse combos (side buttons, Ctrl+wheel, Alt+click, ...) own their combos too.
+        kb.add_default_aliases(keymap::MOUSE_DEFAULTS.iter().map(|(c, id)| (c.to_string(), id.to_string())));
+        let mut m = Modal::new(sp, kb, page);
+        m.user_defaults = m.settings.defaults_value();
+        m.scope = Some(crate::projcfg::Scope::User);
+        self.overlay = Overlay::Settings(Box::new(m));
+        self.settings_set_scope(crate::projcfg::Scope::User);
     }
 
     fn window_rect(&self) -> Rect {
@@ -132,19 +146,34 @@ impl App {
         self.apply_settings_event(e);
     }
 
+    /// A mouse combo pressed while the shortcuts page records one (Ctrl/Alt+click, middle, the
+    /// side buttons, Ctrl/Alt+wheel). True when it was taken.
+    pub fn settings_record_mouse(&mut self, button: &str) -> bool {
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        let Overlay::Settings(m) = &mut self.overlay else { return false };
+        let Some(e) = m.record_mouse(ctrl, shift, alt, button) else { return false };
+        self.apply_settings_event(e);
+        true
+    }
+
     pub fn settings_wheel(&mut self, delta: MouseScrollDelta) {
         let Overlay::Settings(m) = &mut self.overlay else { return };
         m.wheel(crate::scroller::wheel_px(delta, crate::ui::line_h() as f64));
     }
 
-    fn apply_settings_event(&mut self, e: Event) {
+    pub(crate) fn apply_settings_event(&mut self, e: Event) {
         for e in e.flatten() {
             match e {
                 Event::Close => {
                     self.overlay = Overlay::None;
+                    self.config.layers.with(|s| s.target = None);
                     return;
                 }
-                Event::Setting { key, value } => self.apply_setting(&key, &value),
+                Event::Setting { key, value } => {
+                    self.apply_setting(&key, &value);
+                    self.settings_scoped_after_change();
+                }
+                Event::Scope(s) => self.settings_set_scope(s),
                 Event::PickFont { key } => {
                     if let Some(k) = crate::settings_ext::picker_key(&key) {
                         self.open_font_picker(k, true);
@@ -215,6 +244,9 @@ impl App {
 
     pub(crate) fn apply_setting(&mut self, key: &str, v: &Value) {
         if self.lspx_apply_setting(key, v) {
+            return;
+        }
+        if self.inline_apply_setting(key, v) {
             return;
         }
         let b = v.as_bool();
@@ -321,7 +353,7 @@ impl App {
             "word_wrap" => {
                 self.config.word_wrap = b.unwrap_or(false);
                 for d in &mut self.docs {
-                    d.set_word_wrap(self.config.word_wrap);
+                    d.set_word_wrap(self.config.word_wrap_for(d.lang));
                 }
                 self.split_wrap_all(self.config.word_wrap);
             }
@@ -379,7 +411,7 @@ impl App {
                 self.config.git_pull_strategy = crate::config::clean_pull_strategy(s.as_deref().unwrap_or(""))
             }
             _ => {
-                if !self.apply_ext_setting(key, v) {
+                if !self.apply_ext_setting(key, v) && !self.apply_view_setting(key, v) {
                     return;
                 }
             }

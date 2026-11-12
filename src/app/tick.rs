@@ -10,6 +10,8 @@ impl App {
         let mut want = |t: Instant| next = Some(next.map_or(t, |n| n.min(t)));
 
         self.lsp_tick(now, &mut want);
+        self.assist_tick(now, &mut want);
+        self.inline_tick(now, &mut want);
         self.guard_lsp_memory(now, &mut want);
         if self.last_trim.elapsed() > Duration::from_secs(4) {
             self.last_trim = Instant::now();
@@ -17,11 +19,15 @@ impl App {
         }
         want(self.last_trim + Duration::from_secs(4));
         self.check_disk(now, &mut want);
+        self.backup_tick(now, &mut want);
         self.gitpanel_tick(now, &mut want);
         self.update_tick(now, &mut want);
         self.git_bg_tick(now, &mut want);
+        self.fswatch_tick(now, &mut want);
         self.md_tick(now, &mut want);
+        self.img_tick(now, &mut want);
         self.tests_tick(now, &mut want);
+        self.coverage_sync_docs();
         self.build_tick(now, &mut want);
         self.ai_tick(now, &mut want);
         self.ide_tick(now, &mut want);
@@ -151,6 +157,7 @@ impl App {
         self.last_disk_check = now;
         want(now + EVERY);
         let mut notes: Vec<String> = Vec::new();
+        let hist = self.hist_store();
         for d in &mut self.docs {
             let (Some(old), Some(cur)) = (d.disk_mtime, d.stat_mtime()) else { continue };
             if old == cur {
@@ -162,8 +169,14 @@ impl App {
                     d.conflict = true;
                     notes.push(format!("{} changed on disk and you have unsaved changes (Ctrl+S overwrites)", d.name));
                 }
-            } else if d.reload_from_disk().is_ok() {
-                notes.push(format!("{} reloaded (changed on disk)", d.name));
+            } else {
+                // Keep the old text in the local history before another program's version replaces it.
+                if let (Some(s), Some(p)) = (&hist, d.path()) {
+                    crate::localhist::record_buf(s, p, &d.buf, crate::localhist::Source::Reload);
+                }
+                if d.reload_from_disk().is_ok() {
+                    notes.push(format!("{} reloaded (changed on disk)", d.name));
+                }
             }
         }
         if let Some(n) = notes.pop() {

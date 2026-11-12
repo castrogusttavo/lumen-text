@@ -65,6 +65,8 @@ pub enum Entry {
     UseDir(PathBuf),
     Up(PathBuf),
     Dir(PathBuf),
+    /// "Worktrees…" in the branch menu (how many the repository has).
+    Worktrees(usize),
 }
 
 pub struct TopMenu {
@@ -84,6 +86,11 @@ pub struct TopMenu {
     /// Delete buttons of local branches drawn last frame: (button, branch).
     pub trash: Vec<(Rect, String)>,
     pub now: i64,
+    /// Branch menu: branches checked out in another worktree, and its folder.
+    pub worktrees: Vec<(String, PathBuf)>,
+    /// "Open folder in new window": the chosen folder opens in a window of its own (Ctrl+Enter
+    /// or Ctrl+click does the same from any project menu).
+    pub new_window: bool,
 }
 
 // ───────────── pure helpers ─────────────
@@ -221,6 +228,8 @@ impl TopMenu {
             rows: Vec::new(),
             trash: Vec::new(),
             now: now_secs(),
+            worktrees: Vec::new(),
+            new_window: false,
         };
         m.refilter();
         m
@@ -245,7 +254,7 @@ impl TopMenu {
                 }
             };
             match e {
-                Entry::UseDir(_) | Entry::Up(_) | Entry::NewBranch => lead.push(i),
+                Entry::UseDir(_) | Entry::Up(_) | Entry::NewBranch | Entry::Worktrees(_) => lead.push(i),
                 Entry::OpenProject => trail.push(i),
                 Entry::Project(p, recent) => {
                     if !searching {
@@ -353,7 +362,13 @@ impl App {
             if open == Some(MenuKind::Branch) {
                 cv.fill_round(r, 6, c.list_active_bg);
             }
-            self.tx.icon(cv, "ui/git_branch", r.x + 10, bar.y + (bar.h - 14) / 2, 14, c.tab_inactive_fg, bar);
+            // A linked worktree shows the worktree icon (the tooltip names its main worktree).
+            let (icon, icol) = if self.gitbg.worktree_main.is_some() {
+                ("ui/git_worktree", c.accent_text)
+            } else {
+                ("ui/git_branch", c.tab_inactive_fg)
+            };
+            self.tx.icon(cv, icon, r.x + 10, bar.y + (bar.h - 14) / 2, 14, icol, bar);
             self.tx.draw_ui(cv, r.x + 10 + 14 + 8, ty, &b, c.tab_inactive_fg, bar, false);
             self.tx.icon(cv, "ui/chevron_down", r.right() - 22, bar.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, bar);
             self.layout.top_btns.push((r, MenuKind::Branch));
@@ -382,6 +397,14 @@ impl App {
         self.open_topmenu(kind, r);
     }
 
+    /// "File: Open folder in new window…": the folder browser, opening its pick in a new window.
+    pub fn open_topmenu_cmd_new_window(&mut self) {
+        self.open_topmenu_cmd(MenuKind::Browse);
+        if let Overlay::TopMenu(m) = &mut self.overlay {
+            m.new_window = true;
+        }
+    }
+
     // ───────────── menus ─────────────
 
     pub fn open_topmenu(&mut self, kind: MenuKind, anchor: Rect) {
@@ -404,9 +427,20 @@ impl App {
                 if branches.is_empty() {
                     return self.say("no branches (is the folder a git repository?)");
                 }
-                let entries =
-                    std::iter::once(Entry::NewBranch).chain(branches.into_iter().map(Entry::Branch)).collect();
-                self.overlay = Overlay::TopMenu(Box::new(TopMenu::new(kind, anchor, entries, self.root.clone())));
+                let wts = crate::worktree::list(&self.root);
+                let entries = [Entry::NewBranch, Entry::Worktrees(wts.len())]
+                    .into_iter()
+                    .chain(branches.into_iter().map(Entry::Branch))
+                    .collect();
+                let mut m = TopMenu::new(kind, anchor, entries, self.root.clone());
+                let cur = crate::worktree::containing(&wts, &self.root);
+                m.worktrees = wts
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| Some(*i) != cur)
+                    .filter_map(|(_, w)| Some((w.branch.clone()?, w.path.clone())))
+                    .collect();
+                self.overlay = Overlay::TopMenu(Box::new(m));
             }
             MenuKind::Browse => {
                 let start = self.root.parent().map_or_else(|| self.root.clone(), Path::to_path_buf);
@@ -501,7 +535,11 @@ impl App {
                 }
                 Entry::UseDir(p) => {
                     self.tx.icon(cv, "ui/check", rr.x + 12, iy, 16, c.accent, rr);
-                    let label = format!("Open “{}” as a project", project_name(p));
+                    let label = if m.new_window {
+                        format!("Open “{}” in a new window", project_name(p))
+                    } else {
+                        format!("Open “{}” as a project", project_name(p))
+                    };
                     let label = fit(&mut self.tx, &label, rr.w - 60);
                     self.tx.draw_ui(cv, rr.x + 38, ly, &label, c.accent_text, rr, false);
                 }
@@ -514,8 +552,20 @@ impl App {
                     let name = fit(&mut self.tx, &project_name(p), rr.w - 60);
                     self.tx.draw_ui(cv, rr.x + 38, ly, &name, fg, rr, false);
                 }
+                Entry::Worktrees(n) => {
+                    self.tx.icon(cv, "ui/git_worktree", rr.x + 12, iy, 16, c.accent, rr);
+                    let label = if *n > 1 { format!("Worktrees… ({n})") } else { "Worktrees…".to_string() };
+                    self.tx.draw_ui(cv, rr.x + 38, ly, &label, c.accent_text, rr, false);
+                }
                 Entry::Branch(b) => {
-                    self.tx.icon(cv, if b.remote { "ui/public" } else { "ui/git_branch" }, rr.x + 12, iy, 16, dim, rr);
+                    // Checked out in another worktree: choosing it offers to open that worktree.
+                    let held = if b.remote { None } else { m.worktrees.iter().find(|(n, _)| *n == b.name) };
+                    let icon = match (b.remote, held.is_some()) {
+                        (true, _) => "ui/public",
+                        (false, true) => "ui/git_worktree",
+                        (false, false) => "ui/git_branch",
+                    };
+                    self.tx.icon(cv, icon, rr.x + 12, iy, 16, dim, rr);
                     let name = fit(&mut self.tx, &b.name, rr.w * 2 / 5);
                     let name_col = if b.current { c.accent_text } else { fg };
                     self.tx.draw_ui(cv, rr.x + 38, ly, &name, name_col, rr, b.current);
@@ -523,10 +573,13 @@ impl App {
                     let dx = rr.x + 38 + used + 12;
                     // Local branches other than the current one get a delete button on the
                     // highlighted row (it asks before deleting).
-                    let deletable = !b.remote && !b.current;
+                    let deletable = !b.remote && !b.current && held.is_none();
                     let end = rr.right() - if b.current || (deletable && k == m.sel) { 40 } else { 12 };
                     self.tx.draw_ui(cv, dx, ly, "|", dim.with_alpha(0x70), rr, false);
-                    let info = format!("{}, {}, {}", b.author, git::ago((m.now - b.when).max(0)), b.subject);
+                    let mut info = format!("{}, {}, {}", b.author, git::ago((m.now - b.when).max(0)), b.subject);
+                    if let Some((_, p)) = held {
+                        info = format!("worktree {} · {info}", tilde(p));
+                    }
                     let info = fit(&mut self.tx, &info, end - (dx + 16));
                     self.tx.draw_ui(cv, dx + 16, ly, &info, dim, rr, false);
                     if b.current {
@@ -618,8 +671,10 @@ impl App {
             Key::Named(NamedKey::Backspace) => {
                 if m.kind == MenuKind::Browse && m.field.text.is_empty() {
                     if let Some(parent) = m.dir.parent().map(Path::to_path_buf) {
-                        let anchor = m.anchor;
-                        self.overlay = Overlay::TopMenu(Box::new(browse_menu(anchor, parent)));
+                        let (anchor, nw) = (m.anchor, m.new_window);
+                        let mut up = browse_menu(anchor, parent);
+                        up.new_window = nw;
+                        self.overlay = Overlay::TopMenu(Box::new(up));
                     }
                     return;
                 }
@@ -650,12 +705,31 @@ impl App {
             self.overlay = Overlay::TopMenu(m);
             return;
         };
+        let new_window = m.new_window || self.mods.control_key();
         match entry {
+            Entry::Project(p, _) | Entry::UseDir(p) if new_window => self.open_folder_in_new_window(p),
             Entry::Project(p, _) | Entry::UseDir(p) => self.switch_project(p),
-            Entry::OpenProject => self.open_topmenu(MenuKind::Browse, m.anchor),
-            Entry::Up(p) | Entry::Dir(p) => self.overlay = Overlay::TopMenu(Box::new(browse_menu(m.anchor, p))),
-            Entry::Branch(b) => self.checkout_branch(b, &m.entries),
+            Entry::OpenProject => {
+                self.open_topmenu(MenuKind::Browse, m.anchor);
+                if let Overlay::TopMenu(b) = &mut self.overlay {
+                    b.new_window = m.new_window;
+                }
+            }
+            Entry::Up(p) | Entry::Dir(p) => {
+                let mut b = browse_menu(m.anchor, p);
+                b.new_window = m.new_window;
+                self.overlay = Overlay::TopMenu(Box::new(b));
+            }
+            Entry::Branch(b) => match m.worktrees.iter().find(|(n, _)| !b.remote && *n == b.name) {
+                // git refuses to check out a branch another worktree holds: offer that worktree.
+                Some((_, p)) => {
+                    let pick = crate::app_worktree::WtPick::Menu(p.clone());
+                    self.git_pick(crate::app_gitpanel::GitPick::Worktree(pick));
+                }
+                None => self.checkout_branch(b, &m.entries),
+            },
             Entry::NewBranch => self.git_new_branch(None, m.field.text.trim()),
+            Entry::Worktrees(_) => self.worktrees_open(),
         }
     }
 
@@ -671,6 +745,10 @@ impl App {
         if path == self.root {
             return self.say("that project is already open");
         }
+        // Open in another window: bring that one forward instead of opening it twice.
+        if self.win_focus_existing(&path) {
+            return self.say(format!("{} is open in another window", project_name(&path)));
+        }
         let names: Vec<String> = self.docs.iter().filter(|d| d.buf.is_dirty()).map(|d| d.name.clone()).collect();
         if !names.is_empty() || self.dbg.is_some() {
             return self.ask_unsaved(crate::app_unsaved::Pending::SwitchProject(path), names, self.dbg.is_some());
@@ -685,6 +763,8 @@ impl App {
         while !self.docs.is_empty() {
             self.close_tab(0, true);
         }
+        // Tabs of the old project are not "recently closed" in the new one.
+        self.closed_tabs.clear();
         self.lsps.clear();
         self.lsp_warned = false;
         self.diff = None;
@@ -700,13 +780,17 @@ impl App {
         self.eslint_busy.clear();
         self.git_status.clear();
         self.root = path;
-        self.tree = Tree::with_ignore(self.root.clone(), self.config.explorer_hide_gitignored);
+        self.win_root_changed();
+        // The new project's `.lumen/` settings replace the old project's.
+        self.projcfg_init();
+        self.tree = Tree::for_config(self.root.clone(), &self.config);
         self.active = 0;
         self.refresh_git_status();
         self.watcher = crate::watcher::Watcher::new(self.wake()).ok();
         self.watch_dirs();
         remember_project(&self.root);
         self.restore_session();
+        self.restore_backups();
         let name = project_name(&self.root);
         self.say(format!("project: {name}"));
         self.request_redraw();
@@ -776,12 +860,18 @@ pub enum StatusBtn {
     Position,
     Indent,
     Language,
+    /// The file's encoding: picker to reopen or save it in another one.
+    Encoding,
     /// An update is ready or available (left group, only then).
     Update,
     /// A build is running, or the last one failed (left group, only then).
     Build,
     /// The agent of the hidden AI panel finished or wants an answer (left group, only then).
     Ai,
+    /// Project settings (`.lumen/config.json`) are in effect (left group, only then).
+    Project,
+    /// Inline completions (left group, while the setting is on): on / off / signed out / loading.
+    Inline,
 }
 
 /// Is it drawn as an icon button (as opposed to a text read-out)?
@@ -848,6 +938,7 @@ impl App {
         let (v_search, v_problems, v_term, v_dbg, v_git, v_ram) =
             (vis("search"), vis("problems"), vis("terminal"), vis("debug"), vis("git"), vis("ram"));
         let (v_pos, v_indent, v_lang) = (vis("position"), vis("indent"), vis("language"));
+        let v_enc = vis("encoding");
 
         // Left group, in `config.status_left_order` (the sidebar toggle is always shown).
         let mut x = r.x + 6;
@@ -908,8 +999,8 @@ impl App {
             x += w + 14;
         }
         // A chord waits for its second stroke: say so (Esc gives up).
-        if let Some(prefix) = self.chord.clone() {
-            let label = crate::keymap::chord_label(&prefix);
+        // So does "Jump to…" while it waits for characters or a label.
+        if let Some(label) = self.chord.as_deref().map(crate::keymap::chord_label).or_else(|| self.jump_status()) {
             let lw = self.tx.ui_width(&label, true);
             let pill = Rect::new(x + 2, r.y + 4, lw + 18, r.h - 8);
             cv.fill_round(pill, (pill.h / 2).min(10), c.accent.with_alpha(0x38));
@@ -919,12 +1010,18 @@ impl App {
             self.tx.draw_ui(cv, pill.right() + 8, y, hint, dim, Rect::new(pill.right(), r.y, hw + 16, r.h), false);
             x = pill.right() + 8 + hw + 14;
         }
+        x = self.draw_macro_status(cv, x);
         if self.upd.indicator().is_some() {
             let tint = if self.upd.ready() { c.accent_text } else { dim };
             x = self.status_btn(cv, x, "ui/download", "", tint, self.upd.card.is_some(), StatusBtn::Update);
         }
         x = self.draw_build_status(cv, x);
         x = self.draw_ai_status(cv, x);
+        x = self.draw_fswatch_status(cv, x);
+        x = self.draw_projcfg_status(cv, x);
+        x = self.draw_img_status(cv, x);
+        x = self.draw_inline_status(cv, x);
+        x = self.draw_cov_status(cv, x);
 
         // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
         // (cursor position, indentation, language: clickable) and the memory figure, in any order.
@@ -932,17 +1029,25 @@ impl App {
         let git_label = if changed > 0 { changed.to_string() } else { String::new() };
         let short = self.config.ram_display == "short";
         let memtxt = if v_ram { self.memory_text() } else { String::new() };
-        let doc_texts: Option<(String, String, String)> = self.docs.get(self.active).map(|d| {
-            let (l, col) = d.buf.line_col(d.ed.head());
-            let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
-            let sel =
-                if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
-            (
-                format!("{sel}Ln {}, Col {}", l + 1, vc),
-                if d.ed.indent.contains('\t') { "Tab".to_string() } else { format!("Spaces: {}", d.ed.indent.len()) },
-                d.lang.unwrap_or("text").to_string(),
-            )
-        });
+        // An image tab has no caret, indentation, language or encoding to show (its read-out is on the left).
+        let doc_texts: Option<(String, String, String)> =
+            self.docs.get(self.active).filter(|d| !d.showing_image()).map(|d| {
+                let (l, col) = d.buf.line_col(d.ed.head());
+                let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
+                let sel =
+                    if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
+                (
+                    format!("{sel}Ln {}, Col {}", l + 1, vc),
+                    if d.ed.indent.contains('\t') {
+                        "Tab".to_string()
+                    } else {
+                        format!("Spaces: {}", d.ed.indent.len())
+                    },
+                    d.lang.unwrap_or("text").to_string(),
+                )
+            });
+        let enc_text: Option<String> =
+            self.docs.get(self.active).filter(|d| !d.showing_image()).map(|d| d.buf.encoding.short());
         let mut items: Vec<(StatusBtn, i32)> = Vec::new();
         for id in self.config.status_order.clone() {
             let item = match id.as_str() {
@@ -951,6 +1056,7 @@ impl App {
                 "language" if v_lang => {
                     doc_texts.as_ref().map(|t| (StatusBtn::Language, self.tx.ui_width(&t.2, false)))
                 }
+                "encoding" if v_enc => enc_text.as_ref().map(|t| (StatusBtn::Encoding, self.tx.ui_width(t, false))),
                 "terminal" if v_term => Some((StatusBtn::Terminal, self.status_btn_width(""))),
                 "debug" if v_dbg => Some((StatusBtn::Debug, self.status_btn_width(""))),
                 "git" if v_git => Some((StatusBtn::Git, self.status_btn_width(&git_label))),
@@ -1023,12 +1129,15 @@ impl App {
                         }
                         self.layout.status_info.push((Rect::new(ix - 4, r.y + 3, w + 8, r.h - 6), kind));
                     }
-                    StatusBtn::Position | StatusBtn::Indent | StatusBtn::Language => {
-                        let t = doc_texts.as_ref().map(|t| match kind {
-                            StatusBtn::Position => &t.0,
-                            StatusBtn::Indent => &t.1,
-                            _ => &t.2,
-                        });
+                    StatusBtn::Position | StatusBtn::Indent | StatusBtn::Language | StatusBtn::Encoding => {
+                        let t = match kind {
+                            StatusBtn::Encoding => enc_text.as_ref(),
+                            _ => doc_texts.as_ref().map(|t| match kind {
+                                StatusBtn::Position => &t.0,
+                                StatusBtn::Indent => &t.1,
+                                _ => &t.2,
+                            }),
+                        };
                         let b = Rect::new(ix - 4, r.y + 3, w + 8, r.h - 6);
                         if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
                             cv.fill_round(b, 6, c.list_hover_bg);
@@ -1043,7 +1152,9 @@ impl App {
                     | StatusBtn::Problems
                     | StatusBtn::Update
                     | StatusBtn::Build
-                    | StatusBtn::Ai => {}
+                    | StatusBtn::Ai
+                    | StatusBtn::Project
+                    | StatusBtn::Inline => {}
                 }
                 ix += w + kinds.get(k + 1).map_or(0, |&n| status_gap(kind, n));
             }
@@ -1115,9 +1226,12 @@ impl App {
             StatusBtn::Position => self.open_goto_line(),
             StatusBtn::Indent => self.open_indent_picker(),
             StatusBtn::Language => self.open_language_picker(),
+            StatusBtn::Encoding => self.open_encoding_menu(),
             StatusBtn::Update => self.update_indicator_click(),
             StatusBtn::Build => self.build_toggle_panel(),
-            StatusBtn::Ai => self.ai_show(),
+            StatusBtn::Ai => self.ai_badge_click(),
+            StatusBtn::Project => self.open_project_settings(),
+            StatusBtn::Inline => self.inline_status_click(),
             StatusBtn::Ram => {}
         }
         true
@@ -1350,9 +1464,17 @@ impl App {
     pub fn set_default_tab_width(&mut self, n: usize) {
         crate::editor::set_default_tab_w(n);
         for i in 0..self.docs.len() {
-            let own = self.docs[i].path().and_then(|p| self.picks.get(p)).is_some_and(|p| p.tab_w.is_some());
+            let own = self.docs[i].path().and_then(|p| self.picks.get(p)).is_some_and(|p| p.tab_w.is_some())
+                || self.docs[i].fileconf.tab_width.is_some();
             if !own {
-                self.docs[i].ed.tab_w = n;
+                // A `languages.<id>.tab_width` override keeps its own width.
+                let lang = self.docs[i].lang;
+                let w = if self.config.lang_override(lang, "tab_width").is_some() {
+                    self.config.tab_width_for(lang)
+                } else {
+                    n
+                };
+                self.docs[i].ed.tab_w = w;
             }
         }
         self.request_redraw();

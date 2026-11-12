@@ -65,6 +65,9 @@ pub struct GitBg {
     pub toast: Option<Toast>,
     /// Refreshes started so far (tests, diagnostics).
     pub polls: usize,
+    /// The project is a linked git worktree of this main worktree (see `worktree::linked_main`);
+    /// refreshed with the git status.
+    pub worktree_main: Option<PathBuf>,
 }
 
 impl Default for GitBg {
@@ -78,6 +81,7 @@ impl Default for GitBg {
             pending: None,
             toast: None,
             polls: 0,
+            worktree_main: None,
         }
     }
 }
@@ -230,6 +234,7 @@ impl App {
         self.sync_docs_with_head();
         self.refresh_tree();
         self.gitbg.next_poll = Instant::now();
+        self.worktree_job_done(&op, &res, None);
     }
 
     /// Spinner and "Enviando… 4s" in the bottom bar, at (`x`, bar), while a command runs without its

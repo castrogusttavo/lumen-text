@@ -68,6 +68,14 @@ const EDITOR_LANGS: &[&str] = &[
     "prisma",
 ];
 
+/// Built-in spell checkers (companions for prose in comments, strings, Markdown, plain text and
+/// commit messages). They are off unless the `spell_check` setting is on (see [`Registry::with_options`]).
+pub const SPELL_SERVERS: &[&str] = &["harper-ls", "typos-lsp"];
+
+pub fn is_spell_server(id: &str) -> bool {
+    SPELL_SERVERS.contains(&id)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     /// Serves the language: completion, hover, definition... come from it (first installed one wins).
@@ -120,8 +128,12 @@ impl ServerSpec {
         }
     }
 
-    /// Does this server handle a document of language `lang` / file extension `ext`?
+    /// Does this server handle a document of language `lang` / file extension `ext`? A language
+    /// `"*"` matches every document (GitHub Copilot's inline completions).
     pub fn applies(&self, lang: Option<&str>, ext: &str) -> bool {
+        if self.languages.iter().any(|l| l == "*") {
+            return true;
+        }
         let ext = ext.trim_start_matches('.').to_ascii_lowercase();
         let hit = |s: &String| {
             let s = s.trim_start_matches('.');
@@ -136,26 +148,78 @@ impl ServerSpec {
     }
 
     pub fn env_for(&self, root: &Path) -> Vec<(String, String)> {
-        self.env.iter().map(|(k, v)| (k.clone(), subst(v, root))).collect()
+        let mut env: Vec<(String, String)> = self.env.iter().map(|(k, v)| (k.clone(), subst(v, root))).collect();
+        // Python tools (ruff, pylsp plugins) find the project's packages through the venv.
+        if self.is_python()
+            && !env.iter().any(|(k, _)| k == "VIRTUAL_ENV")
+            && let Some(venv) = crate::pyenv::active(root).and_then(|i| i.venv)
+        {
+            env.push(("VIRTUAL_ENV".into(), venv.to_string_lossy().into_owned()));
+        }
+        env
     }
 
     pub fn init_options_for(&self, root: &Path) -> Value {
-        subst_value(&self.initialization_options, root)
+        let mut v = subst_value(&self.initialization_options, root);
+        if self.is_pyright()
+            && (v.is_null() || v.is_object())
+            && v.pointer("/python/pythonPath").is_none()
+            && let Some(py) = project_python(root)
+        {
+            if v.is_null() {
+                v = json!({});
+            }
+            v["python"]["pythonPath"] = json!(py.to_string_lossy());
+        }
+        v
+    }
+
+    /// Does it serve Python?
+    pub fn is_python(&self) -> bool {
+        self.languages.iter().any(|l| l == "python")
+    }
+
+    /// pyright or basedpyright (they read `python.pythonPath`, `python.venvPath` and `python.venv`).
+    fn is_pyright(&self) -> bool {
+        self.is_python() && self.command.contains("pyright")
+    }
+
+    /// The executable for a project: a Python server installed in the project's venv (ruff,
+    /// basedpyright pinned in the dev dependencies) wins over one on the `PATH`.
+    pub fn resolve_for(&self, root: &Path) -> Option<PathBuf> {
+        let bare = !self.command.contains('/') && !self.command.contains('\\');
+        if self.is_python()
+            && bare
+            && let Some(venv) = crate::pyenv::active(root).and_then(|i| i.venv)
+            && let Some(p) =
+                candidates(crate::pyenv::venv_bin(&venv).join(&self.command)).into_iter().find(|p| is_exec(p))
+        {
+            return Some(p);
+        }
+        resolve_command(&self.command, root)
     }
 
     pub fn settings_for(&self, root: &Path) -> Value {
         let mut v = subst_value(&self.settings, root);
         // Python servers do not look for the project's virtualenv themselves (VS Code's Python
         // extension tells them): without it every installed dependency is "could not be resolved".
-        if self.languages.iter().any(|l| l == "python")
-            && let Some(py) = project_python(root)
+        if self.is_python()
+            && let Some(interp) = crate::pyenv::active(root)
         {
-            let py = json!(py.to_string_lossy());
+            let py = json!(interp.python.to_string_lossy());
             if !v.is_object() {
                 v = json!({});
             }
             if v.pointer("/python/pythonPath").is_none() {
                 v["python"]["pythonPath"] = py.clone();
+                // pyright's `venvPath` + `venv` pair (the folder holding the venv, and its name).
+                if let Some(venv) = &interp.venv
+                    && let (Some(parent), Some(name)) = (venv.parent(), venv.file_name())
+                    && v.pointer("/python/venvPath").is_none()
+                {
+                    v["python"]["venvPath"] = json!(parent.to_string_lossy());
+                    v["python"]["venv"] = json!(name.to_string_lossy());
+                }
             }
             if self.id == "pylsp" && v.pointer("/pylsp/plugins/jedi/environment").is_none() {
                 v["pylsp"]["plugins"]["jedi"]["environment"] = py;
@@ -187,24 +251,10 @@ impl ServerSpec {
     }
 }
 
-/// The interpreter of the project's virtualenv: `.venv`, `venv` or `env` in `root`, else the
-/// activated `$VIRTUAL_ENV`.
+/// The interpreter the project's Python servers get: the one picked with "Python: Select
+/// interpreter…", else the project's virtualenv (see `pyenv`).
 pub fn project_python(root: &Path) -> Option<PathBuf> {
-    // Windows venvs keep the interpreter in `Scripts\python.exe`, POSIX ones in `bin/python`.
-    let exe = |venv: &Path| {
-        let (scripts, bin) = (venv.join("Scripts"), venv.join("bin"));
-        let mut c = vec![bin.join("python"), bin.join("python3"), scripts.join("python.exe")];
-        if cfg!(windows) {
-            c.rotate_right(1);
-        }
-        c.into_iter().find(|p| p.is_file())
-    };
-    [".venv", "venv", "env"]
-        .iter()
-        .map(|d| root.join(d))
-        .filter(|d| d.join("pyvenv.cfg").is_file())
-        .find_map(|d| exe(&d))
-        .or_else(|| std::env::var_os("VIRTUAL_ENV").and_then(|v| exe(Path::new(&v))))
+    crate::pyenv::active(root).map(|i| i.python)
 }
 
 /// Does `dir` hold `marker`? A marker is a relative path, or `*.ext` for "any file with that
@@ -230,7 +280,7 @@ pub fn language_id(lang: Option<&str>, path: Option<&Path>) -> String {
         Some("make") => "makefile".into(),
         Some("shellscript") => "shellscript".into(),
         Some(l) => l.to_string(),
-        None if ext.is_empty() => "plaintext".into(),
+        None if ext.is_empty() || ext == "txt" || ext == "text" => "plaintext".into(),
         None => ext,
     }
 }
@@ -365,6 +415,20 @@ impl Registry {
                 }
             }
             _ => r.errors.push("language_servers must be an object".to_string()),
+        }
+        r
+    }
+
+    /// [`with_user`](Self::with_user) plus the `spell_check` setting: it turns the built-in spell
+    /// checkers on (or keeps them off), unless the user's own entry for one says `enabled`.
+    pub fn with_options(user: &Value, spell_check: bool) -> Registry {
+        let mut r = Registry::with_user(user);
+        for s in r.servers.iter_mut().filter(|s| s.builtin && is_spell_server(&s.id)) {
+            if user.get(&s.id).and_then(|e| e.get("enabled")).is_some() {
+                continue;
+            }
+            s.enabled = spell_check;
+            s.disabled_by = (!spell_check).then(|| "spell checking is off (setting spell_check)".to_string());
         }
         r
     }
@@ -607,6 +671,19 @@ mod tests {
     }
 
     #[test]
+    fn copilot_is_an_off_by_default_companion_for_every_file() {
+        let r = Registry::builtin();
+        let c = r.get("copilot").expect("copilot in the table");
+        assert_eq!((c.role, c.enabled, c.args.clone()), (Role::Companion, false, vec!["--stdio".to_string()]));
+        assert!(c.applies(Some("rust"), "rs") && c.applies(None, "") && c.applies(None, "weird"));
+        assert!(c.init_options_for(Path::new("/p"))["editorInfo"]["name"].is_string());
+        assert!(!r.for_doc(Some("rust"), Path::new("/x/a.rs")).iter().any(|s| s.id == "copilot"));
+        let on = Registry::with_user(&json!({"copilot": {"enabled": true}}));
+        let ids: Vec<String> = on.for_doc(None, Path::new("/x/notes.txt")).iter().map(|s| s.id.clone()).collect();
+        assert_eq!(ids, vec!["copilot"]);
+    }
+
+    #[test]
     fn matching_is_by_language_or_extension() {
         let r = Registry::builtin();
         let ids = |lang, p: &str| r.for_doc(lang, Path::new(p)).iter().map(|s| s.id.clone()).collect::<Vec<_>>();
@@ -759,11 +836,66 @@ mod tests {
         assert_eq!(r.get("pyright").unwrap().settings_for(&base)["python"]["pythonPath"], json!(py));
         assert_eq!(r.get("pylsp").unwrap().settings_for(&base)["pylsp"]["plugins"]["jedi"]["environment"], json!(py));
         assert!(r.get("gopls").unwrap().settings_for(&base).pointer("/python").is_none());
+        // pyright's venvPath + venv pair, also in the initialization options.
+        let pr = r.get("pyright").unwrap();
+        let s = pr.settings_for(&base);
+        assert_eq!(s["python"]["venvPath"], json!(base.to_string_lossy()));
+        assert_eq!(s["python"]["venv"], json!(".venv"));
+        assert_eq!(pr.init_options_for(&base)["python"]["pythonPath"], json!(py));
+        assert!(r.get("ruff").unwrap().init_options_for(&base).pointer("/python").is_none(), "only pyright's");
+        // Every Python server runs with the venv activated; others do not.
+        let venv_s = venv.to_string_lossy().into_owned();
+        assert!(r.get("ruff").unwrap().env_for(&base).contains(&("VIRTUAL_ENV".to_string(), venv_s)));
+        assert!(!r.get("gopls").unwrap().env_for(&base).iter().any(|(k, _)| k == "VIRTUAL_ENV"));
+        // A server installed in the venv wins over the PATH.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ruff = venv.join("bin/ruff");
+            std::fs::write(&ruff, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&ruff, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(r.get("ruff").unwrap().resolve_for(&base), Some(ruff));
+        }
+        // The user's own setting is never overwritten.
+        let mut custom = pr.clone();
+        custom.settings = json!({"python": {"pythonPath": "/opt/py"}});
+        assert_eq!(custom.settings_for(&base)["python"], json!({"pythonPath": "/opt/py"}));
         std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
+    fn spell_checkers_follow_the_spell_check_setting() {
+        let ids = |r: &Registry, lang, p: &str| {
+            r.for_doc(lang, Path::new(p)).iter().map(|s| s.id.clone()).collect::<Vec<_>>()
+        };
+        let off = Registry::with_options(&Value::Null, false);
+        assert!(off.errors.is_empty());
+        for id in SPELL_SERVERS {
+            let s = off.get(id).unwrap();
+            assert_eq!(s.role, Role::Companion, "{id}");
+            assert!(!s.enabled && s.disabled_by.as_deref().is_some_and(|w| w.contains("spell_check")), "{id}");
+        }
+        assert_eq!(ids(&off, Some("rust"), "/x/a.rs"), vec!["rust-analyzer"]);
+        let on = Registry::with_options(&Value::Null, true);
+        assert_eq!(ids(&on, Some("rust"), "/x/a.rs"), vec!["rust-analyzer", "harper-ls", "typos-lsp"]);
+        assert_eq!(ids(&on, Some("markdown"), "/x/README.md"), vec!["marksman", "harper-ls", "typos-lsp"]);
+        assert_eq!(ids(&on, None, "/x/notes.txt"), vec!["harper-ls", "typos-lsp"]);
+        let msg = "/x/repo/COMMIT_EDITMSG";
+        let commit = crate::highlight::language_for(msg);
+        assert_eq!(commit, Some("git-commit"));
+        assert_eq!(ids(&on, commit, msg), vec!["harper-ls", "typos-lsp"]);
+        // The user's own `enabled` wins over the setting, both ways.
+        let user = json!({"typos-lsp": {"enabled": false}, "harper-ls": {"enabled": true}});
+        assert_eq!(ids(&Registry::with_options(&user, true), None, "/x/a.txt"), vec!["harper-ls"]);
+        assert_eq!(ids(&Registry::with_options(&user, false), None, "/x/a.txt"), vec!["harper-ls"]);
+        assert!(is_spell_server("harper-ls") && !is_spell_server("ruff"));
+    }
+
+    #[test]
     fn language_ids_use_the_lsp_spelling() {
+        assert_eq!(language_id(None, Some(Path::new("/p/notes.txt"))), "plaintext");
+        assert_eq!(language_id(None, Some(Path::new("/p/LICENSE"))), "plaintext");
+        assert_eq!(language_id(Some("git-commit"), Some(Path::new("/p/COMMIT_EDITMSG"))), "git-commit");
         assert_eq!(language_id(Some("docker"), Some(Path::new("/p/Dockerfile"))), "dockerfile");
         assert_eq!(language_id(Some("make"), Some(Path::new("/p/Makefile"))), "makefile");
         assert_eq!(language_id(Some("csharp"), Some(Path::new("/p/a.cs"))), "csharp");
@@ -816,7 +948,12 @@ mod tests {
         .filter_map(|f| crate::highlight::language_for(f))
         .collect();
         for s in &Registry::builtin().servers {
-            assert!(s.languages.iter().any(|l| assigned.contains(&l.as_str())), "{}: {:?}", s.id, s.languages);
+            assert!(
+                s.languages.iter().any(|l| l == "*" || assigned.contains(&l.as_str())),
+                "{}: {:?}",
+                s.id,
+                s.languages
+            );
         }
     }
 

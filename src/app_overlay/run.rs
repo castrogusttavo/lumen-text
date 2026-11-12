@@ -4,7 +4,10 @@ impl App {
     // ───────────── commands ─────────────
 
     pub fn run_cmd(&mut self, c: Cmd) {
-        if self.run_display_cmd(c) {
+        if self.run_display_cmd(c) || self.run_view_cmd(c) {
+            return;
+        }
+        if self.run_inline_cmd(c) {
             return;
         }
         match c {
@@ -13,6 +16,7 @@ impl App {
                 let a = self.active;
                 self.close_tab(a, false)
             }
+            Cmd::ReopenClosedTab => self.reopen_closed_tab(),
             Cmd::NextTab | Cmd::PrevTab => {
                 let len = self.docs.len();
                 if len > 0 {
@@ -59,6 +63,11 @@ impl App {
             Cmd::NextDiagnostic => self.next_diagnostic(true),
             Cmd::PrevDiagnostic => self.next_diagnostic(false),
             Cmd::ReloadFile => self.reload_active(),
+            Cmd::LocalHistory => self.open_local_history(),
+            Cmd::LocalHistoryDeleted => self.open_local_history_deleted(),
+            Cmd::ReopenWithEncoding => self.open_encoding_picker(false),
+            Cmd::SaveWithEncoding => self.open_encoding_picker(true),
+            Cmd::ToggleRenderWhitespace => self.toggle_render_whitespace(),
             Cmd::RestartLsp => self.restart_lsp(),
             Cmd::ShowLspLog => self.lspx_show_log(),
             Cmd::ToggleAutoImport => self.toggle_auto_import(),
@@ -77,6 +86,9 @@ impl App {
             Cmd::TestDebug => self.tests_debug_cursor(),
             Cmd::TestWatch => self.tests_toggle_watch(),
             Cmd::TestRunner => self.tests_pick_runner(),
+            Cmd::TestCoverage => self.tests_run_coverage(),
+            Cmd::TestCoverageFile => self.coverage_from_file(),
+            Cmd::TestCoverageHide => self.coverage_hide(),
             Cmd::BuildBuild => self.build_build(),
             Cmd::BuildRun => self.build_run(),
             Cmd::BuildStop => self.build_stop(),
@@ -91,10 +103,14 @@ impl App {
             Cmd::GitChanges => self.open_git_changes(),
             Cmd::GitPanel => self.toggle_git_panel(),
             Cmd::AiPanel => self.ai_toggle(),
-            Cmd::AiNewSession => self.ai_respawn(),
+            Cmd::AiNewSession => self.ai_new_session_menu(),
             Cmd::AiStop => self.ai_stop(),
             Cmd::AiChooseAgent => self.ai_choose_agent(),
             Cmd::AiSendSelection => self.ai_send_selection(),
+            Cmd::AiNextWaiting => self.ai_next_waiting(),
+            Cmd::AiRenameSession => self.ai_rename_prompt(),
+            Cmd::AiCloseSession => self.ai_close_current(),
+            Cmd::AiNewSessionInWorktree => self.worktree_pick_for_ai(),
             Cmd::GitStage => self.git_stage(true),
             Cmd::GitUnstage => self.git_stage(false),
             Cmd::GitStageAll => self.git_stage_all(),
@@ -104,6 +120,10 @@ impl App {
             Cmd::GitRevertHunk => self.git_revert_hunk(),
             Cmd::GitDiffFile => self.open_diff_head(),
             Cmd::GitFileHistory => self.open_file_history(),
+            Cmd::GitCompare => self.git_compare_pick(),
+            Cmd::GitCompareTwo => self.git_compare_two_pick(),
+            Cmd::GitCompareFile => self.git_compare_file_pick(),
+            Cmd::GitDiffWhitespace => self.toggle_diff_ws_setting(),
             Cmd::GitCreateBranch => self.git_new_branch(None, ""),
             Cmd::GitDeleteBranch => self.git_delete_branch_pick(),
             Cmd::GitCreateTag => self.git_new_tag(None),
@@ -114,7 +134,25 @@ impl App {
             Cmd::GitCherryPickContinue => self.git_cherry_continue(),
             Cmd::GitCherryPickAbort => self.git_cherry_abort(),
             Cmd::GitUndoCommit => self.git_undo_commit(),
-            Cmd::MarkdownPreview => self.toggle_md_reader(),
+            Cmd::GitWorktrees => self.worktrees_open(),
+            Cmd::GitWorktreeNew => self.worktree_new(),
+            Cmd::GitWorktreeRemove => self.worktree_remove_pick(),
+            Cmd::GitWorktreePrune => self.worktree_prune(),
+            Cmd::GitStash => self.git_stash_cmd(false),
+            Cmd::GitStashUntracked => self.git_stash_cmd(true),
+            Cmd::GitStashPop => self.git_stash_pop_latest(),
+            Cmd::GitStashList => self.git_stash_list(),
+            Cmd::MarkdownPreview => {
+                // On an SVG, Ctrl+Shift+V flips between the picture and its source instead.
+                if !self.img_toggle_source() {
+                    self.toggle_md_reader()
+                }
+            }
+            Cmd::ImageSource => {
+                if !self.img_toggle_source() {
+                    self.say("Preview / source is for SVG files")
+                }
+            }
             Cmd::SplitRight => self.split_right(),
             Cmd::SplitDown => self.split_down(),
             Cmd::CloseSplit => self.split_close(),
@@ -130,8 +168,17 @@ impl App {
             Cmd::ConflictOurs => self.resolve_conflict(crate::gitx::Pick::Ours),
             Cmd::ConflictTheirs => self.resolve_conflict(crate::gitx::Pick::Theirs),
             Cmd::ConflictBoth => self.resolve_conflict(crate::gitx::Pick::Both),
+            Cmd::MergeEditor => self.merge_open_active(),
+            Cmd::MergeNext => self.merge_step(true),
+            Cmd::MergePrev => self.merge_step(false),
+            Cmd::MergeResolve => self.merge_mark_resolved(),
+            Cmd::MergeClose => self.merge_close(),
             Cmd::WorkspaceSymbols => self.open_workspace_symbols(),
             Cmd::Problems => self.open_problems(),
+            // On an image tab the zoom commands zoom the picture, not the font.
+            Cmd::ZoomIn if self.img_zoom_cmd(1) => {}
+            Cmd::ZoomOut if self.img_zoom_cmd(-1) => {}
+            Cmd::ZoomReset if self.img_zoom_cmd(0) => {}
             Cmd::ZoomIn => self.zoom(1.0),
             Cmd::ZoomOut => self.zoom(-1.0),
             Cmd::ZoomReset => self.zoom(0.0),
@@ -139,7 +186,12 @@ impl App {
             Cmd::NavBack => self.navigate(true),
             Cmd::NavForward => self.navigate(false),
             Cmd::OpenTerminal => self.toggle_terminal_focus(),
-            Cmd::CloseTerminal => self.close_terminal(),
+            Cmd::CloseTerminal => self.close_terminal_request(),
+            Cmd::NewTerminal => self.new_terminal(),
+            Cmd::SplitTerminal => self.split_terminal(),
+            Cmd::RenameTerminal => self.prompt_rename_terminal(self.terms.active),
+            Cmd::NextTerminal => self.cycle_terminal(1),
+            Cmd::PrevTerminal => self.cycle_terminal(-1),
             Cmd::DebugStart
             | Cmd::DebugStop
             | Cmd::ToggleBreakpoint
@@ -212,6 +264,7 @@ impl App {
                 self.say(if on { "inlay hints: on" } else { "inlay hints: off" });
             }
             Cmd::ToggleGitBlame => self.toggle_git_blame(),
+            Cmd::CycleInlineDiagnostics => self.cycle_inline_diagnostics(),
             // Handled by `run_display_cmd` before this match.
             Cmd::ToggleBookmark
             | Cmd::NextBookmark
@@ -221,8 +274,18 @@ impl App {
             | Cmd::ToggleBreakpointMarks
             | Cmd::CycleScrollbar
             | Cmd::ToggleLsp
+            | Cmd::ToggleSpellCheck
             | Cmd::ChooseBufferFont
             | Cmd::ChooseUiFont => {}
+            // Handled by `run_view_cmd` (app_view.rs) before this match.
+            Cmd::ToggleZen
+            | Cmd::ToggleTabBar
+            | Cmd::ToggleStatusBar
+            | Cmd::ExplorerSortName
+            | Cmd::ExplorerSortType
+            | Cmd::ExplorerSortModified
+            | Cmd::ExplorerSortMixed
+            | Cmd::ToggleFoldersFirst => {}
             Cmd::ToggleOutline => {
                 self.sidebar_open = true;
                 self.sidebar_mode = if self.sidebar_mode == crate::app::SidebarMode::Files {
@@ -253,7 +316,44 @@ impl App {
             Cmd::CheckUpdate => self.update_check_manual(),
             Cmd::RestartUpdate => self.update_restart_cmd(),
             Cmd::About => self.update_show_about(),
+            Cmd::ColumnSelectUp => self.column_select(-1, 0),
+            Cmd::ColumnSelectDown => self.column_select(1, 0),
+            Cmd::ColumnSelectLeft => self.column_select(0, -1),
+            Cmd::ColumnSelectRight => self.column_select(0, 1),
+            Cmd::JumpTo => self.jump_start(),
+            Cmd::RefreshExplorer => self.refresh_explorer(),
+            Cmd::ProjectReplace => self.open_project_replace(),
+            Cmd::MacroRecord => self.macro_toggle_record(),
+            Cmd::MacroReplay => self.macro_replay(1),
+            Cmd::MacroReplayTimes => self.macro_ask_times(),
+            Cmd::MacroSave => self.macro_ask_name(),
+            Cmd::MacroRunSaved => self.macro_pick_saved(),
+            Cmd::OpenProjectSettings => self.open_project_settings(),
+            Cmd::ProjectTrust => self.projcfg_trust_prompt(true),
+            Cmd::PythonSelectInterpreter => self.open_interpreter_picker(),
+            Cmd::ProblemsProject => {
+                self.set_problems_scope(true);
+                self.open_problems();
+            }
+            // Handled by `run_inline_cmd` before this match.
+            Cmd::InlineSuggest
+            | Cmd::InlineNext
+            | Cmd::InlinePrev
+            | Cmd::ToggleInlineCompletion
+            | Cmd::CopilotSignIn
+            | Cmd::CopilotSignOut => {}
             Cmd::Quit => {
+                if self.quit_all() {
+                    std::process::exit(0);
+                }
+            }
+            Cmd::NewWindow => self.new_window(),
+            Cmd::OpenFolderNewWindow => self.open_topmenu_cmd_new_window(),
+            Cmd::MoveTabToNewWindow => {
+                let a = self.active;
+                self.move_tab_to_new_window(a, None)
+            }
+            Cmd::CloseWindow => {
                 if self.try_quit() {
                     std::process::exit(0);
                 }
@@ -266,7 +366,7 @@ impl App {
     /// extra cursors collapse and the edit is synced/notified like any other keystroke.
     pub fn run_key_cmd(&mut self, c: Cmd) -> bool {
         match c {
-            Cmd::Quit => return self.try_quit(),
+            Cmd::Quit => return self.quit_all(),
             Cmd::Undo | Cmd::Redo | Cmd::ToggleComment => {
                 if let Some(d) = self.docs.get_mut(self.active) {
                     d.ed.clear_extra();
@@ -282,6 +382,12 @@ impl App {
 
     /// Run the command a keybinding names (`"none"` does nothing; an unknown id says so).
     pub fn run_bound(&mut self, id: &str) -> bool {
+        // `"ctrl+alt+1": "macro:wrap"` runs the macro saved as "wrap" in macros.json.
+        if let Some(name) = id.strip_prefix(crate::macros::BIND_PREFIX) {
+            self.macro_run_saved(name);
+            self.request_redraw();
+            return false;
+        }
         match Cmd::from_id(id) {
             Some(c) => self.run_key_cmd(c),
             None => {

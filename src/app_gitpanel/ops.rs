@@ -40,7 +40,9 @@ impl App {
     pub fn right_slot_rect(&self) -> Rect {
         let w = self.gp_width();
         let (ww, hh) = (self.size.0 as i32, self.size.1 as i32);
-        Rect::new(ww - w, crate::app::TOP_H, w, (hh - crate::app::TOP_H - crate::app::STATUS_H).max(0))
+        // Between the top and bottom bars, whichever of them are shown (zen mode, View toggles).
+        let (top, bottom) = (self.layout.topbar.h, self.layout.status.h);
+        Rect::new(ww - w, top, w, (hh - top - bottom).max(0))
     }
 
     /// Panel rectangle (as if open): the slot under its switch.
@@ -73,6 +75,7 @@ impl App {
         self.ai_hide();
         self.refresh_git_status();
         let mut gp = Box::new(GitPanel::new(&self.root));
+        gp.wake = Some(self.wake());
         // A command that kept running while the panel was closed is shown again.
         gp.job = self.gitbg.detached.take();
         self.gitpanel = Some(gp);
@@ -107,6 +110,8 @@ impl App {
         self.root.hash(&mut h);
         let gitdir = gp.top.clone().unwrap_or_else(|| self.root.clone()).join(".git");
         mtime(&gitdir.join("index")).hash(&mut h);
+        // Stashes pushed or dropped elsewhere (a terminal) show up too.
+        mtime(&gitdir.join("logs").join("refs").join("stash")).hash(&mut h);
         let sig = h.finish();
         let hist =
             mtime(&gitdir.join("logs").join("HEAD")) as u64 ^ (mtime(&gitdir.join("HEAD")) as u64).rotate_left(7);
@@ -160,6 +165,7 @@ impl App {
             Ok(()) => {
                 let abs = top.join(&c.path);
                 if let Some(k) = self.docs.iter().position(|d| d.path() == Some(abs.as_path())) {
+                    self.hist_snapshot(k, crate::localhist::Source::Reload);
                     let _ = self.docs[k].reload_from_disk();
                     self.docs[k].git_stale = true;
                 }
@@ -321,6 +327,7 @@ impl App {
     }
 
     pub(super) fn gp_job_done(&mut self, gp: &mut GitPanel, op: Op, res: Result<String, Fail>) {
+        let res_copy = res.clone();
         match res {
             Ok(msg) => self.gp_note(gp, msg, true),
             Err(f) if f.kind == FailKind::NoUpstream && op == Op::Push => return self.gp_ask_publish(gp),
@@ -347,6 +354,7 @@ impl App {
             }
             Err(f) => self.gp_note(gp, format!("{}: {}", op.label(), f.text), false),
         }
+        self.worktree_job_done(&op, &res_copy, Some(&mut *gp));
         // A pull moves HEAD and files; everything the panel shows may have changed.
         self.sync_docs_with_head();
         self.refresh_tree();
@@ -357,6 +365,10 @@ impl App {
     /// Per-event hook (`App::tick`): collect the finished command and keep the elapsed counter alive.
     pub fn gitpanel_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
         let Some(mut gp) = self.gitpanel.take() else { return };
+        // A page of history arrived from the worker (it woke the event loop).
+        if gp.poll_history() && gp.tab == Tab::History {
+            self.request_redraw();
+        }
         if let Some(job) = gp.job.as_mut() {
             let before = job.progress.len();
             match job.poll() {
@@ -436,13 +448,14 @@ impl App {
         let (Some(top), Some(ci)) = (gp.top.clone(), gp.open_commit) else { return };
         let (Some(f), Some(c)) = (gp.files.get(j).cloned(), gp.commits.get(ci).cloned()) else { return };
         let (old, new) = commit_pair(&top, &c.hash, &f);
-        let rows = gitx::side_by_side(&old, &new);
         let name = split_name(&f.path).0.to_string();
-        self.diff = Some(DiffView::plain(
+        self.diff = Some(DiffView::of_texts(
             format!("{name} — {}  {}", c.short, c.subject),
             format!("{}^", c.short),
             c.short.clone(),
-            rows,
+            old,
+            new,
+            self.config.diff_ignore_whitespace,
         ));
         gp.open_file = Some(j);
     }
@@ -460,7 +473,7 @@ impl App {
         gp.open_file = None;
         // Another commit may have been collapsed above this one: re-find it and bring the commit
         // together with its files into view.
-        if let Some(k) = gp.rows().iter().position(|r| *r == Row::Commit(i)) {
+        if let Some(k) = gp.index_of(Row::Commit(i)) {
             gp.cursor = k;
             let view = self.gitpanel_rect().h - gp.chrome_h();
             gp.reveal_span(k, k + gp.files.len(), view);
@@ -478,7 +491,9 @@ impl App {
             Row::File(i) => self.gp_open_diff_change(gp, i),
             Row::Commit(i) => self.gp_toggle_commit(gp, i),
             Row::CFile(j) => self.gp_open_diff_commit(gp, j),
-            Row::Header(_) => {}
+            Row::Stash(i) => self.gp_toggle_stash(gp, i),
+            Row::SFile(j) => self.gp_open_diff_stash(gp, j),
+            Row::Header(_) | Row::StashHead | Row::NoChanges => {}
         }
     }
 }

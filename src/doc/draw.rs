@@ -3,8 +3,9 @@ use super::*;
 impl Doc {
     // ── drawing ──
 
-    /// Draws into `rect`. Returns true while more frames are needed (animation, tokenizing).
-    pub fn draw(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, o: &DrawOpts) -> bool {
+    /// Draws the text into `rect` (`Doc::draw` in `imgview` picks this or the picture of an image
+    /// tab). Returns true while more frames are needed (animation, tokenizing).
+    pub fn draw_text(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, o: &DrawOpts) -> bool {
         // The minimap takes a strip at the right; everything else lays out in what remains.
         let full = rect;
         let mm_w = if self.minimap && rect.w > 560 { crate::minimap::style().width() } else { 0 };
@@ -130,7 +131,27 @@ impl Doc {
             }
         }
 
+        // Rows of lines with right-to-left text: their chars in visual order (see `bidi`). Every
+        // other row keeps the plain left-to-right grid (`has_rtl` is a byte scan).
+        let para = crate::bidi::para();
+        let bidi: Vec<Option<crate::bidi::Row>> =
+            rows.iter().map(|row| crate::bidi::row(&lines[row.lk], row.c0, row.c1, tab_w, para)).collect();
+
         crate::perf::lap!("doc.rows");
+        // Inline completion: the lines after the first of a multi-line suggestion are virtual rows
+        // right below the last row of the cursor line; the rows after them move down that much.
+        let ghost_n = self.ghost.as_ref().map_or(0, |g| g.rest.len());
+        let ghost_after: Option<usize> = if ghost_n == 0 {
+            None
+        } else {
+            self.ghost.as_ref().and_then(|g| vlines.binary_search(&g.line).ok()).map(|lk| row_range[lk].1.max(1) - 1)
+        };
+        let ghost_rest: Vec<String> = match (ghost_after, &self.ghost) {
+            (Some(_), Some(g)) => g.rest.clone(),
+            _ => Vec::new(),
+        };
+        self.ghost_rows = ghost_after.map(|r| (first_row + r, ghost_n));
+        let vshift = |r: usize| if ghost_after.is_some_and(|g| r > g) { ghost_n } else { 0 };
         // Caret glide, in document pixel space (rows, so wrapped lines and folds are accounted for).
         let (crow, cvcol) = self.caret_geom(self.ed.head());
         let target_c = (cvcol as f64 * cell_w as f64, crow as f64 * lh_f as f64);
@@ -168,11 +189,15 @@ impl Doc {
         } else {
             Vec::new()
         };
-        let ry = |r: usize| rect.y + (r as f32 * lh_f) as i32 + y_off;
+        let ry = |r: usize| rect.y + ((r + vshift(r)) as f32 * lh_f) as i32 + y_off;
         let vx = |vc: usize| body.x + (vc as f32 * cell_w).round() as i32 - left.round() as i32;
         let rt = |r: usize| row_text(&rows, &lines, r);
-        // Visual column of char `col` of row `r` (text + the hint cells before it).
+        // Visual column of char `col` of row `r` (text + the hint cells before it). Bidirectional
+        // rows: the char's own cell (they show no inlay hints).
         let vc = |r: usize, col: usize, include_at: bool| -> usize {
+            if let Some(b) = &bidi[r] {
+                return b.cell(col);
+            }
             crate::inlay::vcol_in(hints_for(inl, &row_hs, wrap_cols, r, rows[r].line), rt(r), col, tab_w, include_at)
         };
         // y of the first row of `line` when that line is on screen (a line scrolled partly off the top
@@ -278,6 +303,16 @@ impl Doc {
                     let ca = s - rs;
                     let cb = (e - rs).min(row.c1 - row.c0);
                     let extra = usize::from(row.last && b > le);
+                    if let Some(bd) = &bidi[r] {
+                        // Right-to-left runs: the range may cover several separate pieces.
+                        for (va, vb) in bd.spans(ca, cb) {
+                            f(Rect::new(vx(va), ry(r), vx(vb) - vx(va), lh));
+                        }
+                        if extra > 0 {
+                            f(Rect::new(vx(bd.width), ry(r), vx(bd.width + 1) - vx(bd.width), lh));
+                        }
+                        continue;
+                    }
                     let va = vc(r, ca, true);
                     let vb = vc(r, cb, false) + extra;
                     f(Rect::new(vx(va), ry(r), vx(vb) - vx(va), lh));
@@ -290,6 +325,29 @@ impl Doc {
         for (i, &(a, b)) in o.find.iter().enumerate() {
             let color = if Some(i) == o.find_cur { c.find_match_current } else { c.find_match };
             paint_range(cv, a, b, color);
+        }
+        // Document highlights: the occurrences of the symbol under the caret (read / write from the
+        // language server, or the same word when no server offers them). Only what is on screen.
+        let (doc_hl, hl_word) = self.assist.live_hl(self.buf.version());
+        if o.find.is_empty() && sel.is_empty() && self.ed.extra.is_empty() && !geo.is_empty() {
+            let (vis_a, vis_b) = (geo[0].0, geo[geo.len() - 1].0 + geo[geo.len() - 1].1);
+            for h in doc_hl.iter().filter(|h| h.b >= vis_a && h.a <= vis_b) {
+                paint_range(cv, h.a, h.b, if h.write { c.word_hl_strong } else { c.word_hl });
+            }
+            if let Some(w) = hl_word {
+                let q = crate::editor::Occurrence { needle: w.to_string(), whole_word: true };
+                let mut hits: Vec<(usize, usize)> = Vec::new();
+                for (lk, text) in lines.iter().enumerate() {
+                    let n0 = hits.len();
+                    crate::editor::line_occurrences(text, &q, OCCURRENCE_CAP, &mut hits);
+                    for h in &mut hits[n0..] {
+                        *h = (geo[lk].0 + h.0, geo[lk].0 + h.1);
+                    }
+                }
+                for (a, b) in hits {
+                    paint_range(cv, a, b, c.word_hl);
+                }
+            }
         }
         // Other occurrences of the selected text (Sublime/Zed): a soft tint of the selection color with a
         // faint outline. Only the visible lines are scanned, so it costs the same in any file; it steps
@@ -357,6 +415,75 @@ impl Doc {
             }
         }
 
+        // Whitespace (`render_whitespace`): a faint dot per space, an arrow per tab. Only marks in
+        // the visible columns are placed, so a long line costs no more than a short one.
+        let ws_mode = crate::display::whitespace();
+        if ws_mode != crate::whitespace::Render::Off {
+            let ink = theme.whitespace;
+            let wv0 = (left / cell_w as f64).floor().max(0.0) as usize;
+            let wv1 = wv0 + (body.w as f32 / cell_w).ceil() as usize + 2;
+            let cw = cell_w.round() as i32;
+            let dot = ((cell_w / 7.0).round() as i32).clamp(2, 4);
+            let mut marks: Vec<(usize, bool)> = Vec::new();
+            let mut marks_lk = usize::MAX;
+            let mut placed: Vec<(usize, usize, bool)> = Vec::new(); // (visual column, cells, is tab)
+            for (r, row) in rows.iter().enumerate() {
+                if marks_lk != row.lk {
+                    crate::whitespace::marks(&lines[row.lk], ws_mode, &mut marks);
+                    marks_lk = row.lk;
+                }
+                let m0 = marks.partition_point(|m| m.0 < row.c0);
+                if marks.get(m0).is_none_or(|m| m.0 >= row.c1) {
+                    continue;
+                }
+                placed.clear();
+                if bidi[r].is_none() && hints_for(inl, &row_hs, wrap_cols, r, row.line).is_empty() {
+                    // One pass over the row: tabs run to the next tab stop, everything else is one cell.
+                    let (mut v, mut mi) = (0usize, m0);
+                    for (k, ch) in rt(r).chars().enumerate() {
+                        if v > wv1 || marks.get(mi).is_none_or(|m| m.0 >= row.c1) {
+                            break;
+                        }
+                        let w = if ch == '\t' { tab_w - v % tab_w } else { 1 };
+                        if marks[mi].0 == row.c0 + k {
+                            placed.push((v, w, marks[mi].1));
+                            mi += 1;
+                        }
+                        v += w;
+                    }
+                } else {
+                    for &(col, tab) in marks[m0..].iter().take_while(|m| m.0 < row.c1 && m.0 - row.c0 <= wv1) {
+                        let v = vc(r, col - row.c0, true);
+                        let w = if tab { vc(r, col - row.c0 + 1, false).saturating_sub(v).max(1) } else { 1 };
+                        placed.push((v, w, tab));
+                    }
+                }
+                let y = ry(r);
+                for &(v, w, tab) in &placed {
+                    if v + w < wv0 || v > wv1 {
+                        continue;
+                    }
+                    let x = vx(v);
+                    if tab {
+                        let pad = (cell_w * 0.25).round() as i32;
+                        let (x0, x1) = (x + pad, vx(v + w) - pad);
+                        let ym = y + lh / 2;
+                        cv.fill_clip(Rect::new(x0, ym, (x1 - x0).max(1), 1), ink, body);
+                        for k in 1..=2 {
+                            cv.fill_clip(Rect::new(x1 - k, ym - k, 1, 2 * k + 1), ink, body);
+                        }
+                    } else {
+                        cv.fill_clip(Rect::new(x + (cw - dot) / 2, y + (lh - dot) / 2, dot, dot), ink, body);
+                    }
+                }
+            }
+        }
+
+        // Rulers: thin vertical lines at fixed columns (the cell grid, scrolled with the text).
+        for x in crate::assist::ruler_xs(&self.assist.rulers, body.x, body.right(), cell_w, left) {
+            cv.fill_clip(Rect::new(x, rect.y, 1, rect.h), c.ruler, body);
+        }
+
         // Matching bracket.
         if sel.is_empty()
             && let Some((a, b)) = crate::editor::match_bracket(&self.buf, self.ed.head())
@@ -380,7 +507,9 @@ impl Doc {
         let mut labels: Vec<(i32, i32, &str)> = Vec::new();
         for (r, row) in rows.iter().enumerate() {
             let hs = hints_for(inl, &row_hs, wrap_cols, r, row.line);
-            if hs.is_empty() {
+            if bidi[r].is_some() {
+                // Drawn on its own below; the blank line keeps the rows (and any ghost rows) aligned.
+            } else if hs.is_empty() {
                 window_pieces(
                     &lines[row.lk],
                     line_spans.get(row.lk).and_then(|s| s.as_ref()),
@@ -410,11 +539,31 @@ impl Doc {
                 );
             }
             pieces.push(("\n".to_string(), fg, 0));
+            if Some(r) == ghost_after {
+                let gc = fg.with_alpha(crate::inlay::GHOST_ALPHA);
+                for gl in &ghost_rest {
+                    let s: String = gl.chars().skip(vc0).take(vc1.saturating_sub(vc0)).collect();
+                    if !s.is_empty() {
+                        pieces.push((s, gc, crate::ui::ITALIC));
+                    }
+                    pieces.push(("\n".to_string(), fg, 0));
+                }
+            }
         }
         let body_x = body.x + (vc0 as f32 * cell_w).round() as i32 - left.round() as i32;
         tx.draw_styled(cv, body_x, rect.y + y_off, &pieces, body);
         for (x, y, label) in labels.drain(..) {
             tx.draw_hint(cv, x, y, label, hint_fg, body);
+        }
+        // Bidirectional rows: shaped in logical order, each glyph placed on its visual cell.
+        for (r, row) in rows.iter().enumerate() {
+            let Some(b) = &bidi[r] else { continue };
+            let Some((lo, hi)) = b.window(vc0, vc1, 16) else { continue };
+            let (x0, x1) = crate::bidi::byte_range(rt(r), lo, hi);
+            let mut bp: Vec<(String, Rgba, u8)> = Vec::new();
+            let sp = line_spans.get(row.lk).and_then(|s| s.as_ref());
+            plain_pieces(&lines[row.lk], sp, row.b0 + x0, row.b0 + x1, fg, &mut bp);
+            tx.draw_cells(cv, vx(0), ry(r), &bp, &b.cells[lo..hi], b.para_rtl, body);
         }
 
         crate::perf::lap!("doc.text");
@@ -500,6 +649,7 @@ impl Doc {
         }
 
         // Inline git blame for the cursor line, after the code.
+        let mut blame_end: Option<(usize, i32)> = None;
         if let Some((bl, text)) = &self.blame
             && sel.is_empty()
             && *bl == cur_line
@@ -508,6 +658,52 @@ impl Doc {
             let x = vx(vend) + (cell_w * 4.0) as i32;
             if x < body.right() {
                 tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, text, theme.line_number, body, false);
+                blame_end = Some((*bl, x + tx.ui_width(text, false)));
+            }
+        }
+
+        // Inline diagnostics (Error Lens style): the most severe message of a line after its code and
+        // after whatever is already drawn there (hints, fold marker, lenses, blame), faded and cut to
+        // the room left on the line's last row; with too little room (a long or wrapped line) none.
+        if self.assist.inline != crate::assist::InlineDiags::Off && !self.diags.is_empty() {
+            let only = (self.assist.inline == crate::assist::InlineDiags::CurrentLine).then_some(cur_line);
+            for (line, di) in crate::assist::worst_per_line(&self.diags, first, last, only) {
+                // Ghost text owns the end of its line: no diagnostic message under or over it.
+                if self.ghost.as_ref().is_some_and(|g| g.line == line) {
+                    continue;
+                }
+                let Some((r, vend)) = at_end(line) else { continue };
+                let mut end = vx(vend);
+                for (pill, l) in &self.fold_pills {
+                    if *l == line {
+                        end = end.max(pill.right());
+                    }
+                }
+                for (hit, idx) in &self.lens_hits {
+                    if self.lenses.get(*idx).is_some_and(|lz| lz.line == line) {
+                        end = end.max(hit.right());
+                    }
+                }
+                if let Some((bl, be)) = blame_end
+                    && bl == line
+                {
+                    end = end.max(be);
+                }
+                let gap = (cell_w * 3.0).round() as i32;
+                let Some((x, room)) = crate::assist::inline_slot(end, body.right() - 6, gap, (cell_w * 6.0) as i32)
+                else {
+                    continue;
+                };
+                let d = &self.diags[di];
+                let Some(msg) = crate::assist::fit_message(&d.message, room, &mut |s| tx.ui_width(s, false)) else {
+                    continue;
+                };
+                let color = match d.severity {
+                    1 => c.error,
+                    2 => c.warning,
+                    _ => c.info,
+                };
+                tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, &msg, color.with_alpha(0xc0), body, false);
             }
         }
 
@@ -532,19 +728,32 @@ impl Doc {
                 let (r0, r1) = row_range[k];
                 for (r, row) in rows.iter().enumerate().take(r1).skip(r0) {
                     let (lo, hi) = (a0.max(row.c0), b0.min(row.c1));
-                    let (va, vb) = if lo < hi {
-                        let va = vc(r, lo - row.c0, true);
-                        (va, vc(r, hi - row.c0, false).max(va + 1))
+                    let segs: Vec<(usize, usize)> = if lo < hi {
+                        match &bidi[r] {
+                            Some(bd) => bd.spans(lo - row.c0, hi - row.c0),
+                            None => {
+                                let va = vc(r, lo - row.c0, true);
+                                vec![(va, vc(r, hi - row.c0, false).max(va + 1))]
+                            }
+                        }
                     } else if a0 == b0 && a0 >= row.c0 && (a0 < row.c1 || row.last) {
                         let va = vc(r, a0 - row.c0, true);
-                        (va, va + 1)
+                        vec![(va, va + 1)]
                     } else {
                         continue;
                     };
-                    let (xa, xb) = (vx(va), vx(vb));
                     let base = ry(r) + lh - 3;
-                    for x in xa.max(body.x)..xb.min(body.right()) {
-                        cv.dot(x, base + ((x / 2) % 2), color);
+                    for (va, vb) in segs {
+                        let (xa, xb) = (vx(va), vx(vb));
+                        for x in xa.max(body.x)..xb.min(body.right()) {
+                            if d.severity <= 2 {
+                                // Errors and warnings: wavy.
+                                cv.dot(x, base + ((x / 2) % 2), color);
+                            } else if info_dot(x - xa) {
+                                // Info (spelling, style): flat dotted, so it never reads as an error.
+                                cv.dot(x, base + 1, color);
+                            }
+                        }
                     }
                 }
             }
@@ -555,9 +764,12 @@ impl Doc {
         cv.fill(Rect::new(rect.x, rect.y, gutter_w, rect.h), theme.background);
         let mut gutter: Vec<(String, Rgba)> = Vec::with_capacity(rows.len());
         let digits = self.gutter_digits();
-        for row in rows.iter() {
+        for (r, row) in rows.iter().enumerate() {
             let color = if row.line == cur_line { theme.line_number_active } else { theme.line_number };
             gutter.push((if row.sub == 0 { format!("{:>digits$}\n", row.line + 1) } else { "\n".to_string() }, color));
+            if Some(r) == ghost_after {
+                gutter.extend((0..ghost_n).map(|_| ("\n".to_string(), color)));
+            }
         }
         if crate::display::show_line_numbers() {
             tx.draw(
@@ -609,6 +821,18 @@ impl Doc {
                     None => ("ui/circle", theme.line_number),
                 };
                 tx.icon(cv, icon, rect.x + 12, y + (lh - 12) / 2, 12, color, gclip);
+            }
+        }
+        // Coverage: a thin bar at the inner edge of the gutter, on every row of a marked line.
+        if !self.cov.is_empty() {
+            for (r, row) in rows.iter().enumerate() {
+                let Ok(i) = self.cov.binary_search_by_key(&row.line, |m| m.line) else { continue };
+                let color = match self.cov[i].cov {
+                    crate::coverage::Cov::Covered => c.git_added,
+                    crate::coverage::Cov::Partial => c.warning,
+                    crate::coverage::Cov::Uncovered => c.error,
+                };
+                cv.fill_clip(Rect::new(rect.x + gutter_w - 3, ry(r), 2, lh), color.with_alpha(0xd0), gclip);
             }
         }
         let mut worst: std::collections::HashMap<usize, u8> = std::collections::HashMap::new();
@@ -682,6 +906,14 @@ impl Doc {
                 let head_text = self.buf.line(*l);
                 let hs = if wrap_cols == 0 { inl.hints_on(*l) } else { &[] };
                 let clip = Rect::new(body.x, y, body.w, lh);
+                if let Some(b) = crate::bidi::row(&head_text, 0, usize::MAX, tab_w, para) {
+                    if let Some((lo, hi)) = b.window(vc0, vc1, 16) {
+                        let (x0, x1) = crate::bidi::byte_range(&head_text, lo, hi);
+                        plain_pieces(&head_text, None, x0, x1, fg, &mut pieces);
+                        tx.draw_cells(cv, vx(0), y, &pieces, &b.cells[lo..hi], b.para_rtl, clip);
+                    }
+                    continue;
+                }
                 if hs.is_empty() {
                     window_pieces(&head_text, None, 0, head_text.len(), vc0, vc1, tab_w, fg, &mut pieces);
                 } else {
@@ -714,6 +946,7 @@ impl Doc {
         for x in &self.ed.extra {
             let (l, col) = self.buf.line_col(x.head);
             if let Some((r, v)) = at(l, col, false) {
+                let v = bidi[r].as_ref().map_or(v, |b| b.caret(col - rows[r].c0));
                 cv.fill_clip(Rect::new(vx(v), ry(r), CURSOR_W, lh), theme.cursor, body);
             }
         }
@@ -839,7 +1072,29 @@ impl Doc {
         // Caret.
         let caret_color = if o.focused { theme.cursor } else { theme.cursor.with_alpha(0x70) };
         cv.fill_clip(Rect::new(caret_x, caret_y, CURSOR_W, lh), caret_color, body);
+        // On a bidirectional line a small flag at the caret's top points the way the text at the
+        // caret runs (as on Windows), since one boundary can sit between two direction runs.
+        if let Some(rtl) = self.caret_rtl(self.ed.head()) {
+            let fx = if rtl { caret_x - 3 } else { caret_x + CURSOR_W };
+            cv.fill_clip(Rect::new(fx, caret_y, 3, 2), caret_color, body);
+        }
 
         pending || self.animating || self.caret_animating
+    }
+}
+
+/// Info-level underline pattern: 2 px dots with 2 px gaps from the start of the range (errors and
+/// warnings are wavy; see the diagnostics loop of [`Doc::draw`]).
+pub(crate) fn info_dot(dx: i32) -> bool {
+    dx.rem_euclid(4) < 2
+}
+
+#[cfg(test)]
+mod underline_tests {
+    #[test]
+    fn info_underline_is_dotted_not_wavy() {
+        let on: Vec<bool> = (0..8).map(super::info_dot).collect();
+        assert_eq!(on, [true, true, false, false, true, true, false, false]);
+        assert!(super::info_dot(-4) && !super::info_dot(-1), "stable left of the range start too");
     }
 }

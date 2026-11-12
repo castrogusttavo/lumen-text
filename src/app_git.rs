@@ -44,6 +44,7 @@ impl App {
     pub fn refresh_git_status(&mut self) {
         self.branch = git::branch(&self.root);
         let top = git::toplevel(&self.root).unwrap_or_else(|| self.root.clone());
+        self.gitbg.worktree_main = crate::worktree::linked_main(&top);
         let mut map: HashMap<PathBuf, char> = HashMap::new();
         for (xy, rel) in git::status(&self.root) {
             let rel = rel.rsplit(" -> ").next().unwrap_or(&rel).trim_matches('"').to_string();
@@ -110,6 +111,7 @@ impl App {
         match run_git(&self.root, &["checkout", "--", &arg]) {
             Ok(_) => {
                 if let Some(i) = self.docs.iter().position(|d| d.path() == Some(path)) {
+                    self.hist_snapshot(i, crate::localhist::Source::Reload);
                     let _ = self.docs[i].reload_from_disk();
                 }
                 self.refresh_git_status();

@@ -39,14 +39,35 @@ Lumen speaks the Language Server Protocol to as many servers as you like. TypeSc
 | Svelte, Astro, Vue | `svelteserver`, `astro-ls`, `vue-language-server` | the framework's config file, `package.json` |
 | TS / JS / CSS / HTML | companion `tailwindcss-language-server`, only in a project with a Tailwind config | `tailwind.config.*` |
 | TS / JS | `deno lsp` replaces `tsgo`, only in a project with `deno.json` | `deno.json` |
+| Prose (spell checking, off by default) | companions `harper-ls --stdio` and `typos-lsp`, only with `spell_check` on; see below | `.git` (typos-lsp: also `typos.toml`) |
+| every file | companion `copilot-language-server --stdio` (GitHub Copilot inline completions), only with the setting `inline_completion` on | the project folder |
 
 For a language the **first installed** server of the list is the *primary* one; the others of that language are ignored, so installing `pyright` is enough. A *companion* (`ruff`, `tailwindcss`) runs next to the primary and adds to it.
 
 Executables are looked for in `<project>/node_modules/.bin` (and its parents), `PATH`, `~/.local/share/lumen-text/lsp/bin`, `~/.cargo/bin`, `~/.local/bin`, `~/go/bin`, `~/.dotnet/tools` and the Ruby user-gem folders (`~/.local/share/gem/ruby/*/bin`). A server runs with those folders, and the folder of its own executable, at the front of its `PATH`, so the helpers it calls (`bundle`, `zig`, `go`, `dotnet`, `node`) are found even when Lumen was started from the desktop menu. A file whose language has no installed server shows a one-time message with the install command.
 
-The home folder is never a workspace root for a file below it (a stray `~/package.json` or `~/.git` would otherwise make a server index the whole home). Python servers are given the project's virtualenv (`.venv`, `venv` or `env` in the root, else `$VIRTUAL_ENV`) as `python.pythonPath`, so installed dependencies resolve.
+The home folder is never a workspace root for a file below it (a stray `~/package.json` or `~/.git` would otherwise make a server index the whole home). Python servers are given the project's virtualenv so installed dependencies resolve: `.venv`, `venv`, `env` or any folder holding a `pyvenv.cfg` in the project or a parent folder (uv and `python -m venv` layouts), `$UV_PROJECT_ENVIRONMENT`, `$VIRTUAL_ENV`, then Poetry's cache folder (matched by project name). pyright and basedpyright get `python.pythonPath`, `python.venvPath` and `python.venv` (in `workspace/configuration` and the initialization options), every Python server runs with `VIRTUAL_ENV` set and the venv's `bin` first on its `PATH`, and a ruff or basedpyright installed in the venv is used instead of the one on the `PATH`. *Python: Select interpreter…* lists the venvs found and the system pythons and pins one per project (remembered in the state folder); the tooltip of the language item in the status bar shows the active interpreter. Your own `settings.python.pythonPath` always wins.
 
 The table is data, not code: it is `src/lsp_servers.json` in the repository, embedded in the program.
+
+### Inline completions (ghost text)
+
+With the setting `inline_completion` on (Settings, or the palette: *Inline completion: Toggle on / off*), Lumen asks
+the servers of the file for `textDocument/inlineCompletion` (LSP 3.18) after a 250 ms typing pause and shows the
+first suggestion as faded text at the cursor; the lines after the first one appear as extra rows below the cursor
+line. `Tab` accepts it (one undo step; a command that comes with it is then run with `workspace/executeCommand`),
+`Ctrl+Right` accepts the next word, `Esc` dismisses it, `Alt+]` / `Alt+[` show the other suggestions and `Alt+\`
+asks right away. Nothing is asked while the completion popup is open, with several cursors or with a selection;
+moving the cursor or typing something else cancels the request in flight. A status bar item shows the state (on,
+off, signed out, loading, no server); a click pauses it, or signs in when Copilot is signed out.
+
+Any server that offers inline completions works. For **GitHub Copilot**, install its language server
+(`npm i -g @github/copilot-language-server`) and run *Copilot: Sign in*: Lumen shows the device code (and copies
+it), opens `github.com/login/device` in your browser and finishes when you confirm there. The login is stored by the
+server itself; Lumen never sees a token or an API key. *Copilot: Sign out* signs out. Copilot only serves inline
+completions in Lumen (its other features are not merged into hover, completion or code actions). The sign-in uses
+Copilot's own requests (`checkStatus`, `signIn`, `signOut`); if a future server changes them, only the sign-in is
+affected. Switch Copilot off while keeping other servers' suggestions with `"language_servers": {"copilot": {"enabled": false}}`.
 
 ## Your own servers
 
@@ -92,6 +113,21 @@ A key is resolved in this order:
 | `install` | Hint shown when the program is not found. |
 
 A mistake never stops the editor: the offending field is ignored and the first problem is shown in the status bar (for example `language_servers.rust-analyzer.args must be an array of strings`); the rest of the file still applies.
+
+## Spell checking
+
+Two spell checkers are built in as *companions*, **off until you turn on `spell_check`** (Settings → *Spell checking*, or the palette *Language servers: Toggle spell checking*). Like every server they start only when installed:
+
+| Server | What it checks | Install |
+| --- | --- | --- |
+| [harper-ls](https://github.com/Automattic/harper) | Spelling and grammar in comments and strings of code (Rust, TS/JS, Python, Go, C/C++, C#, Java, Kotlin, Swift, Dart, Scala, Haskell, Elixir, Lua, Ruby, PHP, shell, Zig, Nix, TOML, HTML), Markdown, LaTeX, Typst, plain text (`.txt`) and git commit messages | `cargo install harper-ls --locked`, or a release binary in `~/.local/share/lumen-text/lsp/bin` |
+| [typos-lsp](https://github.com/tekumara/typos-lsp) | Common misspellings in identifiers and text (few false positives), the same files plus CSS, YAML, SQL, Vue, Svelte and Astro | a release binary on `PATH` or in `~/.local/share/lumen-text/lsp/bin` |
+
+`tools/install-lsp-servers.sh spell` installs both (pinned versions, checksums verified).
+
+What they find is never shown as an error: whatever severity a spell checker reports, its diagnostics are *info* and get a **dotted** underline (errors and warnings are wavy) and no error / warning count in the bottom bar. `Ctrl+.` on a flagged word lists the fixes ("Replace with: …", typos-lsp's correction) and harper-ls's "Add … to the user / workspace / file dictionary" and "Ignore" commands, which run on the server that offered them.
+
+To keep one of them off while the other runs, switch it off by name: `"language_servers": {"typos-lsp": {"enabled": false}}` (a server's own `enabled` wins over `spell_check`, both ways). harper-ls reads its own options from `settings` under `harper-ls` (dialect, linters...), typos-lsp from a `typos.toml` in the project.
 
 ## Status, restart and log
 

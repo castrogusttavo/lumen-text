@@ -19,6 +19,8 @@ pub fn buffer_spec(c: &Config) -> FontSpec {
         weight: c.buffer_font_weight,
         line_height: c.buffer_line_height,
         ligatures: c.buffer_font_ligatures,
+        features: c.view.buffer_font_features.clone(),
+        letter_spacing: c.view.buffer_letter_spacing,
     }
 }
 
@@ -30,6 +32,7 @@ pub fn ui_spec(c: &Config) -> FontSpec {
         weight: c.ui_font_weight,
         line_height: c.ui_line_height,
         ligatures: c.ui_font_ligatures,
+        ..FontSpec::ui_default()
     }
 }
 
@@ -65,7 +68,7 @@ impl App {
 
     /// Re-apply the buffer and/or UI font group after a setting changed, then refresh whatever
     /// depends on text metrics.
-    fn refit_fonts(&mut self, buffer: bool, ui: bool) {
+    pub(crate) fn refit_fonts(&mut self, buffer: bool, ui: bool) {
         let mut missing: Vec<String> = Vec::new();
         if buffer && !self.tx.set_buffer_font(&buffer_spec(&self.config)) {
             missing.push(self.config.buffer_font_family.clone());
@@ -162,8 +165,26 @@ impl App {
                 display::set_scrollbar(Scrollbar::from_name(&self.config.scrollbar));
                 display::touch();
             }
+            "bidi_paragraph" => {
+                self.config.bidi_paragraph = crate::bidi::normalize(v.as_str());
+                crate::bidi::set_para(crate::bidi::Para::from_name(&self.config.bidi_paragraph));
+            }
             // Read by the Markdown reader on its next draw.
             "markdown_remote_images" => self.config.markdown_remote_images = b.unwrap_or(true),
+            // Read when the app quits / the next backup pass runs, and when a file is opened or closed.
+            "hot_exit" => self.config.hot_exit = b.unwrap_or(true),
+            "persistent_undo" => self.config.persistent_undo = b.unwrap_or(true),
+            "render_whitespace" => {
+                self.config.render_whitespace = crate::whitespace::normalize(v.as_str());
+                display::set_whitespace(crate::whitespace::Render::from_name(&self.config.render_whitespace));
+            }
+            // Read on the next save.
+            "trim_trailing_whitespace" => self.config.trim_trailing_whitespace = b.unwrap_or(false),
+            "insert_final_newline" => self.config.insert_final_newline = b.unwrap_or(false),
+            // Read when a session next finishes or asks.
+            "ai_notifications" => self.config.ai_notifications = b.unwrap_or(true),
+            // An open diff follows on its next draw (`diff_sync_ws`).
+            "diff_ignore_whitespace" => self.config.diff_ignore_whitespace = b.unwrap_or(false),
             "build_command" | "run_command" => {
                 let cmd = v.as_str().unwrap_or("").trim().to_string();
                 if key == "build_command" {
@@ -172,6 +193,9 @@ impl App {
                     self.config.run_command = cmd;
                 }
             }
+            // The registry is rebuilt from it on the next tick (`lspx_sync_config`): the spell
+            // checkers start or stop with the documents they apply to.
+            "spell_check" => self.config.spell_check = b.unwrap_or(false),
             "enable_lsp" => {
                 let on = b.unwrap_or(true);
                 if on != self.config.enable_lsp {
@@ -186,7 +210,7 @@ impl App {
                     }
                 }
             }
-            _ => return false,
+            _ => return self.apply_assist_setting(key, v),
         }
         true
     }
@@ -228,6 +252,7 @@ impl App {
             Cmd::ToggleBookmarkMarks => ("show_bookmarks", json!(!c.show_bookmarks)),
             Cmd::ToggleBreakpointMarks => ("show_breakpoints", json!(!c.show_breakpoints)),
             Cmd::ToggleLsp => ("enable_lsp", json!(!c.enable_lsp)),
+            Cmd::ToggleSpellCheck => ("spell_check", json!(!c.spell_check)),
             Cmd::CycleScrollbar => {
                 let next = match c.scrollbar.as_str() {
                     "show" => "auto",
@@ -242,6 +267,12 @@ impl App {
         let msg = match key {
             "scrollbar" => format!("scrollbars: {}", val.as_str().unwrap_or("show")),
             "enable_lsp" => if val == json!(true) { "language servers: on" } else { "language servers: off" }.into(),
+            "spell_check" => if val == json!(true) {
+                "spell checking: on (harper-ls / typos-lsp, when installed)"
+            } else {
+                "spell checking: off"
+            }
+            .into(),
             _ => format!(
                 "{}: {}",
                 key.trim_start_matches("show_").replace('_', " "),

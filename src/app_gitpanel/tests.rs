@@ -166,8 +166,9 @@ fn panel_rows_cursor_and_state() {
     let mut gp = GitPanel::new(&dir);
     assert!(gp.top.is_some());
     let rows = gp.rows();
-    assert_eq!(rows.len(), 6, "3 headers + 3 files: {rows:?}");
+    assert_eq!(rows.len(), 7, "3 headers + 3 files + the Stashes header: {rows:?}");
     assert!(matches!(rows[0], Row::Header(Group::Staged)));
+    assert_eq!(rows[6], Row::StashHead, "offers to stash even before there are stashes");
     assert_eq!(gp.staged(), 1);
     assert_eq!(gp.group_paths(Group::Untracked), vec!["c.ts".to_string()]);
     // The cursor skips headers.
@@ -181,12 +182,16 @@ fn panel_rows_cursor_and_state() {
     // History: loads in pages and tracks the end.
     gp.tab = Tab::History;
     gp.load_more();
+    gp.wait_history(10);
     assert_eq!(gp.commits.len(), 1);
     assert!(gp.log_done, "a short page is the last one");
+    assert!(gp.is_head(0), "the HEAD label comes with the commit");
     gp.open_commit = Some(0);
     gp.files = commit_files(gp.top.as_ref().unwrap(), &gp.commits[0].hash);
     assert_eq!(gp.rows(), vec![Row::Commit(0), Row::CFile(0)]);
     gp.reset_history();
+    assert!(gp.rows().is_empty(), "reset forgets the loaded history");
+    gp.wait_history(10);
     assert_eq!(gp.rows().len(), 1, "reset reloads the first page and closes the expansion");
     // Not a repository.
     let plain = std::env::temp_dir().join(format!("lumen-gp-plain-{}", std::process::id()));
@@ -231,7 +236,7 @@ fn staged_plus_modified_in_a_real_repo() {
     assert_eq!(gp.changes.len(), 2);
     assert_eq!(
         gp.rows(),
-        vec![Row::Header(Group::Staged), Row::File(0), Row::Header(Group::Changes), Row::File(1)],
+        vec![Row::Header(Group::Staged), Row::File(0), Row::Header(Group::Changes), Row::File(1), Row::StashHead],
         "one row under each group"
     );
     assert_eq!((gp.changes[0].group, gp.changes[1].group), (Group::Staged, Group::Changes));

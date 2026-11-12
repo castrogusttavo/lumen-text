@@ -9,6 +9,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, ev: &KeyIn) -> bool {
+        // A macro being recorded sees every key first (see `macros`).
+        self.macro_record(ev);
+        self.handle_key_inner(ev)
+    }
+
+    fn handle_key_inner(&mut self, ev: &KeyIn) -> bool {
         self.compute_layout();
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
@@ -25,6 +31,15 @@ impl App {
 
         if !self.overlay.is_none() {
             return self.overlay_key(ev);
+        }
+        // "Jump to…" owns the keys until it jumps or is cancelled.
+        if self.jump.is_some() && self.jump_key(ev) {
+            return false;
+        }
+        // Zen mode: Esc Esc leaves it (the first Esc still does its usual job below).
+        if self.zen_escape(&key) {
+            self.request_redraw();
+            return false;
         }
         if self.update_card_key(&key) {
             self.request_redraw();
@@ -104,12 +119,18 @@ impl App {
             self.request_redraw();
             return quit;
         }
+        // A visible inline suggestion owns Tab, Ctrl+Right and Esc (otherwise they keep their meaning).
+        if self.focus == Focus::Editor && self.inline_key(&key, ctrl, shift, alt) {
+            self.request_redraw();
+            return false;
+        }
         // One table: keybindings.json first ("none" disables), then keymap::DEFAULTS.
         if let Some(id) = self.keymap.lookup(ctrl, shift, alt, &key).map(str::to_string) {
             let cmd = crate::app_overlay::Cmd::from_id(&id);
             // Ctrl+Shift+V is also "paste" outside Markdown files: let it through.
             let paste = cmd == Some(crate::app_overlay::Cmd::MarkdownPreview)
                 && !self.active_is_markdown()
+                && !self.active_is_svg()
                 && ctrl
                 && shift
                 && !alt;
@@ -139,6 +160,11 @@ impl App {
             return r;
         }
 
+        // A tab showing a picture: arrows pan, + / - zoom, nothing edits its (hidden) text.
+        if self.focus == Focus::Editor && self.img_key(ev) {
+            self.request_redraw();
+            return false;
+        }
         if self.completion_key(&key) {
             self.request_redraw();
             return false;
@@ -175,7 +201,14 @@ impl App {
                     if multi {
                         let t = d.ed.copy_text_multi(&d.buf);
                         self.clip.set(&t);
-                        d.ed.edit_multi(&mut d.buf, EditKind::Other, |e, b| e.backspace(b));
+                        // A column selection has carets on lines shorter than the box: they cut
+                        // nothing (a backspace there would eat the character before them).
+                        let any = d.ed.all_sels().iter().any(|s| !s.is_empty());
+                        d.ed.edit_multi(&mut d.buf, EditKind::Other, |e, b| {
+                            if !any || !e.sel.is_empty() {
+                                e.backspace(b)
+                            }
+                        });
                     } else {
                         let t = d.cut_cmd();
                         self.clip.set(&t);
@@ -425,16 +458,29 @@ impl App {
     }
 
     pub fn try_quit(&mut self) -> bool {
+        // Hot exit: unsaved buffers are kept on disk and reopened next time, so there is nothing to ask.
+        let hot = self.config.hot_exit && self.hot_exit_store();
         let dirty: Vec<&str> = self.docs.iter().filter(|d| d.buf.is_dirty()).map(|d| d.name.as_str()).collect();
-        if !dirty.is_empty() && !self.quit_armed {
+        if !hot && !dirty.is_empty() && !self.quit_armed {
             self.quit_armed = true;
             let list = dirty.join(", ");
             self.say(format!("Unsaved: {list} — Ctrl+S saves, Ctrl+Q again discards"));
             self.request_redraw();
             return false;
         }
+        // A job in the terminal, a task or a Build & Run job is alive: confirm first (card).
+        if self.ask_before_quit() {
+            return false;
+        }
+        if !hot {
+            self.backup_discard_all();
+        }
         mem::report("exit");
+        for i in 0..self.docs.len() {
+            self.undo_persist(i, hot);
+        }
         self.save_session();
+        self.win_close();
         self.stop_task();
         for l in &mut self.lsps {
             l.shutdown();

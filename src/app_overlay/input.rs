@@ -24,6 +24,11 @@ impl App {
             self.fontpicker_key(ev);
             return false;
         }
+        // Project search: replace row, whole-word toggle, "replace all" question.
+        if self.project_search_key(ev) {
+            self.request_redraw();
+            return false;
+        }
         let ctrl = self.mods.control_key();
         let shift = self.mods.shift_key();
         let alt = self.mods.alt_key();
@@ -115,6 +120,15 @@ impl App {
             Key::Named(NamedKey::End) => {
                 field.end();
                 Next::Nothing
+            }
+            Key::Character(c)
+                if alt
+                    && c.to_lowercase() == "w"
+                    && matches!(&self.overlay, Overlay::Picker(p) if p.kind == PickKind::Problems) =>
+            {
+                let project = !self.problems_project();
+                self.set_problems_scope(project);
+                Next::Changed
             }
             Key::Character(c) if alt && (c.as_str() == "c" || c.as_str() == "r") => {
                 if let Overlay::Picker(p) = &mut self.overlay {
@@ -235,6 +249,10 @@ impl App {
                 PromptKind::GitCommit => self.git_commit(&p.field.text),
                 PromptKind::Git(ask) => self.git_prompt_answer(ask, p.field.text),
                 PromptKind::SaveAs { doc, rest, then } => self.save_as_answer(doc, rest, then, p.field.text),
+                PromptKind::RenameTerminal { id } => self.rename_terminal(id, &p.field.text),
+                PromptKind::MacroCount => self.macro_replay_answer(&p.field.text),
+                PromptKind::MacroName => self.macro_save_answer(&p.field.text),
+                PromptKind::AiRename { id } => self.ai_rename(id, &p.field.text),
             },
             Overlay::None => {}
         }
@@ -257,6 +275,7 @@ impl App {
             }
             Action::SetIndent(spec) => self.set_doc_indent(&spec),
             Action::SetLang(id) => self.set_doc_language(id),
+            Action::Encoding(spec) => self.encoding_action(&spec),
             Action::WorkspaceEdit(v) => {
                 if v.get("__resolve").is_some() {
                     self.resolve_code_action(&v["__resolve"]);
@@ -268,6 +287,7 @@ impl App {
             Action::TestTarget(id) => self.tests_set_target(&id),
             Action::BuildTarget(id) => self.build_set_target(&id),
             Action::AiAgent(id) => self.ai_pick(&id),
+            Action::AiNew(id) => self.ai_pick_new(&id),
             Action::Run(cmd) => {
                 let title = cmd.clone();
                 self.run_task(&cmd, &title)
@@ -277,7 +297,12 @@ impl App {
                 self.set_theme(&name)
             }
             Action::GitShow(path, commit, subject) => self.open_diff_commit(&path, &commit, &subject),
+            Action::LocalHist(path, Some(file)) => self.hist_show(&path, &file),
+            Action::LocalHist(path, None) => self.hist_list(&path),
             Action::Git(p) => self.git_pick(p),
+            Action::Macro(name) => self.macro_run_saved(&name),
+            Action::Compare(p) => self.cmp_pick(p),
+            Action::Project(p) => self.projcfg_pick(p),
             Action::UndoBranch(n) => {
                 if let Some(d) = self.docs.get_mut(self.active)
                     && let Some(sel) = d.buf.redo_branch(n)
@@ -313,6 +338,10 @@ impl App {
         if matches!(self.overlay, Overlay::Font(_)) {
             return self.fontpicker_mouse(x, y);
         }
+        if self.problems_chip_click(self.picker_rect(), INPUT_H, x, y) {
+            self.request_redraw();
+            return true;
+        }
         let rows = self.layout.overlay_rows.clone();
         if let Some((_, idx)) = rows.iter().find(|(r, _)| r.contains(x, y)) {
             if let Overlay::Picker(p) = &mut self.overlay {
@@ -322,10 +351,14 @@ impl App {
             return true;
         }
         let r = self.picker_rect();
+        let extra = match &self.overlay {
+            Overlay::Picker(p) if p.rep.is_some() => preplace::REP_H,
+            _ => 0,
+        };
         if x < r.x as f64
             || x > r.right() as f64
             || y < r.y as f64
-            || y > (r.y + INPUT_H + PICKER_ROWS as i32 * ROW + 12) as f64
+            || y > (r.y + INPUT_H + extra + PICKER_ROWS as i32 * ROW + 12) as f64
         {
             self.overlay = Overlay::None;
             self.restore_theme_preview();

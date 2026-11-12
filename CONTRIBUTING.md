@@ -42,7 +42,8 @@ Use `--release`: debug builds of the tokenizer and renderer are far too slow for
 Kotlin, TypeScript, JavaScript, CSS/SCSS/Less, HTML, JSON, YAML, TOML, Python, Go, Rust, Ruby, PHP, Lua, Zig, Bash,
 Markdown, Dockerfile) through the real servers and checks that each starts and answers with diagnostics, hover and
 completion. It needs the servers installed, so it is `#[ignore]`d in the normal run; CI runs it in the job
-"Language servers".
+"Language servers". `lsp_matrix_spell` does the same for the spell checkers (harper-ls, typos-lsp): each must flag a
+misspelled word as info and offer its fixes in the code-action menu (`LUMEN_LSP_ONLY=spell` runs only those).
 
 ```sh
 tools/install-lsp-servers.sh                  # pinned servers into ~/.local/share/lumen-text/lsp (Linux)
@@ -97,7 +98,15 @@ Flags: `--keys`, `--snap <dir>` (default `/tmp/lumen-snap`), `--size WxH` (logic
 | `sh:command` | Run a shell command (for example to edit a file or run `git` mid-script) |
 
 Tests in `src/` use the same building blocks (`App`, `Editor`, `Buffer`) directly; prefer a unit test for logic and a headless script for layout and visuals.
+`script::send_keys(&mut app, "ctrl+shift+r;type:abc;enter")` sends key tokens to a test `App` without the rendering and settling of `--keys` (see the macro tests); saved macros (`macros.json`) use the same tokens.
 Tests must not write to `/tmp` or your real config: use `std::env::temp_dir()` subfolders that they clean up, or `CARGO_TARGET_TMPDIR`.
+
+### Inline completions
+
+`src/inline.rs` holds the pure part (request lifecycle, parsing, typing through, geometry) and `src/app_inline.rs`
+the app glue and GitHub Copilot's sign-in. The fake server `examples/fake_lsp.rs` answers inline completions with
+`FAKE_INLINE=1` and plays Copilot's sign-in with `FAKE_COPILOT=1`, so `cargo test --release inline` covers the whole
+flow without a real Copilot account.
 
 ## Code style
 
@@ -115,8 +124,27 @@ The palette, fuzzy search and the shortcut modal pick it up automatically.
 
 **A shortcut.** Add `("ctrl+shift+x", "VariantName")` to `DEFAULTS` in `src/keymap.rs` (the first row for a command is its main default and must match the palette text; later rows are aliases).
 A test checks that ids exist, combos are unique and the palette text agrees. Chords use a space (`ctrl+k r`); explorer-only keys use `explorer:`.
+Mouse combos (`mouse4`, `middle`, `ctrl+click`, `ctrl+wheelup`...) have their own table, `MOUSE_DEFAULTS`, resolved by `Keymap::lookup_mouse`
+and dispatched from `src/app_input.rs` / `src/app/mouse.rs`; besides command ids they may name the mouse-only actions in `MOUSE_ACTIONS`.
+
+**A layout switch.** Bars that can be hidden (zen mode, `show_tabs`, `show_status_bar`) get their height from `App::chrome_heights`
+(`src/app_view.rs`); layout code must read `self.layout` rects, never the `TOP_H` / `TAB_H` / `STATUS_H` constants directly.
 
 **A setting.** Add a field to `Config` in `src/config.rs` with its default in `Default`, parse it in `load_from` (validate and clamp), write it in `save_to`, extend the round-trip test, and add a row in `src/settingsui.rs` so it shows in the settings modal. Document it in the README table.
+Settings can be overridden per project (`.lumen/config.json`, see `src/projcfg.rs`): if the new key only makes sense for the
+whole app (window, interface, updates), add it to `projcfg::GLOBAL_ONLY`; if it names a program to run, to `projcfg::COMMAND_KEYS`.
+
+**Something that reacts to disk changes.** Every change arrives as a `watcher::FsEvent` in `App::pump_watcher`, from inotify or, on
+file systems inotify cannot be trusted on (`fstype.rs`: NFS, SMB, FUSE, 9p, FAT/exFAT, watch limit), from the poller (`poller.rs`, open
+files and expanded folders only). Events under the repository's git dir never reach the tree or the language servers: `app_fswatch.rs`
+debounces them and compares a cheap `GitSig` before refreshing the branch, gutter base and status. Never run a `git` command that
+writes `.git/index` on every refresh (use `--no-optional-locks`), or the watcher loops. Tests run real `git` in temp repos
+(`app_fswatch::tests`); `LUMEN_FORCE_POLL=1` tries the polling fallback on a local disk.
+
+**Per-window state.** Each window is its own process (`src/app_window.rs` explains why); anything that
+must survive a restart per window goes into the session (`save_session` / `restore_session`, keyed by
+project root and window slot). State shared by every window lives on disk (config, recents, `windows.json`),
+never in memory, and a second invocation reaches a window only through `src/instance.rs`.
 
 **A theme.** Bundled themes are VS Code JSON in `assets/themes/` and listed through `assets/language-manifest.json`; the test suite loads every theme and checks WCAG AA text pairs, so run `cargo test --release theme`.
 Users can add themes without code in `~/.config/lumen-text/themes/` (see README). Zed conversion lives in `src/zedtheme.rs`.

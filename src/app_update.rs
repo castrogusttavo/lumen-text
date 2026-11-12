@@ -323,11 +323,12 @@ impl App {
         }
     }
 
-    /// Start the new version and quit this one (the single-instance socket is released first so
-    /// the new process doesn't hand its files over to this dying one).
+    /// Start the new version and quit this one (`try_quit` releases this window's handoff
+    /// endpoint first, so the new process doesn't hand its files over to this dying one).
     pub fn update_restart(&mut self) {
         let Some((_, exe)) = self.upd.installed.clone() else { return };
-        if self.docs.iter().any(|d| d.buf.is_dirty()) {
+        // With hot exit the unsaved buffers come back after the restart.
+        if self.restart_needs_save() {
             self.say("Save your files before restarting to update");
             return self.request_redraw();
         }
@@ -335,10 +336,9 @@ impl App {
             self.say(format!("Could not find {} — reopen Lumen manually", exe.display()));
             return self.request_redraw();
         }
-        if !self.try_quit() {
+        if self.ask_before_restart() || !self.try_quit() {
             return;
         }
-        let _ = std::fs::remove_file(crate::instance::socket_path());
         spawn_detached(&exe, &self.root, matches!(self.upd.env.kind, InstallKind::AppImage(_)));
         std::process::exit(0);
     }

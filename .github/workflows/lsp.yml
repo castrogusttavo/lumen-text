@@ -70,7 +70,7 @@ jobs:
         run: |
           php --version | head -1; java -version 2>&1 | head -1; dotnet --version; go version
           ruby --version; node --version; clangd --version | head -1
-      - name: LSP matrix (every language - server starts, diagnostics, hover, completion)
+      - name: LSP matrix (every language - server starts, diagnostics, hover, completion; spell checkers)
         shell: bash
         run: |
           set -o pipefail
@@ -80,7 +80,7 @@ jobs:
         shell: bash
         run: |
           [ -f lsp-matrix.log ] || exit 0
-          { echo '```'; sed -n '/===== LSP matrix =====/,/^$/p' lsp-matrix.log | tail -n +2; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; sed -n '/===== LSP \(spell \)\?matrix =====/,/^$/p' lsp-matrix.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

@@ -4,7 +4,18 @@
 //! `FAKE_NAME` (hover/diagnostic source), `FAKE_PULL=1` (pull diagnostics instead of push),
 //! `FAKE_FORMAT=1` (documentFormattingProvider), `FAKE_DYNAMIC=1` (register formatting dynamically),
 //! `FAKE_CONFIG=1` (ask `workspace/configuration`), `FAKE_PROGRESS=1` (`$/progress`),
-//! `FAKE_EXIT_AFTER_INIT=1` (die right after `initialized`), `FAKE_NO_HOVER=1`.
+//! `FAKE_EXIT_AFTER_INIT=1` (die right after `initialized`), `FAKE_NO_HOVER=1`,
+//! `FAKE_HIGHLIGHT=1` (documentHighlight: every whole-word occurrence, the first as a write) or
+//! `FAKE_HIGHLIGHT=first` (only the first occurrence), `FAKE_LINKED=1` (linkedEditingRange for
+//! `<tag>...</tag>` names).
+//! `FAKE_WORKSPACE=1` (`workspace/diagnostic` over the `*.fk` files of the root: the first report as a
+//! partial result, `unchanged` for files whose `previousResultIds` still match; a file named `hang`
+//! in the root keeps the request open until `$/cancelRequest`), `FAKE_PUSH_CLOSED=1` (publish
+//! diagnostics for every `*.fk` file of the root right after `initialized`), `FAKE_ACTIONS=1`
+//! (`source.organizeImports` with an edit, `source.fixAll` through `codeAction/resolve`),
+//! `FAKE_HANG_ACTIONS=1` (never answer `source.*` code action requests).
+//! `FAKE_INLINE=1` (`textDocument/inlineCompletion`, see `inline_items`), `FAKE_COPILOT=1` (Copilot's
+//! `checkStatus` / `signIn` / `signOut` with a device code; `executeCommand` signs in).
 //! A document containing `CRASH` kills the server. Every line containing `FIXME` gets a warning.
 use serde_json::{Value, json};
 use std::io::{BufRead, Read, Write};
@@ -39,8 +50,131 @@ fn diags(text: &str, name: &str) -> Vec<Value> {
     out
 }
 
+fn ident(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c == b'-'
+}
+
+/// Byte offset of an LSP position (the test documents are ASCII, so UTF-16 columns are bytes).
+fn offset(text: &str, p: &Value) -> usize {
+    let (line, ch) = (p["line"].as_u64().unwrap_or(0) as usize, p["character"].as_u64().unwrap_or(0) as usize);
+    let start: usize = text.split_inclusive('\n').take(line).map(str::len).sum();
+    (start + ch).min(text.len())
+}
+
+fn pos(text: &str, off: usize) -> Value {
+    let line = text[..off].matches('\n').count();
+    let col = off - text[..off].rfind('\n').map_or(0, |i| i + 1);
+    json!({"line": line, "character": col})
+}
+
+fn range(text: &str, a: usize, b: usize) -> Value {
+    json!({"start": pos(text, a), "end": pos(text, b)})
+}
+
+/// The identifier around byte `off`.
+fn word_at(text: &str, off: usize) -> (usize, usize) {
+    let b = text.as_bytes();
+    let (mut s, mut e) = (off, off);
+    while s > 0 && ident(b[s - 1]) {
+        s -= 1;
+    }
+    while e < b.len() && ident(b[e]) {
+        e += 1;
+    }
+    (s, e)
+}
+
+fn highlights(text: &str, off: usize, first_only: bool) -> Value {
+    let (s, e) = word_at(text, off);
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    if s < e {
+        let word = &text[s..e];
+        let mut from = 0;
+        while let Some(m) = text[from..].find(word) {
+            let (a, z) = (from + m, from + m + word.len());
+            if (a == 0 || !ident(b[a - 1])) && (z >= b.len() || !ident(b[z])) {
+                out.push(json!({"range": range(text, a, z), "kind": if out.is_empty() { 3 } else { 2 }}));
+                if first_only {
+                    break;
+                }
+            }
+            from = z;
+        }
+    }
+    json!(out)
+}
+
+fn linked(text: &str, off: usize) -> Value {
+    let (s, e) = word_at(text, off);
+    if s == e {
+        return Value::Null;
+    }
+    let name = &text[s..e];
+    let other = if text[..s].ends_with("</") {
+        text[..s].rfind(&format!("<{name}")).map(|i| i + 1)
+    } else if text[..s].ends_with('<') {
+        text[e..].find(&format!("</{name}>")).map(|i| e + i + 2)
+    } else {
+        None
+    };
+    let Some(o) = other else { return Value::Null };
+    let (a, b) = if o < s { ((o, o + name.len()), (s, e)) } else { ((s, e), (o, o + name.len())) };
+    json!({"ranges": [range(text, a.0, a.1), range(text, b.0, b.1)], "wordPattern": "[a-zA-Z0-9:\\-\\._$]*"})
+}
+
+/// `*.fk` files of `root`, sorted, with the open document's text when it has one.
+fn project_files(root: &str, docs: &std::collections::HashMap<String, String>) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(root) else { return out };
+    let mut paths: Vec<std::path::PathBuf> =
+        rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "fk")).collect();
+    paths.sort();
+    for p in paths {
+        let uri = format!("file://{}", p.display());
+        let text = docs.get(&uri).cloned().unwrap_or_else(|| std::fs::read_to_string(&p).unwrap_or_default());
+        out.push((uri, text));
+    }
+    out
+}
+
+/// A stable id for a text (the `resultId` of a report).
+fn result_id(text: &str) -> String {
+    let h = text.bytes().fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
+    format!("{h:x}")
+}
+
+/// One whole-document edit inserting `line` at the top of `uri`.
+fn insert_top(uri: &Value, line: &str) -> Value {
+    let mut changes = serde_json::Map::new();
+    let edit =
+        json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": line}]);
+    changes.insert(uri.as_str().unwrap_or("").to_string(), edit);
+    json!({"changes": changes})
+}
+
+/// Inline suggestions at `pos` of `text`: a two-line one carrying a command, a snippet, and one
+/// whose range covers the character before the cursor. Each names the trigger kind it answered.
+fn inline_items(text: &str, pos: &Value, kind: u64) -> Value {
+    let (line, ch) = (pos["line"].as_u64().unwrap_or(0), pos["character"].as_u64().unwrap_or(0));
+    let mut items = vec![
+        json!({"insertText": format!("_k{kind}();\nnext_line();"),
+               "command": {"title": "accepted", "command": "fake.accept", "arguments": ["one"]}}),
+        json!({"insertText": {"kind": "snippet", "value": "alt(${1:arg})$0"}}),
+    ];
+    let prev = text.lines().nth(line as usize).and_then(|l| l.chars().nth((ch as usize).checked_sub(1)?));
+    if let Some(prev) = prev {
+        items.push(json!({"insertText": format!("{prev}_ranged"),
+            "range": {"start": {"line": line, "character": ch - 1}, "end": {"line": line, "character": ch}}}));
+    }
+    json!({"items": items})
+}
+
 fn main() {
     let name = std::env::var("FAKE_NAME").unwrap_or_else(|_| "fake".into());
+    let mut root = String::new();
+    // The open workspace pull kept open by a `hang` file: its id.
+    let mut hanging: Option<Value> = None;
     eprintln!("fake server {name} started");
     let mut docs: std::collections::HashMap<String, String> = Default::default();
     let stdin = std::io::stdin();
@@ -83,12 +217,33 @@ fn main() {
                 if env("FAKE_FORMAT") {
                     caps["documentFormattingProvider"] = json!(true);
                 }
+                if std::env::var("FAKE_HIGHLIGHT").is_ok() {
+                    caps["documentHighlightProvider"] = json!(true);
+                }
+                if env("FAKE_LINKED") {
+                    caps["linkedEditingRangeProvider"] = json!(true);
+                }
                 if env("FAKE_PULL") {
-                    caps["diagnosticProvider"] = json!({"interFileDependencies": false, "workspaceDiagnostics": false});
+                    caps["diagnosticProvider"] =
+                        json!({"interFileDependencies": false, "workspaceDiagnostics": env("FAKE_WORKSPACE")});
+                }
+                if env("FAKE_ACTIONS") || env("FAKE_HANG_ACTIONS") {
+                    caps["codeActionProvider"] = json!({"codeActionKinds": ["quickfix", "source.organizeImports", "source.fixAll"], "resolveProvider": true});
+                }
+                root = m["params"]["rootUri"].as_str().unwrap_or("").trim_start_matches("file://").to_string();
+                if env("FAKE_INLINE") {
+                    caps["inlineCompletionProvider"] = json!({});
+                    caps["executeCommandProvider"] = json!({"commands": ["fake.accept"]});
                 }
                 reply(json!({"capabilities": caps, "serverInfo": {"name": format!("fake-{name}"), "version": "0.1"}}));
             }
             "initialized" => {
+                if env("FAKE_PUSH_CLOSED") {
+                    for (uri, text) in project_files(&root, &docs) {
+                        send(&json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+                            "params": {"uri": uri, "diagnostics": diags(&text, &name)}}));
+                    }
+                }
                 if env("FAKE_EXIT_AFTER_INIT") {
                     eprintln!("fake server {name} dying on purpose");
                     std::process::exit(3);
@@ -147,6 +302,17 @@ fn main() {
             "textDocument/hover" => {
                 reply(json!({"contents": {"kind": "markdown", "value": format!("hover from {name}")}}))
             }
+            "textDocument/documentHighlight" | "textDocument/linkedEditingRange" => {
+                let uri = m["params"]["textDocument"]["uri"].as_str().unwrap_or("");
+                let text = docs.get(uri).cloned().unwrap_or_default();
+                let off = offset(&text, &m["params"]["position"]);
+                if method == "textDocument/linkedEditingRange" {
+                    reply(linked(&text, off));
+                } else {
+                    let first = std::env::var("FAKE_HIGHLIGHT").is_ok_and(|v| v == "first");
+                    reply(highlights(&text, off, first));
+                }
+            }
             "textDocument/completion" => reply(json!([
                 {"label": format!("{name}_item"), "kind": 3},
                 {"label": "shared_item", "kind": 3}
@@ -167,8 +333,102 @@ fn main() {
                     json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": nl}]),
                 );
             }
-            "textDocument/codeAction" => reply(json!([{"title": format!("Fix with {name}"), "kind": "quickfix",
-                "edit": {"changes": {}}}, {"title": "Shared action", "kind": "quickfix", "edit": {"changes": {}}}])),
+            "textDocument/codeAction" => {
+                let only = m["params"]["context"]["only"][0].as_str().unwrap_or("");
+                let uri = m["params"]["textDocument"]["uri"].clone();
+                if only.starts_with("source") && env("FAKE_HANG_ACTIONS") {
+                    eprintln!("ignoring {only} on purpose");
+                } else if only == "source.organizeImports" {
+                    reply(json!([{"title": "Organize imports", "kind": "source.organizeImports",
+                        "edit": insert_top(&uri, "// imports organized\n")}]));
+                } else if only == "source.fixAll" {
+                    // No edit: the client resolves it.
+                    reply(json!([{"title": "Fix all", "kind": "source.fixAll.fake", "data": {"uri": uri}}]));
+                } else if only.is_empty() {
+                    reply(json!([{"title": format!("Fix with {name}"), "kind": "quickfix",
+                        "edit": {"changes": {}}}, {"title": "Shared action", "kind": "quickfix", "edit": {"changes": {}}}]));
+                } else {
+                    reply(json!([]));
+                }
+            }
+            "codeAction/resolve" => {
+                let mut a = m["params"].clone();
+                a["edit"] = insert_top(&a["data"]["uri"], "// fixed\n");
+                reply(a);
+            }
+            "workspace/diagnostic" => {
+                let prev: std::collections::HashMap<String, String> = m["params"]["previousResultIds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| Some((p["uri"].as_str()?.to_string(), p["value"].as_str()?.to_string())))
+                    .collect();
+                if std::path::Path::new(&root).join("hang").exists() {
+                    hanging = id.clone();
+                    continue;
+                }
+                let mut reports = Vec::new();
+                let mut unchanged = 0;
+                for (uri, text) in project_files(&root, &docs) {
+                    let rid = result_id(&text);
+                    if prev.get(&uri) == Some(&rid) {
+                        unchanged += 1;
+                        reports.push(json!({"uri": uri, "kind": "unchanged", "resultId": rid, "version": null}));
+                    } else {
+                        reports.push(json!({"uri": uri, "kind": "full", "resultId": rid, "version": null, "items": diags(&text, &name)}));
+                    }
+                }
+                eprintln!("workspace pull: unchanged {unchanged}");
+                let token = m["params"]["partialResultToken"].clone();
+                if !token.is_null() && !reports.is_empty() {
+                    let first = reports.remove(0);
+                    send(
+                        &json!({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": token, "value": {"items": [first]}}}),
+                    );
+                }
+                reply(json!({"items": reports}));
+            }
+            "$/cancelRequest" => {
+                if hanging.as_ref() == Some(&m["params"]["id"]) {
+                    eprintln!("cancelled workspace pull");
+                    send(
+                        &json!({"jsonrpc": "2.0", "id": hanging.take(), "error": {"code": -32800, "message": "cancelled"}}),
+                    );
+                }
+            }
+            "textDocument/inlineCompletion" => {
+                let uri = m["params"]["textDocument"]["uri"].as_str().unwrap_or("");
+                let text = docs.get(uri).cloned().unwrap_or_default();
+                let kind = m["params"]["context"]["triggerKind"].as_u64().unwrap_or(0);
+                eprintln!("inline request kind {kind}");
+                reply(inline_items(&text, &m["params"]["position"], kind));
+            }
+            "workspace/executeCommand" => {
+                let cmd = m["params"]["command"].as_str().unwrap_or("");
+                eprintln!("executed {cmd} {}", m["params"]["arguments"]);
+                if cmd == "github.copilot.finishDeviceFlow" {
+                    reply(json!({"status": "OK", "user": "octocat"}));
+                    send(
+                        &json!({"jsonrpc": "2.0", "method": "didChangeStatus", "params": {"kind": "Normal", "message": "", "busy": false}}),
+                    );
+                } else {
+                    reply(Value::Null);
+                }
+            }
+            "checkStatus" if env("FAKE_COPILOT") => {
+                let signed = std::path::Path::new(&std::env::var("FAKE_STATE").unwrap_or_default()).exists();
+                reply(if signed {
+                    json!({"status": "OK", "user": "octocat"})
+                } else {
+                    json!({"status": "NotSignedIn"})
+                });
+            }
+            "signIn" if env("FAKE_COPILOT") => reply(json!({
+                "status": "PromptUserDeviceFlow", "userCode": "ABCD-1234", "verificationUri": "https://example.invalid/device",
+                "expiresIn": 900, "interval": 5,
+                "command": {"command": "github.copilot.finishDeviceFlow", "title": "Sign in", "arguments": []}
+            })),
+            "signOut" if env("FAKE_COPILOT") => reply(json!({"status": "NotSignedIn"})),
             "shutdown" => reply(Value::Null),
             "exit" => return,
             _ => {

@@ -176,21 +176,28 @@ impl App {
         }
     }
 
-    /// Files handed over by another `lumen-text` invocation (single-instance mode).
+    /// Messages from other `lumen-text` invocations and windows (see `instance`).
     pub fn pump_inbox(&mut self) {
-        let mut batches: Vec<Vec<String>> = Vec::new();
+        let mut msgs: Vec<crate::instance::Msg> = Vec::new();
         if let Some(rx) = &self.inbox {
-            while let Ok(b) = rx.try_recv() {
-                batches.push(b);
+            while let Ok(m) = rx.try_recv() {
+                msgs.push(m);
             }
         }
-        if batches.is_empty() {
+        if msgs.is_empty() {
             return;
         }
-        for arg in batches.into_iter().flatten() {
-            let (p, at) = crate::parse_target(&arg);
-            if !p.is_dir() {
-                self.open_path(&p, at);
+        for m in msgs {
+            match m {
+                crate::instance::Msg::Open(args) => {
+                    for arg in args {
+                        let (p, at) = crate::parse_target(&arg);
+                        if !p.is_dir() {
+                            self.open_path(&p, at);
+                        }
+                    }
+                }
+                crate::instance::Msg::Quit => return self.win_quit_requested(),
             }
         }
         if let Some(g) = &self.gfx {
@@ -245,27 +252,6 @@ impl App {
             Overlay::Picker(Picker::new(PickKind::WorkspaceSymbols, "Symbol in project (type to search)", Vec::new()));
     }
 
-    pub fn open_problems(&mut self) {
-        let mut items = Vec::new();
-        for d in &self.docs {
-            let Some(p) = d.path() else { continue };
-            for g in d.diags.iter().filter(|g| g.severity <= 2) {
-                let icon = if g.severity == 1 { "\u{f057}" } else { "\u{f071}" };
-                items.push(Item {
-                    label: format!("{icon} {}", g.message.lines().next().unwrap_or("")),
-                    detail: format!("{}:{}", self.rel(p), g.sl + 1),
-                    action: Action::Open(p.to_path_buf(), Some((g.sl, g.sc))),
-                });
-            }
-        }
-        items.extend(self.build_problem_items());
-        if items.is_empty() {
-            return self.say("no problems in open files");
-        }
-        let title = format!("{} problem(s)", items.len());
-        self.open_locations(&title, items);
-    }
-
     pub fn open_goto_line(&mut self) {
         if self.docs.is_empty() {
             return;
@@ -294,18 +280,41 @@ impl App {
         if p.kind != PickKind::ProjectSearch {
             return;
         }
+        let overrides = self.unsaved_texts();
+        let Overlay::Picker(p) = &mut self.overlay else { return };
+        let q = search::Query {
+            text: p.field.text.clone(),
+            case: p.case,
+            regex: p.regex,
+            word: p.word,
+            replace: p.rep.as_ref().map(|r| r.field.text.clone()),
+        };
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(r) = p.rep.as_mut() {
+            // Select the same match again once the refreshed results arrive.
+            if r.want.is_none() {
+                r.want = r.hits.get(p.sel).map(|h| (h.path.clone(), h.line, h.start));
+            }
+            r.hits.clear();
+            r.confirm = None;
+            r.done = done.clone();
+            r.query = q.clone();
+        }
         p.items.clear();
         p.filtered.clear();
         p.sel = 0;
-        let query = p.field.text.clone();
-        let (case, regex) = (p.case, p.regex);
         let my_gen = self.search_gen.fetch_add(1, Ordering::SeqCst) + 1;
-        if query.is_empty() {
+        if q.text.is_empty() {
+            done.store(true, Ordering::SeqCst);
             return;
         }
         let (root, generation, tx, wake) =
             (self.root.clone(), self.search_gen.clone(), self.search_tx.clone(), self.wake());
-        thread::spawn(move || search::search(&root, &query, case, regex, generation, my_gen, tx, || wake()));
+        thread::spawn(move || {
+            search::search(&root, &q, &overrides, generation, my_gen, tx, || wake());
+            done.store(true, Ordering::SeqCst);
+            wake();
+        });
     }
 
     pub fn pump_background(&mut self) {
@@ -321,6 +330,7 @@ impl App {
         self.pump_debug();
         self.pump_watcher();
         self.pump_update();
+        self.pump_elevated();
         let cur = self.search_gen.load(Ordering::SeqCst);
         let mut incoming: Vec<Hit> = Vec::new();
         while let Ok((g, hits)) = self.search_rx.try_recv() {
@@ -332,7 +342,7 @@ impl App {
             return;
         }
         let items: Vec<Item> = incoming
-            .into_iter()
+            .iter()
             .map(|h| Item {
                 label: h.text.clone(),
                 detail: format!("{}:{}", self.rel(&h.path), h.line + 1),
@@ -343,7 +353,20 @@ impl App {
             && p.kind == PickKind::ProjectSearch
         {
             p.items.extend(items);
+            let sel = p.sel;
             p.refilter();
+            if let Some(r) = p.rep.as_mut() {
+                let base = r.hits.len();
+                r.hits.extend(incoming);
+                p.sel = sel.min(p.filtered.len().saturating_sub(1));
+                if let Some(w) = &r.want
+                    && let Some(i) = r.hits[base..].iter().position(|h| (&h.path, h.line, h.start) == (&w.0, w.1, w.2))
+                {
+                    p.sel = base + i;
+                    r.want = None;
+                }
+                p.keep_visible();
+            }
         }
     }
 }

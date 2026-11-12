@@ -125,36 +125,80 @@ fn frame(app: &mut App, w: u32, h: u32) {
     app.render_into(&mut cv, 0.016);
 }
 
+/// Named keys of the `--keys` syntax (the first name of a key is the one `named_token` gives).
+const NAMED: &[(&str, NamedKey)] = &[
+    ("enter", NamedKey::Enter),
+    ("esc", NamedKey::Escape),
+    ("escape", NamedKey::Escape),
+    ("tab", NamedKey::Tab),
+    ("backspace", NamedKey::Backspace),
+    ("delete", NamedKey::Delete),
+    ("up", NamedKey::ArrowUp),
+    ("down", NamedKey::ArrowDown),
+    ("left", NamedKey::ArrowLeft),
+    ("right", NamedKey::ArrowRight),
+    ("home", NamedKey::Home),
+    ("end", NamedKey::End),
+    ("pageup", NamedKey::PageUp),
+    ("pagedown", NamedKey::PageDown),
+    ("space", NamedKey::Space),
+    ("insert", NamedKey::Insert),
+    ("f1", NamedKey::F1),
+    ("f2", NamedKey::F2),
+    ("f3", NamedKey::F3),
+    ("f4", NamedKey::F4),
+    ("f5", NamedKey::F5),
+    ("f6", NamedKey::F6),
+    ("f7", NamedKey::F7),
+    ("f8", NamedKey::F8),
+    ("f9", NamedKey::F9),
+    ("f10", NamedKey::F10),
+    ("f11", NamedKey::F11),
+    ("f12", NamedKey::F12),
+];
+
 fn named(name: &str) -> Option<NamedKey> {
-    Some(match name {
-        "enter" => NamedKey::Enter,
-        "esc" | "escape" => NamedKey::Escape,
-        "tab" => NamedKey::Tab,
-        "backspace" => NamedKey::Backspace,
-        "delete" => NamedKey::Delete,
-        "up" => NamedKey::ArrowUp,
-        "down" => NamedKey::ArrowDown,
-        "left" => NamedKey::ArrowLeft,
-        "right" => NamedKey::ArrowRight,
-        "home" => NamedKey::Home,
-        "end" => NamedKey::End,
-        "pageup" => NamedKey::PageUp,
-        "pagedown" => NamedKey::PageDown,
-        "space" => NamedKey::Space,
-        "f2" => NamedKey::F2,
-        "f3" => NamedKey::F3,
-        "f5" => NamedKey::F5,
-        "f9" => NamedKey::F9,
-        "f10" => NamedKey::F10,
-        "f11" => NamedKey::F11,
-        "f8" => NamedKey::F8,
-        "f12" => NamedKey::F12,
-        _ => return None,
-    })
+    NAMED.iter().find(|(n, _)| *n == name).map(|(_, k)| *k)
+}
+
+/// The `--keys` name of a named key ("enter", "f5"), if the syntax has one.
+pub fn named_token(key: NamedKey) -> Option<&'static str> {
+    NAMED.iter().find(|(_, k)| *k == key).map(|(n, _)| *n)
+}
+
+/// Send `--keys` key tokens (combos and `type:text`, separated by `;`) straight to the app, without
+/// the rendering and settling of [`run`]. Tests drive the editor through it.
+#[cfg(test)]
+pub fn send_keys(app: &mut App, keys: &str) {
+    for tok in keys.split(';').map(str::trim).filter(|t| !t.is_empty()) {
+        for (mods, ki) in parse_token(tok) {
+            app.mods = mods;
+            app.handle_key(&ki);
+        }
+        app.mods = ModifiersState::empty();
+    }
+}
+
+/// The key presses of one token: a combo, or one press per character of `type:text`.
+pub fn parse_token(tok: &str) -> Vec<(ModifiersState, KeyIn)> {
+    match tok.strip_prefix("type:") {
+        Some(text) => text
+            .chars()
+            .map(|ch| {
+                let ki = if ch == ' ' {
+                    KeyIn { key: Key::Named(NamedKey::Space), text: Some(" ".into()) }
+                } else {
+                    KeyIn { key: Key::Character(SmolStr::new(ch.to_string())), text: Some(ch.to_string()) }
+                };
+                (ModifiersState::empty(), ki)
+            })
+            .collect(),
+        None => parse_combo(tok).into_iter().collect(),
+    }
 }
 
 /// "ctrl+shift+p" -> (mods, key)
-fn parse_combo(tok: &str) -> Option<(ModifiersState, KeyIn)> {
+pub fn parse_combo(tok: &str) -> Option<(ModifiersState, KeyIn)> {
     let mut mods = ModifiersState::empty();
     let mut parts: Vec<&str> = tok.split('+').collect();
     // A literal '+' key ends with "++" and splits into an empty last part.

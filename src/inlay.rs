@@ -25,7 +25,13 @@ pub enum HintKind {
     Type,
     Parameter,
     Other,
+    /// The first line of an inline-completion suggestion (`inline`): full-size faded text drawn
+    /// in its cells instead of a pill, one cell per char.
+    Ghost,
 }
+
+/// Opacity of inline-completion ghost text (over the theme's foreground color).
+pub const GHOST_ALPHA: u8 = 0x80;
 
 /// Font size of hint labels relative to the code font (cells are still the code font's).
 pub const HINT_SCALE: f32 = 0.85;
@@ -77,6 +83,9 @@ pub struct Hint {
 impl Hint {
     /// Cells taken by the label itself (smaller font, rounded up).
     pub fn label_width(&self) -> usize {
+        if self.kind == HintKind::Ghost {
+            return self.label.chars().count();
+        }
         label_cells(self.label.chars().count())
     }
 
@@ -312,6 +321,8 @@ pub fn row_hints(line_hints: &[Hint], len: usize, c0: usize, c1: usize, last: bo
 #[derive(Debug, Clone, Default)]
 pub struct LineHints {
     by_line: HashMap<usize, Vec<Hint>>,
+    /// Line of the inline-completion ghost hint placed with [`LineHints::set_ghost`].
+    ghost_at: Option<usize>,
 }
 
 impl From<Vec<Hint>> for LineHints {
@@ -323,7 +334,7 @@ impl From<Vec<Hint>> for LineHints {
         for v in by_line.values_mut() {
             v.sort_by_key(|h| h.col); // stable: LSP order kept among equal columns
         }
-        LineHints { by_line }
+        LineHints { by_line, ghost_at: None }
     }
 }
 
@@ -368,9 +379,34 @@ impl LineHints {
 // ───────────────────────────── editor integration ─────────────────────────────
 
 impl LineHints {
+    /// The inline-completion ghost hint, when it is still where it was placed.
+    pub fn ghost(&self) -> Option<&Hint> {
+        self.by_line.get(&self.ghost_at?)?.iter().find(|h| h.kind == HintKind::Ghost)
+    }
+
+    /// Place the ghost hint `h` (before the server's hints at its column: the ghost text starts
+    /// right at the caret), or take it away. Edits may have moved the previous one: it is
+    /// looked for everywhere.
+    pub fn set_ghost(&mut self, h: Option<Hint>) {
+        if self.ghost_at.take().is_some() {
+            self.by_line.retain(|_, v| {
+                v.retain(|x| x.kind != HintKind::Ghost);
+                !v.is_empty()
+            });
+        }
+        if let Some(h) = h {
+            self.ghost_at = Some(h.line);
+            let v = self.by_line.entry(h.line).or_default();
+            let at = v.partition_point(|x| x.col < h.col);
+            v.insert(at, h);
+        }
+    }
+
     /// Replace every hint on lines `first..=last` with `new` (the answer for that range) and drop
     /// hints farther than 400 lines from it (they would be stale by the time they scroll back).
+    /// The ghost hint of an inline suggestion stays.
     pub fn replace_range(&mut self, first: usize, last: usize, new: Vec<Hint>) {
+        let ghost = self.ghost().cloned();
         let (lo, hi) = (first.saturating_sub(400), last.saturating_add(400));
         self.by_line.retain(|&l, _| l >= lo && l <= hi && !(l >= first && l <= last));
         let mut merged = std::mem::take(self);
@@ -380,9 +416,14 @@ impl LineHints {
             }
         }
         for v in merged.by_line.values_mut() {
+            v.retain(|h| h.kind != HintKind::Ghost);
             v.sort_by_key(|h| h.col);
         }
+        merged.by_line.retain(|_, v| !v.is_empty());
         *self = merged;
+        if ghost.is_some() {
+            self.set_ghost(ghost);
+        }
     }
 
     /// An edit starting on `line` changed the line count by `delta`: hints on the edited line are
@@ -618,6 +659,18 @@ pub fn window_pieces_hinted(
     let mut chars = row.char_indices();
     for i in 0..=len {
         while hi < hints.len() && hints[hi].col.min(len) <= i {
+            if hints[hi].kind == HintKind::Ghost {
+                // Inline-completion ghost text: its own (faded, italic) chars fill its cells.
+                let gc = fg.with_alpha(GHOST_ALPHA);
+                for ch in hints[hi].label.chars() {
+                    if pos >= vc0 && pos < vc1 {
+                        put(out, ch, gc, crate::ui::ITALIC);
+                    }
+                    pos += 1;
+                }
+                hi += 1;
+                continue;
+            }
             for _ in 0..hints[hi].width() {
                 if pos >= vc0 && pos < vc1 {
                     put(out, ' ', fg, 0);
@@ -1299,5 +1352,39 @@ mod tests {
     fn utf16_columns() {
         assert_eq!(utf16_to_char_col("a😀b", 3), 2);
         assert_eq!(utf16_to_char_col("abc", 99), 3);
+    }
+
+    #[test]
+    fn ghost_hints_draw_their_own_text_full_width_before_other_hints() {
+        use crate::theme::Rgba;
+        let fg = Rgba(10, 20, 30, 255);
+        let ghost = Hint { kind: HintKind::Ghost, ..h(0, 3, "(1)", false, false) };
+        assert_eq!(ghost.width(), 3, "one cell per char, unlike the smaller inlay labels");
+        let mut lh = LineHints::from(vec![h(0, 3, "x:", false, true)]);
+        lh.set_ghost(Some(ghost.clone()));
+        let hs = lh.hints_on(0);
+        assert_eq!(hs[0].kind, HintKind::Ghost, "the ghost text starts right at the caret");
+        // Caret before the ghost; the text after it moves by both hints.
+        assert_eq!(lh.vcol(0, "foo;", 3, 4, false), 3);
+        assert_eq!(lh.vcol(0, "foo;", 3, 4, true), 3 + 3 + hs[1].width());
+        let mut out = Vec::new();
+        window_pieces_hinted("foo;", None, 0, 4, hs, 0, 100, 4, fg, &mut out);
+        assert_eq!(out[0], ("foo".to_string(), fg, 0));
+        assert_eq!(out[1], ("(1)".to_string(), fg.with_alpha(GHOST_ALPHA), crate::ui::ITALIC));
+        let all: String = out.iter().map(|p| p.0.as_str()).collect();
+        assert_eq!(all, format!("foo(1){};", " ".repeat(hs[1].width())));
+        // A window starting inside the ghost text.
+        let mut out = Vec::new();
+        window_pieces_hinted("foo;", None, 0, 4, lh.hints_on(0), 4, 6, 4, fg, &mut out);
+        assert_eq!(out[0].0, "1)");
+        // Clicking on it lands on its column.
+        assert_eq!(lh.col_from_vcol(0, "foo;", 4, 4), (3, Some(0)));
+        // Placing it again elsewhere moves it; taking it away leaves the server's hints.
+        lh.set_ghost(Some(Hint { line: 2, ..ghost }));
+        assert_eq!((lh.hints_on(0).len(), lh.hints_on(2).len()), (1, 1));
+        assert_eq!(lh.ghost().map(|g| g.line), Some(2));
+        lh.set_ghost(None);
+        assert_eq!(lh.len(), 1);
+        assert!(lh.ghost().is_none());
     }
 }

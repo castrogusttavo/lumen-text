@@ -72,6 +72,11 @@ pub fn watch_limit() -> Option<usize> {
     std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches").ok()?.trim().parse().ok()
 }
 
+/// Did `watch_dir` fail because `fs.inotify.max_user_watches` is exhausted?
+pub fn is_limit_error(e: &io::Error) -> bool {
+    e.to_string().contains("max_user_watches")
+}
+
 fn is_ignored(dir: &Path) -> bool {
     dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| IGNORED.contains(&n))
 }
@@ -129,15 +134,29 @@ impl Watcher {
         if is_ignored(dir) {
             return Ok(());
         }
+        self.add_watch(dir)
+    }
+
+    /// Watch `dir` even when its name is in the ignore list: the repository's `.git` folder, whose
+    /// `HEAD`, `index` and `packed-refs` say when a terminal `git checkout` / `commit` / `pull` ran.
+    pub fn watch_dir_always(&mut self, dir: &Path) -> io::Result<()> {
+        self.add_watch(dir)
+    }
+
+    fn add_watch(&mut self, dir: &Path) -> io::Result<()> {
         let mut st = self.state.lock().unwrap();
-        if st.by_path.contains_key(dir) {
-            return Ok(());
-        }
+        // Already watched: adding again is one cheap syscall that returns the same descriptor, unless
+        // the folder was deleted (or moved away) and recreated since, and its old watch is stale.
+        let known = st.by_path.get(dir).copied();
         let c = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(dir.as_os_str()))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
         let wd = unsafe { libc::inotify_add_watch(self.ifd, c.as_ptr(), MASK) };
         if wd < 0 {
             let e = io::Error::last_os_error();
+            if known.is_some() && e.raw_os_error() == Some(libc::ENOENT) {
+                // Gone: its IN_IGNORED is on the way, keep the bookkeeping until then.
+                return Ok(());
+            }
             return Err(match e.raw_os_error() {
                 Some(libc::ENOSPC) => {
                     let lim = watch_limit().map(|n| n.to_string()).unwrap_or_else(|| "?".into());
@@ -149,6 +168,16 @@ impl Watcher {
                 }
                 _ => e,
             });
+        }
+        match known {
+            Some(old) if old == wd => return Ok(()),
+            Some(old) => {
+                // A new folder at the same path: drop the stale watch, keep the new one.
+                st.by_wd.remove(&old);
+                st.by_path.remove(dir);
+                unsafe { libc::inotify_rm_watch(self.ifd, old) };
+            }
+            None => {}
         }
         // The same inode reached through another path (symlink) returns the same wd.
         if let std::collections::hash_map::Entry::Vacant(e) = st.by_wd.entry(wd) {
@@ -646,6 +675,75 @@ mod tests {
     }
 
     #[test]
+    fn folder_removed_and_recreated_is_watched_again() {
+        let d = tmp("recreate");
+        let sub = d.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let (mut w, _) = mk();
+        w.watch_dir(&d).unwrap();
+        w.watch_dir(&sub).unwrap();
+        fs::remove_dir(&sub).unwrap();
+        fs::create_dir_all(&sub).unwrap();
+        // Whether or not the reader thread has seen IN_IGNORED yet, watching again must end up on
+        // the new folder (the app calls `watch_dir` again after every refresh).
+        let _ = collect(&w, 150, 1000);
+        w.watch_dir(&sub).unwrap();
+        assert!(w.is_watching(&sub));
+        let f = sub.join("after.txt");
+        fs::write(&f, "x").unwrap();
+        let ev = collect(&w, 300, 2000);
+        assert_eq!(kinds_of(&ev, &f), vec![FsKind::Created], "{ev:?}");
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn watching_again_right_after_recreate_replaces_the_stale_watch() {
+        let d = tmp("restale");
+        let sub = d.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let (mut w, _) = mk();
+        w.watch_dir(&sub).unwrap();
+        // No pause: the old descriptor may still be in the map.
+        fs::remove_dir(&sub).unwrap();
+        fs::create_dir_all(&sub).unwrap();
+        w.watch_dir(&sub).unwrap();
+        let _ = collect(&w, 150, 1000);
+        w.watch_dir(&sub).unwrap();
+        let f = sub.join("n.txt");
+        fs::write(&f, "x").unwrap();
+        let ev = collect(&w, 300, 2000);
+        assert_eq!(kinds_of(&ev, &f), vec![FsKind::Created], "{ev:?}");
+        assert_eq!(w.watched_count(), 1);
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn git_folder_is_watched_only_on_request() {
+        let d = tmp("gitdir");
+        let g = d.join(".git");
+        fs::create_dir_all(&g).unwrap();
+        let (mut w, _) = mk();
+        w.watch_dir(&g).unwrap();
+        assert!(!w.is_watching(&g), "the tree walk never descends into .git");
+        w.watch_dir_always(&g).unwrap();
+        assert!(w.is_watching(&g));
+        let head = g.join("HEAD");
+        let tmpf = g.join("HEAD.lock");
+        fs::write(&tmpf, "ref: refs/heads/x\n").unwrap();
+        fs::rename(&tmpf, &head).unwrap();
+        let ev = collect(&w, 300, 2000);
+        assert_eq!(kinds_of(&ev, &head), vec![FsKind::Moved], "{ev:?}");
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn limit_errors_are_recognised() {
+        let e = io::Error::other("inotify watch limit reached (fs.inotify.max_user_watches = 8192); cannot watch /x");
+        assert!(is_limit_error(&e));
+        assert!(!is_limit_error(&io::Error::from_raw_os_error(libc::ENOENT)));
+    }
+
+    #[test]
     fn merge_rules() {
         use FsKind::*;
         assert_eq!(merge(Created, Modified), Created);
@@ -777,7 +875,15 @@ mod poll {
 
         /// Watch `dir` (non-recursive). Idempotent. Ignored names are skipped silently.
         pub fn watch_dir(&mut self, dir: &Path) -> io::Result<()> {
-            if is_ignored(dir) || self.dirs.lock().unwrap().contains_key(dir) {
+            if is_ignored(dir) {
+                return Ok(());
+            }
+            self.watch_dir_always(dir)
+        }
+
+        /// Watch `dir` even when its name is in the ignore list (the repository's `.git`).
+        pub fn watch_dir_always(&mut self, dir: &Path) -> io::Result<()> {
+            if self.dirs.lock().unwrap().contains_key(dir) {
                 return Ok(());
             }
             let snap = scan(dir)?;

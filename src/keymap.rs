@@ -7,6 +7,11 @@
 //!
 //! Combo syntax: `ctrl+shift+p` (plain), `ctrl+k r` (a chord: two strokes separated by a space)
 //! and `explorer:a` (only while the file explorer has the focus; no modifiers needed).
+//!
+//! Mouse combos end in a mouse "key" (see [`MOUSE_KEYS`]): `mouse4` / `mouse5` (back / forward
+//! side buttons), `middle`, `ctrl+click`, `alt+click`, `ctrl+wheelup`, ... Their built-in rows
+//! live in [`MOUSE_DEFAULTS`] and are resolved by [`Keymap::lookup_mouse`]; besides palette
+//! commands they can name the mouse-only actions in [`MOUSE_ACTIONS`].
 
 use std::{collections::HashMap, path::Path};
 use winit::keyboard::{Key, NamedKey};
@@ -19,6 +24,7 @@ use winit::keyboard::{Key, NamedKey};
 pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+s", "Save"),
     ("ctrl+w", "CloseTab"),
+    ("ctrl+shift+t", "ReopenClosedTab"),
     ("ctrl+q", "Quit"),
     ("ctrl+p", "QuickOpen"),
     ("ctrl+shift+p", "Commands"),
@@ -34,6 +40,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+shift+g", "GitPanel"),
     ("ctrl+shift+a", "AiPanel"),
     ("ctrl+alt+k", "AiSendSelection"),
+    ("ctrl+alt+a", "AiNextWaiting"),
     ("ctrl+t", "WorkspaceSymbols"),
     ("f12", "GotoDefinition"),
     ("shift+f12", "FindReferences"),
@@ -53,6 +60,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("alt+left", "NavBack"),
     ("alt+right", "NavForward"),
     ("ctrl+`", "OpenTerminal"),
+    ("ctrl+shift+`", "NewTerminal"),
     ("ctrl+shift+[", "Fold"),
     ("ctrl+shift+]", "Unfold"),
     ("ctrl+,", "OpenSettings"),
@@ -74,6 +82,18 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("shift+f11", "StepOut"),
     ("shift+alt+right", "ExpandSelection"),
     ("shift+alt+left", "ShrinkSelection"),
+    ("ctrl+shift+alt+up", "ColumnSelectUp"),
+    ("ctrl+shift+alt+down", "ColumnSelectDown"),
+    ("ctrl+shift+alt+left", "ColumnSelectLeft"),
+    ("ctrl+shift+alt+right", "ColumnSelectRight"),
+    ("alt+j", "JumpTo"),
+    ("ctrl+shift+h", "ProjectReplace"),
+    ("ctrl+shift+r", "MacroRecord"),
+    ("ctrl+alt+r", "MacroReplay"),
+    ("alt+\\", "InlineSuggest"),
+    ("alt+]", "InlineNext"),
+    ("alt+[", "InlinePrev"),
+    ("ctrl+shift+n", "NewWindow"),
     // Chords: `Ctrl+K` then a letter.
     ("ctrl+k r", "RepeatTask"),
     ("ctrl+k x", "StopTask"),
@@ -89,6 +109,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+k shift+right", "MoveToNextPane"),
     ("ctrl+k shift+left", "MoveToPrevPane"),
     ("ctrl+k shift+w", "ClosePane"),
+    ("ctrl+k z", "ToggleZen"),
     // Aliases of commands that already have a main combo above.
     ("ctrl+y", "Redo"),
     ("ctrl+k s", "Save"),
@@ -108,6 +129,36 @@ pub const SHIFT_TOLERANT: &[&str] =
 
 /// Prefix that scopes a combo to the file explorer.
 pub const EXPLORER: &str = "explorer:";
+
+/// Mouse "keys" a combo can end with: `click` (left button, together with Ctrl or Alt), `middle`,
+/// the side buttons `mouse4` (back) and `mouse5` (forward), and the wheel (`wheelup`, `wheeldown`).
+#[cfg(test)]
+pub const MOUSE_KEYS: &[&str] = &["click", "middle", "mouse4", "mouse5", "wheelup", "wheeldown"];
+
+/// Built-in mouse bindings (normalized combo -> command id or mouse action). Clicks only count in
+/// the editor's text; side buttons and the wheel work everywhere.
+pub const MOUSE_DEFAULTS: &[(&str, &str)] = &[
+    ("mouse4", "NavBack"),
+    ("mouse5", "NavForward"),
+    ("ctrl+wheelup", "ZoomIn"),
+    ("ctrl+wheeldown", "ZoomOut"),
+    ("alt+click", "AddCursor"),
+    ("ctrl+click", "GotoDefinition"),
+    ("middle", "PastePrimary"),
+];
+
+/// Mouse-only actions a mouse combo can name besides the palette commands: a new cursor at the
+/// pointer (dragging makes a column selection) and pasting the primary selection there.
+#[cfg(test)]
+pub const MOUSE_ACTIONS: &[&str] = &["AddCursor", "PastePrimary"];
+
+/// Is `combo` (normalized) a mouse combination?
+#[cfg(test)]
+pub fn is_mouse_combo(combo: &str) -> bool {
+    !combo.contains(' ')
+        && !combo.starts_with(EXPLORER)
+        && combo.rsplit('+').next().is_some_and(|k| MOUSE_KEYS.contains(&k))
+}
 
 /// Built-in combo of a command id (first entry of [`DEFAULTS`]).
 pub fn default_combo(id: &str) -> Option<&'static str> {
@@ -184,6 +235,13 @@ fn normalize_stroke(text: &str) -> String {
             "→" => "right".to_string(),
             "↑" => "up".to_string(),
             "↓" => "down".to_string(),
+            // Mouse spellings (see `MOUSE_KEYS`).
+            "mouse1" | "button1" | "leftclick" | "lclick" => "click".to_string(),
+            "mouse3" | "button3" | "middleclick" | "mclick" | "wheelclick" => "middle".to_string(),
+            "back" | "button4" | "xbutton1" => "mouse4".to_string(),
+            "forward" | "button5" | "xbutton2" => "mouse5".to_string(),
+            "scrollup" | "wheel_up" | "wheel-up" => "wheelup".to_string(),
+            "scrolldown" | "wheel_down" | "wheel-down" => "wheeldown".to_string(),
             other => other.to_string(),
         };
         match p.as_str() {
@@ -275,6 +333,8 @@ impl Keymap {
             "_" => cands.push(combo(ctrl, false, alt, "-")),
             "{" => cands.push(combo(ctrl, shift, alt, "[")),
             "}" => cands.push(combo(ctrl, shift, alt, "]")),
+            // Shift+` types `~` on most layouts.
+            "~" => cands.push(combo(ctrl, shift, alt, "`")),
             n if is_fkey(n) && (ctrl || alt) => {
                 cands.push(combo(false, shift, false, n));
                 if shift {
@@ -321,6 +381,31 @@ impl Keymap {
     pub fn lookup_explorer(&self, ctrl: bool, shift: bool, alt: bool, key: &Key) -> Option<&str> {
         let name = key_name(key)?;
         self.resolve(&[format!("{EXPLORER}{}", combo(ctrl, shift, alt, &name))])
+    }
+
+    /// Command or mouse action bound to a mouse combo: the user's file first (`"none"` means
+    /// disabled), then [`MOUSE_DEFAULTS`]. `button` is one of [`MOUSE_KEYS`]. Forgiving matches
+    /// for buttons (never for the wheel, where Shift means horizontal scrolling): Shift is dropped
+    /// when Ctrl or Alt is held, Ctrl+Alt tries Alt then Ctrl alone (so Ctrl+Alt+click still adds
+    /// a cursor), and `middle` / side buttons fall back to the bare button.
+    pub fn lookup_mouse(&self, ctrl: bool, shift: bool, alt: bool, button: &str) -> Option<&str> {
+        let mut mods = vec![(ctrl, shift, alt)];
+        if !button.starts_with("wheel") {
+            if shift && (ctrl || alt) {
+                mods.push((ctrl, false, alt));
+            }
+            if ctrl && alt {
+                mods.extend([(false, false, true), (true, false, false)]);
+            }
+            if button != "click" {
+                mods.push((false, false, false));
+            }
+        }
+        let cands: Vec<String> = mods.iter().map(|&(c, s, a)| combo(c, s, a, button)).collect();
+        if let Some(v) = cands.iter().find_map(|c| self.map.get(c)) {
+            return Some(v.as_str());
+        }
+        cands.iter().find_map(|c| MOUSE_DEFAULTS.iter().find(|(k, _)| k == c).map(|(_, id)| *id))
     }
 
     /// Copy of the user's combo → command-id table.
@@ -433,7 +518,8 @@ mod tests {
         assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("s")), Some("Save"));
         assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("w")), Some("CloseTab"));
         assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("i")), Some("ShowHover"));
-        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("z")), None);
+        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("z")), Some("ToggleZen"));
+        assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch(";")), None);
         // The user can rebind, disable and add chords.
         let k = Keymap::from_json(r#"{"Ctrl+K R": "none", "ctrl+k g": "GotoLine", "ctrl+q q": "Quit"}"#);
         assert_eq!(k.lookup_chord("ctrl+k", false, false, false, &ch("r")), Some("none"));
@@ -475,11 +561,12 @@ mod tests {
         assert_eq!(k.lookup(true, true, false, &ch("W")), Some("CloseTab"));
         assert_eq!(k.lookup(true, true, false, &ch("Q")), Some("Quit"));
         assert_eq!(k.lookup(true, true, false, &ch("J")), Some("ToggleOutput"));
-        assert_eq!(k.lookup(true, true, false, &ch("H")), Some("Replace"));
         assert_eq!(k.lookup(true, true, false, &ch("S")), Some("Save"));
         // An exact Ctrl+Shift row wins over the tolerant fallback.
         assert_eq!(k.lookup(true, true, false, &ch("G")), Some("GitPanel"));
         assert_eq!(k.lookup(true, true, false, &ch("B")), Some("BuildBuild"));
+        assert_eq!(k.lookup(true, true, false, &ch("H")), Some("ProjectReplace"));
+        assert_eq!(k.lookup(true, false, false, &ch("h")), Some("Replace"));
         assert_eq!(k.lookup(true, false, false, &ch("b")), Some("ToggleSidebar"));
         assert_eq!(k.lookup(true, false, false, &ch("g")), Some("GotoLine"));
         assert_eq!(k.lookup(true, true, false, &ch("Z")), Some("Redo"));
@@ -561,5 +648,60 @@ mod tests {
     fn pending_chord_label() {
         assert_eq!(chord_label("ctrl+k"), "Ctrl+K …");
         assert_eq!(chord_label("ctrl+shift+k"), "Ctrl+Shift+K …");
+    }
+
+    #[test]
+    fn mouse_combos_parse_and_normalize() {
+        assert_eq!(normalize("Ctrl+WheelUp"), "ctrl+wheelup");
+        assert_eq!(normalize("ctrl+scrolldown"), "ctrl+wheeldown");
+        assert_eq!(normalize("Alt+Click"), "alt+click");
+        assert_eq!(normalize("Shift+Ctrl+Middle"), "ctrl+shift+middle");
+        assert_eq!(normalize("Mouse4"), "mouse4");
+        assert_eq!(normalize("Back"), "mouse4");
+        assert_eq!(normalize("forward"), "mouse5");
+        assert_eq!(normalize("ctrl+button5"), "ctrl+mouse5");
+        assert_eq!(normalize("Mouse3"), "middle");
+        assert!(is_mouse_combo("ctrl+wheelup") && is_mouse_combo("mouse4") && is_mouse_combo("alt+click"));
+        assert!(!is_mouse_combo("ctrl+k") && !is_mouse_combo("ctrl+k middle") && !is_mouse_combo("explorer:a"));
+        assert!(!is_mouse_combo("ctrl++") && !is_mouse_combo("alt+left"));
+        let k = Keymap::from_json(r#"{"Ctrl+WheelUp": "none", "Shift+Middle": "FindReferences", "Back": "GotoLine"}"#);
+        assert_eq!(k.entries().get("ctrl+wheelup").map(String::as_str), Some("none"));
+        assert_eq!(k.lookup_mouse(false, true, false, "middle"), Some("FindReferences"));
+        assert_eq!(k.lookup_mouse(false, false, false, "mouse4"), Some("GotoLine"));
+        assert_eq!(k.lookup_mouse(true, false, false, "wheelup"), Some("none"));
+    }
+
+    #[test]
+    fn mouse_defaults_keep_the_current_behaviour() {
+        use crate::app_overlay::Cmd;
+        let k = Keymap::default();
+        assert_eq!(k.lookup_mouse(false, false, false, "mouse4"), Some("NavBack"));
+        assert_eq!(k.lookup_mouse(false, false, false, "mouse5"), Some("NavForward"));
+        assert_eq!(k.lookup_mouse(true, false, false, "wheelup"), Some("ZoomIn"));
+        assert_eq!(k.lookup_mouse(true, false, false, "wheeldown"), Some("ZoomOut"));
+        assert_eq!(k.lookup_mouse(false, false, false, "wheelup"), None, "the plain wheel scrolls");
+        assert_eq!(k.lookup_mouse(true, true, false, "wheelup"), None, "no guessing on the wheel");
+        assert_eq!(k.lookup_mouse(false, false, true, "click"), Some("AddCursor"));
+        assert_eq!(k.lookup_mouse(false, true, true, "click"), Some("AddCursor"), "Shift+Alt+click too");
+        assert_eq!(k.lookup_mouse(true, false, true, "click"), Some("AddCursor"), "Alt wins over Ctrl");
+        assert_eq!(k.lookup_mouse(true, false, false, "click"), Some("GotoDefinition"));
+        assert_eq!(k.lookup_mouse(true, true, false, "click"), Some("GotoDefinition"));
+        assert_eq!(k.lookup_mouse(false, true, false, "click"), None, "Shift+click extends the selection");
+        assert_eq!(k.lookup_mouse(false, false, false, "click"), None);
+        assert_eq!(k.lookup_mouse(false, false, false, "middle"), Some("PastePrimary"));
+        assert_eq!(k.lookup_mouse(true, false, false, "middle"), Some("PastePrimary"), "modifiers ignored");
+        for (combo, id) in MOUSE_DEFAULTS {
+            assert_eq!(normalize(combo), *combo, "{combo} is not normalized");
+            assert!(is_mouse_combo(combo), "{combo}");
+            assert!(Cmd::from_id(id).is_some() || MOUSE_ACTIONS.contains(id), "{combo} -> unknown {id}");
+            assert!(DEFAULTS.iter().all(|(c, _)| c != combo), "{combo} is also a key default");
+        }
+        // The user can rebind and disable mouse combos like keys.
+        let k = Keymap::from_json(r#"{"alt+click": "none", "ctrl+alt+click": "ToggleComment", "middle": "none"}"#);
+        assert_eq!(k.lookup_mouse(false, false, true, "click"), Some("none"));
+        assert_eq!(k.lookup_mouse(true, false, true, "click"), Some("ToggleComment"));
+        assert_eq!(k.lookup_mouse(true, false, false, "middle"), Some("none"), "the bare button's none covers it");
+        // Mouse combos never leak into the key table.
+        assert_eq!(k.lookup(true, false, false, &ch("click")), None);
     }
 }

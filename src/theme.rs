@@ -106,6 +106,13 @@ pub struct Chrome {
     pub diff_del: Rgba,
     pub diff_add_word: Rgba,
     pub diff_del_word: Rgba,
+    /// Vertical rulers (`editorRuler.foreground`).
+    pub ruler: Rgba,
+    /// Document highlights: read / write occurrences of the symbol under the caret
+    /// (`editor.wordHighlightBackground` / `editor.wordHighlightStrongBackground`, translucent;
+    /// the editor text reads on both).
+    pub word_hl: Rgba,
+    pub word_hl_strong: Rgba,
 }
 
 impl Rgba {
@@ -188,6 +195,8 @@ pub struct Theme {
     pub line_highlight: Rgba,
     pub line_number: Rgba,
     pub line_number_active: Rgba,
+    /// Dots and arrows of `render_whitespace` (`editorWhitespace.foreground`, else a faded foreground).
+    pub whitespace: Rgba,
     pub chrome: Chrome,
     rules: Vec<Rule>,
 }
@@ -277,6 +286,8 @@ impl Theme {
         let find_match_current =
             tame(ck("editor.findMatchBackground", Rgba(0x51, 0xc0, 0xa8, 0x80)), background, fg_ui, 0x08);
         let foreground = fg_ui;
+        let whitespace =
+            color("editorWhitespace.foreground", background.mix(foreground, if dark { 0.24 } else { 0.28 }));
         let sem_raw = |key: &str, fb: Rgba| ok(ck(key, fb), 4.5);
         let (git_added, git_deleted) = (
             sem_raw("editorGutter.addedBackground", Rgba(0x58, 0xa6, 0x4a, 0xff)),
@@ -286,6 +297,14 @@ impl Theme {
         let diff_del = tame(git_deleted.with_alpha(0x26), background, fg_ui, 0x00);
         let diff_add_word = tame(git_added.with_alpha(0x55), background, fg_ui, 0x00);
         let diff_del_word = tame(git_deleted.with_alpha(0x55), background, fg_ui, 0x00);
+        let ruler = ck("editorRuler.foreground", tint(if dark { 0.16 } else { 0.14 }));
+        let (wh, whs) = if dark {
+            (Rgba(0x57, 0x57, 0x57, 0xb8), Rgba(0x00, 0x49, 0x72, 0xb8))
+        } else {
+            (Rgba(0x57, 0x57, 0x57, 0x40), Rgba(0x0e, 0x63, 0x9c, 0x40))
+        };
+        let word_hl = tame(ck("editor.wordHighlightBackground", wh), background, fg_ui, 0x00);
+        let word_hl_strong = tame(ck("editor.wordHighlightStrongBackground", whs), background, fg_ui, 0x00);
         // Text on the accent fill: white or near-black, whichever reads better; a mid-tone accent that
         // reads on neither is pushed away from the editor background until one of them passes.
         let (accent_raw, on_accent) = {
@@ -330,6 +349,9 @@ impl Theme {
             diff_del,
             diff_add_word,
             diff_del_word,
+            ruler,
+            word_hl,
+            word_hl_strong,
         };
         if own_chrome && fix {
             let opt = |keys: &[&str]| {
@@ -378,6 +400,7 @@ impl Theme {
             line_highlight,
             line_number,
             line_number_active,
+            whitespace,
             chrome,
             rules,
         })
@@ -531,6 +554,9 @@ impl Chrome {
             diff_del: c,
             diff_add_word: c,
             diff_del_word: c,
+            ruler: c,
+            word_hl: c,
+            word_hl_strong: c,
         }
     }
 }
@@ -549,6 +575,7 @@ mod tests {
             line_highlight: Rgba(0, 0, 0, 255),
             line_number: Rgba(0, 0, 0, 255),
             line_number_active: Rgba(0, 0, 0, 255),
+            whitespace: Rgba(0, 0, 0, 255),
             chrome: Chrome::test_default(),
             rules: rules
                 .iter()
@@ -667,6 +694,8 @@ mod tests {
             ("diff added", c.diff_add),
             ("diff removed (word)", c.diff_del_word),
             ("diff added (word)", c.diff_add_word),
+            ("word highlight", c.word_hl),
+            ("word highlight (write)", c.word_hl_strong),
         ] {
             pair(format!("foreground on {n}"), t.foreground, hl.over(t.background), 4.5);
         }

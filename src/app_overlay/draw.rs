@@ -94,6 +94,10 @@ impl App {
         self.regions.modal_from = self.regions.list.len();
         // (list area, total rows, scroll row) of the picker: its scrollbar is added after the borrow ends.
         let mut picker_bar: Option<(Rect, f64, f64)> = None;
+        // Problems panel: the scope switch ("Open files" | "Whole project") in the input row.
+        let chips = matches!(&self.overlay, Overlay::Picker(p) if p.kind == PickKind::Problems)
+            .then(|| self.problems_chips(base, INPUT_H));
+        let project = self.problems_project();
 
         match &self.overlay {
             Overlay::None => {}
@@ -126,7 +130,9 @@ impl App {
             Overlay::Picker(p) => {
                 let shown = p.filtered.len().min(PICKER_ROWS);
                 let list_h = if shown == 0 { 44 } else { shown as i32 * ROW + 14 };
-                let r = Rect::new(base.x, base.y, base.w, INPUT_H + list_h);
+                // Project search with the replace row: the list starts below it.
+                let top = INPUT_H + if p.rep.is_some() { preplace::REP_H } else { 0 };
+                let r = Rect::new(base.x, base.y, base.w, top + list_h);
                 cv.shadow(r, 16);
                 cv.card(r, 16, c.widget_bg, c.border);
                 // Input row.
@@ -141,31 +147,73 @@ impl App {
                         c.accent.with_alpha(0x50),
                     );
                 }
-                self.tx.draw_ui(cv, r.x + 46, r.y + (INPUT_H - 18) / 2, shown_text, col, r, false);
+                let text_clip = match chips {
+                    Some(ch) => Rect::new(r.x, r.y, ch[0].x - 8 - r.x, INPUT_H),
+                    None => r,
+                };
+                self.tx.draw_ui(cv, r.x + 46, r.y + (INPUT_H - 18) / 2, shown_text, col, text_clip, false);
+                if let Some(ch) = chips {
+                    let outer = Rect::new(ch[0].x - 2, ch[0].y - 2, ch[1].right() - ch[0].x + 4, ch[0].h + 4);
+                    cv.card(outer, 8, c.input_bg, c.border);
+                    for (k, chip) in ch.iter().enumerate() {
+                        let on = (k == 1) == project;
+                        if on {
+                            cv.fill_round(*chip, 6, c.list_active_bg);
+                        }
+                        let label = crate::app_problems::SCOPE_LABELS[k];
+                        let lw = self.tx.ui_width(label, false);
+                        let ty = chip.y + (chip.h - 18) / 2;
+                        self.tx.draw_ui(
+                            cv,
+                            chip.x + (chip.w - lw) / 2,
+                            ty,
+                            label,
+                            if on { fg } else { dim },
+                            *chip,
+                            false,
+                        );
+                    }
+                }
                 if p.kind == PickKind::ProjectSearch {
-                    let tag = format!("{}{}", if p.case { "Aa  " } else { "" }, if p.regex { ".*" } else { "" });
+                    let tag = [(p.case, "Aa"), (p.word, "Word"), (p.regex, ".*")]
+                        .iter()
+                        .filter(|(on, _)| *on)
+                        .map(|(_, t)| *t)
+                        .collect::<Vec<_>>()
+                        .join("  ");
                     let tw = self.tx.ui_width(&tag, true);
                     self.tx.draw_ui(cv, r.right() - tw - 16, r.y + (INPUT_H - 18) / 2, &tag, c.accent_text, r, true);
                 }
-                let prefix: String = p.field.text.chars().take(p.field.cursor).collect();
-                let x = r.x + 46 + self.tx.ui_width(&prefix, false);
-                cv.fill_clip(Rect::new(x, r.y + (INPUT_H - 20) / 2, 1, 20), fg, r);
+                if p.rep.as_ref().is_none_or(|rp| !rp.focus) {
+                    let prefix: String = p.field.text.chars().take(p.field.cursor).collect();
+                    let x = r.x + 46 + self.tx.ui_width(&prefix, false);
+                    cv.fill_clip(Rect::new(x, r.y + (INPUT_H - 20) / 2, 1, 20), fg, r);
+                }
                 cv.fill(Rect::new(r.x + 16, r.y + INPUT_H - 1, r.w - 32, 1), c.border);
+                if p.rep.is_some() {
+                    preplace::draw_replace_row(cv, &mut self.tx, &self.theme, r, p);
+                    cv.fill(Rect::new(r.x + 16, r.y + top - 1, r.w - 32, 1), c.border);
+                }
 
                 let mut rows = Vec::new();
                 // Mid-glide the list sits a fraction of a row past `p.scroll`: rows shift up by `off`
                 // px, one more row shows at the bottom and everything is clipped to the list.
                 let off = self.region_off(crate::scrollreg::Reg::Picker, ROW);
-                let lclip = Rect::new(r.x, r.y + INPUT_H, r.w, list_h);
+                let lclip = Rect::new(r.x, r.y + top, r.w, list_h);
                 for (k, (idx, pos)) in
                     p.filtered.iter().enumerate().skip(p.scroll).take(PICKER_ROWS + (off > 0) as usize)
                 {
                     let it = &p.items[*idx];
-                    let y = r.y + INPUT_H + 6 + (k - p.scroll) as i32 * ROW - off;
+                    let y = r.y + top + 6 + (k - p.scroll) as i32 * ROW - off;
                     let row_full = Rect::new(r.x + 8, y, r.w - 16, ROW);
                     let rr = row_full.intersect(&lclip);
                     if k == p.sel {
                         cv.fill_round_clip(row_full, 10, c.list_active_bg, lclip);
+                    }
+                    if let Some(h) = p.rep.as_ref().and_then(|rp| rp.hits.get(*idx)) {
+                        preplace::draw_preview(cv, &mut self.tx, &self.theme, rr, y + (ROW - 18) / 2, h, &it.detail);
+                        rows.push((rr, k));
+                        continue;
                     }
                     let avail = rr.w - 28;
                     let detail_w = if matches!(p.kind, PickKind::Commands | PickKind::Themes | PickKind::Choice)
@@ -255,15 +303,21 @@ impl App {
                 self.layout.overlay_rows = rows;
                 if p.filtered.len() > PICKER_ROWS {
                     picker_bar =
-                        Some((Rect::new(r.x, r.y + INPUT_H, r.w, list_h), p.filtered.len() as f64, p.scroll as f64));
+                        Some((Rect::new(r.x, r.y + top, r.w, list_h), p.filtered.len() as f64, p.scroll as f64));
                 }
                 if p.filtered.is_empty() {
                     let msg = if p.kind == PickKind::ProjectSearch && p.field.text.is_empty() {
                         "Type to search the project"
+                    } else if p.kind == PickKind::Problems && p.field.text.is_empty() {
+                        if project {
+                            "No problems in the project (Alt+W: open files)"
+                        } else {
+                            "No problems in open files (Alt+W: whole project)"
+                        }
                     } else {
                         "No results"
                     };
-                    self.tx.draw_ui(cv, r.x + 16, r.y + INPUT_H + 10, msg, dim, r, false);
+                    self.tx.draw_ui(cv, r.x + 16, r.y + top + 10, msg, dim, r, false);
                 }
             }
         }

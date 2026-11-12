@@ -260,7 +260,7 @@ impl Lay<'_> {
         }
         let mut ly = y;
         for line in lines {
-            let lw = line.last().map_or(0.0, |r| r.x + r.w).round() as i32;
+            let lw = line_right(&line).round() as i32;
             let ox = match align {
                 1 => ((w - lw) / 2).max(0),
                 2 => (w - lw).max(0),
@@ -363,7 +363,7 @@ impl Lay<'_> {
                 }
                 let avail = cw - 2 * CELL_PAD_X;
                 for (li, line) in lines.into_iter().enumerate() {
-                    let lw = line.last().map_or(0.0, |r| r.x + r.w).round() as i32;
+                    let lw = line_right(&line).round() as i32;
                     let ox = match align {
                         1 => ((avail - lw) / 2).max(0),
                         2 => (avail - lw).max(0),

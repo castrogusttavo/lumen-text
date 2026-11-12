@@ -37,12 +37,22 @@ pub struct DragSel {
     /// Block mode: anchor (line, visual column) and the cursors that were there before.
     pub block: (usize, usize),
     pub base: Vec<Sel>,
+    /// Middle button: a column selection once dragged, else (with `pending`) a paste on release.
+    pub middle: bool,
 }
 
 impl DragSel {
     /// Mouse press at char `p`. `clicks`: 1 single, 2 double (word), 3+ triple (line).
     pub fn press(d: &mut Doc, p: usize, clicks: u32, shift: bool) -> DragSel {
-        let mut ds = DragSel { kind: DragKind::Char, lo: p, hi: p, pending: false, block: (0, 0), base: Vec::new() };
+        let mut ds = DragSel {
+            kind: DragKind::Char,
+            lo: p,
+            hi: p,
+            pending: false,
+            block: (0, 0),
+            base: Vec::new(),
+            middle: false,
+        };
         match clicks {
             1 => {
                 let s = d.ed.sel;
@@ -101,7 +111,21 @@ impl DragSel {
         let base = d.ed.all_sels();
         d.ed.add_cursor_at(p);
         let (line, _) = d.buf.line_col(p);
-        DragSel { kind: DragKind::Block, lo: p, hi: p, pending: false, block: (line, vcol), base }
+        DragSel { kind: DragKind::Block, lo: p, hi: p, pending: false, block: (line, vcol), base, middle: false }
+    }
+
+    /// Shift+Alt+press at `pt` = (line, visual column): a column selection from the current box's
+    /// corner (or the primary cursor) to the pointer, replacing the other cursors; dragging resizes it.
+    pub fn press_box(d: &mut Doc, p: usize, pt: (usize, usize)) -> DragSel {
+        let anchor = d.ed.box_anchor(&d.buf);
+        d.ed.block_select(&d.buf, anchor, pt, &[], d.view.folds.hidden_ranges());
+        DragSel { kind: DragKind::Block, lo: p, hi: p, pending: false, block: anchor, base: Vec::new(), middle: false }
+    }
+
+    /// Middle press at char `p` / point `pt`: nothing changes yet. Dragging to another column or
+    /// line makes a column selection anchored here; a release without moving pastes (see `mouse_up`).
+    pub fn press_middle(p: usize, pt: (usize, usize)) -> DragSel {
+        DragSel { kind: DragKind::Block, lo: p, hi: p, pending: true, block: pt, base: Vec::new(), middle: true }
     }
 
     /// The pointer is now at char `p` (visual column `vcol`, unclamped, for blocks).
@@ -137,7 +161,13 @@ impl DragSel {
             }
             DragKind::Block => {
                 let (line, _) = d.buf.line_col(p);
-                d.ed.block_select(&d.buf, self.block, (line, vcol), &self.base);
+                if self.pending {
+                    if (line, vcol) == self.block {
+                        return;
+                    }
+                    self.pending = false;
+                }
+                d.ed.block_select(&d.buf, self.block, (line, vcol), &self.base, d.view.folds.hidden_ranges());
             }
         }
     }
@@ -168,9 +198,33 @@ pub struct InputState {
     pub sb_edge: crate::app_sidebar::SidebarEdge,
     /// Tab strip geometry and a tab being dragged to a new place.
     pub tabs: crate::app_tabdrag::TabStrip,
+    /// Touchpad pixels of a bound wheel combo (Ctrl+wheel zoom) not yet turned into a step.
+    pub wheel_acc: f64,
 }
 
 const HBAR_H: i32 = 12;
+/// Touchpad pixels per step of a bound wheel combo (a mouse wheel notch is one step).
+const WHEEL_STEP_PX: f64 = 50.0;
+
+/// Steps of a bound wheel combo for one event (positive = up): a notch is one, touchpad pixels
+/// add up in `acc` until they make a whole step (a reversal starts over).
+pub fn wheel_steps(delta: MouseScrollDelta, acc: &mut f64) -> i32 {
+    match delta {
+        MouseScrollDelta::LineDelta(_, y) => {
+            let n = y.round() as i32;
+            if n == 0 && y != 0.0 { y.signum() as i32 } else { n.clamp(-5, 5) }
+        }
+        MouseScrollDelta::PixelDelta(p) => {
+            if *acc != 0.0 && acc.signum() != p.y.signum() {
+                *acc = 0.0;
+            }
+            *acc += p.y;
+            let n = (*acc / WHEEL_STEP_PX).trunc();
+            *acc -= n * WHEEL_STEP_PX;
+            n as i32
+        }
+    }
+}
 
 impl App {
     /// The wheel event reduced to (dx, dy) positive = down / right. Shift turns vertical into
@@ -192,8 +246,79 @@ impl App {
         WheelIn { dx, dy, pixels }
     }
 
+    // ── mouse bindings (keybindings.json mouse combos, see `keymap::MOUSE_DEFAULTS`) ──
+
+    /// Back / forward side buttons: what the keymap binds to `mouse4` / `mouse5` (NavBack /
+    /// NavForward by default), or a combo for the shortcuts page while it records one.
+    pub fn mouse_side_button(&mut self, button: winit::event::MouseButton) {
+        let name = if button == winit::event::MouseButton::Back { "mouse4" } else { "mouse5" };
+        if self.settings_record_mouse(name) {
+            return self.request_redraw();
+        }
+        if !self.overlay.is_none() {
+            return;
+        }
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        if let Some(id) = self.keymap.lookup_mouse(ctrl, shift, alt, name).map(str::to_string) {
+            self.run_mouse_action(&id);
+        }
+    }
+
+    /// Run a mouse binding's target: a mouse-only action (`PastePrimary` pastes the primary
+    /// selection at the caret; `AddCursor` only means something on a click in the text, see
+    /// `mouse_down`) or any palette command id.
+    pub fn run_mouse_action(&mut self, id: &str) {
+        match id {
+            "none" | "AddCursor" => {}
+            "PastePrimary" => {
+                let text = self.clip.get_primary();
+                if let Some(d) = self.docs.get_mut(self.active) {
+                    d.ed.paste(&mut d.buf, &text);
+                    d.reveal = true;
+                }
+            }
+            _ => {
+                self.run_bound(id);
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// The wheel with a bound combo (`ctrl+wheelup` / `ctrl+wheeldown` zoom by default): runs the
+    /// command once per notch. True when the event was taken (it does not scroll then).
+    fn wheel_binding(&mut self, delta: MouseScrollDelta) -> bool {
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => y as f64,
+            MouseScrollDelta::PixelDelta(p) => p.y,
+        };
+        if dy == 0.0 {
+            return false;
+        }
+        if (ctrl || alt) && self.settings_record_mouse(if dy > 0.0 { "wheelup" } else { "wheeldown" }) {
+            return true;
+        }
+        let km = &self.keymap;
+        let up = km.lookup_mouse(ctrl, shift, alt, "wheelup").filter(|id| *id != "none").map(str::to_string);
+        let down = km.lookup_mouse(ctrl, shift, alt, "wheeldown").filter(|id| *id != "none").map(str::to_string);
+        if up.is_none() && down.is_none() {
+            self.inp.wheel_acc = 0.0;
+            return false;
+        }
+        let steps = wheel_steps(delta, &mut self.inp.wheel_acc);
+        if let Some(id) = if steps > 0 { up } else { down } {
+            for _ in 0..steps.unsigned_abs() {
+                self.run_mouse_action(&id);
+            }
+        }
+        true
+    }
+
     pub fn on_wheel(&mut self, delta: MouseScrollDelta) {
         let (x, y) = self.mouse;
+        if self.wheel_binding(delta) {
+            return self.request_redraw();
+        }
         if self.hover_wheel(delta) {
             return self.request_redraw();
         }
@@ -224,10 +349,10 @@ impl App {
         if self.panel_wheel(delta) {
             return self.request_redraw();
         }
-        if self.diff_wheel(delta) {
+        if self.merge_wheel(delta) || self.diff_wheel(delta) {
             return self.request_redraw();
         }
-        if self.md_wheel(delta) || self.split_wheel(delta) {
+        if self.img_wheel(delta) || self.md_wheel(delta) || self.split_wheel(delta) {
             return self.request_redraw();
         }
         self.hover = None;
@@ -464,11 +589,6 @@ impl App {
     // ── drag selection glue ──
 
     /// Visual column under window x for the active document (not clamped to the line length).
-    fn vcol_at(d: &Doc, x: f64) -> usize {
-        let bx = (d.rect.x + d.gutter_w()) as f64;
-        ((x - bx + d.left) / d.cell_w as f64).round().max(0.0) as usize
-    }
-
     /// Mouse press in the text (single / double / triple click, shift extends).
     pub fn drag_press(&mut self, p: usize, clicks: u32, shift: bool) {
         let Some(d) = self.docs.get_mut(self.active) else { return };
@@ -478,11 +598,38 @@ impl App {
 
     /// Alt+press: add a cursor, and a column selection if the pointer is dragged.
     pub fn drag_press_block(&mut self, p: usize) {
-        let x = self.mouse.0;
+        let (x, y) = self.mouse;
         let Some(d) = self.docs.get_mut(self.active) else { return };
-        let vcol = Self::vcol_at(d, x);
+        let (_, vcol) = d.box_point_at(x, y);
         self.inp.drag = Some(DragSel::press_block(d, p, vcol));
         self.dragging = true;
+    }
+
+    /// Shift+Alt+press: column selection from the cursor to the pointer (resized by dragging).
+    pub fn drag_press_box(&mut self, p: usize) {
+        let (x, y) = self.mouse;
+        let Some(d) = self.docs.get_mut(self.active) else { return };
+        let pt = d.box_point_at(x, y);
+        self.inp.drag = Some(DragSel::press_box(d, p, pt));
+        self.dragging = true;
+    }
+
+    /// Middle press in the text: a column selection when dragged, a paste of the primary
+    /// selection when released in place.
+    pub fn drag_press_middle(&mut self) {
+        let (x, y) = self.mouse;
+        let Some(d) = self.docs.get(self.active) else { return };
+        let p = d.pos_at(x, y);
+        let pt = d.box_point_at(x, y);
+        self.inp.drag = Some(DragSel::press_middle(p, pt));
+        self.dragging = true;
+    }
+
+    /// Ctrl+Shift+Alt+arrows: grow / shrink the column selection of the focused document.
+    pub fn column_select(&mut self, dl: isize, dc: isize) {
+        let Some(d) = self.docs.get_mut(self.active) else { return };
+        d.column_select(dl, dc);
+        d.reveal = true;
     }
 
     /// Extend the dragged selection to the pointer (clamped into the text area).
@@ -497,7 +644,7 @@ impl App {
             let px = x.clamp(bx, ((d.rect.right() - 1) as f64).max(bx));
             let py = y.clamp(d.rect.y as f64, ((d.rect.bottom() - 1) as f64).max(d.rect.y as f64));
             let p = d.pos_at(px, py);
-            let vcol = Self::vcol_at(d, px);
+            let (_, vcol) = d.box_point_at(px, py);
             ds.update(d, p, vcol);
         }
         self.inp.drag = Some(ds);
@@ -553,6 +700,7 @@ impl App {
         self.sidebar_edge_release();
         self.tab_drag_release();
         self.tree_drag_release();
+        self.diff_release();
         self.dragging_minimap = false;
         if self.regions.drag.take().is_some() {
             self.request_redraw();
@@ -565,9 +713,19 @@ impl App {
             self.request_redraw();
         }
         self.split_release();
+        self.img_release();
         if self.dragging {
             if let Some(ds) = self.inp.drag.take() {
-                if let Some(d) = self.docs.get_mut(self.active) {
+                if ds.middle && ds.pending {
+                    // A middle click that never moved: paste the primary selection there.
+                    let text = self.clip.get_primary();
+                    if let Some(d) = self.docs.get_mut(self.active) {
+                        d.ed.clear_extra();
+                        d.ed.click(&mut d.buf, ds.lo, false);
+                        d.ed.paste(&mut d.buf, &text);
+                        d.reveal = true;
+                    }
+                } else if let Some(d) = self.docs.get_mut(self.active) {
                     ds.release(d);
                 }
                 self.request_redraw();
@@ -723,6 +881,74 @@ mod tests {
         assert!(lines.contains(&(3, 1, 2)), "{lines:?}");
     }
 
+    fn box_lines(d: &Doc) -> Vec<(usize, usize, usize)> {
+        d.ed.all_sels()
+            .iter()
+            .map(|s| (d.buf.line_col(s.start()).0, d.buf.line_col(s.start()).1, d.buf.line_col(s.end()).1))
+            .collect()
+    }
+
+    #[test]
+    fn shift_alt_press_boxes_from_the_cursor_and_keeps_extending_it() {
+        let mut d = doc("abcdef\nabcdef\nabcdef\n");
+        d.ed.click(&mut d.buf, 1, false); // (0, 1)
+        let other = d.buf.pos(2, 0);
+        d.ed.extra.push(Sel::caret(other)); // an unrelated extra cursor goes away
+        let p = d.buf.pos(2, 4);
+        let mut ds = DragSel::press_box(&mut d, p, (2, 4));
+        assert_eq!(box_lines(&d), vec![(0, 1, 4), (1, 1, 4), (2, 1, 4)]);
+        let to = d.buf.pos(1, 2);
+        ds.update(&mut d, to, 2);
+        assert_eq!(box_lines(&d), vec![(0, 1, 2), (1, 1, 2)], "dragging resizes from the same corner");
+        ds.release(&mut d);
+        // Another Shift+Alt+click grows the same box.
+        let p = d.buf.pos(2, 5);
+        let _ = DragSel::press_box(&mut d, p, (2, 5));
+        assert_eq!(box_lines(&d), vec![(0, 1, 5), (1, 1, 5), (2, 1, 5)]);
+    }
+
+    #[test]
+    fn middle_drag_makes_a_column_selection_and_a_still_click_stays_a_paste() {
+        let mut d = doc("abcdef\nabcdef\nabcdef\n");
+        d.ed.click(&mut d.buf, 2, false);
+        let p = d.buf.pos(0, 1);
+        let mut ds = DragSel::press_middle(p, (0, 1));
+        assert_eq!(sel(&d), (2, 2), "nothing changes on press");
+        ds.update(&mut d, p, 1);
+        assert!(ds.pending && ds.middle, "same point: still a click (pasted on release)");
+        assert_eq!(sel(&d), (2, 2));
+        let to = d.buf.pos(2, 3);
+        ds.update(&mut d, to, 3);
+        assert!(!ds.pending);
+        assert_eq!(box_lines(&d), vec![(0, 1, 3), (1, 1, 3), (2, 1, 3)], "anchored at the press point");
+    }
+
+    #[test]
+    fn middle_click_pastes_the_primary_selection_and_middle_drag_does_not() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp, untitled};
+        let _g = lock();
+        let dir = tmp("middlebox");
+        let mut app = test_app(&dir);
+        let i = untitled(&mut app, "abcdef\nabcdef\nabcdef\n");
+        app.active = i;
+        app.clip.set_primary("XY");
+        app.inp.drag = Some(DragSel::press_middle(3, (0, 3)));
+        app.dragging = true;
+        app.mouse_up();
+        assert_eq!(app.docs[i].buf.to_string(), "abcXYdef\nabcdef\nabcdef\n");
+        // A drag that became a box pastes nothing.
+        let mut ds = DragSel::press_middle(1, (0, 1));
+        let d = &mut app.docs[i];
+        let to = d.buf.pos(1, 2);
+        ds.update(d, to, 2);
+        app.inp.drag = Some(ds);
+        app.dragging = true;
+        app.mouse_up();
+        assert_eq!(app.docs[i].buf.to_string(), "abcXYdef\nabcdef\nabcdef\n");
+        assert_eq!(app.docs[i].ed.all_sels().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn folded_doc() -> Doc {
         // 0 fn a() {  1     x();  2 }  3 fn b() {  4     y();  5 }  6 tail
         let mut d = doc("fn a() {\n    x();\n}\nfn b() {\n    y();\n}\ntail\n");
@@ -786,5 +1012,58 @@ mod tests {
         let mut ds = DragSel::press(&mut d, 3, 1, false);
         ds.update(&mut d, 200, 200);
         assert_eq!(sel(&d), (3, 200));
+    }
+
+    #[test]
+    fn bound_wheel_steps_per_notch_and_per_touchpad_distance() {
+        let mut acc = 0.0;
+        assert_eq!(wheel_steps(MouseScrollDelta::LineDelta(0.0, 1.0), &mut acc), 1);
+        assert_eq!(wheel_steps(MouseScrollDelta::LineDelta(0.0, -1.0), &mut acc), -1);
+        assert_eq!(wheel_steps(MouseScrollDelta::LineDelta(0.0, 0.3), &mut acc), 1, "a partial notch is a step");
+        assert_eq!(wheel_steps(MouseScrollDelta::LineDelta(0.0, 40.0), &mut acc), 5, "capped");
+        let px = |y: f64| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, y));
+        assert_eq!(wheel_steps(px(20.0), &mut acc), 0);
+        assert_eq!(wheel_steps(px(20.0), &mut acc), 0);
+        assert_eq!(wheel_steps(px(20.0), &mut acc), 1, "60 px make one step, 10 px stay");
+        assert!((acc - 10.0).abs() < 1e-9);
+        assert_eq!(wheel_steps(px(-30.0), &mut acc), 0, "a reversal starts over");
+        assert_eq!(wheel_steps(px(-30.0), &mut acc), -1);
+    }
+
+    #[test]
+    fn mouse_bindings_dispatch() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        let _g = lock();
+        let dir = tmp("mousebind");
+        let mut app = test_app(&dir);
+        // Ctrl+wheel zooms (one step per notch), the plain wheel does not.
+        let size = crate::ui::font_size();
+        app.mods = winit::keyboard::ModifiersState::CONTROL;
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, 1.0));
+        assert_eq!(crate::ui::font_size(), size + 1.0, "Ctrl+wheel up zooms in");
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -1.0));
+        assert_eq!(crate::ui::font_size(), size);
+        app.mods = winit::keyboard::ModifiersState::empty();
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, 1.0));
+        assert_eq!(crate::ui::font_size(), size, "the plain wheel scrolls");
+        // A user binding for the side button runs its command; "none" switches Ctrl+wheel off.
+        app.keymap = crate::keymap::Keymap::from_json(r#"{"mouse4": "ToggleSidebar", "ctrl+wheelup": "none"}"#);
+        let open = app.sidebar_open;
+        app.mouse_side_button(winit::event::MouseButton::Back);
+        assert_eq!(app.sidebar_open, !open);
+        app.mods = winit::keyboard::ModifiersState::CONTROL;
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, 1.0));
+        assert_eq!(crate::ui::font_size(), size, "disabled");
+        app.mods = winit::keyboard::ModifiersState::empty();
+        // The primary selection lands at the caret.
+        app.clip.set_primary("XY");
+        let d = &mut app.docs[0];
+        d.ed.click(&mut d.buf, 0, false);
+        app.active = 0;
+        app.run_mouse_action("PastePrimary");
+        let text = app.docs[0].buf.to_string();
+        assert!(text.starts_with("XYseed"), "{text}");
+        drop(app);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -15,24 +15,26 @@ impl App {
         }
     }
 
-    pub(super) fn compute_layout(&mut self) {
+    pub(crate) fn compute_layout(&mut self) {
         let (w, h) = (self.size.0 as i32, self.size.1 as i32);
         let sb = if self.sidebar_open { self.sidebar_w() } else { 0 };
-        self.layout.topbar = Rect::new(0, 0, w, TOP_H);
-        self.layout.sidebar = Rect::new(0, TOP_H, sb, h - STATUS_H - TOP_H);
+        // Zen mode and the View toggles can hide the top bar, tab bar, breadcrumbs and status bar.
+        let (top_h, tab_h, bread_h, status_h) = self.chrome_heights();
+        self.layout.topbar = Rect::new(0, 0, w, top_h);
+        self.layout.sidebar = Rect::new(0, top_h, sb, h - status_h - top_h);
         let rw = self.gitpanel_w();
-        self.layout.tabbar = Rect::new(sb, TOP_H, w - sb - rw, TAB_H);
-        let bread_h = if self.config.breadcrumbs { BREAD_H } else { 0 };
-        self.layout.bread = Rect::new(sb, TOP_H + TAB_H, (w - sb - rw).max(0), bread_h);
-        let avail = (h - TOP_H - TAB_H - bread_h - STATUS_H).max(0);
+        self.layout.tabbar = Rect::new(sb, top_h, w - sb - rw, tab_h);
+        self.layout.bread = Rect::new(sb, top_h + tab_h, (w - sb - rw).max(0), bread_h);
+        let avail = (h - top_h - tab_h - bread_h - status_h).max(0);
         let panel_h = if self.panel.open { self.panel.height.min(avail / 2).max(0) } else { 0 };
         let gap = if panel_h > 0 { CARD_M } else { 0 };
         let card_h = (avail - CARD_M - panel_h - gap).max(0);
-        self.layout.card = Rect::new(sb + CARD_M, TOP_H + TAB_H + bread_h, (w - sb - 2 * CARD_M - rw).max(0), card_h);
+        self.layout.card = Rect::new(sb + CARD_M, top_h + tab_h + bread_h, (w - sb - 2 * CARD_M - rw).max(0), card_h);
+        self.layout.card = self.zen_card(self.layout.card);
         self.layout.editor = self.layout.card;
         self.layout.panel =
-            Rect::new(sb + CARD_M, TOP_H + TAB_H + bread_h + card_h + gap, (w - sb - 2 * CARD_M - rw).max(0), panel_h);
-        self.layout.status = Rect::new(0, h - STATUS_H, w, STATUS_H);
+            Rect::new(sb + CARD_M, top_h + tab_h + bread_h + card_h + gap, (w - sb - 2 * CARD_M - rw).max(0), panel_h);
+        self.layout.status = Rect::new(0, h - status_h, w, status_h);
         self.split_layout();
     }
 
@@ -89,8 +91,12 @@ impl App {
         let editor = self.layout.editor;
         let find_ranges: Vec<(usize, usize)> = self.find.as_ref().map(|f| f.matches.clone()).unwrap_or_default();
         let find_cur = self.find.as_ref().and_then(|f| f.current);
+        // Zen mode hides the minimaps for this frame only (each document keeps its own switch).
+        let minimaps = self.zen_hide_minimaps();
         busy |= self.draw_split_other(cv, dt);
         crate::perf::lap!("split_other");
+        // Inline suggestion: follow the latest keystroke before the document draws its ghost text.
+        self.inline_sync();
         if let Some(d) = self.docs.get_mut(self.active) {
             d.cell_w = self.tx.cell_w;
             busy |= d.draw(
@@ -117,12 +123,24 @@ impl App {
             }
         }
 
+        self.draw_jump(cv);
+        self.zen_restore_minimaps(minimaps);
         crate::perf::lap!("doc.caret_end");
         busy |= self.draw_md(cv);
+        self.draw_merge(cv);
         crate::perf::lap!("md");
-        self.draw_topbar(cv);
+        // Hidden bars (zen mode, View toggles) draw nothing and keep no stale hit rects.
+        if self.layout.topbar.h > 0 {
+            self.draw_topbar(cv);
+        } else {
+            self.layout.top_btns.clear();
+        }
         crate::perf::lap!("topbar");
-        self.draw_tabs(cv);
+        if self.layout.tabbar.h > 0 {
+            self.draw_tabs(cv);
+        } else {
+            self.layout.tabs.clear();
+        }
         crate::perf::lap!("tabs");
         self.draw_breadcrumbs(cv);
         self.draw_diff(cv);
@@ -140,7 +158,12 @@ impl App {
         self.draw_tree_drag(cv);
         self.draw_tab_drag(cv);
         crate::perf::lap!("panels");
-        self.draw_status(cv);
+        if self.layout.status.h > 0 {
+            self.draw_status(cv);
+        } else {
+            self.layout.status_btns.clear();
+            self.layout.status_info.clear();
+        }
         crate::perf::lap!("status");
         // Re-aim the hover tint at what is under the pointer in this frame's layout: a closed or
         // switched tab, a deleted row or a toggled panel must not leave the old tint behind (a
@@ -310,6 +333,7 @@ impl App {
             r,
             true,
         );
+        self.draw_explorer_refresh(cv);
         if self.sidebar_mode == SidebarMode::Outline {
             self.draw_outline(cv);
             return self.draw_sidebar_bar(cv);
@@ -356,9 +380,17 @@ impl App {
             let fg = if dim { fg.with_alpha(0x60).over(c.sidebar_bg) } else { fg };
             // A name that does not fit before the git dot ends in "…"; scrolling right reveals it.
             let text_x = r.x + hx + indent + 38;
-            let room = crate::app_sidebar::name_room(r, text_x, false);
+            // Line coverage of the file, when a report is loaded, just before the git dot.
+            let cov = if row.is_dir { None } else { self.coverage_pct_of(&row.path) };
+            let cov_label = cov.map(|p| format!("{p:.0}%"));
+            let cov_w = cov_label.as_deref().map_or(0, |l| self.tx.ui_width_sized(l, false, 11.0) + 6);
+            let room = crate::app_sidebar::name_room(r, text_x, false) - cov_w;
             let name = crate::ui::fit_ellipsis(&mut self.tx, &row.name, room, false);
             self.tx.draw_ui(cv, text_x, y + (ROW_H - 18) / 2, &name, fg, body, false);
+            if let (Some(p), Some(l)) = (cov, cov_label.as_deref()) {
+                let col = self.coverage_color(p).with_alpha(0xc0).over(c.sidebar_bg);
+                self.tx.draw_ui_sized(cv, r.right() - 30 - cov_w, y + (ROW_H - 15) / 2, l, col, body, false, 11.0);
+            }
             if let Some(b) = badge {
                 // A quiet dot instead of a colored letter: modified / new / deleted.
                 let dot = match b {

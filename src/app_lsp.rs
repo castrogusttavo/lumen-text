@@ -78,6 +78,30 @@ pub(crate) fn parse_edits(v: &Value) -> Vec<LspEdit> {
     v.as_array().map(|a| a.iter().filter_map(parse_edit).collect()).unwrap_or_default()
 }
 
+/// One entry of a `textDocument/codeAction` answer as a menu item. A `CodeAction` with an edit
+/// applies it; one with only `data` / a `command` is resolved or executed when chosen; a bare
+/// `Command` (harper-ls: "Add … to the user dictionary") is executed when chosen. `server` names the
+/// registry server that answered, so the right one gets the follow-up request.
+fn code_action_item(a: &Value, server: Option<&str>) -> Option<Item> {
+    let title = a["title"].as_str()?;
+    let lazy = |mut a: Value| {
+        if let Some(n) = server {
+            a["__server"] = json!(n);
+        }
+        Action::WorkspaceEdit(json!({"__resolve": a}))
+    };
+    let action = if a["edit"].is_object() {
+        Action::WorkspaceEdit(a["edit"].clone())
+    } else if a["command"].is_string() {
+        lazy(json!({"title": title, "command": a}))
+    } else if a["data"].is_object() || a["command"].is_object() {
+        lazy(a.clone())
+    } else {
+        return None;
+    };
+    Some(Item { label: title.to_string(), detail: a["kind"].as_str().unwrap_or("").to_string(), action })
+}
+
 impl App {
     // ───────────── lifecycle ─────────────
 
@@ -374,7 +398,7 @@ impl App {
         }
     }
 
-    fn biome_index(&self, doc: usize) -> Option<usize> {
+    pub(crate) fn biome_index(&self, doc: usize) -> Option<usize> {
         let root = self.docs.get(doc)?.biome_root.clone().flatten()?;
         self.lsps.iter().position(|l| l.name == "biome" && l.root == root)
     }
@@ -425,6 +449,7 @@ impl App {
         let n = self.docs.len();
         self.lspx_sync_config();
         self.lspx_tick(now, want);
+        self.problems_tick(now, want);
         self.sync_mirrors();
         let mut pull: Vec<usize> = Vec::new(); // server indexes needing a diagnostics refresh
         let mut comp: Option<Option<char>> = None;
@@ -512,7 +537,7 @@ impl App {
                 }
             }
             // Inlay hints for the visible lines only (debounced), once the text is synced.
-            if self.config.inlay_hints && i == self.active && self.docs[i].changed_at.is_none() {
+            if self.config.inlay_hints_for(self.docs[i].lang) && i == self.active && self.docs[i].changed_at.is_none() {
                 self.inlay_tick(i, li, now, want);
             }
             // Outline for breadcrumbs / sticky scroll, once the text is synced.
@@ -615,7 +640,7 @@ impl App {
     fn on_inlay_hints(&mut self, uri: &str, version: i32, first: usize, last: usize, v: &Value) {
         let Some(i) = self.doc_by_uri(uri) else { return };
         let d = &mut self.docs[i];
-        if d.version != version || !self.config.inlay_hints {
+        if d.version != version || !self.config.inlay_hints_for(d.lang) {
             return;
         }
         let mut cache: Option<(usize, String)> = None;
@@ -676,6 +701,7 @@ impl App {
     }
 
     pub fn lsp_did_save(&mut self, i: usize) {
+        self.ws_after_save();
         if let (Some(lb), Some(uri)) = (self.biome_index(i), self.docs.get(i).and_then(|d| d.real_uri())) {
             self.lsps[lb].notify("textDocument/didSave", json!({"textDocument": {"uri": uri}}));
         }
@@ -741,6 +767,7 @@ impl App {
     }
 
     pub fn lsp_did_close(&mut self, i: usize) {
+        self.problems_keep_closing(i);
         self.biome_close(i);
         // Registry servers: didClose everywhere; they are stopped after an idle grace period.
         let was_generic = self.doc_lsp(i).is_some_and(|li| self.lsps[li].is_generic());
@@ -810,6 +837,13 @@ impl App {
                 let Some(what) = self.lsps[li].pending.remove(&id) else { return };
                 self.on_tokens(li, what, data);
             }
+            Msg::WsDiag { id, report } => {
+                let Some(what) = self.lsps[li].pending.remove(&id) else { return };
+                if let Pending::WorkspaceDiag { token } = what {
+                    self.ws_report(li, &token, report, true);
+                }
+            }
+            Msg::WsPartial { token, report } => self.ws_report(li, &token, report, false),
             Msg::Notification { method, params } => self.on_notification(li, &method, &params),
             Msg::Request { id, method, params } => self.on_server_request(li, id, &method, &params),
         }
@@ -825,6 +859,8 @@ impl App {
             }
             if li < self.lsps.len() {
                 let root = self.lsps[li].root.clone();
+                let name = self.lsps[li].name.clone();
+                self.lspx.problems.clear_source(&name);
                 crate::doc::unregister_mirror(&root);
                 self.lsps.remove(li);
                 for d in &mut self.docs {
@@ -910,6 +946,10 @@ impl App {
                 let root = self.lsps[li].root.clone();
                 json!([{"uri": path_to_uri(&root), "name": root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()}])
             }
+            "workspace/diagnostic/refresh" => {
+                self.ws_refresh_requested();
+                Value::Null
+            }
             _ => Value::Null,
         };
         self.lsps[li].respond(id, result);
@@ -927,9 +967,26 @@ impl App {
     /// Diagnostics from tsgo (`lint = None`), Biome (`Some(true)`), or a registry server whose id is
     /// `source` (`lint = Some(false)`: stored per server, merged by the document).
     pub(crate) fn set_diags_from(&mut self, uri: &str, items: &Value, lint: Option<bool>, source: &str) {
-        let Some(i) = self.doc_by_uri(uri) else { return };
+        let Some(i) = self.doc_by_uri(uri) else {
+            // A file that is not open (servers publish for the whole project): the Problems panel's
+            // project-wide store keeps it, bounded.
+            let key = match lint {
+                None => "tsgo",
+                Some(true) => "biome",
+                Some(false) => source,
+            };
+            return self.problems_store_closed(uri, key, lint == Some(false), items);
+        };
+        self.lspx.problems.generation += 1;
         let d = &mut self.docs[i];
         let mut out = Vec::new();
+        // Spelling is never an error: whatever a spell checker says shows as "info" (dotted underline).
+        let spell = crate::lspreg::is_spell_server(source);
+        if lint == Some(false) {
+            let with_data =
+                items.as_array().into_iter().flatten().filter(|it| !it["data"].is_null()).cloned().collect();
+            d.set_diag_data(source, with_data);
+        }
         for it in items.as_array().into_iter().flatten() {
             let r = &it["range"];
             let (Some(sl), Some(sc), Some(el), Some(ec)) = (
@@ -954,7 +1011,7 @@ impl App {
                 sc: c0,
                 el: l1,
                 ec: c1,
-                severity: it["severity"].as_u64().unwrap_or(1) as u8,
+                severity: if spell { 3 } else { it["severity"].as_u64().unwrap_or(1) as u8 },
                 message: it["message"].as_str().unwrap_or("").to_string(),
                 code,
                 source: if source.is_empty() {
@@ -974,6 +1031,16 @@ impl App {
     fn on_response(&mut self, li: usize, what: Pending, result: Result<Value, Value>) {
         if let Pending::Multi { kind, serial } = what {
             return self.lspx_on_multi(li, kind, serial, result.unwrap_or(Value::Null));
+        }
+        if matches!(what, Pending::Highlight { .. } | Pending::LinkedEditing { .. }) {
+            return self.assist_on_response(li, what, result);
+        }
+        if let Pending::WorkspaceDiag { token } = what {
+            // Answers normally arrive parsed as `Msg::WsDiag`; this is an error (cancelled...).
+            return self.ws_failed(li, &token, result.err());
+        }
+        if matches!(what, Pending::InlineCompletion { .. } | Pending::Copilot(_)) {
+            return self.inline_on_response(li, what, result);
         }
         if let (Pending::Initialize, Ok(v), true) = (&what, &result, self.lsps[li].is_generic()) {
             return self.lspx_initialized(li, v);
@@ -1149,7 +1216,13 @@ impl App {
                     self.say("action made no changes");
                 }
             }
-            Pending::ExecuteCommand | Pending::Multi { .. } => {}
+            Pending::ExecuteCommand
+            | Pending::Multi { .. }
+            | Pending::Highlight { .. }
+            | Pending::LinkedEditing { .. }
+            | Pending::WorkspaceDiag { .. }
+            | Pending::InlineCompletion { .. }
+            | Pending::Copilot(_) => {}
         }
     }
 
@@ -1419,23 +1492,7 @@ impl App {
 
     fn on_code_actions(&mut self, li: usize, v: &Value) {
         let server = self.lsps.get(li).filter(|l| l.is_generic()).map(|l| l.name.clone());
-        let mut items = Vec::new();
-        for a in v.as_array().into_iter().flatten() {
-            let Some(title) = a["title"].as_str() else { continue };
-            let action = if a["edit"].is_object() {
-                Action::WorkspaceEdit(a["edit"].clone())
-            } else if a["data"].is_object() || a["command"].is_object() {
-                // Resolved lazily when chosen.
-                let mut a = a.clone();
-                if let Some(n) = &server {
-                    a["__server"] = json!(n);
-                }
-                Action::WorkspaceEdit(json!({"__resolve": a}))
-            } else {
-                continue;
-            };
-            items.push(Item { label: title.to_string(), detail: a["kind"].as_str().unwrap_or("").to_string(), action });
-        }
+        let items = v.as_array().into_iter().flatten().filter_map(|a| code_action_item(a, server.as_deref())).collect();
         self.actions_response(items);
     }
 
@@ -2126,6 +2183,36 @@ impl App {
 #[cfg(test)]
 mod lang_tests {
     use super::*;
+
+    #[test]
+    fn code_actions_with_edits_commands_and_bare_commands_all_reach_the_menu() {
+        let resolve = |it: &Item| match &it.action {
+            Action::WorkspaceEdit(v) => v["__resolve"].clone(),
+            _ => Value::Null,
+        };
+        // typos-lsp / harper-ls: "Replace with" carries its edit (applied directly).
+        let fix = json!({"title": "Replace with: receive", "kind": "quickfix", "edit": {"changes": {}},
+            "command": {"title": "Record lint statistic", "command": "HarperRecordLint"}});
+        let it = code_action_item(&fix, Some("harper-ls")).unwrap();
+        assert_eq!((it.label.as_str(), it.detail.as_str()), ("Replace with: receive", "quickfix"));
+        assert!(matches!(&it.action, Action::WorkspaceEdit(v) if v.get("changes").is_some()));
+        // harper-ls: "Add to the user dictionary" is a bare Command, executed on the server that sent it.
+        let add = json!({"title": "Add \"recieve\" to the user dictionary.", "command": "HarperAddToUserDict",
+            "arguments": ["recieve", "file:///x/a.md"]});
+        let it = code_action_item(&add, Some("harper-ls")).unwrap();
+        let r = resolve(&it);
+        assert_eq!(r["command"]["command"], json!("HarperAddToUserDict"));
+        assert_eq!(r["command"]["arguments"], json!(["recieve", "file:///x/a.md"]));
+        assert_eq!(r["__server"], json!("harper-ls"));
+        // typos-lsp: a CodeAction that only has a command object.
+        let ignore = json!({"title": "Ignore `recieve` in the project", "command": {"command": "ignore-in-project",
+            "arguments": [{"typo": "recieve"}]}});
+        let r = resolve(&code_action_item(&ignore, Some("typos-lsp")).unwrap());
+        assert_eq!(r["command"]["command"], json!("ignore-in-project"));
+        // Nothing to do, or no title: not listed.
+        assert!(code_action_item(&json!({"title": "noop"}), None).is_none());
+        assert!(code_action_item(&json!({"command": "X"}), None).is_none());
+    }
 
     #[test]
     fn language_ids_follow_the_document_language() {

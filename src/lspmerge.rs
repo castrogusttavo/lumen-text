@@ -8,6 +8,9 @@
 //! * completion: lists are concatenated, primary first; an item that repeats a label+text already
 //!   offered is dropped; companion items remember their server (`__server`) so they resolve there.
 //! * code actions: all servers' actions are listed, duplicates by title dropped (see `app_lspx`).
+//! * document highlights: asked of every server that offers them; the first non-empty answer in
+//!   server order wins (the primary's whenever it has one). Linked editing asks the first server
+//!   that offers it, primary first (see `app_assist`).
 //! * definition, references, rename, formatting, symbols...: the primary only (formatting falls
 //!   through to the next server that can format when the primary cannot).
 
@@ -118,6 +121,15 @@ pub fn merge_completion(parts: &[(usize, String, Value)]) -> Value {
     json!({"isIncomplete": incomplete, "items": out})
 }
 
+/// Several servers' `documentHighlight` answers (order, name, answer): the first non-empty one by
+/// order (0 = primary), else `Null`. Occurrences of one symbol are not unioned across servers: two
+/// servers rarely agree on what a symbol is, and a mix would light unrelated words.
+pub fn merge_highlights(parts: &[(usize, String, Value)]) -> Value {
+    let mut sorted: Vec<&(usize, String, Value)> = parts.iter().collect();
+    sorted.sort_by_key(|p| p.0);
+    sorted.iter().find(|p| p.2.as_array().is_some_and(|a| !a.is_empty())).map_or(Value::Null, |p| p.2.clone())
+}
+
 /// Several servers' diagnostics for one document, deduplicated: same range and message once, first wins.
 pub fn dedupe_diags(sources: &[&[Diag]]) -> Vec<Diag> {
     let mut seen = std::collections::HashSet::new();
@@ -178,6 +190,20 @@ mod tests {
         // a lone answer is untouched
         let only = json!([{"label": "a"}]);
         assert_eq!(merge_completion(&[part(0, "x", only.clone()), part(1, "y", Value::Null)]), only);
+    }
+
+    #[test]
+    fn highlights_take_the_first_non_empty_answer_primary_first() {
+        let hl =
+            |l: u64| json!([{"range": {"start": {"line": l, "character": 0}, "end": {"line": l, "character": 1}}}]);
+        // Answers arrive in any order; the primary's wins when it has one.
+        let m = merge_highlights(&[part(2, "c", hl(2)), part(0, "a", hl(0)), part(1, "b", hl(1))]);
+        assert_eq!(m, hl(0));
+        // An empty or failed primary answer falls through to the next server.
+        let m = merge_highlights(&[part(1, "b", hl(1)), part(0, "a", json!([])), part(3, "d", Value::Null)]);
+        assert_eq!(m, hl(1));
+        assert_eq!(merge_highlights(&[part(0, "a", Value::Null)]), Value::Null);
+        assert_eq!(merge_highlights(&[]), Value::Null);
     }
 
     #[test]

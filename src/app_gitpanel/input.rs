@@ -6,11 +6,16 @@ impl App {
     pub fn gitpanel_key(&mut self, ev: &KeyIn) -> bool {
         let Some(mut gp) = self.gitpanel.take() else { return false };
         let consumed = if gp.focused { self.gp_key(&mut gp, ev) } else { false };
+        let pending = gp.pending.take();
         if gp.closed {
             self.git_detach_job(&mut gp);
             self.focus = crate::app::Focus::Editor;
         } else {
             self.gitpanel = Some(gp);
+        }
+        // Actions that open cards or prompts run with the panel back in place.
+        if let Some(act) = pending {
+            self.git_act(act);
         }
         consumed
     }
@@ -37,6 +42,7 @@ impl App {
                 || gp.force.take().is_some()
                 || gp.ask.take().is_some()
                 || std::mem::take(&mut gp.strategy_ask)
+                || !std::mem::take(&mut gp.selected).is_empty()
             {
             } else if gp.msg_focus && gp.tab == Tab::Changes && self.diff.is_none() {
                 gp.msg_focus = false;
@@ -64,13 +70,21 @@ impl App {
         if (ctrl || alt) && matches!(key, Key::Character(_)) {
             return Self::gp_pass(gp);
         }
-        let rows = gp.rows();
+        let at_cursor = gp.row_at(gp.cursor);
         match key {
             Key::Named(NamedKey::ArrowDown) => gp.move_cursor(1),
             Key::Named(NamedKey::ArrowUp) => gp.move_cursor(-1),
-            Key::Named(NamedKey::ArrowLeft) => gp.tab = Tab::Changes,
+            Key::Named(NamedKey::ArrowLeft) => {
+                if gp.tab != Tab::Changes {
+                    gp.tab = Tab::Changes;
+                    gp.cursor = 0;
+                }
+            }
             Key::Named(NamedKey::ArrowRight) => {
-                gp.tab = Tab::History;
+                if gp.tab != Tab::History {
+                    gp.tab = Tab::History;
+                    gp.cursor = 0;
+                }
                 if gp.commits.is_empty() {
                     gp.load_more();
                 }
@@ -83,23 +97,25 @@ impl App {
                 }
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(r) = rows.get(gp.cursor).copied() {
+                if let Some(r) = at_cursor {
                     self.gp_activate(gp, r);
                 }
             }
-            Key::Named(NamedKey::Space) => match rows.get(gp.cursor).copied() {
+            Key::Named(NamedKey::Space) => match at_cursor {
                 Some(Row::File(i)) => self.gp_toggle_stage(gp, i),
                 Some(Row::Header(g)) => self.gp_section(gp, g),
                 Some(r) => self.gp_activate(gp, r),
                 None => {}
             },
-            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
-                if let Some(Row::File(i)) = rows.get(gp.cursor).copied()
-                    && gp.changes[i].discardable()
-                {
-                    gp.confirm = Some(i);
+            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => match at_cursor {
+                Some(Row::File(i)) if gp.changes[i].discardable() => gp.confirm = Some(i),
+                Some(Row::Stash(i)) => {
+                    if let Some(e) = gp.stashes.get(i) {
+                        gp.pending = Some(GitAct::StashDropAsk { sha: e.sha.clone() });
+                    }
                 }
-            }
+                _ => {}
+            },
             Key::Named(NamedKey::PageUp | NamedKey::PageDown | NamedKey::Home | NamedKey::End)
                 if self.diff.is_some() =>
             {
@@ -169,12 +185,30 @@ impl App {
             && gp.top.is_some()
             && let Some(e) = gp.commits.get(i)
         {
-            let c = CommitRef { hash: e.hash.clone(), head: i == 0 };
-            if let Some(k) = gp.rows().iter().position(|r| *r == Row::Commit(i)) {
+            let branches =
+                gp.chips_of(i).iter().filter(|c| c.kind == ChipKind::Branch).map(|c| c.name.clone()).collect();
+            let c = CommitRef { hash: e.hash.clone(), head: gp.is_head(i), branches };
+            if let Some(k) = gp.index_of(Row::Commit(i)) {
                 gp.cursor = k;
             }
             gp.focused = true;
             self.git_open_commit_menu(c, (x as i32, y as i32));
+            return true;
+        }
+        // A changed file: the selection (or just this file) can be stashed from its menu.
+        if let Some(Hit::Row(i)) = gp.hit_at(x, y)
+            && let Some(top) = gp.top.clone()
+            && let Some(ch) = gp.changes.get(i)
+        {
+            if !gp.selected.contains(&ch.path) {
+                gp.selected.clear();
+                gp.sel_anchor = None;
+            }
+            let rels: Vec<String> =
+                if gp.selected.is_empty() { vec![ch.path.clone()] } else { gp.selected.iter().cloned().collect() };
+            gp.focused = true;
+            let paths = rels.iter().map(|r| top.join(r)).collect();
+            self.open_ctxmenu(crate::app_ctxmenu::Target::GitFiles(paths), (x as i32, y as i32));
             return true;
         }
         if gp.top.is_none() || gp.job.is_some() || gp.hit_at(x, y) != Some(Hit::Pull) {
@@ -205,6 +239,7 @@ impl App {
         // Card buttons run once the panel is back in place (they may reopen or refresh it).
         let mut deferred: Option<GitAct> = None;
         let mut undo = false;
+        let mut merge_path: Option<PathBuf> = None;
         if !inside {
             gp.focused = false;
             gp.msg_focus = false;
@@ -220,7 +255,7 @@ impl App {
             if !matches!(hit, Some(Hit::Msg)) {
                 gp.msg_focus = false;
             }
-            let rows = gp.rows();
+            let (ctrl, shift) = (self.mods.control_key(), self.mods.shift_key());
             match hit {
                 Some(Hit::Tab(t)) => {
                     gp.tab = t;
@@ -237,12 +272,36 @@ impl App {
                 Some(Hit::Close) => gp.closed = true,
                 Some(Hit::Check(i)) => self.gp_toggle_stage(&mut gp, i),
                 Some(Hit::Discard(i)) => gp.confirm = Some(i),
+                Some(Hit::Merge(i)) => {
+                    merge_path = gp.top.as_ref().zip(gp.changes.get(i)).map(|(t, c)| t.join(&c.path))
+                }
                 Some(Hit::ConfirmDiscard(i)) => self.gp_discard(&mut gp, i),
                 Some(Hit::Row(i)) => {
-                    if let Some(k) = rows.iter().position(|r| *r == Row::File(i)) {
+                    if let Some(k) = gp.index_of(Row::File(i)) {
                         gp.cursor = k;
                     }
-                    self.gp_open_diff_change(&mut gp, i);
+                    if ctrl || shift {
+                        gp.select_change(i, ctrl, shift);
+                    } else {
+                        gp.selected.clear();
+                        gp.sel_anchor = Some(i);
+                        self.gp_open_diff_change(&mut gp, i);
+                    }
+                }
+                Some(Hit::StashNew) => deferred = Some(GitAct::StashStart),
+                Some(Hit::Stash(i)) => self.gp_toggle_stash(&mut gp, i),
+                Some(Hit::StashApply(i) | Hit::StashPop(i)) => {
+                    let pop = matches!(hit, Some(Hit::StashPop(_)));
+                    deferred = gp.stashes.get(i).map(|e| GitAct::StashApply { sha: e.sha.clone(), pop });
+                }
+                Some(Hit::StashDrop(i)) => {
+                    deferred = gp.stashes.get(i).map(|e| GitAct::StashDropAsk { sha: e.sha.clone() });
+                }
+                Some(Hit::SFile(j)) => {
+                    if let Some(k) = gp.index_of(Row::SFile(j)) {
+                        gp.cursor = k;
+                    }
+                    self.gp_open_diff_stash(&mut gp, j);
                 }
                 Some(Hit::Section(g)) => self.gp_section(&mut gp, g),
                 Some(Hit::Msg) => {
@@ -285,13 +344,13 @@ impl App {
                 Some(Hit::Note) => gp.sync_note = None,
                 Some(Hit::CommitBtn) => self.gp_commit(&mut gp),
                 Some(Hit::Commit(i)) => {
-                    if let Some(k) = rows.iter().position(|r| *r == Row::Commit(i)) {
+                    if let Some(k) = gp.index_of(Row::Commit(i)) {
                         gp.cursor = k;
                     }
                     self.gp_toggle_commit(&mut gp, i);
                 }
                 Some(Hit::CFile(j)) => {
-                    if let Some(k) = rows.iter().position(|r| *r == Row::CFile(j)) {
+                    if let Some(k) = gp.index_of(Row::CFile(j)) {
                         gp.cursor = k;
                     }
                     self.gp_open_diff_commit(&mut gp, j);
@@ -310,6 +369,9 @@ impl App {
         }
         if undo {
             self.git_undo_commit();
+        }
+        if let Some(p) = merge_path {
+            self.merge_open(&p);
         }
         inside
     }

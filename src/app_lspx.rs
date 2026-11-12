@@ -48,8 +48,10 @@ pub struct Plan {
 
 #[derive(Default)]
 pub struct LspX {
-    /// The `language_servers` value the registry was built from (`None`: not built yet).
-    src: Option<Value>,
+    /// The `language_servers` value and `spell_check` setting the registry was built from (`None`: not built yet).
+    src: Option<(Value, bool)>,
+    /// The `inline_completion` setting it was built with (it switches the Copilot companion).
+    src_inline: bool,
     pub reg: Registry,
     pub health: HashMap<(String, PathBuf), Health>,
     plans: RefCell<HashMap<(PathBuf, Option<&'static str>), Rc<Plan>>>,
@@ -62,6 +64,10 @@ pub struct LspX {
     /// Last check for URIs no open document has (see `lspx_close_strays`).
     strays_at: Option<Instant>,
     pub timing: lspsup::Timing,
+    /// Diagnostics of files that are not open (Problems panel, whole-project scope).
+    pub problems: crate::problems::ProjectDiags,
+    /// In-flight `workspace/diagnostic` requests and the panel's refresh bookkeeping.
+    pub ws: crate::app_problems::WsState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,12 +126,17 @@ impl App {
 
     /// Rebuild the registry when `language_servers` changed in the configuration.
     pub(crate) fn lspx_sync_config(&mut self) {
-        if self.lspx.src.as_ref() == Some(&self.config.language_servers) {
+        let spell = self.config.spell_check;
+        let inline = self.config.inline_completion;
+        let same = self.lspx.src.as_ref().is_some_and(|(v, s)| *s == spell && *v == self.config.language_servers);
+        if same && self.lspx.src_inline == inline {
             return;
         }
         let first = self.lspx.src.is_none();
-        let reg = Registry::with_user(&self.config.language_servers);
-        self.lspx.src = Some(self.config.language_servers.clone());
+        let mut reg = Registry::with_options(&self.config.language_servers, spell);
+        crate::app_inline::gate_copilot(&mut reg, &self.config.language_servers, inline);
+        self.lspx.src_inline = inline;
+        self.lspx.src = Some((self.config.language_servers.clone(), spell));
         self.lspx.plans.borrow_mut().clear();
         if !reg.errors.is_empty() {
             let n = reg.errors.len();
@@ -133,8 +144,11 @@ impl App {
             self.say_for(format!("language_servers: {}{more}", reg.errors[0]), 10);
         }
         self.lspx.reg = reg;
-        if !first {
+        if !first && !same {
             self.lspx_restart_all();
+        } else if !first {
+            // Only inline completion was switched: the other servers keep running.
+            self.inline_copilot_switched();
         }
     }
 
@@ -156,10 +170,15 @@ impl App {
             .for_doc(d.lang, &key.0)
             .into_iter()
             .map(|s| {
-                let root = s.root_for(&key.0);
+                // One Copilot per project, not one per folder without a `.git`.
+                let root = if s.id == crate::app_inline::COPILOT && key.0.starts_with(&self.root) {
+                    self.root.clone()
+                } else {
+                    s.root_for(&key.0)
+                };
                 PlanEntry {
                     id: s.id.clone(),
-                    exe: lspreg::resolve_command(&s.command, &root),
+                    exe: s.resolve_for(&root),
                     primary: s.role == lspreg::Role::Primary,
                     root,
                 }
@@ -259,7 +278,14 @@ impl App {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let mut env = spec.env_for(&e.root);
         if !env.iter().any(|(k, _)| k == "PATH") {
-            env.push(("PATH".into(), lspreg::child_path(&exe).to_string_lossy().into_owned()));
+            let mut path = lspreg::child_path(&exe);
+            // An activated venv puts its executables first (what `source .venv/bin/activate` does).
+            if let Some((_, venv)) = env.iter().find(|(k, _)| k == "VIRTUAL_ENV") {
+                let bin = crate::pyenv::venv_bin(Path::new(venv));
+                let dirs = std::iter::once(bin).chain(std::env::split_paths(&path).collect::<Vec<_>>());
+                path = std::env::join_paths(dirs).unwrap_or(path);
+            }
+            env.push(("PATH".into(), path.to_string_lossy().into_owned()));
         }
         if exe.file_name().is_some_and(|n| n == "gopls") && !env.iter().any(|(k, _)| k == "GOMEMLIMIT") {
             env.push(("GOMEMLIMIT".into(), "512MiB".into()));
@@ -382,8 +408,9 @@ impl App {
     }
 
     /// Documents that were open on a server that is gone lose its diagnostics and must reopen.
-    fn lspx_forget_docs(&mut self, l: &Lsp) {
+    pub(crate) fn lspx_forget_docs(&mut self, l: &Lsp) {
         let Some(g) = &l.generic else { return };
+        self.lspx.problems.clear_source(&g.id);
         for i in 0..self.docs.len() {
             let Some(uri) = self.docs[i].real_uri() else { continue };
             if !l.open_uris.contains(&uri) {
@@ -583,6 +610,7 @@ impl App {
         self.lsps[li].log_line("app", &format!("initialized {server} {ver}"));
         self.say(format!("{id} ready"));
         self.lspx_rearm(li);
+        self.inline_on_server_ready(li);
     }
 
     /// Ask again for tokens, outline and diagnostics of the documents of server `li`
@@ -628,7 +656,7 @@ impl App {
                 }
             }
             "$/progress" => self.lspx_progress(li, params),
-            _ => {}
+            _ => self.inline_on_notification(li, method, params),
         }
         true
     }
@@ -698,7 +726,14 @@ impl App {
                 self.lspx_rearm(li);
                 Value::Null
             }
-            // window/workDoneProgress/create, window/showMessageRequest, window/showDocument...
+            "workspace/diagnostic/refresh" => {
+                self.lspx_rearm(li);
+                self.lsp_refresh_at = Some(Instant::now() + Duration::from_millis(100));
+                self.ws_refresh_requested();
+                Value::Null
+            }
+            "window/showDocument" => self.lsp_show_document(params),
+            // window/workDoneProgress/create, window/showMessageRequest...
             _ => Value::Null,
         };
         self.lsps[li].respond(rid.clone(), result);
@@ -774,7 +809,11 @@ impl App {
         let cs: Vec<usize> =
             self.lspx_open_companions(i).into_iter().filter(|&c| self.lsps[c].has_cap("codeActionProvider")).collect();
         for &c in &cs {
-            self.lsps[c].request("textDocument/codeAction", real_params(params, &real), Pending::CodeActions);
+            let mut p = real_params(params, &real);
+            if let Some(id) = self.lsps[c].generic.as_ref().map(|g| g.id.clone()) {
+                self.docs[i].with_diag_data(&id, &mut p["context"]["diagnostics"]);
+            }
+            self.lsps[c].request("textDocument/codeAction", p, Pending::CodeActions);
         }
         cs.len()
     }
@@ -870,6 +909,27 @@ impl App {
         self.lspx.told.clear();
         self.lspx.agg = None;
         self.lspx.dead_logs.clear();
+    }
+
+    /// Stop the running Python servers (another interpreter was picked); they start again with the
+    /// next tick, with the new settings.
+    pub fn lspx_restart_python(&mut self) {
+        let mut i = 0;
+        while i < self.lsps.len() {
+            let python = self.lsps[i]
+                .generic
+                .as_ref()
+                .is_some_and(|g| self.lspx.reg.get(&g.id).is_some_and(lspreg::ServerSpec::is_python));
+            if python {
+                let mut l = self.lsps.remove(i);
+                l.shutdown();
+                self.lspx_forget_docs(&l);
+            } else {
+                i += 1;
+            }
+        }
+        self.lspx.plans.borrow_mut().clear();
+        self.lspx.health.retain(|(id, _), _| self.lspx.reg.get(id).is_none_or(|s| !s.is_python()));
     }
 
     /// Turn a server on or off (writes `language_servers.<id>.enabled` to the config).
@@ -975,17 +1035,22 @@ impl App {
 impl App {
     /// Formatting from a companion server (ruff, a formatter-only server) when the primary has none.
     pub(crate) fn format_with_companion(&mut self, i: usize, wait: Duration) -> Option<crate::app_format::Fmt> {
-        use crate::app_format::Fmt;
         let cs: Vec<usize> = self
             .lspx_open_companions(i)
             .into_iter()
             .filter(|&c| self.lsps[c].has_cap("documentFormattingProvider"))
             .collect();
         let li = *cs.first()?;
+        Some(self.format_via(i, li, wait))
+    }
+
+    /// `textDocument/formatting` of document `i` by registry server `li` (which has it open).
+    pub(crate) fn format_via(&mut self, i: usize, li: usize, wait: Duration) -> crate::app_format::Fmt {
+        use crate::app_format::Fmt;
         let name = self.lsps[li].name.clone();
         self.flush(i);
         let d = &self.docs[i];
-        let uri = d.real_uri()?;
+        let Some(uri) = d.real_uri() else { return Fmt::NoFormatter };
         let tab = if d.ed.indent.contains('\t') { d.ed.tab_w } else { d.ed.indent.len().max(1) };
         let params = json!({
             "textDocument": {"uri": uri},
@@ -995,19 +1060,19 @@ impl App {
         let version = d.version;
         let v = match self.lsp_request_wait(li, "textDocument/formatting", params, wait) {
             Ok(v) => v,
-            Err(e) if e == crate::app_format::TIMEOUT => return Some(Fmt::TimedOut(name)),
-            Err(e) => return Some(Fmt::Failed(format!("{name}: {e}"))),
+            Err(e) if e == crate::app_format::TIMEOUT => return Fmt::TimedOut(name),
+            Err(e) => return Fmt::Failed(format!("{name}: {e}")),
         };
         if self.docs.get(i).is_none_or(|d| d.version != version) {
-            return Some(Fmt::Failed("the text changed during formatting".into()));
+            return Fmt::Failed("the text changed during formatting".into());
         }
         let edits = crate::app_lsp::parse_edits(&v);
         if edits.is_empty() {
-            return Some(Fmt::Same(name));
+            return Fmt::Same(name);
         }
         let before = self.docs[i].buf.to_string();
         self.docs[i].apply_lsp_edits(&edits);
-        Some(if self.docs[i].buf.to_string() == before { Fmt::Same(name) } else { Fmt::Changed(name) })
+        if self.docs[i].buf.to_string() == before { Fmt::Same(name) } else { Fmt::Changed(name) }
     }
 }
 
@@ -1509,6 +1574,10 @@ impl App {
 
     /// A change made on the settings page that belongs to this module. True when handled.
     pub fn lspx_apply_setting(&mut self, key: &str, v: &Value) -> bool {
+        if key == "problems_scope" {
+            self.set_problems_scope(v.as_str() == Some("project"));
+            return true;
+        }
         let Some(rest) = key.strip_prefix("language_servers.") else { return false };
         if let Some(id) = rest.strip_suffix(".enabled")
             && let Some(on) = v.as_bool()

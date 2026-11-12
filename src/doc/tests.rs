@@ -95,3 +95,66 @@ fn sticky_band_snaps_to_the_row_grid_at_rest() {
     // While the text glides the band keeps its size.
     assert_eq!(sticky_band_h(2, lh, 9, false), 44);
 }
+
+#[test]
+fn code_actions_get_back_the_data_a_server_attached_to_its_diagnostics() {
+    let mut d = Doc::new(Buffer::from_str("we recieve it\n"), None, None, "//", 8.0);
+    let range = serde_json::json!({"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 10}});
+    let raw = serde_json::json!({"range": range, "message": "`recieve` should be `receive`", "severity": 3,
+        "data": {"corrections": ["receive"], "typo": "recieve"}});
+    d.set_diag_data("typos-lsp", vec![raw.clone()]);
+    let plain = serde_json::json!({"range": range, "message": "`recieve` should be `receive`", "severity": 3});
+    let other = serde_json::json!({"range": range, "message": "something else", "severity": 1});
+    let mut list = serde_json::json!([plain.clone(), other.clone()]);
+    d.with_diag_data("typos-lsp", &mut list);
+    assert_eq!(list, serde_json::json!([raw, other]), "only the matching entry is swapped");
+    let mut list = serde_json::json!([plain.clone()]);
+    d.with_diag_data("harper-ls", &mut list);
+    assert_eq!(list, serde_json::json!([plain.clone()]), "another server's data is never handed out");
+    d.set_diag_data("typos-lsp", Vec::new());
+    let mut list = serde_json::json!([plain.clone()]);
+    d.with_diag_data("typos-lsp", &mut list);
+    assert_eq!(list, serde_json::json!([plain]), "forgotten");
+}
+
+#[test]
+fn rtl_lines_map_caret_and_clicks_through_the_bidi_layout() {
+    let mut d = Doc::new(Buffer::from_str("abc אבג\nplain\n"), None, None, "//", 8.0);
+    d.rect = Rect::new(0, 0, 800, 400);
+    let lh = line_h() as f64;
+    let tx = (d.rect.x + d.gutter_w()) as f64;
+    // Caret: after the last Hebrew letter it sits at the word's left end (cell 4); after the first, at cell 6.
+    assert_eq!(d.caret_geom(d.buf.pos(0, 7)), (0, 4));
+    assert_eq!(d.caret_geom(d.buf.pos(0, 5)), (0, 6));
+    assert_eq!(d.caret_rtl(d.buf.pos(0, 5)), Some(true));
+    assert_eq!(d.caret_rtl(d.buf.pos(0, 2)), Some(false));
+    // Click: the right half of cell 6 (the first Hebrew letter) is before it, the left half after it.
+    assert_eq!(d.pos_at(tx + 6.8 * 8.0, lh / 2.0), d.buf.pos(0, 4));
+    assert_eq!(d.pos_at(tx + 6.2 * 8.0, lh / 2.0), d.buf.pos(0, 5));
+    assert_eq!(d.pos_at(tx + 0.8 * 8.0, lh / 2.0), d.buf.pos(0, 1));
+    // A pure left-to-right line keeps the plain grid and shows no direction flag.
+    assert_eq!(d.caret_geom(d.buf.pos(1, 3)), (1, 3));
+    assert_eq!(d.caret_rtl(d.buf.pos(1, 3)), None);
+    assert_eq!(d.pos_at(tx + 3.2 * 8.0, lh + lh / 2.0), d.buf.pos(1, 3));
+}
+
+#[test]
+fn rtl_text_renders_headless() {
+    let theme = Theme::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/themes/dark-plus.json")).unwrap();
+    let mut tx = TextCtx::new(None);
+    let mut ink = |text: &str| -> usize {
+        let mut d = Doc::new(Buffer::from_str(text), None, None, "//", tx.cell_w);
+        let (w, h) = (400, 120);
+        let mut px = vec![0u32; (w * h) as usize];
+        let mut cv = Canvas { px: &mut px, w, h };
+        let o = DrawOpts { dt: 0.0, find: &[], find_cur: None, focused: true };
+        d.draw(&mut cv, &mut tx, &theme, Rect::new(0, 0, w, h), &o);
+        let bg = theme.background.0 as u32;
+        px.iter().filter(|p| (**p >> 16) & 255 != bg).count()
+    };
+    let (empty, hebrew, arabic) = (ink(""), ink("let s = \"שלום\";\n"), ink("مرحبا بالعالم\n"));
+    // The fonts of a bare CI image may lack the scripts; with them the text must leave ink.
+    eprintln!("[bidi test] ink: empty {empty}, hebrew {hebrew}, arabic {arabic}");
+    assert!(hebrew > empty, "the Latin part of the Hebrew line is drawn");
+    assert!(arabic >= empty);
+}

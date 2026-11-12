@@ -57,6 +57,10 @@ pub enum TipKey {
     Ai(crate::app_aipanel::AiHit),
     /// The Tests panel's target selector and the buttons a log-only target disables.
     Tests(crate::app_tests::Tip),
+    /// A tab or button of the terminal strip in the bottom panel.
+    Term(crate::app_terms::TermHit),
+    /// The explorer's refresh button and the "Polling (NFS)" hint.
+    Fs(crate::app_fswatch::FsTip),
 }
 
 /// Pointer-rest state (the text is resolved while drawing).
@@ -215,11 +219,21 @@ pub fn act_hint(act: Act) -> Option<&'static str> {
         Act::CloseAll => "Closes all tabs except pinned ones",
         Act::TogglePin => "Pinned tabs stay on the left and survive “Close All”",
         Act::Markdown => "Shows the rendered text beside the editor",
+        Act::LocalHistory => "Earlier versions of this file, kept on every save: compare and restore",
+        Act::NewWindow => {
+            "Opens this tab in a window of its own, unsaved changes included (or drag the tab out of the window)"
+        }
         Act::CherryPick => "Applies this commit's changes on top of the current branch (git cherry-pick)",
+        Act::Checkout => "Switches to the branch at this commit, or detaches HEAD there",
+        Act::Revert => "Adds a commit that undoes this one (git revert)",
+        Act::StashFiles => "Sets these changes aside (git stash push -- files); apply them later from the Stashes list",
         Act::BranchHere => "Creates a branch at this commit and switches to it",
         Act::TagHere => "Tags this commit (annotated when you give a message)",
         Act::UndoCommit => "Removes the last commit and keeps its changes staged (git reset --soft HEAD~1)",
         Act::Run("AiSendSelection") => "Mentions the selected lines (file#L3-9) in the connected Claude Code",
+        Act::Run("ReopenClosedTab") => {
+            "Reopens the most recently closed tab where it was: same pane, cursor and scroll"
+        }
         Act::CopyHash | Act::Run(_) => return None,
         Act::NewFile | Act::NewFolder | Act::Rename | Act::CloseTab => return None,
     })
@@ -303,7 +317,7 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 impl App {
-    fn shortcut_text(&self, id: &str) -> Option<String> {
+    pub(crate) fn shortcut_text(&self, id: &str) -> Option<String> {
         shortcut_in(&self.keymap.entries(), id)
     }
 
@@ -346,11 +360,17 @@ impl App {
         if let Some((r, t)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((TipKey::PanelTab(*t), *r, false));
         }
+        if let Some((r, h)) = self.terms_hit_at(x, y) {
+            return Some((TipKey::Term(h), r, false));
+        }
         if let Some((r, h)) = self.aipanel_tip_target(x, y) {
             return Some((TipKey::Ai(h), r, true));
         }
         if let Some((r, k)) = self.tests_tip_at(x, y) {
             return Some((TipKey::Tests(k), r, true));
+        }
+        if let Some((k, r, below)) = self.fswatch_tip_at(x, y) {
+            return Some((TipKey::Fs(k), r, below));
         }
         if let Some(gp) = &self.gitpanel
             && self.gitpanel_rect().contains(x, y)
@@ -408,6 +428,8 @@ impl App {
         match key {
             TipKey::Ai(h) => self.aipanel_tip(h),
             TipKey::Tests(k) => self.tests_tip(k),
+            TipKey::Term(h) => self.terms_tip(h),
+            TipKey::Fs(k) => self.fswatch_tip(k),
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
                 Some(s) => t(&s.name, None, Some(format!("{} · line {}", symbol_kind_name(s.kind), s.sl + 1))),
                 None => TipText::default(),
@@ -422,7 +444,18 @@ impl App {
                 };
                 t(&label.unwrap_or_default(), None, act_hint(act).map(str::to_string))
             }
-            TipKey::Top(MenuKind::Branch) => t("Switch branch", None, self.branch.clone()),
+            TipKey::Top(MenuKind::Branch) => match &self.gitbg.worktree_main {
+                Some(main) => t(
+                    "Switch branch",
+                    None,
+                    Some(format!(
+                        "{} · linked worktree of {}",
+                        self.branch.clone().unwrap_or_default(),
+                        crate::app_topbar::tilde(main)
+                    )),
+                ),
+                None => t("Switch branch", None, self.branch.clone()),
+            },
             TipKey::Top(_) => t("Switch project", None, Some(crate::app_topbar::tilde(&self.root))),
             TipKey::Tab(i) => match self.docs.get(i) {
                 Some(d) => {
@@ -520,13 +553,21 @@ impl App {
                 StatusBtn::Ai => t(
                     "AI agent",
                     self.shortcut_text("AiPanel"),
-                    Some(format!("{} — click to open the AI panel", self.ai.status.label())),
+                    Some(format!(
+                        "{} — click to open the AI panel",
+                        self.ai.badge().map_or_else(|| "Agent".to_string(), |(b, _)| b)
+                    )),
                 ),
-                StatusBtn::Language => t(
-                    "Change language…",
+                StatusBtn::Inline => {
+                    t("Inline completion", self.shortcut_text("InlineSuggest"), Some(self.inline_status_tip()))
+                }
+                StatusBtn::Language => self.language_tip(),
+                StatusBtn::Encoding => t(
+                    "Reopen or save with another encoding…",
                     None,
-                    self.docs.get(self.active).map(|d| format!("Current: {}", d.lang.unwrap_or("text"))),
+                    self.docs.get(self.active).map(|d| format!("Current: {}", d.buf.encoding.label())),
                 ),
+                StatusBtn::Project => self.projcfg_tip(),
             },
         }
     }
@@ -906,6 +947,7 @@ mod tests {
                 md: Some(false),
                 pinned: false,
                 has_path: true,
+                reopen: true,
             };
             for e in crate::app_ctxmenu::entries_for(&t, &f) {
                 if let crate::app_ctxmenu::Entry::Item { act, label, .. } = e {

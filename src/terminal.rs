@@ -1,9 +1,9 @@
 //! Integrated terminal: a PTY running the user's shell (or an agent CLI in the AI panel) plus an
 //! xterm-compatible emulator over `vte`: cursor movement, erase, scroll regions, SGR colors and
 //! attributes (bold, dim, italic, underline, strikethrough), wide characters, the alternate screen,
-//! mouse and focus reporting, synchronized output, cursor shapes and OSC titles / hyperlinks /
-//! clipboard / notifications. Sequences it does not implement (kitty keyboard, modifyOtherKeys...)
-//! are ignored instead of being misread as other commands.
+//! mouse and focus reporting, synchronized output, cursor shapes, OSC titles / hyperlinks /
+//! clipboard / notifications and the kitty keyboard protocol's flag stack (`kittykeys`). Sequences
+//! it does not implement (modifyOtherKeys...) are ignored instead of being misread as other commands.
 
 use crate::{
     lsp::Wake,
@@ -223,6 +223,8 @@ pub struct Grid {
     line_drawing: bool,
     /// Default foreground / background, for OSC 10 / 11 color queries.
     pub colors: (Rgba, Rgba),
+    /// Kitty keyboard protocol flags pushed by the program (one stack per screen).
+    pub keys: crate::kittykeys::KeyStack,
 }
 
 impl Grid {
@@ -262,7 +264,13 @@ impl Grid {
             last_char: None,
             line_drawing: false,
             colors: (Rgba(0xd4, 0xd4, 0xd4, 255), Rgba(0x1e, 0x1e, 0x1e, 255)),
+            keys: Default::default(),
         }
+    }
+
+    /// Kitty keyboard flags in effect on the current screen (0 = legacy key encoding).
+    pub fn kitty_flags(&self) -> u8 {
+        self.keys.flags(self.alt.is_some())
     }
 
     pub fn at(&self, r: usize, c: usize) -> Cell {
@@ -792,7 +800,11 @@ impl vte::Perform for Grid {
                 if matches!(action, 'h' | 'l') {
                     self.private_set(&p, action == 'h');
                 }
-                // `CSI ? u` (kitty keyboard query) and friends: unsupported, so no answer.
+                // `CSI ? u`: kitty keyboard query, answered with the flags in effect.
+                if action == 'u' {
+                    let f = self.kitty_flags();
+                    self.reply(&format!("\x1b[?{f}u"));
+                }
                 return;
             }
             // DECRQM for a private mode: 1 = set, 2 = reset, 0 = unknown.
@@ -822,12 +834,18 @@ impl vte::Perform for Grid {
                 return;
             }
             b">" if action == 'c' => return self.reply("\x1b[>0;10;1c"),
+            // Kitty keyboard protocol: push / pop / set the enhancement flags of this screen.
+            b">" if action == 'u' => return self.keys.push(self.alt.is_some(), first.min(255) as u8),
+            b"<" if action == 'u' => return self.keys.pop(self.alt.is_some(), get(0, 1)),
+            b"=" if action == 'u' => {
+                let mode = p.get(1).copied().unwrap_or(1);
+                return self.keys.set(self.alt.is_some(), first.min(255) as u8, mode);
+            }
             // XTVERSION.
             b">" if action == 'q' => return self.reply("\x1bP>|lumen-text\x1b\\"),
             b"!" if action == 'p' => return self.soft_reset(),
-            // Any other private marker or intermediate (`CSI > 4;2 m` modifyOtherKeys, `CSI > 1 u` /
-            // `CSI < u` kitty keyboard push / pop, ...): not supported, and never one of the plain
-            // commands below.
+            // Any other private marker or intermediate (`CSI > 4;2 m` modifyOtherKeys, ...): not
+            // supported, and never one of the plain commands below.
             _ => return,
         }
         match action {
@@ -1193,9 +1211,28 @@ impl Term {
         self.pty.write(bytes);
     }
 
+    /// The program's process id.
+    pub fn pid(&self) -> Option<u32> {
+        self.pty.pid()
+    }
+
     /// End the program (SIGHUP to its process group on Unix); its last screen stays readable.
     pub fn hangup(&mut self) {
         self.pty.hangup();
+    }
+
+    /// Name of the foreground process (the shell, or the command it is running), when known.
+    pub fn foreground_name(&self) -> Option<String> {
+        self.pty.foreground_name()
+    }
+
+    /// Command line of the job the shell is running in the foreground (`None` at the prompt, after
+    /// the program ended, and always on Windows).
+    pub fn foreground_job(&self) -> Option<String> {
+        if !self.alive {
+            return None;
+        }
+        self.pty.foreground_job()
     }
 
     /// Bytes the terminal itself sends (mouse / focus reports): no side effects on the view.
@@ -1467,11 +1504,35 @@ mod tests {
         assert_eq!((g.cy, g.cx), (1, 4), "kitty keyboard push is not restore-cursor");
         feed(&mut g, "\x1b[<u\x1b[=1;1u\x1b[?u");
         assert_eq!((g.cy, g.cx), (1, 4), "kitty pop / set / query leave the cursor alone");
-        assert!(g.replies.is_empty(), "no answer to the kitty query (not supported)");
+        assert_eq!(g.replies, b"\x1b[?1u".to_vec(), "the kitty query answers with the flags in effect");
         feed(&mut g, "x");
         assert_eq!(g.at(1, 4).flags, 0);
         feed(&mut g, "\x1b#8");
         assert_eq!((g.cy, g.cx), (1, 5), "ESC # 8 is not restore-cursor either");
+    }
+
+    #[test]
+    fn kitty_keyboard_flags_per_screen() {
+        let mut g = Grid::new(3, 10);
+        feed(&mut g, "\x1b[?u");
+        assert_eq!(g.replies, b"\x1b[?0u".to_vec(), "nothing pushed: legacy encoding");
+        g.replies.clear();
+        feed(&mut g, "\x1b[>1u");
+        assert_eq!(g.kitty_flags(), 1);
+        // A full-screen program pushes its own flags on the alternate screen; leaving it restores ours.
+        feed(&mut g, "\x1b[?1049h");
+        assert_eq!(g.kitty_flags(), 0, "the alternate screen starts with its own empty stack");
+        feed(&mut g, "\x1b[>11u\x1b[?u");
+        assert_eq!(g.replies, b"\x1b[?9u".to_vec(), "flag 2 (event types) is not implemented");
+        g.replies.clear();
+        feed(&mut g, "\x1b[=16;2u");
+        assert_eq!(g.kitty_flags(), 25);
+        feed(&mut g, "\x1b[?1049l");
+        assert_eq!(g.kitty_flags(), 1);
+        feed(&mut g, "\x1b[<u");
+        assert_eq!(g.kitty_flags(), 0);
+        feed(&mut g, "\x1b[>9u\x1bc");
+        assert_eq!(g.kitty_flags(), 0, "a full reset (RIS) drops the flags");
     }
 
     #[test]

@@ -35,13 +35,22 @@ impl App {
         let idx = if let Some(i) = self.docs.iter().position(|d| d.path() == Some(path.as_path())) {
             i
         } else {
-            let buf = match Buffer::open(&path) {
+            // Images open as a picture: a raster file is never read as text (see `imgview`).
+            let img = crate::imgview::kind_for(&path);
+            let buf = match img {
+                Some(crate::imgview::Kind::Raster) => Ok(crate::imgview::placeholder_buffer(&path)),
+                _ => Buffer::open(&path),
+            };
+            let mut buf = match buf {
                 Ok(b) => b,
                 Err(e) => {
                     self.say(format!("Could not open {}: {e}", path.display()));
                     return None;
                 }
             };
+            if img != Some(crate::imgview::Kind::Raster) {
+                self.undo_restore(&path, &mut buf);
+            }
             let lang = language_for(&path.to_string_lossy());
             let hl = lang.and_then(|l| self.tokenizer_for(l)).map(Highlighter::new);
             let comment = comment_prefix(&path.to_string_lossy());
@@ -52,8 +61,21 @@ impl App {
             doc.sticky = self.config.sticky_scroll;
             doc.lens_refs = self.config.code_lens_refs;
             doc.lens_impls = self.config.code_lens_impls;
-            doc.set_word_wrap(self.config.word_wrap);
-            doc.git_base = git::head_text(&path);
+            // Per-language overrides (`languages.<id>` in the settings files).
+            doc.set_word_wrap(self.config.word_wrap_for(lang));
+            if self.config.lang_override(lang, "tab_width").is_some() {
+                doc.ed.tab_w = self.config.tab_width_for(lang);
+            }
+            // `.editorconfig` is per file and wins over every settings layer.
+            crate::app_filefmt::apply_editorconfig(&mut doc);
+            self.assist_setup(&mut doc);
+            if img != Some(crate::imgview::Kind::Raster) {
+                doc.git_base = git::head_text(&path);
+            }
+            if let Some(k) = img {
+                doc.img = Some(Box::new(crate::imgview::ImgView::new(k, &path, self.wake())));
+                doc.buf.read_only = true; // an SVG opens on its picture
+            }
             self.docs.push(doc);
             self.docs.len() - 1
         };
@@ -108,27 +130,44 @@ impl App {
     }
 
     /// Watch the project root, every expanded folder of the tree, and the folders of open files.
+    /// Also the repository's git dir, and polling where inotify cannot be trusted (`fswatch_sync`).
     pub fn watch_dirs(&mut self) {
-        let Some(w) = self.watcher.as_mut() else { return };
-        let _ = w.watch_dir(&self.root);
-        for r in &self.tree.rows {
-            if r.is_dir && r.expanded {
-                let _ = w.watch_dir(&r.path);
+        // Folders inotify refused (watch limit): polled instead.
+        let mut refused: Vec<PathBuf> = Vec::new();
+        if let Some(w) = self.watcher.as_mut() {
+            let mut watch = |p: &Path| {
+                if let Err(e) = w.watch_dir(p)
+                    && crate::watcher::is_limit_error(&e)
+                {
+                    refused.push(p.to_path_buf());
+                }
+            };
+            watch(self.root.as_path());
+            // Settings files (live reload): `.lumen/` of the project and the user's config folder.
+            watch(self.root.join(crate::projcfg::DIR).as_path());
+            if let Some(d) = crate::config::default_path().as_deref().and_then(Path::parent) {
+                watch(d);
+            }
+            for r in &self.tree.rows {
+                if r.is_dir && r.expanded {
+                    watch(r.path.as_path());
+                }
+            }
+            for d in &self.docs {
+                if let Some(p) = d.path().and_then(Path::parent) {
+                    watch(p);
+                }
+            }
+            // A running language server needs to hear about every source file changing on disk, also in
+            // folders that are collapsed in the tree.
+            for l in &self.lsps {
+                if (l.name == "tsgo" || l.is_generic()) && !self.lsp_watched.contains(&l.root) {
+                    self.lsp_watched.push(l.root.clone());
+                    crate::watcher::watch_tree(w, &l.root, 4000);
+                }
             }
         }
-        for d in &self.docs {
-            if let Some(p) = d.path().and_then(Path::parent) {
-                let _ = w.watch_dir(p);
-            }
-        }
-        // A running language server needs to hear about every source file changing on disk, also in
-        // folders that are collapsed in the tree.
-        for l in &self.lsps {
-            if (l.name == "tsgo" || l.is_generic()) && !self.lsp_watched.contains(&l.root) {
-                self.lsp_watched.push(l.root.clone());
-                crate::watcher::watch_tree(w, &l.root, 4000);
-            }
-        }
+        self.fswatch_sync(refused);
     }
 
     /// React to file-system events: reload changed files right away and refresh the tree.
@@ -139,21 +178,22 @@ impl App {
                 evs.push(e);
             }
         }
+        // The poller's events join; `.git` events leave (they schedule a git check instead).
+        self.fswatch_drain(&mut evs);
         if evs.is_empty() {
             return;
         }
+        // Settings files: live reload (events of the user's config folder are not project files).
+        if self.projcfg_fs_events(&mut evs) {
+            return self.request_redraw();
+        }
         self.lsp_fs_events(&evs);
         self.last_disk_check = Instant::now() - Duration::from_secs(60);
-        if self.last_tree_refresh.elapsed() > Duration::from_millis(400) {
-            self.last_tree_refresh = Instant::now();
-            if evs.iter().any(|e| crate::ignore_filter::IgnoreFilter::is_ignore_file(&e.path)) {
-                self.tree.invalidate_ignore();
-            }
-            self.tree.rebuild();
-            self.file_index = None;
-            self.refresh_git_status();
-            self.watch_dirs();
+        if evs.iter().any(|e| crate::ignore_filter::IgnoreFilter::is_ignore_file(&e.path)) {
+            self.tree.invalidate_ignore();
         }
+        // Now, or at the end of the throttle window (never dropped).
+        self.fswatch_schedule_tree();
         self.request_redraw();
     }
 
@@ -176,9 +216,12 @@ impl App {
             self.say(format!("{n} has unsaved changes — close again to discard"));
             return;
         }
+        self.undo_persist(idx, false);
+        let closed = self.closed_tab_entry(idx);
         self.lsp_did_close(idx);
         self.docs.remove(idx);
         self.split_doc_removed(idx);
+        self.remember_closed(closed);
         self.close_armed = None;
         // The code hover, completion list and tooltip belong to the old layout: drop them now.
         self.hover = None;
@@ -193,11 +236,15 @@ impl App {
     }
 
     pub fn save_active(&mut self) {
+        if self.docs.get(self.active).is_some_and(|d| d.buf.no_write) {
+            return self.say("An image is not saved from its tab");
+        }
         if self.docs.get(self.active).is_some_and(|d| d.path().is_none()) {
             // Untitled document: nowhere to write yet, ask for a path.
             return self.ask_save_as(self.active, Vec::new(), None, String::new());
         }
         let warn = self.format_for_save(self.active);
+        self.whitespace_on_save(self.active);
         let Some(d) = self.docs.get_mut(self.active) else { return };
         let name = d.name.clone();
         match d.buf.save() {
@@ -207,6 +254,7 @@ impl App {
                 d.conflict = false;
                 let idx = self.active;
                 self.lsp_did_save(idx);
+                self.hist_snapshot(idx, crate::localhist::Source::Save);
                 self.refresh_git_status();
                 match warn {
                     Some(w) => self.say_for(format!("Saved {name}, but {w}"), 8),
@@ -214,20 +262,16 @@ impl App {
                 }
                 self.tests_on_save();
             }
+            Err(e) if crate::app_elevated::is_permission_denied(&e) => self.offer_elevated_save(self.active),
             Err(e) => self.say(format!("Error saving {name}: {e}")),
         }
     }
 
     // ── session ──
 
+    /// Per project root and window slot (see `app_window`).
     pub(super) fn session_path(&self) -> Option<PathBuf> {
-        let base = crate::paths::state_home()?;
-        let h = self
-            .root
-            .to_string_lossy()
-            .bytes()
-            .fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
-        Some(base.join("lumen-text").join(format!("session-{h:016x}.json")))
+        self.win_session_path()
     }
 
     pub fn save_session(&self) {
@@ -242,6 +286,9 @@ impl App {
                 if !d.marks.is_empty() {
                     entry["marks"] = serde_json::json!(d.marks);
                 }
+                if d.img.as_ref().is_some_and(|v| !v.preview) {
+                    entry["img_source"] = serde_json::json!(true); // an SVG left on its source
+                }
                 Some(entry)
             })
             .collect();
@@ -254,6 +301,7 @@ impl App {
         if let Some(sp) = self.split_session(&file_ix) {
             v["split"] = sp;
         }
+        self.win_session_save(&mut v);
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -264,6 +312,7 @@ impl App {
         let Some(path) = self.session_path() else { return };
         let Ok(text) = std::fs::read_to_string(path) else { return };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+        self.win_session_restore(&v);
         let mut opened: Vec<Option<usize>> = Vec::new();
         for f in v["files"].as_array().into_iter().flatten() {
             opened.push(None);
@@ -278,6 +327,9 @@ impl App {
                 let top = f["top"].as_f64().unwrap_or(0.0);
                 self.docs[i].pinned = f["pinned"].as_bool().unwrap_or(false);
                 self.docs[i].md_restore(f["md"].as_bool().unwrap_or(false));
+                if f["img_source"].as_bool() == Some(true) {
+                    self.docs[i].img_show_source();
+                }
                 self.apply_picks_json(i, f);
                 self.docs[i].marks = crate::bookmarks::from_json(&f["marks"], self.docs[i].buf.line_count());
                 self.docs[i].target = top;

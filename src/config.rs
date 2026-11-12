@@ -55,6 +55,9 @@ pub struct Config {
     /// How `Pull` integrates remote commits: "merge", "rebase", "ff-only", or "" = not chosen yet
     /// (git's own `pull.rebase` / `pull.ff` if set, else fast-forward only; a diverged pull asks).
     pub git_pull_strategy: String,
+    /// Folder new git worktrees go in (`~` and `{repo}` expanded; relative = to the main worktree);
+    /// empty = `<repo>/../<repo>-worktrees`. Each worktree is a sub-folder named after its branch.
+    pub git_worktree_dir: String,
     /// Columns a tab character spans in the editor (2, 4 or 8).
     pub tab_width: usize,
     /// Width in px of the Git panel when the user dragged its edge (0 = automatic).
@@ -80,9 +83,14 @@ pub struct Config {
     pub run_command: String,
     /// Markdown preview: download `http(s)` images (off keeps a placeholder card, for privacy).
     pub markdown_remote_images: bool,
+    /// Diff view: ignore whitespace changes (like `-w`) in hunks and intraline highlights.
+    pub diff_ignore_whitespace: bool,
     /// Hide what `.gitignore` (and the global ignore file and `.git/info/exclude`) ignores in the explorer;
     /// off shows those entries dimmed.
     pub explorer_hide_gitignored: bool,
+    /// AI panel: a desktop notification when a session waits for you or is done while Lumen is
+    /// not focused.
+    pub ai_notifications: bool,
     /// The user's `language_servers` object, kept verbatim (see `lspreg`); `Null` when absent.
     pub language_servers: Value,
     /// Buffer font: the code editor and everything monospace (terminal, output, diffs, code blocks).
@@ -107,6 +115,97 @@ pub struct Config {
     pub scrollbar: String,
     /// Master switch for every language server (see `App::lsp_enabled`).
     pub enable_lsp: bool,
+    /// Local history: a snapshot of a file on every save and before a reload from disk (see
+    /// `localhist`), at most `local_history_max_entries` per file (1..=1000).
+    pub local_history: bool,
+    pub local_history_max_entries: usize,
+    /// Quitting keeps unsaved buffers (untitled ones too) and reopens them next time instead of
+    /// asking to save; they are also backed up a moment after each edit, for crashes (`backup.rs`).
+    pub hot_exit: bool,
+    /// Keep each file's undo history after it is closed, while its text stays the same (`undo_store.rs`).
+    pub persistent_undo: bool,
+    /// Interval in ms of the polling fallback used where inotify cannot be trusted (NFS, SMB, FUSE,
+    /// 9p, FAT/exFAT, watch limit reached); at least `poller::MIN_MS`.
+    pub watcher_poll_ms: u64,
+    /// Draw spaces and tabs: "none" (default), "boundary", "trailing" or "all" (see `whitespace`).
+    pub render_whitespace: String,
+    /// On save: strip spaces/tabs at line ends (Markdown is skipped unless `.editorconfig` asks)
+    /// and end the file with a line break. `.editorconfig` overrides both per file.
+    pub trim_trailing_whitespace: bool,
+    pub insert_final_newline: bool,
+    /// Per-language overrides, kept verbatim: `{"python": {"tab_width": 4, "format_on_save": true}}`
+    /// (see `projcfg::LANG_KEYS` and `Config::tab_width_for` & co.); `Null` when absent.
+    pub languages: Value,
+    /// Where the values came from (user file, `.lumen/config.json`, `.lumen/config.local.json`) so
+    /// `save` writes each change to the right file; empty for a plain user config. Never compared.
+    pub layers: crate::projcfg::Layers,
+    /// Columns of the thin vertical rulers (empty = none); see `assist::parse_rulers`.
+    pub rulers: Vec<usize>,
+    /// Inline diagnostics after the code: "off", "current_line" (default) or "all".
+    pub inline_diagnostics: String,
+    /// Layout toggles, zen mode, explorer order and buffer font features (see [`ViewPrefs`]).
+    pub view: ViewPrefs,
+    /// Spell checking through the companion servers harper-ls and typos-lsp (when installed).
+    pub spell_check: bool,
+    /// Problems panel scope: "open_files" (default) or "project" (whole-project diagnostics).
+    pub problems_scope: String,
+    /// Which formatter wins per language id ("*" = every language): "auto" (default: the project's
+    /// Biome / Prettier, then the language server), "biome", "prettier", "lsp", "lsp:<server>",
+    /// "none". See [`clean_formatter`].
+    pub formatter: BTreeMap<String, String>,
+    /// Code action kinds run (in order) before formatting on save, per language id ("*" = every
+    /// language), e.g. `["source.organizeImports", "source.fixAll"]`.
+    pub code_actions_on_save: BTreeMap<String, Vec<String>>,
+    /// Inline completions (ghost text) from language servers that offer them; also starts GitHub
+    /// Copilot's `copilot-language-server` when it is installed (see `app_inline`).
+    pub inline_completion: bool,
+    /// Paragraph direction of lines with right-to-left text (see `bidi`): "auto" (the first strong
+    /// char decides, the default) or "ltr" (always left to right; RTL runs are still reordered).
+    pub bidi_paragraph: String,
+}
+
+/// `problems_scope` values; anything else is "open_files".
+pub fn normalize_problems_scope(v: Option<&str>) -> String {
+    if v == Some("project") { "project".into() } else { "open_files".into() }
+}
+
+/// A `formatter` value, or `None` when it names no known formatter.
+pub fn clean_formatter(v: &str) -> Option<String> {
+    let v = v.trim();
+    match v {
+        "auto" | "none" | "biome" | "prettier" | "lsp" => Some(v.to_string()),
+        _ => v.strip_prefix("lsp:").map(str::trim).filter(|n| !n.is_empty()).map(|n| format!("lsp:{n}")),
+    }
+}
+
+/// `formatter` from config.json: one string for every language or a map of language id to value.
+fn parse_formatter(v: &Value) -> BTreeMap<String, String> {
+    match v {
+        Value::String(s) => clean_formatter(s).map(|f| BTreeMap::from([("*".to_string(), f)])).unwrap_or_default(),
+        Value::Object(o) => {
+            o.iter().filter_map(|(k, x)| Some((k.trim().to_string(), clean_formatter(x.as_str()?)?))).collect()
+        }
+        _ => BTreeMap::new(),
+    }
+}
+
+/// `code_actions_on_save` from config.json: a list for every language or a map of language id to list.
+fn parse_code_actions(v: &Value) -> BTreeMap<String, Vec<String>> {
+    let list = |a: &Value| -> Option<Vec<String>> {
+        let kinds: Vec<String> = a
+            .as_array()?
+            .iter()
+            .filter_map(|k| k.as_str().map(str::trim).filter(|k| !k.is_empty()).map(str::to_string))
+            .collect();
+        Some(kinds)
+    };
+    match v {
+        Value::Array(_) => {
+            list(v).filter(|l| !l.is_empty()).map(|l| BTreeMap::from([("*".to_string(), l)])).unwrap_or_default()
+        }
+        Value::Object(o) => o.iter().filter_map(|(k, x)| Some((k.trim().to_string(), list(x)?))).collect(),
+        _ => BTreeMap::new(),
+    }
 }
 
 /// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
@@ -142,11 +241,12 @@ pub const STATUS_ITEMS: &[(&str, &str, bool)] = &[
     ("position", "Line and column", false),
     ("indent", "Indentation", false),
     ("language", "Language", false),
+    ("encoding", "Encoding", false),
 ];
 
 /// The bottom bar items of the right-hand group in their default order, left to right. They can
 /// be reordered with `Config::status_order` (config.json) or the settings modal.
-pub const STATUS_RIGHT: &[&str] = &["position", "indent", "language", "terminal", "debug", "git", "ram"];
+pub const STATUS_RIGHT: &[&str] = &["position", "indent", "encoding", "language", "terminal", "debug", "git", "ram"];
 
 /// The left-hand group in its default order (sidebar toggle, project search, problems).
 pub const STATUS_LEFT: &[&str] = &["sidebar", "search", "problems"];
@@ -164,13 +264,24 @@ fn normalize_order(list: &[String], all: &[&str]) -> Vec<String> {
             out.push(id.clone());
         }
     }
-    for id in all {
+    for id in all.iter().filter(|id| !LATE_ITEMS.contains(*id)) {
         if !out.iter().any(|o| o == id) {
             out.push((*id).to_string());
         }
     }
+    // Items added in a later version go right after their default left neighbour, so an order
+    // stored before they existed gains them where they belong instead of at the far end.
+    for (k, id) in all.iter().enumerate().filter(|(_, id)| LATE_ITEMS.contains(*id)) {
+        if !out.iter().any(|o| o == id) {
+            let at = k.checked_sub(1).and_then(|p| out.iter().position(|o| o == all[p])).map_or(out.len(), |p| p + 1);
+            out.insert(at, (*id).to_string());
+        }
+    }
     out
 }
+
+/// Bottom bar items that came after `status_order` was first stored (see `normalize_order`).
+const LATE_ITEMS: &[&str] = &["encoding"];
 
 /// `list` cleaned up into a permutation of [`STATUS_RIGHT`]: unknown ids and repeats are dropped
 /// and the missing ones are appended in their default order.
@@ -230,6 +341,7 @@ impl Default for Config {
             status_order: normalize_status_order(&[]),
             status_left_order: normalize_left_order(&[]),
             git_pull_strategy: String::new(),
+            git_worktree_dir: String::new(),
             tab_width: 4,
             git_panel_width: 0,
             sidebar_width: crate::app::SIDEBAR_W,
@@ -241,8 +353,10 @@ impl Default for Config {
             build_command: String::new(),
             run_command: String::new(),
             markdown_remote_images: true,
+            diff_ignore_whitespace: false,
             test_watch: false,
             explorer_hide_gitignored: true,
+            ai_notifications: true,
             language_servers: Value::Null,
             buffer_font_family: String::new(),
             buffer_font_size: 14.0,
@@ -259,6 +373,25 @@ impl Default for Config {
             show_breakpoints: true,
             scrollbar: "never".into(),
             enable_lsp: true,
+            local_history: true,
+            local_history_max_entries: crate::localhist::DEFAULT_MAX_ENTRIES,
+            hot_exit: true,
+            persistent_undo: true,
+            watcher_poll_ms: crate::poller::DEFAULT_MS,
+            render_whitespace: "none".into(),
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
+            languages: Value::Null,
+            layers: Default::default(),
+            rulers: Vec::new(),
+            inline_diagnostics: "current_line".into(),
+            view: ViewPrefs::default(),
+            spell_check: false,
+            problems_scope: "open_files".into(),
+            formatter: BTreeMap::new(),
+            code_actions_on_save: BTreeMap::new(),
+            inline_completion: false,
+            bidi_paragraph: "auto".into(),
         }
     }
 }
@@ -390,6 +523,20 @@ impl Config {
         list[..slot].iter().filter(|s| self.status_visible(s)).count() + 1
     }
 
+    /// The `formatter` choice for a language id: its own entry, else "*", else "auto".
+    pub fn formatter_for(&self, lang: Option<&str>) -> &str {
+        lang.and_then(|l| self.formatter.get(l)).or_else(|| self.formatter.get("*")).map_or("auto", String::as_str)
+    }
+
+    /// The code action kinds to run on save for a language id: its own list (an empty one switches
+    /// them off), else the "*" list.
+    pub fn code_actions_for(&self, lang: Option<&str>) -> &[String] {
+        lang.and_then(|l| self.code_actions_on_save.get(l))
+            .or_else(|| self.code_actions_on_save.get("*"))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     /// Does the sidebar / tab bar / status bar use the theme's own colors?
     pub fn own_chrome(&self) -> bool {
         self.theme_chrome == "theme"
@@ -404,6 +551,11 @@ impl Config {
     }
 }
 
+/// `watcher_poll_ms` from the file: the default when missing, never below `poller::MIN_MS`, at most a minute.
+pub fn clean_poll_ms(v: Option<u64>) -> u64 {
+    v.map_or(crate::poller::DEFAULT_MS, |n| n.clamp(crate::poller::MIN_MS, 60_000))
+}
+
 pub fn default_path() -> Option<PathBuf> {
     let base = crate::paths::config_home()?;
     Some(base.join("lumen-text").join("config.json"))
@@ -413,6 +565,11 @@ impl Config {
     pub fn load_from(path: &Path) -> Config {
         let Ok(text) = std::fs::read_to_string(path) else { return Config::default() };
         let Ok(v) = serde_json::from_str::<Value>(&text) else { return Config::default() };
+        Config::from_value(&v)
+    }
+
+    /// Parse (validate and clamp) a configuration object; missing keys take their defaults.
+    pub fn from_value(v: &Value) -> Config {
         Config {
             theme: v["theme"].as_str().map(str::to_string),
             format_on_save: v["format_on_save"].as_bool().unwrap_or(false),
@@ -468,6 +625,7 @@ impl Config {
                     .unwrap_or_default(),
             ),
             git_pull_strategy: clean_pull_strategy(v["git_pull_strategy"].as_str().unwrap_or("")),
+            git_worktree_dir: v["git_worktree_dir"].as_str().unwrap_or("").trim().to_string(),
             tab_width: clean_tab_width(v["tab_width"].as_u64().unwrap_or(4) as usize),
             git_panel_width: v["git_panel_width"].as_i64().map_or(0, |n| n.clamp(0, 4000) as i32),
             sidebar_width: v["sidebar_width"]
@@ -482,7 +640,9 @@ impl Config {
             build_command: v["build_command"].as_str().unwrap_or("").trim().to_string(),
             run_command: v["run_command"].as_str().unwrap_or("").trim().to_string(),
             markdown_remote_images: v["markdown_remote_images"].as_bool().unwrap_or(true),
+            diff_ignore_whitespace: v["diff_ignore_whitespace"].as_bool().unwrap_or(false),
             explorer_hide_gitignored: v["explorer_hide_gitignored"].as_bool().unwrap_or(true),
+            ai_notifications: v["ai_notifications"].as_bool().unwrap_or(true),
             language_servers: v.get("language_servers").cloned().unwrap_or(Value::Null),
             scroll_speed: v["scroll_speed"].as_f64().map_or(1.0, |f| f as f32).clamp(0.1, 5.0),
             ui_scale: v["ui_scale"].as_f64().map_or(0.0, |f| f as f32).clamp(0.0, 4.0),
@@ -521,6 +681,29 @@ impl Config {
                 (_, s) => normalize_scrollbar(s),
             },
             enable_lsp: v["enable_lsp"].as_bool().unwrap_or(true),
+            local_history: v["local_history"].as_bool().unwrap_or(true),
+            local_history_max_entries: v["local_history_max_entries"]
+                .as_u64()
+                .map_or(crate::localhist::DEFAULT_MAX_ENTRIES, |n| n.clamp(1, 1000) as usize),
+            hot_exit: v["hot_exit"].as_bool().unwrap_or(true),
+            persistent_undo: v["persistent_undo"].as_bool().unwrap_or(true),
+            watcher_poll_ms: clean_poll_ms(v["watcher_poll_ms"].as_u64()),
+            render_whitespace: crate::whitespace::normalize(v["render_whitespace"].as_str()),
+            trim_trailing_whitespace: v["trim_trailing_whitespace"].as_bool().unwrap_or(false),
+            insert_final_newline: v["insert_final_newline"].as_bool().unwrap_or(false),
+            languages: v.get("languages").filter(|l| l.is_object()).cloned().unwrap_or(Value::Null),
+            layers: Default::default(),
+            rulers: crate::assist::parse_rulers(&v["rulers"]),
+            inline_diagnostics: crate::assist::InlineDiags::from_name(v["inline_diagnostics"].as_str().unwrap_or(""))
+                .name()
+                .to_string(),
+            view: ViewPrefs::from_json(v),
+            spell_check: v["spell_check"].as_bool().unwrap_or(false),
+            problems_scope: normalize_problems_scope(v["problems_scope"].as_str()),
+            formatter: parse_formatter(&v["formatter"]),
+            code_actions_on_save: parse_code_actions(&v["code_actions_on_save"]),
+            inline_completion: v["inline_completion"].as_bool().unwrap_or(false),
+            bidi_paragraph: crate::bidi::normalize(v["bidi_paragraph"].as_str()),
         }
     }
 
@@ -532,6 +715,11 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        std::fs::write(path, serde_json::to_string_pretty(&self.to_json()).unwrap_or_default())
+    }
+
+    /// Every setting as the JSON object `save_to` writes (`from_value(&c.to_json()) == c`).
+    pub fn to_json(&self) -> Value {
         let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "lsp_narrow": self.lsp_narrow, "lsp_lean_v": 2, "lsp_auto_lean": self.lsp_auto_lean, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch});
         // Split in two: one `json!` this long hits the macro recursion limit.
         let fonts = json!({"buffer_font_family": self.buffer_font_family, "buffer_font_size": self.buffer_font_size, "buffer_font_weight": self.buffer_font_weight, "buffer_line_height": self.buffer_line_height, "buffer_font_ligatures": self.buffer_font_ligatures, "ui_font_family": self.ui_font_family, "ui_font_size": self.ui_font_size, "ui_font_weight": self.ui_font_weight, "ui_line_height": self.ui_line_height, "ui_font_ligatures": self.ui_font_ligatures, "show_line_numbers": self.show_line_numbers, "show_bookmarks": self.show_bookmarks, "show_breakpoints": self.show_breakpoints, "scrollbar": self.scrollbar, "enable_lsp": self.enable_lsp});
@@ -546,13 +734,46 @@ impl Config {
         v["build_command"] = json!(self.build_command);
         v["run_command"] = json!(self.run_command);
         v["markdown_remote_images"] = json!(self.markdown_remote_images);
+        v["ai_notifications"] = json!(self.ai_notifications);
+        v["diff_ignore_whitespace"] = json!(self.diff_ignore_whitespace);
+        v["spell_check"] = json!(self.spell_check);
+        v["inline_completion"] = json!(self.inline_completion);
         v["sidebar_width"] = json!(self.sidebar_width);
+        v["git_worktree_dir"] = json!(self.git_worktree_dir);
         v["scrollbar_v"] = json!(2);
-        std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default())
+        v["local_history"] = json!(self.local_history);
+        v["local_history_max_entries"] = json!(self.local_history_max_entries);
+        v["hot_exit"] = json!(self.hot_exit);
+        v["persistent_undo"] = json!(self.persistent_undo);
+        v["watcher_poll_ms"] = json!(self.watcher_poll_ms);
+        v["render_whitespace"] = json!(self.render_whitespace);
+        v["trim_trailing_whitespace"] = json!(self.trim_trailing_whitespace);
+        v["insert_final_newline"] = json!(self.insert_final_newline);
+        v["rulers"] = json!(self.rulers);
+        v["inline_diagnostics"] = json!(self.inline_diagnostics);
+        if !self.languages.is_null() {
+            v["languages"] = self.languages.clone();
+        }
+        v["problems_scope"] = json!(self.problems_scope);
+        if !self.formatter.is_empty() {
+            v["formatter"] = json!(self.formatter);
+        }
+        match self.code_actions_on_save.get("*") {
+            Some(all) if self.code_actions_on_save.len() == 1 => v["code_actions_on_save"] = json!(all),
+            _ if !self.code_actions_on_save.is_empty() => v["code_actions_on_save"] = json!(self.code_actions_on_save),
+            _ => {}
+        }
+        v["bidi_paragraph"] = json!(self.bidi_paragraph);
+        self.view.write_json(&mut v);
+        v
     }
 
+    /// Store the settings. With a project layer active (see `projcfg::Layers`) each change goes to
+    /// the file it belongs to (user, `.lumen/config.json` or `.lumen/config.local.json`).
     pub fn save(&self) {
-        if let Some(p) = default_path() {
+        if let Some(p) = default_path()
+            && !self.layers.save(self, &p)
+        {
             let _ = self.save_to(&p);
         }
     }
@@ -607,12 +828,13 @@ mod tests {
             git_blame: false,
             ram_display: "short".into(),
             status_items: [("terminal".to_string(), false), ("ram".to_string(), false)].into_iter().collect(),
-            status_order: ["git", "ram", "position", "indent", "language", "terminal", "debug"]
+            status_order: ["git", "ram", "position", "indent", "encoding", "language", "terminal", "debug"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
             status_left_order: ["problems", "sidebar", "search"].iter().map(|s| s.to_string()).collect(),
             git_pull_strategy: "rebase".into(),
+            git_worktree_dir: "~/trees/{repo}".into(),
             tab_width: 8,
             git_panel_width: 512,
             sidebar_width: 333,
@@ -624,7 +846,9 @@ mod tests {
             build_command: "make -j8".into(),
             run_command: "./out/app --port 8080".into(),
             markdown_remote_images: false,
+            diff_ignore_whitespace: true,
             explorer_hide_gitignored: false,
+            ai_notifications: false,
             language_servers: json!({"rust": {"command": "ra"}}),
             buffer_font_family: "JetBrains Mono".into(),
             buffer_font_size: 17.0,
@@ -641,12 +865,50 @@ mod tests {
             show_breakpoints: false,
             scrollbar: "auto".into(),
             enable_lsp: false,
+            local_history: false,
+            local_history_max_entries: 7,
+            hot_exit: false,
+            persistent_undo: false,
+            watcher_poll_ms: 5000,
+            render_whitespace: "boundary".into(),
+            trim_trailing_whitespace: true,
+            insert_final_newline: true,
+            languages: json!({"python": {"tab_width": 4, "format_on_save": true}}),
+            layers: Default::default(),
+            rulers: vec![80, 120],
+            inline_diagnostics: "all".into(),
+            view: ViewPrefs {
+                show_tabs: false,
+                show_status_bar: false,
+                zen_max_width: 120,
+                explorer_sort: "modified".into(),
+                explorer_folders_first: false,
+                buffer_font_features: [("zero".to_string(), 1), ("cv02".to_string(), 0), ("cv05".to_string(), 3)]
+                    .into_iter()
+                    .collect(),
+                buffer_letter_spacing: 0.5,
+            },
+            spell_check: true,
+            problems_scope: "project".into(),
+            formatter: [("python".to_string(), "lsp:ruff".to_string())].into(),
+            code_actions_on_save: [("*".to_string(), vec!["source.fixAll".to_string()])].into(),
+            inline_completion: true,
+            bidi_paragraph: "ltr".into(),
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);
         std::fs::write(&p, "{ not json").unwrap();
         assert_eq!(Config::load_from(&p), Config::default(), "corrupt file -> defaults");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn watcher_poll_interval_default_and_bounds() {
+        assert_eq!(Config::default().watcher_poll_ms, 2000);
+        assert_eq!(clean_poll_ms(None), 2000);
+        assert_eq!(clean_poll_ms(Some(10)), crate::poller::MIN_MS);
+        assert_eq!(clean_poll_ms(Some(5000)), 5000);
+        assert_eq!(clean_poll_ms(Some(u64::MAX)), 60_000);
     }
 
     #[test]
@@ -740,7 +1002,12 @@ mod tests {
         assert_eq!(normalize_status_order(&[]), v(STATUS_RIGHT));
         assert_eq!(
             normalize_status_order(&v(&["git", "bogus", "git", "sidebar", "ram"])),
-            v(&["git", "ram", "position", "indent", "language", "terminal", "debug"])
+            v(&["git", "ram", "position", "indent", "encoding", "language", "terminal", "debug"])
+        );
+        // An order stored before an item existed gains it next to its default neighbour.
+        assert_eq!(
+            normalize_status_order(&v(&["git", "ram", "position", "indent", "language", "terminal", "debug"])),
+            v(&["git", "ram", "position", "indent", "encoding", "language", "terminal", "debug"])
         );
         assert_eq!(Config::default().status_order, v(STATUS_RIGHT));
     }
@@ -750,7 +1017,7 @@ mod tests {
         let mut c = Config::default();
         assert!(!c.move_status("position", -1), "already leftmost");
         assert!(c.move_status("position", 1));
-        assert_eq!(c.status_order[..3], ["indent", "position", "language"]);
+        assert_eq!(c.status_order[..3], ["indent", "position", "encoding"]);
         assert!(c.move_status_to("ram", 0));
         assert_eq!(c.status_slot("ram"), Some(0));
         assert!(c.move_status_to("ram", 99), "clamped to the last slot");
@@ -768,6 +1035,7 @@ mod tests {
         std::fs::write(&p, r#"{"status_order": ["git", "nope", "language", "git"]}"#).unwrap();
         let mut c = Config::load_from(&p);
         assert_eq!(c.status_order[..3], ["git", "language", "position"]);
+        assert_eq!(c.status_order[4], "encoding", "after indent, its default neighbour");
         assert_eq!(c.status_order.len(), STATUS_RIGHT.len());
         c.move_status("git", 1);
         c.save_to(&p).unwrap();
@@ -795,13 +1063,14 @@ mod tests {
     #[test]
     fn stepping_skips_hidden_items_so_the_bar_always_changes() {
         let mut c = Config::default();
-        // position, indent, language, terminal, debug, git, ram: hide indent and language.
+        // position, indent, encoding, language, terminal, debug, git, ram: hide the three after position.
         c.set_status_item("indent", false);
+        c.set_status_item("encoding", false);
         c.set_status_item("language", false);
         assert_eq!(c.status_rank("position"), 1);
         assert_eq!(c.status_rank("terminal"), 2, "hidden items do not count");
-        assert!(c.step_status("position", 1), "hops over the two hidden items and the terminal button");
-        assert_eq!(c.status_order[..5], ["indent", "language", "terminal", "position", "debug"]);
+        assert!(c.step_status("position", 1), "hops over the three hidden items and the terminal button");
+        assert_eq!(c.status_order[..6], ["indent", "encoding", "language", "terminal", "position", "debug"]);
         assert_eq!(c.status_rank("position"), 2);
         assert!(c.step_status("position", -1));
         assert_eq!(c.status_rank("position"), 1);
@@ -813,9 +1082,9 @@ mod tests {
         // Last visible item with only hidden ones after it.
         let mut d = Config::default();
         d.set_status_item("ram", false);
-        d.move_status_to("git", 6);
+        d.move_status_to("git", 99);
         assert_eq!(d.status_order.last().map(String::as_str), Some("git"));
-        d.move_status_to("ram", 6);
+        d.move_status_to("ram", 99);
         assert!(!d.step_status("git", 1), "only the hidden RAM item is to its right");
         // A hidden item itself moves one slot at a time.
         let slot = d.status_slot("ram").unwrap();
@@ -863,6 +1132,7 @@ mod tests {
         assert!(!c.buffer_font_ligatures && c.ui_font_ligatures);
         assert!(c.buffer_font_family.is_empty() && c.ui_font_family.is_empty());
         assert!(c.show_line_numbers && c.show_bookmarks && c.show_breakpoints && c.enable_lsp);
+        assert!(!c.spell_check, "spell checking is opt-in");
         assert_eq!(c.scrollbar, "never", "scrollbars are hidden by default");
         // The literals above are the fontcfg constants (the docs extractor reads the literals).
         assert_eq!(c.buffer_font_size, crate::fontcfg::DEFAULT_BUFFER_SIZE);
@@ -947,5 +1217,153 @@ mod tests {
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p).sidebar_width, 312, "persisted");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn formatter_code_actions_and_problems_scope_load_clean_and_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("lumen-cfg-fmtchoice-{}", std::process::id()));
+        let p = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let load = |raw: &str| {
+            std::fs::write(&p, raw).unwrap();
+            Config::load_from(&p)
+        };
+        let c = load("{}");
+        assert_eq!(c.problems_scope, "open_files");
+        assert_eq!(c.formatter_for(Some("python")), "auto");
+        assert!(c.code_actions_for(Some("python")).is_empty());
+        let c = load(
+            r#"{"problems_scope": "project",
+                "formatter": {"python": "lsp:ruff", "typescript": "biome", "go": "gofmt?", "*": "prettier", "rust": " lsp: "},
+                "code_actions_on_save": {"python": ["source.organizeImports", " source.fixAll ", ""], "go": [], "*": ["source.fixAll"]}}"#,
+        );
+        assert_eq!(c.problems_scope, "project");
+        assert_eq!(c.formatter_for(Some("python")), "lsp:ruff");
+        assert_eq!(c.formatter_for(Some("typescript")), "biome");
+        assert_eq!(c.formatter_for(Some("go")), "prettier", "an unknown value is dropped: the default entry applies");
+        assert_eq!(c.formatter_for(Some("rust")), "prettier", "`lsp:` without a name is not a choice");
+        assert_eq!(c.formatter_for(None), "prettier");
+        assert_eq!(c.code_actions_for(Some("python")), ["source.organizeImports", "source.fixAll"]);
+        assert!(c.code_actions_for(Some("go")).is_empty(), "an empty list switches them off for that language");
+        assert_eq!(c.code_actions_for(Some("css")), ["source.fixAll"]);
+        c.save_to(&p).unwrap();
+        assert_eq!(Config::load_from(&p), c, "round trip");
+        // The short forms: one formatter and one list for every language.
+        let c =
+            load(r#"{"formatter": "none", "code_actions_on_save": ["source.organizeImports"], "problems_scope": "x"}"#);
+        assert_eq!(c.formatter_for(Some("anything")), "none");
+        assert_eq!(c.code_actions_for(Some("anything")), ["source.organizeImports"]);
+        assert_eq!(c.problems_scope, "open_files");
+        c.save_to(&p).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("\"code_actions_on_save\": [") && text.contains("\"*\": \"none\""), "{text}");
+        assert_eq!(Config::load_from(&p), c);
+        assert_eq!(clean_formatter("lsp:rust-analyzer").as_deref(), Some("lsp:rust-analyzer"));
+        assert_eq!(clean_formatter("black"), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// `explorer_sort` values: by name (folders first by default), by extension, newest first, or
+/// folders and files interleaved by name.
+pub const EXPLORER_SORTS: &[&str] = &["name", "type", "modified", "mixed"];
+
+/// Bounds of [`ViewPrefs::zen_max_width`] (columns of the centered text in zen mode).
+pub const ZEN_WIDTH_RANGE: (usize, usize) = (40, 400);
+
+/// `s` if it is an explorer order, else "name".
+pub fn normalize_explorer_sort(s: Option<&str>) -> String {
+    match s {
+        Some(m) if EXPLORER_SORTS.contains(&m) => m.to_string(),
+        _ => "name".to_string(),
+    }
+}
+
+/// Settings of the "your way" options, stored as top-level keys of config.json like the others:
+/// `show_tabs`, `show_status_bar`, `zen_max_width`, `explorer_sort`, `explorer_folders_first`,
+/// `buffer_font_features` (an object such as `{"zero": true, "ss01": true, "cv05": 3}`) and
+/// `buffer_letter_spacing` (px, -1 to 3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewPrefs {
+    pub show_tabs: bool,
+    pub show_status_bar: bool,
+    pub zen_max_width: usize,
+    pub explorer_sort: String,
+    pub explorer_folders_first: bool,
+    /// OpenType feature tag -> value (0 = off, 1 = on, n = alternate n) for the buffer font.
+    pub buffer_font_features: BTreeMap<String, u32>,
+    pub buffer_letter_spacing: f32,
+}
+
+impl Default for ViewPrefs {
+    fn default() -> Self {
+        Self {
+            show_tabs: true,
+            show_status_bar: true,
+            zen_max_width: 100,
+            explorer_sort: "name".into(),
+            explorer_folders_first: true,
+            buffer_font_features: BTreeMap::new(),
+            buffer_letter_spacing: 0.0,
+        }
+    }
+}
+
+impl ViewPrefs {
+    pub fn from_json(v: &Value) -> Self {
+        Self {
+            show_tabs: v["show_tabs"].as_bool().unwrap_or(true),
+            show_status_bar: v["show_status_bar"].as_bool().unwrap_or(true),
+            zen_max_width: v["zen_max_width"]
+                .as_u64()
+                .map_or(100, |n| (n as usize).clamp(ZEN_WIDTH_RANGE.0, ZEN_WIDTH_RANGE.1)),
+            explorer_sort: normalize_explorer_sort(v["explorer_sort"].as_str()),
+            explorer_folders_first: v["explorer_folders_first"].as_bool().unwrap_or(true),
+            buffer_font_features: crate::fontcfg::clean_features(&v["buffer_font_features"]),
+            buffer_letter_spacing: crate::fontcfg::clean_letter_spacing(
+                v["buffer_letter_spacing"].as_f64().unwrap_or(0.0),
+            ),
+        }
+    }
+
+    pub fn write_json(&self, v: &mut Value) {
+        v["show_tabs"] = json!(self.show_tabs);
+        v["show_status_bar"] = json!(self.show_status_bar);
+        v["zen_max_width"] = json!(self.zen_max_width);
+        v["explorer_sort"] = json!(self.explorer_sort);
+        v["explorer_folders_first"] = json!(self.explorer_folders_first);
+        v["buffer_font_features"] = crate::fontcfg::features_json(&self.buffer_font_features);
+        v["buffer_letter_spacing"] = json!(self.buffer_letter_spacing);
+    }
+}
+
+#[cfg(test)]
+mod view_prefs_tests {
+    use super::*;
+
+    #[test]
+    fn view_prefs_default_keep_the_current_look_and_are_cleaned_on_load() {
+        let d = Config::default().view;
+        assert!(d.show_tabs && d.show_status_bar && d.explorer_folders_first);
+        assert_eq!((d.zen_max_width, d.explorer_sort.as_str(), d.buffer_letter_spacing), (100, "name", 0.0));
+        assert!(d.buffer_font_features.is_empty());
+        let v: Value = serde_json::from_str(
+            r#"{"zen_max_width": 5, "explorer_sort": "size", "buffer_letter_spacing": 9,
+                "buffer_font_features": {"zero": true, "SS01": true, "cv02": false, "toolong": true, "cv05": 3, "x": 1}}"#,
+        )
+        .unwrap();
+        let p = ViewPrefs::from_json(&v);
+        assert_eq!(p.zen_max_width, ZEN_WIDTH_RANGE.0);
+        assert_eq!(p.explorer_sort, "name", "unknown order falls back");
+        assert_eq!(p.buffer_letter_spacing, 3.0);
+        let feats: Vec<(&str, u32)> = p.buffer_font_features.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        assert_eq!(feats, [("cv02", 0), ("cv05", 3), ("ss01", 1), ("zero", 1)], "bad tags are dropped");
+        let mut out = json!({});
+        p.write_json(&mut out);
+        assert_eq!(out["buffer_font_features"], json!({"cv02": false, "cv05": 3, "ss01": true, "zero": true}));
+        assert_eq!(ViewPrefs::from_json(&out), p, "round trip");
+        for s in EXPLORER_SORTS {
+            assert_eq!(normalize_explorer_sort(Some(s)), *s);
+        }
     }
 }

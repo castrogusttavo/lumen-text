@@ -21,6 +21,7 @@ mod draw;
 mod find;
 mod input;
 mod open;
+pub mod preplace;
 mod run;
 
 pub use commands::*;
@@ -34,6 +35,8 @@ pub enum Action {
     SetIndent(String),
     /// Language of the current document (`None` = plain text).
     SetLang(Option<String>),
+    /// Encoding pickers of the current document (see `app_filefmt::encoding_action`).
+    Encoding(String),
     WorkspaceEdit(Value),
     Run(String),
     TestRunner(crate::testrun::Runner),
@@ -43,11 +46,21 @@ pub enum Action {
     BuildTarget(String),
     /// AI panel agent (its id, see `app_aipanel::AGENTS`).
     AiAgent(String),
+    /// AI panel: a new session of this agent.
+    AiNew(String),
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),
+    /// Local history of a file: one snapshot (its file name) to compare, or `None` = list them.
+    LocalHist(PathBuf, Option<String>),
     /// Branch / tag / release / cherry-pick pickers (see `app_gitpanel::actions`).
     Git(crate::app_gitpanel::GitPick),
+    /// A macro saved in `macros.json` (see `macros`).
+    Macro(String),
+    /// "Compare with branch or commit" pickers (see `app_gitcmp`).
+    Compare(crate::app_gitcmp::CmpPick),
+    /// Trust prompt of the project settings and the Python interpreter picker (see `app_projcfg`).
+    Project(crate::app_projcfg::ProjPick),
 }
 
 #[derive(Clone)]
@@ -69,6 +82,8 @@ pub enum PickKind {
     Themes,
     /// Short list of choices opened from the bottom bar (indentation, language).
     Choice,
+    /// The Problems panel (see `app_problems`): grouped rows and a scope switch.
+    Problems,
 }
 
 pub struct Picker {
@@ -81,6 +96,14 @@ pub struct Picker {
     pub scroll: usize,
     pub case: bool,
     pub regex: bool,
+    /// Project search: whole words only (Alt+W).
+    pub word: bool,
+    /// Project search: the replace row (Ctrl+Shift+H) and its state.
+    pub rep: Option<Box<preplace::ReplaceUi>>,
+    /// Accepts free text too: what was typed becomes one more item, made by this (see
+    /// [`typed_picker`]); `real` is the number of items that are not that one.
+    pub typed: Option<std::rc::Rc<dyn Fn(&str) -> Action>>,
+    pub real: usize,
 }
 
 pub enum PromptKind {
@@ -113,6 +136,18 @@ pub enum PromptKind {
         doc: usize,
         rest: Vec<usize>,
         then: Option<crate::app_unsaved::Pending>,
+    },
+    /// New name for a bottom-panel terminal (see `app_terms`).
+    RenameTerminal {
+        id: u32,
+    },
+    /// "Macro: Replay…": how many times.
+    MacroCount,
+    /// "Macro: Save last as…": the name in `macros.json`.
+    MacroName,
+    /// The name of AI panel session `id`.
+    AiRename {
+        id: u64,
     },
 }
 
@@ -197,8 +232,17 @@ pub fn choice_picker(title: &str, items: Vec<Item>, sel: usize) -> Picker {
     p
 }
 
+/// A filtering picker that also takes what is typed (a ref, an expression...): a “Use …” item made
+/// by `make` comes first, unless some item starts with the typed text.
+pub fn typed_picker(title: &str, items: Vec<Item>, make: std::rc::Rc<dyn Fn(&str) -> Action>) -> Picker {
+    let mut p = Picker::new(PickKind::Choice, title, items);
+    p.typed = Some(make);
+    p.refilter();
+    p
+}
+
 impl Picker {
-    fn new(kind: PickKind, title: &str, items: Vec<Item>) -> Self {
+    pub(crate) fn new(kind: PickKind, title: &str, items: Vec<Item>) -> Self {
         let mut p = Picker {
             kind,
             title: title.to_string(),
@@ -209,13 +253,25 @@ impl Picker {
             scroll: 0,
             case: false,
             regex: false,
+            word: false,
+            rep: None,
+            typed: None,
+            real: 0,
         };
+        p.real = p.items.len();
         p.refilter();
         p
     }
 
     pub fn refilter(&mut self) {
         let q = self.field.text.trim().to_string();
+        if let Some(make) = self.typed.clone() {
+            self.items.truncate(self.real);
+            if !q.is_empty() {
+                let action = make(&q);
+                self.items.push(Item { label: format!("Use “{q}”"), detail: "as typed".into(), action });
+            }
+        }
         let filter = matches!(
             self.kind,
             PickKind::QuickOpen
@@ -224,9 +280,10 @@ impl Picker {
                 | PickKind::CodeActions
                 | PickKind::Themes
                 | PickKind::Choice
+                | PickKind::Problems
         );
         if !filter || q.is_empty() {
-            self.filtered = (0..self.items.len().min(2000)).map(|i| (i, Vec::new())).collect();
+            self.filtered = (0..self.items.len().min(search::MAX_REPLACE_HITS)).map(|i| (i, Vec::new())).collect();
         } else {
             // Several words narrow the list: every term must match somewhere in the label.
             let terms: Vec<&str> = q.split_whitespace().collect();
@@ -248,6 +305,19 @@ impl Picker {
                 .collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             self.filtered = scored.into_iter().take(300).map(|(_, i, p)| (i, p)).collect();
+        }
+        if self.typed.is_some() && !q.is_empty() {
+            // The typed item: first, unless an item starts with what was typed (then last).
+            let t = self.real;
+            let entry = match self.filtered.iter().position(|(i, _)| *i == t) {
+                Some(k) => self.filtered.remove(k),
+                None => (t, Vec::new()),
+            };
+            if self.filtered.iter().any(|(i, _)| self.items[*i].label.starts_with(&q)) {
+                self.filtered.push(entry);
+            } else {
+                self.filtered.insert(0, entry);
+            }
         }
         self.sel = self.sel.min(self.filtered.len().saturating_sub(1));
         self.scroll = 0;

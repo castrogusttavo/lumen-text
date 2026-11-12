@@ -109,9 +109,16 @@ pub struct Doc {
     diags_eslint: Vec<Diag>,
     /// Diagnostics of the registry servers, by server id (merged and deduplicated into `diags`).
     diags_ext: Vec<(String, Vec<Diag>)>,
+    /// Raw diagnostics of registry servers that carry a `data` field, by server id: a code-action
+    /// request hands them back verbatim (typos-lsp builds its fixes from `data.corrections`).
+    diag_data: Vec<(String, Vec<serde_json::Value>)>,
     pub eslint_due: Option<Instant>,
     /// Test outcomes from the last run: (0-based line, passed). Drawn in the gutter.
     pub test_marks: Vec<(usize, Option<bool>)>,
+    /// Coverage marks of the loaded report (sorted by line; they follow edits, see `coverage`).
+    pub cov: Vec<crate::coverage::Mark>,
+    /// Report generation `cov` was made from (see `app_coverage`).
+    pub cov_gen: u64,
     /// Selections to return to when shrinking after "expand selection".
     pub sel_stack: Vec<crate::buffer::Sel>,
     pub symbols: Vec<Sym>,
@@ -176,10 +183,20 @@ pub struct Doc {
     pub blame: Option<(usize, String)>,
     /// Side-by-side Markdown reader (None = closed, costs nothing).
     pub md: Option<Box<crate::app_md::MdState>>,
+    /// Image tab (PNG, JPEG, GIF, WebP, SVG): the picture shown instead of the text (see `imgview`).
+    pub img: Option<Box<crate::imgview::ImgView>>,
     /// LSP inlay hints for the lines around the viewport (empty = no cost anywhere).
     pub inlay: crate::inlay::InlayState,
     /// Pinned tab (drawn first, kept by "Close all").
     pub pinned: bool,
+    /// What `.editorconfig` says about this file (see `app_filefmt`); empty when nothing.
+    pub fileconf: crate::editorconfig::Props,
+    /// Rulers, inline diagnostics, document highlights and linked editing (see `assist`).
+    pub assist: crate::assist::Assist,
+    /// Inline-completion ghost text at the cursor (see `inline::GhostView` and `Doc::set_ghost`).
+    pub ghost: Option<crate::inline::GhostView>,
+    /// Last frame's virtual ghost rows: `n` rows drawn after document row `g`, as `(g, n)`.
+    pub ghost_rows: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Debug)]
@@ -240,8 +257,11 @@ impl Doc {
             diags_lint: Vec::new(),
             diags_eslint: Vec::new(),
             diags_ext: Vec::new(),
+            diag_data: Vec::new(),
             eslint_due: None,
             test_marks: Vec::new(),
+            cov: Vec::new(),
+            cov_gen: 0,
             sel_stack: Vec::new(),
             symbols: Vec::new(),
             bps: Vec::new(),
@@ -291,8 +311,13 @@ impl Doc {
             snippet: None,
             blame: None,
             md: None,
+            img: None,
             inlay: Default::default(),
             pinned: false,
+            fileconf: Default::default(),
+            assist: Default::default(),
+            ghost: None,
+            ghost_rows: None,
         }
     }
 
@@ -378,9 +403,26 @@ impl Doc {
     }
 
     /// Replace the text with what is on disk, keeping cursor (clamped) and scroll. Clears undo.
+    /// An encoding the bytes cannot reveal (picked by the user or `.editorconfig`) is kept.
     pub fn reload_from_disk(&mut self) -> std::io::Result<()> {
+        let keep = self.buf.encoding.sticky().then_some(self.buf.encoding);
+        self.reload_as(keep)
+    }
+
+    /// [`reload_from_disk`](Self::reload_from_disk) decoding the file as `enc` (`None` = detect).
+    pub fn reload_as(&mut self, enc: Option<crate::encoding::TextEncoding>) -> std::io::Result<()> {
         let Some(path) = self.path().map(Path::to_path_buf) else { return Ok(()) };
-        let fresh = Buffer::open(&path)?;
+        if let Some(v) = self.img.as_mut() {
+            v.reload();
+            if v.kind == crate::imgview::Kind::Raster {
+                // No text to reload: the picture is decoded again on the next frame.
+                self.disk_mtime = self.stat_mtime();
+                self.conflict = false;
+                return Ok(());
+            }
+        }
+        let mut fresh = Buffer::open_as(&path, enc)?;
+        fresh.read_only = self.buf.read_only; // an SVG tab showing its picture stays read-only
         let sel = self.ed.sel;
         self.buf = fresh;
         let len = self.buf.len_chars();
@@ -434,6 +476,31 @@ impl Doc {
             None => self.diags_ext.push((server.to_string(), v)),
         }
         self.rebuild_diags();
+    }
+
+    /// Remember the raw diagnostics of `server` that carry `data` (empty: forget them).
+    pub fn set_diag_data(&mut self, server: &str, v: Vec<serde_json::Value>) {
+        let at = self.diag_data.iter().position(|(n, _)| n == server);
+        match (at, v.is_empty()) {
+            (Some(i), true) => {
+                self.diag_data.remove(i);
+            }
+            (Some(i), false) => self.diag_data[i].1 = v,
+            (None, true) => {}
+            (None, false) => self.diag_data.push((server.to_string(), v)),
+        }
+    }
+
+    /// Swap the entries of a code-action `context.diagnostics` list that `server` published with a
+    /// `data` field for its raw originals (same range and message), so the server gets its data back.
+    pub fn with_diag_data(&self, server: &str, list: &mut serde_json::Value) {
+        let Some((_, raw)) = self.diag_data.iter().find(|(n, _)| n == server) else { return };
+        let Some(items) = list.as_array_mut() else { return };
+        for it in items.iter_mut() {
+            if let Some(r) = raw.iter().find(|r| r["range"] == it["range"] && r["message"] == it["message"]) {
+                *it = r.clone();
+            }
+        }
     }
 
     /// Does the document hold diagnostics of `server` (see [`Doc::set_ext_diags`])?
@@ -508,9 +575,11 @@ impl Doc {
         self.eslint_due = Some(Instant::now() + std::time::Duration::from_millis(700));
         self.sel_stack.clear();
         let recs = self.view_on_edit(l);
+        let mirror = self.linked_follow(&recs);
         crate::bookmarks::on_edits(&mut self.marks, &recs);
         let buf = &self.buf;
         self.inlay.on_edits(&recs, l, buf.line_count(), &|p| buf.line_col(p));
+        crate::coverage::on_edits(&mut self.cov, &recs, &|n| (n < buf.line_count()).then(|| buf.line(n)));
         // Edits that add or remove no line break leave every other line's width and minimap row as they were.
         if !recs.is_empty() && recs.iter().all(|r| r.rem_lines == 0 && r.ins_lines == 0) {
             let mut lines: Vec<usize> = recs.iter().map(|r| r.line).collect();
@@ -533,6 +602,11 @@ impl Doc {
         self.git_stale = true;
         self.target = self.target.clamp(0.0, self.max_top());
         self.top = self.top.clamp(0.0, self.max_top());
+        if let Some(m) = mirror {
+            // Linked editing: the other tag names follow, in the same undo step.
+            self.linked_apply(m);
+            self.sync_edits();
+        }
         true
     }
 
@@ -604,6 +678,8 @@ impl Doc {
         let lh = line_h() as f64;
         let rel_y = y - self.rect.y as f64;
         let row = ((rel_y + self.top * lh) / lh).floor().max(0.0) as usize;
+        // Rows below a multi-line inline suggestion are drawn lower by its extra lines.
+        let row = crate::inline::unshift_row(row, self.ghost_rows);
         let tx = (self.rect.x + self.gutter_w()) as f64;
         let cw = self.cell_w as f64;
         let docx = x - tx + self.left;
@@ -623,21 +699,39 @@ impl Doc {
             });
             (col, hit)
         };
+        // A line with right-to-left text: visual x -> logical offset through its bidi layout
+        // (chars `c0..c1` of the row; such rows show no inlay hints).
+        let para = crate::bidi::para();
+        let bidi_hit = |text: &str, c0: usize, c1: usize| {
+            crate::bidi::row(text, c0, c1, tab_w, para).map(|b| c0 + b.hit((docx / cw).max(0.0)))
+        };
         if !self.vm_live() {
             let line = row.min(self.buf.line_count() - 1);
             let text = self.buf.line(line);
+            if let Some(col) = bidi_hit(&text, 0, usize::MAX) {
+                return (self.buf.pos(line, col), None);
+            }
             let (col, hit) = hinted(line, &text, self.inlay.hints.hints_on(line), None);
             return (self.buf.pos(line, col), hit);
         }
         let (line, sub) = self.view.map.line_at_row(row);
         let text = self.buf.line(line);
         if self.view.cols == 0 {
+            if let Some(col) = bidi_hit(&text, 0, usize::MAX) {
+                return (self.buf.pos(line, col), None);
+            }
             let (col, hit) = hinted(line, &text, self.inlay.hints.hints_on(line), None);
             return (self.buf.pos(line, col), hit);
         }
         let breaks = self.view.breaks(&text);
         let len = text.chars().count();
         let (c0, c1) = crate::docview::row_range(&breaks, sub, len);
+        if let Some(mut c) = bidi_hit(&text, c0, c1) {
+            if sub < breaks.len() {
+                c = c.min(c1.saturating_sub(1).max(c0)); // not the last row: stay before the wrap point
+            }
+            return (self.buf.pos(line, c), None);
+        }
         let rowtext: String = text.chars().skip(c0).take(c1 - c0).collect();
         let rh = crate::inlay::row_hints(self.inlay.hints.hints_on(line), len, c0, c1, sub >= breaks.len());
         let (rc, hit) = hinted(line, &rowtext, &rh.hints, Some(&rh.idx));
@@ -651,6 +745,7 @@ impl Doc {
     /// Window position (x, y of the cell's top-left) of a char index, if visible.
     pub fn screen_pos(&self, c: usize) -> Option<(i32, i32)> {
         let (row, v) = self.caret_geom(c);
+        let row = crate::inline::shift_row(row, self.ghost_rows);
         let x = self.rect.x + self.gutter_w() + (v as f32 * self.cell_w).round() as i32 - self.left.round() as i32;
         let y = self.rect.y + (row as f64 * line_h() as f64 - self.top * line_h() as f64).round() as i32;
         (y >= self.rect.y - line_h() as i32 && y < self.rect.bottom()).then_some((x, y))

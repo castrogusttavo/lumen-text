@@ -300,16 +300,22 @@ fn hooks_need_their_bearer_token() {
     let mut hook = None;
     while hook.is_none() && std::time::Instant::now() < end {
         match srv.try_recv() {
-            Some(Event::Hook { route, body }) => hook = Some((route, body)),
+            Some(Event::Hook { route, session, body }) => hook = Some((route, session, body)),
             Some(_) => {}
             None => thread::sleep(Duration::from_millis(10)),
         }
     }
-    let (route, body) = hook.expect("the hook reached the UI side");
-    assert_eq!(route, "done");
+    let (route, session, body) = hook.expect("the hook reached the UI side");
+    assert_eq!((route.as_str(), session), ("done", None));
     assert_eq!(body["hook_event_name"], "Stop");
+    assert_eq!(hook_route("/lumen/hook/waiting/7"), ("waiting".to_string(), Some(7)));
+    assert_eq!(hook_route("/lumen/hook/done?x=1"), ("done".to_string(), None));
+    assert_eq!(hook_route("/lumen/hook/done/nope"), ("done".to_string(), None));
+    let v: Value = serde_json::from_str(&hook_settings(srv.port(), Some(4))).unwrap();
+    let url = v["hooks"]["Stop"][0]["hooks"][0]["url"].as_str().unwrap().to_string();
+    assert_eq!(url, format!("http://127.0.0.1:{}/lumen/hook/done/4", srv.port()), "each session has its own URLs");
     // The settings Claude Code is started with point its hooks here, token from the environment.
-    let v: Value = serde_json::from_str(&hook_settings(srv.port())).unwrap();
+    let v: Value = serde_json::from_str(&hook_settings(srv.port(), None)).unwrap();
     let stop = &v["hooks"]["Stop"][0]["hooks"][0];
     assert_eq!(stop["type"], "http");
     assert_eq!(stop["url"], format!("http://127.0.0.1:{}/lumen/hook/done", srv.port()));
