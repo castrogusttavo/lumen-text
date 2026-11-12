@@ -172,9 +172,9 @@ fn full_session() {
     let tokens = c.request("textDocument/semanticTokens/full", json!({"textDocument": {"uri": URI}}));
     assert!(!tokens["data"].as_array().unwrap().is_empty());
 
-    // a request inside a Go expression reaches the (stub) router and answers null
+    // a request inside a Go expression reaches the router (scope fallback without gopls)
     let go = c.request("textDocument/hover", json!({"textDocument": {"uri": URI}, "position": pos(2, 13)}));
-    assert_eq!(go, Value::Null);
+    assert!(go["contents"]["value"].as_str().unwrap().contains("x := range xs"), "{go}");
 
     // an unknown method is an error, not a crash
     c.send(json!({"jsonrpc": "2.0", "id": 99, "method": "nope/never", "params": {}}));
