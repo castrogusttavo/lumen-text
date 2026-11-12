@@ -292,6 +292,9 @@ impl App {
             Cmd::MacroReplayTimes => self.macro_ask_times(),
             Cmd::MacroSave => self.macro_ask_name(),
             Cmd::MacroRunSaved => self.macro_pick_saved(),
+            Cmd::OpenProjectSettings => self.open_project_settings(),
+            Cmd::ProjectTrust => self.projcfg_trust_prompt(true),
+            Cmd::PythonSelectInterpreter => self.open_interpreter_picker(),
             Cmd::Quit => {
                 if self.try_quit() {
                     std::process::exit(0);

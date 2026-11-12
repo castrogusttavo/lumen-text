@@ -64,6 +64,10 @@ and no GPU driver:
   stopped after an idle grace period, restarted with backoff when it crashes; several servers per file (a primary plus companions such
   as Tailwind or ruff) with merged diagnostics, hover, completion and code actions; status, switches and a bounded server log
   (palette: *LSP: Restart language servers*, *LSP: Show server log*)
+- Python: the project's virtualenv (`.venv`, `venv`, `$VIRTUAL_ENV`, uv, Poetry's cache, any folder with a `pyvenv.cfg`) is
+  handed to pyright/basedpyright (`python.pythonPath`, `venvPath` + `venv`) and activated for ruff (a ruff or basedpyright
+  installed in the venv is preferred); *Python: Select interpreter…* pins another one per project; the language item's tooltip
+  shows the active interpreter
 - Vitest/Jest runs with pass/fail marks in the gutter, `package.json` and `cargo` tasks with an ANSI output panel
 
 **Git**
@@ -113,6 +117,8 @@ and no GPU driver:
 **Customization**
 - Settings modal (`Ctrl+,`) and shortcut editor with conflict detection
 - `config.json`, `keybindings.json`, user themes folder, removable and reorderable bottom-bar items
+- Per-project settings in `.lumen/config.json` (and a personal `.lumen/config.local.json`), per-language overrides
+  (`"languages": {"python": {"tab_width": 4}}`), live reload, a *User | Project* switch in the settings modal
 
 ## Screenshots
 
@@ -356,6 +362,31 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `tab_width` | `4` | Columns a tab character spans (2, 4 or 8); per-file picks live in the session |
 | `ai_notifications` | `true` | Desktop notification when an AI panel session waits for you or is done while Lumen is not focused |
 | `git_panel_width` / `md_split` | `0` / `0.5` | Panel width in px (0 = automatic); Markdown source share (0.2 to 0.8) |
+| `languages` | `{}` | Per-language overrides of `tab_width` (1 to 16 here), `format_on_save`, `word_wrap` and `inlay_hints`, keyed by language id: `{"python": {"tab_width": 4, "format_on_save": true}, "go": {"tab_width": 8}}` |
+
+### Project settings: `.lumen/config.json`
+
+A project can carry its own settings: `.lumen/config.json` at the project root (commit it to share them) and
+`.lumen/config.local.json` (personal, add it to `.gitignore`). They hold the same keys as `config.json` and win in this
+order: **user < `.lumen/config.json` < `.lumen/config.local.json`**; `languages` and `language_servers` merge key by key.
+Both files are reloaded live when they change. The settings modal has a **User | Project** switch (`Alt+U` / `Alt+P`)
+that chooses the file it writes; *Preferences: Project settings* opens it on the project side, where each row the
+project sets is marked and the reset icon goes back to your own value. A gear in the bottom bar shows that project
+settings are in effect; its tooltip lists the keys (amber while commands wait for trust).
+
+```json
+{ "tab_width": 2, "format_on_save": true, "theme": "vitesse-black",
+  "languages": { "python": { "tab_width": 4 } },
+  "language_servers": { "ruff": { "enabled": false } } }
+```
+
+- **User-only keys** (ignored in a project file): `ui_scale`, `scroll_speed`, `updates`, `sidebar_width`, `git_panel_width`,
+  `md_split`, `status_items`, `status_order`, `status_left_order`, `ram_display`, the `ui_font_*` keys, `theme_chrome` and
+  `test_watch`. A changed setting goes to the file that defines it; anything else to your `config.json`.
+- **Commands need trust.** `build_command`, `run_command`, `test_command` and `language_servers` entries with `command`,
+  `args` or `env` coming from a project file are not applied until you answer the one-time prompt *Trust: run these
+  commands*. The answer is remembered per project (in `$XDG_STATE_HOME/lumen-text/trusted-projects.json`) and asked again
+  when the commands change; *Project: Trust the commands of the project settings…* changes it.
 
 Environment variables: `LUMEN_THEME` (path to a theme file), `LUMEN_ASSETS` (assets directory),
 `LUMEN_TSGO` (path to a `tsgo` binary), `LUMEN_AUTOIMPORT=1`, `LUMEN_DEBUG=1`, `LUMEN_GIT_POLL_MS` (interval of the background ahead/behind refresh, default 60000),

@@ -27,6 +27,7 @@ pub(super) enum Hit {
     KbResetAll,
     KbConfirm,
     KbCancel,
+    Scope(crate::projcfg::Scope),
 }
 
 pub struct Modal {
@@ -38,6 +39,10 @@ pub struct Modal {
     /// The scrolling list of the page drawn last: (its rectangle, content height in px). The app
     /// paints and drags the thin scrollbar (`ui::VBar`) from this.
     pub(super) list: Option<(Rect, i32)>,
+    /// Which settings file the Settings page edits ("User | Project" switch); `None` hides the switch.
+    pub scope: Option<crate::projcfg::Scope>,
+    /// The page's defaults as built (the Project scope swaps in the user's values to reset to).
+    pub user_defaults: Value,
 }
 
 pub(super) const HEAD_H: i32 = 48;
@@ -46,7 +51,16 @@ pub(super) const FOOT_H: i32 = 46;
 
 impl Modal {
     pub fn new(settings: SettingsPage, keybinds: KeybindsPage, page: Page) -> Self {
-        Self { page, settings, keybinds, hits: vec![], rect: Rect::default(), list: None }
+        Self {
+            page,
+            settings,
+            keybinds,
+            hits: vec![],
+            rect: Rect::default(),
+            list: None,
+            scope: None,
+            user_defaults: Value::Null,
+        }
     }
 
     /// (list area, content height, visible height, scroll) in px for the scrollbar; `None` when
@@ -96,6 +110,14 @@ impl Modal {
             return self.keybinds.record_key(ctrl, shift, alt, key);
         }
         let k = classify(key);
+        // Alt+U / Alt+P: the scope switch.
+        if alt && !ctrl && self.page == Page::Settings && self.scope.is_some() && !self.settings.is_editing() {
+            match &k {
+                K::Ch(ch) if ch.eq_ignore_ascii_case("u") => return Event::Scope(crate::projcfg::Scope::User),
+                K::Ch(ch) if ch.eq_ignore_ascii_case("p") => return Event::Scope(crate::projcfg::Scope::Project),
+                _ => {}
+            }
+        }
         if ctrl && k == K::Tab {
             self.switch_page();
             return Event::None;
@@ -222,6 +244,10 @@ impl Modal {
                 self.keybinds.arm_reset_all();
                 Event::None
             }
+            Hit::Scope(s) => {
+                self.settings.cancel();
+                Event::Scope(s)
+            }
             Hit::KbConfirm => self.keybinds.confirm(),
             Hit::KbCancel => {
                 self.keybinds.cancel();
@@ -259,10 +285,42 @@ impl Modal {
         let close = Rect::new(r.right() - 18 - 28, r.y + 10, 28, 28);
         tx.icon(cv, "hugeicons/close", close.x + 6, close.y + 6, 16, dim, close);
         self.hits.push((close, Hit::Close));
+        // "User | Project": which file the Settings page edits.
+        let mut right = close.x;
+        if let (Some(cur), Page::Settings) = (self.scope, self.page) {
+            use crate::projcfg::Scope;
+            let opts = [(Scope::User, "User"), (Scope::Project, "Project")];
+            let w: i32 = 4 + opts.iter().map(|(_, l)| tx.ui_width(l, false) + 22).sum::<i32>();
+            let bar = Rect::new(close.x - 10 - w, r.y + 10, w, 28);
+            if bar.x > x + 8 {
+                card_c(cv, bar, 8, c.input_bg, c.border, r);
+                let mut sx = bar.x + 2;
+                for (s, label) in opts {
+                    let sw = tx.ui_width(label, false) + 22;
+                    let seg = Rect::new(sx, bar.y + 2, sw, bar.h - 4);
+                    let active = s == cur;
+                    if active {
+                        rr(cv, seg, 6, c.accent, r);
+                    }
+                    tx.draw_ui(
+                        cv,
+                        seg.x + 11,
+                        seg.y + 4,
+                        label,
+                        if active { on_accent(c.accent) } else { fg },
+                        seg,
+                        active,
+                    );
+                    self.hits.push((seg, Hit::Scope(s)));
+                    sx += sw;
+                }
+                right = bar.x;
+            }
+        }
         let hint = "Ctrl+Tab switches";
         let hw = tx.ui_width(hint, false);
-        if close.x - hw - 20 > x {
-            tx.draw_ui(cv, close.x - hw - 12, r.y + 15, hint, dim.with_alpha(160), r, false);
+        if right - hw - 20 > x {
+            tx.draw_ui(cv, right - hw - 12, r.y + 15, hint, dim.with_alpha(160), r, false);
         }
         cv.fill(Rect::new(r.x + 1, r.y + HEAD_H, r.w - 2, 1), c.border);
 

@@ -63,6 +63,8 @@ pub enum Event {
     PickFont {
         key: String,
     },
+    /// The "User | Project" switch: edit that settings file from now on.
+    Scope(crate::projcfg::Scope),
 }
 
 impl Event {

@@ -555,16 +555,13 @@ impl App {
                         self.ai.badge().map_or_else(|| "Agent".to_string(), |(b, _)| b)
                     )),
                 ),
-                StatusBtn::Language => t(
-                    "Change language…",
-                    None,
-                    self.docs.get(self.active).map(|d| format!("Current: {}", d.lang.unwrap_or("text"))),
-                ),
+                StatusBtn::Language => self.language_tip(),
                 StatusBtn::Encoding => t(
                     "Reopen or save with another encoding…",
                     None,
                     self.docs.get(self.active).map(|d| format!("Current: {}", d.buf.encoding.label())),
                 ),
+                StatusBtn::Project => self.projcfg_tip(),
             },
         }
     }

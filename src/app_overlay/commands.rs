@@ -191,6 +191,9 @@ pub enum Cmd {
     ColumnSelectRight,
     JumpTo,
     RefreshExplorer,
+    OpenProjectSettings,
+    ProjectTrust,
+    PythonSelectInterpreter,
 }
 
 impl Cmd {
@@ -392,4 +395,7 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Edit: Column select right", "Ctrl+Shift+Alt+→", Cmd::ColumnSelectRight),
     ("Go to: Jump to…", "Alt+J", Cmd::JumpTo),
     ("File: Refresh explorer and git status", "", Cmd::RefreshExplorer),
+    ("Preferences: Project settings (.lumen/config.json)", "", Cmd::OpenProjectSettings),
+    ("Project: Trust the commands of the project settings…", "", Cmd::ProjectTrust),
+    ("Python: Select interpreter…", "", Cmd::PythonSelectInterpreter),
 ];

@@ -53,7 +53,12 @@ impl App {
             doc.sticky = self.config.sticky_scroll;
             doc.lens_refs = self.config.code_lens_refs;
             doc.lens_impls = self.config.code_lens_impls;
-            doc.set_word_wrap(self.config.word_wrap);
+            // Per-language overrides (`languages.<id>` in the settings files).
+            doc.set_word_wrap(self.config.word_wrap_for(lang));
+            if self.config.lang_override(lang, "tab_width").is_some() {
+                doc.ed.tab_w = self.config.tab_width_for(lang);
+            }
+            // `.editorconfig` is per file and wins over every settings layer.
             crate::app_filefmt::apply_editorconfig(&mut doc);
             doc.git_base = git::head_text(&path);
             self.docs.push(doc);
@@ -123,6 +128,11 @@ impl App {
                 }
             };
             watch(self.root.as_path());
+            // Settings files (live reload): `.lumen/` of the project and the user's config folder.
+            watch(self.root.join(crate::projcfg::DIR).as_path());
+            if let Some(d) = crate::config::default_path().as_deref().and_then(Path::parent) {
+                watch(d);
+            }
             for r in &self.tree.rows {
                 if r.is_dir && r.expanded {
                     watch(r.path.as_path());
@@ -157,6 +167,10 @@ impl App {
         self.fswatch_drain(&mut evs);
         if evs.is_empty() {
             return;
+        }
+        // Settings files: live reload (events of the user's config folder are not project files).
+        if self.projcfg_fs_events(&mut evs) {
+            return self.request_redraw();
         }
         self.lsp_fs_events(&evs);
         self.last_disk_check = Instant::now() - Duration::from_secs(60);

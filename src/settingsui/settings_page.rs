@@ -24,6 +24,12 @@ pub struct SettingsPage {
     pub(super) edit: Option<(usize, TextField)>,
     pub(super) drop: Option<DropState>,
     pub(super) view_h: i32,
+    /// Keys not listed (the user-only settings while the Project scope is shown).
+    pub hidden: Vec<String>,
+    /// Short note drawn after a row's label ("set in .lumen/config.json", ...).
+    pub badges: HashMap<String, String>,
+    /// Replaces the key hint at the bottom (which file is being edited).
+    pub footer: Option<String>,
 }
 
 impl SettingsPage {
@@ -48,6 +54,9 @@ impl SettingsPage {
             edit: None,
             drop: None,
             view_h: 380,
+            hidden: Vec::new(),
+            badges: HashMap::new(),
+            footer: None,
         }
     }
 
@@ -74,10 +83,31 @@ impl SettingsPage {
         }
     }
 
+    /// Hide the rows of `keys` (and the sections left empty); the selection starts over.
+    pub fn set_hidden(&mut self, keys: Vec<String>) {
+        self.hidden = keys;
+        self.drop = None;
+        self.edit = None;
+        if self.section >= self.sections().len() {
+            self.section = 0;
+        }
+        self.sel = 0;
+        self.scroll = 0.0;
+    }
+
+    fn shown(&self, def: usize) -> bool {
+        !self.hidden.iter().any(|k| k == self.defs[def].key)
+    }
+
+    /// The per-key defaults (what the reset icon goes back to).
+    pub fn defaults_value(&self) -> Value {
+        Value::Object(self.defaults.clone())
+    }
+
     /// Sections in definition order, without duplicates.
     pub fn sections(&self) -> Vec<&'static str> {
         let mut out: Vec<&'static str> = Vec::new();
-        for d in &self.defs {
+        for d in self.defs.iter().filter(|d| !self.hidden.iter().any(|k| k == d.key)) {
             if !out.contains(&d.section) {
                 out.push(d.section);
             }
@@ -95,12 +125,12 @@ impl SettingsPage {
         if self.searching() {
             let q = &self.search.text;
             (0..self.defs.len())
-                .filter(|&i| matches_all(&format!("{} {}", self.defs[i].label, self.defs[i].help), q))
+                .filter(|&i| self.shown(i) && matches_all(&format!("{} {}", self.defs[i].label, self.defs[i].help), q))
                 .collect()
         } else {
             let secs = self.sections();
             let Some(s) = secs.get(self.section) else { return vec![] };
-            (0..self.defs.len()).filter(|&i| self.defs[i].section == *s).collect()
+            (0..self.defs.len()).filter(|&i| self.defs[i].section == *s && self.shown(i)).collect()
         }
     }
 
