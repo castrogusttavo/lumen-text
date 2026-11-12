@@ -800,8 +800,9 @@ esac
         d.ed.undo(&mut d.buf);
         assert_eq!(app.docs[i].buf.to_string(), "// imports organized\ny\n");
         // A language whose list is empty runs nothing.
-        app.config.code_actions_on_save.insert("fk".into(), Vec::new());
-        app.config.code_actions_on_save.insert(app.docs[i].lang.unwrap_or("fk").to_string(), Vec::new());
+        let lang = app.docs[i].lang.unwrap_or("*").to_string();
+        app.config.code_actions_on_save.insert(lang, Vec::new());
+        app.config.code_actions_on_save.insert("*".into(), Vec::new());
         app.docs[i].replace_text("z\n");
         app.save_active();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "z\n");
