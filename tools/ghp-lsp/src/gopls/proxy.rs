@@ -876,7 +876,7 @@ mod tests {
         ]});
         let out = translate_completion(&d, v);
         let items = out["items"].as_array().unwrap();
-        assert_eq!(items[0]["textEdit"]["range"]["start"], json!({"line": 0, "character": 6}));
+        assert_eq!(items[0]["textEdit"]["range"]["start"], json!({"line": 0, "character": 5}));
         assert!(items[0].get("additionalTextEdits").is_none());
         assert!(items[1].get("textEdit").is_none());
     }
@@ -902,7 +902,7 @@ mod tests {
         let off = d.map.segments()[0].go_start;
         let r = range_json(Range { start: d.map.go_index().position(off), end: d.map.go_index().position(off + 1) });
         let out = translate_hover(&d, json!({"contents": "t", "range": r}));
-        assert_eq!(out["range"]["start"], json!({"line": 0, "character": 6}));
+        assert_eq!(out["range"]["start"], json!({"line": 0, "character": 5}));
         let out = translate_hover(
             &d,
             json!({"contents": "t", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}}),
