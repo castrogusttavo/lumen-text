@@ -15,6 +15,8 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 app="$work/Lumen Text.app"
 install -d "$app/Contents/MacOS" "$app/Contents/Resources"
 install -m755 "$bin" "$app/Contents/MacOS/lumen-text"
+# The GHP language server next to the editor binary (GHP_LSP_BIN=path/to/ghp-lsp).
+[ -n "${GHP_LSP_BIN:-}" ] && install -m755 "$GHP_LSP_BIN" "$app/Contents/MacOS/ghp-lsp"
 cp -R "$root/assets" "$app/Contents/Resources/assets"
 # Licensed HugeIcons Pro masks live inside the binary only, never as loose files.
 rm -rf "$app/Contents/Resources/assets/icons/hugeicons" "$app/Contents/Resources/assets/icons/hugeicons_bulk"

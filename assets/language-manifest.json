@@ -291,6 +291,7 @@
     "gdshader",
     "genie",
     "gherkin",
+    "ghp",
     "git-commit",
     "git-rebase",
     "gleam",
@@ -1761,6 +1762,21 @@
       "kind": "grammar",
       "resource": "grammars/git-commit.json",
       "scopeName": "text.git-commit"
+    },
+    {
+      "aliases": [],
+      "displayName": "GHP",
+      "embeddedIn": [],
+      "embeddedLangs": [
+        "html",
+        "go"
+      ],
+      "embeddedLangsLazy": [],
+      "id": "ghp",
+      "injectTo": [],
+      "kind": "grammar",
+      "resource": "grammars/ghp.json",
+      "scopeName": "text.html.ghp"
     },
     {
       "aliases": [],

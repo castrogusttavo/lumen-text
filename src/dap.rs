@@ -448,6 +448,64 @@ pub fn parse_stack_trace(body: &Value) -> Vec<Frame> {
         .collect()
 }
 
+/// What the adapter said about one requested breakpoint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BpResult {
+    /// The line the user asked for.
+    pub requested: usize,
+    /// The line the adapter placed it on (it may move a breakpoint to the next line with code).
+    pub line: usize,
+    pub verified: bool,
+    pub message: String,
+}
+
+/// Pair the `breakpoints` of a `setBreakpoints` response with the lines that were requested.
+pub fn parse_breakpoints(body: &Value, requested: &[usize]) -> Vec<BpResult> {
+    let Some(arr) = body.get("breakpoints").and_then(Value::as_array) else { return Vec::new() };
+    arr.iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let asked = requested.get(i).copied().unwrap_or(0);
+            BpResult {
+                requested: asked,
+                line: b.get("line").and_then(Value::as_u64).map_or(asked, |l| l as usize),
+                verified: b.get("verified").and_then(Value::as_bool).unwrap_or(false),
+                message: b.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
+            }
+        })
+        .collect()
+}
+
+/// Make an adapter-reported source path comparable with the editor's: relative paths are joined
+/// to `root`, `.`/`..` are folded, and a path inside a deleted `ghp-stage-*` build dir (the staged
+/// copy `ghp build` compiles) is mapped back to the same relative path under `root`.
+pub fn normalize_source_path(path: &str, root: &Path) -> String {
+    use std::path::{Component, PathBuf};
+    let mut p = PathBuf::from(path);
+    if p.is_relative() {
+        p = root.join(p);
+    }
+    if !p.exists() {
+        let s = p.to_string_lossy().replace('\\', "/");
+        if let Some(i) = s.find("/ghp-stage-")
+            && let Some((_, rel)) = s[i + 1..].split_once('/')
+        {
+            p = root.join(rel);
+        }
+    }
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out.to_string_lossy().into_owned()
+}
+
 pub fn parse_variables(body: &Value) -> Vec<Var> {
     let Some(arr) = body.get("variables").and_then(Value::as_array) else { return Vec::new() };
     arr.iter()
@@ -502,6 +560,11 @@ pub struct Session {
     pub start_request: Option<(String, Value)>,
     /// Send `setExceptionBreakpoints` before `configurationDone` (js-debug expects it).
     pub exception_bps: bool,
+    /// When set, source paths from the adapter and the editor are normalised against this root
+    /// (see `normalize_source_path`): used for GHP pages, whose frames can name a staged copy.
+    pub source_root: Option<std::path::PathBuf>,
+    /// Per source file, how the adapter placed the breakpoints last requested.
+    pub bp_results: HashMap<String, Vec<BpResult>>,
 }
 
 impl Session {
@@ -519,6 +582,23 @@ impl Session {
             stop_on_entry,
             start_request: None,
             exception_bps: false,
+            source_root: None,
+            bp_results: HashMap::new(),
+        }
+    }
+
+    /// Breakpoints of `path` the adapter could not place: `(requested line, reason)`.
+    pub fn unverified(&self, path: &str) -> Vec<(usize, String)> {
+        self.bp_results
+            .get(&self.key(path))
+            .map(|v| v.iter().filter(|b| !b.verified).map(|b| (b.requested, b.message.clone())).collect())
+            .unwrap_or_default()
+    }
+
+    fn key(&self, path: &str) -> String {
+        match &self.source_root {
+            Some(root) => normalize_source_path(path, root),
+            None => path.to_string(),
         }
     }
 
@@ -537,9 +617,10 @@ impl Session {
 
     /// Replace the breakpoints of one file; sent immediately if the debuggee is live.
     pub fn set_breakpoints(&mut self, path: &str, lines: &[usize], dap: &mut Dap) {
-        self.breakpoints.insert(path.to_string(), lines.to_vec());
+        let path = self.key(path);
+        self.breakpoints.insert(path.clone(), lines.to_vec());
         if matches!(self.state, State::Running | State::Stopped { .. }) {
-            dap.set_breakpoints(path, lines);
+            dap.set_breakpoints(&path, lines);
         }
     }
 
@@ -637,8 +718,22 @@ impl Session {
                         }
                         dap.launch(&self.program, &self.args, &self.cwd, self.stop_on_entry);
                     }
+                    Pending::SetBreakpoints(path) => {
+                        let asked = self.breakpoints.get(&path).cloned().unwrap_or_default();
+                        let results = parse_breakpoints(body, &asked);
+                        for b in results.iter().filter(|b| !b.verified) {
+                            let why = if b.message.is_empty() { "no code on this line" } else { b.message.as_str() };
+                            self.output.push(format!("[dap] breakpoint {path}:{} not verified: {why}", b.requested));
+                        }
+                        self.bp_results.insert(path, results);
+                    }
                     Pending::StackTrace(_) => {
                         self.frames = parse_stack_trace(body);
+                        if let Some(root) = &self.source_root {
+                            for f in &mut self.frames {
+                                f.path = f.path.take().map(|p| normalize_source_path(&p, root));
+                            }
+                        }
                         if let Some(top) = self.frames.first() {
                             dap.scopes(top.id);
                         }
