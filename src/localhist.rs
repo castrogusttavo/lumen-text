@@ -170,6 +170,18 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
+static LAST_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// A snapshot timestamp (ms) that is at least `min` and strictly greater than every one handed out
+/// before in this process, across files too. Without that, two snapshots of different files taken
+/// in the same millisecond tie, and the "oldest first" order of the budget prune is arbitrary.
+fn next_ts(min: i64) -> i64 {
+    use std::sync::atomic::Ordering::Relaxed;
+    let want = now_ms().max(min);
+    let prev = LAST_TS.fetch_update(Relaxed, Relaxed, |p| Some(want.max(p + 1))).unwrap_or_else(|p| p);
+    want.max(prev + 1)
+}
+
 fn read_index(dir: &Path) -> Option<Index> {
     let text = fs::read_to_string(dir.join(INDEX)).ok()?;
     Index::from_json(&serde_json::from_str(&text).ok()?)
@@ -244,9 +256,9 @@ impl Store {
             return Ok(0);
         }
         fs::create_dir_all(&dir)?;
-        // Strictly increasing per file, so names never clash (two saves in the same millisecond,
-        // or a clock that went back).
-        let mut ts = now_ms().max(ix.entries.last().map_or(i64::MIN, |e| e.ts + 1));
+        // Strictly increasing per file and across files, so names never clash (two saves in the same
+        // millisecond, or a clock that went back) and the prune order is deterministic.
+        let mut ts = next_ts(ix.entries.last().map_or(i64::MIN, |e| e.ts + 1));
         while dir.join(format!("{ts}.snap")).exists() {
             ts += 1;
         }
@@ -485,6 +497,20 @@ mod tests {
         let snaps = fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name() != INDEX).count();
         assert_eq!(snaps, 3, "dropped snapshot files are deleted");
         fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn snapshot_timestamps_are_strictly_increasing_across_files() {
+        let d = tmp("ts-order");
+        let (a, b) = (d.join("a.txt"), d.join("b.txt"));
+        let s = Store::new(d.join("hist"), 50);
+        let mut seen = Vec::new();
+        for i in 0..20 {
+            let path = if i % 2 == 0 { &a } else { &b };
+            s.record(path, &format!("v{i}"), Source::Save).unwrap();
+            seen.push(s.history(path)[0].ts);
+        }
+        assert!(seen.windows(2).all(|w| w[0] < w[1]), "ties would make the budget prune order arbitrary: {seen:?}");
     }
 
     #[test]
