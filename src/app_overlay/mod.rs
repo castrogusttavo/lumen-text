@@ -21,6 +21,7 @@ mod draw;
 mod find;
 mod input;
 mod open;
+pub mod preplace;
 mod run;
 
 pub use commands::*;
@@ -52,6 +53,8 @@ pub enum Action {
     LocalHist(PathBuf, Option<String>),
     /// Branch / tag / release / cherry-pick pickers (see `app_gitpanel::actions`).
     Git(crate::app_gitpanel::GitPick),
+    /// A macro saved in `macros.json` (see `macros`).
+    Macro(String),
 }
 
 #[derive(Clone)]
@@ -85,6 +88,10 @@ pub struct Picker {
     pub scroll: usize,
     pub case: bool,
     pub regex: bool,
+    /// Project search: whole words only (Alt+W).
+    pub word: bool,
+    /// Project search: the replace row (Ctrl+Shift+H) and its state.
+    pub rep: Option<Box<preplace::ReplaceUi>>,
 }
 
 pub enum PromptKind {
@@ -122,6 +129,10 @@ pub enum PromptKind {
     RenameTerminal {
         id: u32,
     },
+    /// "Macro: Replay…": how many times.
+    MacroCount,
+    /// "Macro: Save last as…": the name in `macros.json`.
+    MacroName,
 }
 
 pub struct Prompt {
@@ -217,6 +228,8 @@ impl Picker {
             scroll: 0,
             case: false,
             regex: false,
+            word: false,
+            rep: None,
         };
         p.refilter();
         p
@@ -234,7 +247,7 @@ impl Picker {
                 | PickKind::Choice
         );
         if !filter || q.is_empty() {
-            self.filtered = (0..self.items.len().min(2000)).map(|i| (i, Vec::new())).collect();
+            self.filtered = (0..self.items.len().min(search::MAX_REPLACE_HITS)).map(|i| (i, Vec::new())).collect();
         } else {
             // Several words narrow the list: every term must match somewhere in the label.
             let terms: Vec<&str> = q.split_whitespace().collect();

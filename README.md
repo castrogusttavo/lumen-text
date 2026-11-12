@@ -41,6 +41,8 @@ and no GPU driver:
 - Jump to character (`Alt+J`, flash / easymotion style): type 1–2 characters, then the label shown over the match (`Shift` extends the selection)
 - Word wrap, folding, sticky scroll, indent guides, minimap, breadcrumbs, color swatches
 - Find/replace (case, regex), project search, symbols, go to line, back/forward navigation
+- Replace in project (`Ctrl+Shift+H`): case / whole word / regex with `$1` captures, a preview of every replacement, replace one match, a file or everything (after a "Replace 42 matches in 7 files?" question); open files are edited in their buffer (one undo step, left unsaved), the others rewritten atomically with their line endings; `.gitignore` respected like the search
+- Keyboard macros: record with `Ctrl+Shift+R` (keys and commands, not the mouse; a REC pill in the bottom bar), replay with `Ctrl+Alt+R` or N times from the palette, as one undo step; save them by name in `macros.json` and bind them in `keybindings.json`
 - Tabs, quick open (fuzzy), session restore, live reload when files change on disk (inotify)
 - **Local history**, independent of git: a snapshot on every save and right before a buffer is reloaded because another program (a formatter, `git checkout`, the AI agent) rewrote the file. *File: Local history* (also in the tab and explorer context menus) lists them ("3 minutes ago · Saved", date, size), opens a side-by-side diff of the snapshot against the buffer and restores it as one undoable edit (`r` or *Restore this version*); *File: Local history (deleted files)* brings back files that no longer exist. Stored in `$XDG_STATE_HOME/lumen-text/history` (default `~/.local/state`): identical snapshots are skipped, files over 5 MB are not kept, 50 snapshots per file and 200 MB in total (oldest pruned first)
 - Never lose anything: **hot exit** (quitting keeps unsaved tabs, untitled ones too, and reopens them next time, no save prompt), **crash recovery** (unsaved buffers are backed up a few seconds after each edit; a backup whose file changed on disk meanwhile is still restored, with a notice) and **persistent undo** (a file's undo tree survives closing it and restarting while its text is unchanged)
@@ -249,7 +251,9 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 |---|---|
 | Open file (fuzzy) / command palette | `Ctrl+P` / `Ctrl+Shift+P` |
 | Find / replace | `Ctrl+F` / `Ctrl+H` (`Alt+C` case, `Alt+R` regex, `Ctrl+Alt+Enter` replace all) |
-| Find in project | `Ctrl+Shift+F` |
+| Find in project | `Ctrl+Shift+F` (`Alt+C` case, `Alt+W` whole word, `Alt+R` regex) |
+| Replace in project | `Ctrl+Shift+H` (or `Ctrl+H` in the search; `Tab` switches fields, `Enter` replaces the selected match, `Ctrl+Enter` its file, `Ctrl+Alt+Enter` everything) |
+| Macro: record / stop, replay | `Ctrl+Shift+R`, `Ctrl+Alt+R` ("Macro: Replay…" in the palette asks how many times) |
 | Symbol in file / in project | `Ctrl+Shift+O` / `Ctrl+T` |
 | Go to line | `Ctrl+G` |
 | Definition / references / rename | `F12` (or `Ctrl+click`) / `Shift+F12` / `F2` |
@@ -355,6 +359,17 @@ Chords use a space, explorer-only bindings use the `explorer:` prefix.
 { "ctrl+shift+t": "TestFile", "f5": "RepeatTask", "ctrl+w": "none", "ctrl+k r": "RepeatTask" }
 ```
 
+A `macro:<name>` id runs a macro saved with "Macro: Save last as…". Saved macros live in `macros.json` (same folder),
+as headless `--keys` tokens:
+
+```json
+{ "wrap-bold": ["home", "type:<b>", "end", "type:</b>", "down"] }
+```
+
+```json
+{ "ctrl+alt+1": "macro:wrap-bold" }
+```
+
 ### Themes
 
 Themes are VS Code JSON (`colors` + `tokenColors`). Drop `*.json` files into
@@ -396,8 +411,10 @@ src/
   git.rs, gitx.rs, gitsync.rs  status, blame, hunks, diff, history, conflicts, fetch/pull/push
   worktree.rs, app_worktree.rs  git worktrees: list, add/remove/prune (on the git worker), open here / in a new window
   mdview/, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)
-  search.rs, fuzzy.rs, snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs
   fstype.rs, poller.rs, app_fswatch.rs  untrusted file systems (statfs), polling fallback, .git watching and refresh on focus
+  search.rs, replace.rs     project search (gitignore-aware walk) and the replace engine (captures, line endings, atomic writes)
+  macros.rs                keyboard macros (record, replay as one undo step, macros.json)
+  fuzzy.rs, snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs
   script.rs                headless mode for tests and screenshots
 assets/   grammars, themes, language-manifest.json, icons, licenses
 packaging/  tarball, deb, rpm, Arch, AppImage, Flatpak scripts

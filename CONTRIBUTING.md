@@ -97,6 +97,7 @@ Flags: `--keys`, `--snap <dir>` (default `/tmp/lumen-snap`), `--size WxH` (logic
 | `sh:command` | Run a shell command (for example to edit a file or run `git` mid-script) |
 
 Tests in `src/` use the same building blocks (`App`, `Editor`, `Buffer`) directly; prefer a unit test for logic and a headless script for layout and visuals.
+`script::send_keys(&mut app, "ctrl+shift+r;type:abc;enter")` sends key tokens to a test `App` without the rendering and settling of `--keys` (see the macro tests); saved macros (`macros.json`) use the same tokens.
 Tests must not write to `/tmp` or your real config: use `std::env::temp_dir()` subfolders that they clean up, or `CARGO_TARGET_TMPDIR`.
 
 ## Code style

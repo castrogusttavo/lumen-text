@@ -294,18 +294,41 @@ impl App {
         if p.kind != PickKind::ProjectSearch {
             return;
         }
+        let overrides = self.unsaved_texts();
+        let Overlay::Picker(p) = &mut self.overlay else { return };
+        let q = search::Query {
+            text: p.field.text.clone(),
+            case: p.case,
+            regex: p.regex,
+            word: p.word,
+            replace: p.rep.as_ref().map(|r| r.field.text.clone()),
+        };
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(r) = p.rep.as_mut() {
+            // Select the same match again once the refreshed results arrive.
+            if r.want.is_none() {
+                r.want = r.hits.get(p.sel).map(|h| (h.path.clone(), h.line, h.start));
+            }
+            r.hits.clear();
+            r.confirm = None;
+            r.done = done.clone();
+            r.query = q.clone();
+        }
         p.items.clear();
         p.filtered.clear();
         p.sel = 0;
-        let query = p.field.text.clone();
-        let (case, regex) = (p.case, p.regex);
         let my_gen = self.search_gen.fetch_add(1, Ordering::SeqCst) + 1;
-        if query.is_empty() {
+        if q.text.is_empty() {
+            done.store(true, Ordering::SeqCst);
             return;
         }
         let (root, generation, tx, wake) =
             (self.root.clone(), self.search_gen.clone(), self.search_tx.clone(), self.wake());
-        thread::spawn(move || search::search(&root, &query, case, regex, generation, my_gen, tx, || wake()));
+        thread::spawn(move || {
+            search::search(&root, &q, &overrides, generation, my_gen, tx, || wake());
+            done.store(true, Ordering::SeqCst);
+            wake();
+        });
     }
 
     pub fn pump_background(&mut self) {
@@ -333,7 +356,7 @@ impl App {
             return;
         }
         let items: Vec<Item> = incoming
-            .into_iter()
+            .iter()
             .map(|h| Item {
                 label: h.text.clone(),
                 detail: format!("{}:{}", self.rel(&h.path), h.line + 1),
@@ -344,7 +367,20 @@ impl App {
             && p.kind == PickKind::ProjectSearch
         {
             p.items.extend(items);
+            let sel = p.sel;
             p.refilter();
+            if let Some(r) = p.rep.as_mut() {
+                let base = r.hits.len();
+                r.hits.extend(incoming);
+                p.sel = sel.min(p.filtered.len().saturating_sub(1));
+                if let Some(w) = &r.want
+                    && let Some(i) = r.hits[base..].iter().position(|h| (&h.path, h.line, h.start) == (&w.0, w.1, w.2))
+                {
+                    p.sel = base + i;
+                    r.want = None;
+                }
+                p.keep_visible();
+            }
         }
     }
 }

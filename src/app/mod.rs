@@ -166,6 +166,8 @@ pub struct App {
     pub search_tx: mpsc::Sender<(usize, Vec<Hit>)>,
     pub search_rx: mpsc::Receiver<(usize, Vec<Hit>)>,
     pub search_due: Option<Instant>,
+    /// Keyboard macros: recording, last macro, replay (see `macros`).
+    pub macros: crate::macros::Macros,
 
     pub layout: Layout,
     pub last_frame: Instant,
@@ -319,6 +321,7 @@ impl App {
             search_tx: stx,
             search_rx: srx,
             search_due: None,
+            macros: Default::default(),
             layout: Layout::default(),
             last_frame: Instant::now(),
             mods: ModifiersState::empty(),

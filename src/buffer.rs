@@ -631,6 +631,51 @@ impl Buffer {
         }
     }
 
+    /// Where the undo history stands now, for [`squash_since`](Self::squash_since).
+    pub fn undo_mark(&self) -> Option<usize> {
+        self.hist.cur
+    }
+
+    /// Join every undo step made since `mark` (a straight run of new steps, e.g. a replayed macro)
+    /// into one. Nothing changes when the history left that run (an undo past the mark, a branch).
+    pub fn squash_since(&mut self, mark: Option<usize>) {
+        self.open = false;
+        self.compound = false;
+        let mut path = Vec::new();
+        let mut c = self.hist.cur;
+        while c != mark {
+            let Some(i) = c else { return };
+            path.push(i);
+            c = self.hist.nodes[i].parent;
+        }
+        if path.len() < 2 {
+            return;
+        }
+        path.reverse();
+        // A straight run: each step has exactly the next one as its only child.
+        let straight = path.windows(2).all(|w| self.hist.nodes[w[0]].children == [w[1]])
+            && self.hist.nodes[path[path.len() - 1]].children.is_empty();
+        if !straight {
+            return;
+        }
+        let first = path[0];
+        let last = path[path.len() - 1];
+        let (after, ver_after) = (self.hist.nodes[last].group.after, self.hist.nodes[last].group.ver_after);
+        let mut edits = Vec::new();
+        for &i in &path[1..] {
+            edits.append(&mut self.hist.nodes[i].group.edits);
+        }
+        let n = &mut self.hist.nodes[first];
+        n.group.edits.append(&mut edits);
+        n.group.after = after;
+        n.group.ver_after = ver_after;
+        n.group.kind = EditKind::Other;
+        n.children.clear();
+        n.last_child = None;
+        // The emptied steps stay in `nodes` but nothing links to them any more.
+        self.hist.cur = Some(first);
+    }
+
     fn apply_reverse(&mut self, idx: usize) {
         for k in (0..self.hist.nodes[idx].group.edits.len()).rev() {
             let (at, n, removed, shape) = {
@@ -871,5 +916,57 @@ mod edit_log_tests {
         assert!(b.edits_since(1).is_none());
         rep(&mut b, 0, 0, "d");
         assert_eq!(b.log_seq(), 2, "logging stopped");
+    }
+}
+
+#[cfg(test)]
+mod squash_tests {
+    use super::*;
+
+    #[test]
+    fn squash_joins_the_steps_since_the_mark_into_one() {
+        let mut b = Buffer::from_str("abc");
+        b.replace(0, 0, "1", EditKind::Other, Sel::caret(0));
+        b.close_group();
+        let mark = b.undo_mark();
+        // Separate steps, the way replayed keys make them.
+        b.replace(4, 4, "x", EditKind::Typing, Sel::caret(4));
+        b.close_group();
+        b.begin_compound(Sel::caret(5));
+        b.replace(0, 1, "", EditKind::Other, Sel::caret(5));
+        b.end_compound(Sel::caret(4));
+        b.replace(1, 2, "B", EditKind::Other, Sel::caret(4));
+        b.set_after(Sel::caret(2));
+        assert_eq!(b.to_string(), "aBcx");
+        b.squash_since(mark);
+        assert_eq!(b.undo(), Some(Sel::caret(4)), "one step back, to the selection before the first");
+        assert_eq!(b.to_string(), "1abc");
+        assert_eq!(b.redo(), Some(Sel::caret(2)));
+        assert_eq!(b.to_string(), "aBcx");
+        b.undo();
+        b.undo();
+        assert_eq!(b.to_string(), "abc");
+        assert!(!b.is_dirty());
+        // A new edit after the squashed step is a step of its own.
+        b.redo();
+        b.redo();
+        b.replace(0, 0, "z", EditKind::Typing, Sel::caret(0));
+        b.undo();
+        assert_eq!(b.to_string(), "aBcx");
+    }
+
+    #[test]
+    fn squash_leaves_history_alone_when_it_left_the_run() {
+        let mut b = Buffer::from_str("abc");
+        b.replace(0, 0, "1", EditKind::Other, Sel::caret(0));
+        b.close_group();
+        let mark = b.undo_mark();
+        b.undo(); // back before the mark, then a new branch
+        b.replace(0, 0, "2", EditKind::Other, Sel::caret(0));
+        b.close_group();
+        b.replace(0, 0, "3", EditKind::Other, Sel::caret(0));
+        b.squash_since(mark);
+        b.undo();
+        assert_eq!(b.to_string(), "2abc", "still two steps");
     }
 }
