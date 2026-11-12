@@ -363,6 +363,10 @@ impl App {
         if named {
             fill_source(&mut diags, source);
         }
+        // Spelling is never an error, here as for open documents (companion servers).
+        if crate::lspreg::is_spell_server(source) {
+            diags.iter_mut().for_each(|g| g.severity = 3);
+        }
         let store = &mut self.lspx.problems;
         store.dropped += dropped;
         store.set(&path, source, diags);
