@@ -251,6 +251,63 @@ impl Dap {
         Ok(Dap { child: None, sock: Some(stream), adapter_id: "gdb".into(), tx, rx, seq, pending: HashMap::new() })
     }
 
+    /// A client over any byte transport (in-memory pipes in the tests).
+    pub fn from_io(input: impl Read + Send + 'static, output: impl Write + Send + 'static, wake: Wake) -> Dap {
+        let (tx, rx, seq) = start_io(input, output, wake);
+        Dap { child: None, sock: None, adapter_id: "gdb".into(), tx, rx, seq, pending: HashMap::new() }
+    }
+
+    /// Spawn an adapter that serves DAP on a TCP port it picks itself and announces on stdout
+    /// (`... listening at: 127.0.0.1:41234`, as `dlv dap --listen=127.0.0.1:0` does), then connect.
+    /// The child is killed when the `Dap` is dropped.
+    pub fn spawn_listening(cmd: &str, args: &[&str], cwd: &Path, wake: Wake) -> io::Result<Dap> {
+        use std::io::{BufRead, BufReader};
+        let mut child = Command::new(cmd)
+            .args(args)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let stdout = child.stdout.take().ok_or_else(|| io::Error::other("no stdout"))?;
+        let (atx, arx) = channel::<String>();
+        thread::spawn(move || {
+            let mut sent = false;
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if !sent && let Some((_, addr)) = line.split_once("listening at:") {
+                    sent = true;
+                    let _ = atx.send(addr.trim().to_string());
+                }
+            }
+        });
+        let addr = match arx.recv_timeout(Duration::from_secs(15)) {
+            Ok(a) => a,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::other(format!("{cmd} did not announce a listening address")));
+            }
+        };
+        let port = addr.rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
+        let host = addr.rsplit_once(':').map_or("127.0.0.1", |(h, _)| h.trim_matches(['[', ']']));
+        let Some(port) = port else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::other(format!("bad listening address: {addr}")));
+        };
+        match Dap::connect_tcp(if host.is_empty() { "127.0.0.1" } else { host }, port, wake) {
+            Ok(mut d) => {
+                d.child = Some(child);
+                Ok(d)
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(e)
+            }
+        }
+    }
+
     /// Answer a `DapMsg::ReverseRequest`.
     pub fn respond(&mut self, seq: i64, command: &str, success: bool, body: Value) {
         let seq_out = self.seq.fetch_add(1, Ordering::SeqCst);

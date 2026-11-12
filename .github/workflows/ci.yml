@@ -66,6 +66,26 @@ jobs:
       - name: "Test (perf tests run in their own job; the real-tsgo test skips itself when tsgo is absent)"
         run: "cargo test --release --locked -- --skip perf::"
 
+  dap:
+    name: Debug adapters (delve)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - name: Install delve
+        run: |
+          go install github.com/go-delve/delve/cmd/dlv@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: DAP against real dlv (breakpoint hit + variable read)
+        run: cargo test --release --locked dap_tests -- --ignored --nocapture --test-threads=1
+
   perf:
     name: Performance regression tests
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'perf')

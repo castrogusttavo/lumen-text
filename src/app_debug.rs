@@ -228,7 +228,8 @@ impl App {
         match ext.as_str() {
             "ts" | "js" | "mjs" | "cjs" | "mts" | "cts" => self.start_node_debug(&path),
             "rs" => self.start_rust_debug(&path),
-            _ => self.say("no debugger for this file type (supported: TS/JS via js-debug, Rust via gdb)"),
+            "go" => self.start_go_debug(&path),
+            _ => self.say("no debugger for this file type (supported: TS/JS via js-debug, Rust via gdb, Go via delve)"),
         }
     }
 
@@ -291,6 +292,32 @@ impl App {
         let Some(name) = name else { return self.say("Cargo.toml has no [package] name") };
         self.pending_native = Some(root.join("target/debug").join(name));
         self.run_task("cargo build", "Build for debugging");
+    }
+
+    /// Go through the registry's `delve` adapter (`dlv dap`); dlv builds the package itself.
+    fn start_go_debug(&mut self, path: &Path) {
+        let reg = crate::dap_adapters::Registry::builtin();
+        let Some(adapter) = reg.for_language("go") else { return self.say("no Go debug adapter registered") };
+        let root = path
+            .ancestors()
+            .find(|d| d.join("go.mod").exists())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_else(|| self.root.clone()));
+        let mut dap = match adapter.start(&root, self.wake()) {
+            Ok(d) => d,
+            Err(e) => return self.say(format!("could not start dlv: {e}")),
+        };
+        let mut session = adapter.session(path, &root);
+        for (p, lines) in self.breakpoint_pairs() {
+            session.set_breakpoints(&p, &lines, &mut dap);
+        }
+        session.start(&mut dap);
+        self.dbg = Some(Debugger::Native { dap: Box::new(dap), session: Box::new(session) });
+        self.panel.open = true;
+        self.panel.tab = PanelTab::Debug;
+        self.panel.dbg_scroll = [0.0; 3];
+        self.panel.dbg_follow = true;
+        self.say("debugging with delve…");
     }
 
     /// Called when `cargo build` finished successfully.
