@@ -1531,6 +1531,13 @@ mod tests {
 mod integration_tests {
     use super::*;
 
+    fn tmpd(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("lumen-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
     #[test]
     fn register_desktop_rewrites_stale_icons() {
         let data = std::env::temp_dir().join(format!("lumen-integ-{}", std::process::id()));
@@ -1547,7 +1554,7 @@ mod integration_tests {
 
     #[test]
     fn setup_install_is_recognised_by_its_uninstaller_under_the_user_profile() {
-        let home = scratch("setup-home");
+        let home = tmpd("setup-home");
         let dir = home.join("AppData/Local/Programs/Lumen");
         fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("lumen-text.exe");
@@ -1556,7 +1563,7 @@ mod integration_tests {
         fs::write(dir.join("unins000.exe"), b"x").unwrap();
         assert_eq!(setup_install_dir(&exe, Some(&home)), Some(dir.clone()));
         assert_eq!(
-            setup_install_dir(&exe, Some(&scratch("setup-other"))),
+            setup_install_dir(&exe, Some(&tmpd("setup-other"))),
             None,
             "outside the profile (all users): not self-updated"
         );

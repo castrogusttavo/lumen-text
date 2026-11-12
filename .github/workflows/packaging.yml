@@ -130,7 +130,7 @@ jobs:
           [ "$got" = "lumen-text ${E2E_VERSION}" ] || { echo "version stamp mismatch: $got" >&2; exit 1; }
           ! grep -qa 'VCRUNTIME140' target/release/lumen-text.exe || { echo "lumen-text.exe imports VCRUNTIME140.dll: crt-static is not in effect" >&2; exit 1; }
       - name: Updater unit tests on Windows
-        run: cargo test --release --locked update::
+        run: "cargo test --release --locked update::"
       - uses: ./.github/actions/build-ghp-lsp
       - uses: ./.github/actions/setup-innosetup
       - name: Package (zip and installer)
