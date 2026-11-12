@@ -1,0 +1,8 @@
+<go:import ("example.com/demo/models")/>
+<go
+    team := models.NewTeam("core")
+    lead := team.Lead
+/>
+<p><go= team.Home.City /></p>
+<p><go= lead.Name /></p>
+<p><go= `raw /> string` + "a /> b" /></p>

@@ -2,7 +2,7 @@
 //!
 //! Ignored by default (needs `gopls` and `go` on PATH); CI runs it with `--ignored`.
 
-use ghp_lsp::gopls::scan::scan_regions;
+use ghp_lsp::gopls::adapter::regions_of;
 use ghp_lsp::gopls::sourcemap::TextIndex;
 use ghp_lsp::gopls::{Bridge, CancelToken, Config, Event, Position};
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ fn demo() -> PathBuf {
 fn open(b: &Bridge, rel: &str) -> (PathBuf, String) {
     let path = demo().join(rel);
     let src = std::fs::read_to_string(&path).unwrap();
-    b.update(&path, &src, &scan_regions(&src));
+    b.update(&path, &src, &regions_of(&src));
     (path, src)
 }
 

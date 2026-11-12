@@ -1,0 +1,16 @@
+<go:import ("example.com/demo/models")/>
+<go
+    team := models.NewTeam("core")
+    counts := map[string]int{"a": 1, "b": 2}
+/>
+<ul>
+<go:for i, member := range team.Members/>
+    <li><go= i /> <go= member.Name /></li>
+<go:endfor/>
+<go:for k, v := range counts/>
+    <li><go= k /> <go= v /></li>
+<go:endfor/>
+<go:for n := 0; n < team.Size(); n++/>
+    <li><go= n /></li>
+<go:endfor/>
+</ul>

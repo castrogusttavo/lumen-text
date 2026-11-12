@@ -3,10 +3,10 @@
 //! * [`virtual_doc`]: `.ghp` + expression regions -> virtual `.go` mirroring the transpiler.
 //! * [`sourcemap`]: byte / UTF-16 position mapping between the two.
 //! * [`proxy`]: gopls child process, JSON-RPC, overlay documents, request/diagnostic translation.
-//! * [`scan`]: tolerant tag scanner used until/besides the real parser.
+//! * [`adapter`]: the parser's tree -> the regions above.
 
+pub mod adapter;
 pub mod proxy;
-pub mod scan;
 pub mod sourcemap;
 pub mod virtual_doc;
 

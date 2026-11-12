@@ -166,10 +166,10 @@ pub fn build(src: &str, regions: &[ExprRegion], opts: &Options) -> VirtualDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gopls::scan::scan_regions;
+    use crate::gopls::adapter::regions_of;
 
     fn golden(name: &str, src: &str, want: &str) {
-        let regions = scan_regions(src);
+        let regions = regions_of(src);
         let doc = build(src, &regions, &Options::for_page(name, "pages"));
         if std::env::var_os("GHP_UPDATE_GOLDEN").is_some() {
             let p = format!("{}/tests/golden/{name}.go", env!("CARGO_MANIFEST_DIR"));
@@ -200,14 +200,14 @@ mod tests {
     #[test]
     fn user_import_of_managed_package_is_not_duplicated() {
         let src = "<go:import (\"fmt\")/><go= fmt.Sprint(1) />";
-        let doc = build(src, &scan_regions(src), &Options::for_page("p", "main"));
+        let doc = build(src, &regions_of(src), &Options::for_page("p", "main"));
         assert_eq!(doc.text.matches("\"fmt\"").count(), 1);
     }
 
     #[test]
     fn aliased_import_keeps_managed_copy() {
         let src = "<go:import (f \"fmt\")/>";
-        let doc = build(src, &scan_regions(src), &Options::for_page("p", "main"));
+        let doc = build(src, &regions_of(src), &Options::for_page("p", "main"));
         assert_eq!(doc.text.matches("\"fmt\"").count(), 2);
     }
 
