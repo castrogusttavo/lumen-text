@@ -1,0 +1,34 @@
+name: Build ghp-lsp
+description: >
+  Build the GHP language server (standalone package in tools/ghp-lsp) in release mode, check that it
+  answers an LSP initialize, and export GHP_LSP_BIN (absolute path, .exe on Windows) for the
+  packaging scripts. Shared by the release jobs in ci.yml and the PR dry run in packaging.yml, so the
+  first release is not the first time this step runs.
+
+runs:
+  using: composite
+  steps:
+    - name: Build ghp-lsp and check the handshake
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -f tools/ghp-lsp/src/main.rs || { echo "tools/ghp-lsp/src/main.rs is missing" >&2; exit 1; }
+        locked=""
+        if [ -f tools/ghp-lsp/Cargo.lock ]; then
+          locked="--locked"
+        else
+          echo "::warning::tools/ghp-lsp/Cargo.lock is not committed: building without --locked"
+        fi
+        cargo build --release $locked --manifest-path tools/ghp-lsp/Cargo.toml
+        ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
+        bin="$PWD/tools/ghp-lsp/target/release/ghp-lsp$ext"
+        test -f "$bin"
+        # initialize -> shutdown -> exit over stdio: the binary we ship must speak LSP, not just exist.
+        msg() { printf 'Content-Length: %d\r\n\r\n%s' "${#1}" "$1"; }
+        out="$({
+          msg '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
+          msg '{"jsonrpc":"2.0","id":2,"method":"shutdown"}'
+          msg '{"jsonrpc":"2.0","method":"exit"}'
+        } | "$bin")" || true
+        echo "$out" | grep -q '"capabilities"' || { echo "ghp-lsp did not answer initialize: $out" >&2; exit 1; }
+        echo "GHP_LSP_BIN=$bin" >> "$GITHUB_ENV"

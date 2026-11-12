@@ -125,6 +125,8 @@ pub struct Doc {
     pub bps: Vec<usize>,
     /// How each of `bps` is drawn (same order; missing entries are plain dots).
     pub bp_glyphs: Vec<crate::debug_model::BpGlyph>,
+    /// Edits since the app last moved the breakpoints of this file (see `App::follow_breakpoint_edits`).
+    pub bp_pending: Vec<crate::buffer::EditRec>,
     /// Bookmarked lines (0-based, sorted); they follow edits (see `bookmarks`).
     pub marks: Vec<usize>,
     pub minimap: bool,
@@ -269,6 +271,7 @@ impl Doc {
             symbols: Vec::new(),
             bps: Vec::new(),
             bp_glyphs: Vec::new(),
+            bp_pending: Vec::new(),
             marks: Vec::new(),
             minimap: true,
             sb: None,
@@ -581,6 +584,9 @@ impl Doc {
         let recs = self.view_on_edit(l);
         let mirror = self.linked_follow(&recs);
         crate::bookmarks::on_edits(&mut self.marks, &recs);
+        if !self.bps.is_empty() {
+            self.bp_pending.extend_from_slice(&recs);
+        }
         let buf = &self.buf;
         self.inlay.on_edits(&recs, l, buf.line_count(), &|p| buf.line_col(p));
         crate::coverage::on_edits(&mut self.cov, &recs, &|n| (n < buf.line_count()).then(|| buf.line(n)));

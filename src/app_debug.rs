@@ -208,6 +208,19 @@ pub struct DebugUi {
     pub last: Option<LaunchConfig>,
     /// An evaluate-on-hover in flight: `(expression, anchor start, anchor end, probe position)`.
     pub hover_for: Option<(String, usize, usize, usize)>,
+    /// A prelaunch build (`ghp build --debug`) running on a worker thread.
+    pub build: Option<PendingBuild>,
+    /// Debug Console lines of the build (shown while there is no session).
+    pub build_log: Vec<String>,
+}
+
+/// A prelaunch build in flight: when it succeeds the session starts from `adapter`/`path`/`root`.
+pub struct PendingBuild {
+    rx: std::sync::mpsc::Receiver<Result<(), String>>,
+    adapter: String,
+    path: PathBuf,
+    root: PathBuf,
+    ov: Option<dm::LaunchOverride>,
 }
 
 /// One line of a list in the panel.
@@ -269,6 +282,29 @@ impl App {
             d.set_breakpoint_specs(&path.to_string_lossy(), &specs);
         }
         self.debug_save();
+    }
+
+    /// Breakpoints follow the edits of their file like bookmarks do (lines inserted above move them, a
+    /// removed line takes its breakpoint along); a running session gets the new lines.
+    pub fn follow_breakpoint_edits(&mut self) {
+        let mut changed: Vec<PathBuf> = Vec::new();
+        for d in &mut self.docs {
+            if d.bp_pending.is_empty() {
+                continue;
+            }
+            let recs = std::mem::take(&mut d.bp_pending);
+            let Some(path) = d.path().map(Path::to_path_buf) else { continue };
+            let Some(lines) = self.breakpoints.get_mut(&path) else { continue };
+            if dm::follow_edits(lines, self.dbgui.meta.get_mut(&path), &recs) && !changed.contains(&path) {
+                changed.push(path);
+            }
+        }
+        for path in changed {
+            if self.breakpoints.get(&path).is_some_and(Vec::is_empty) {
+                self.breakpoints.remove(&path);
+            }
+            self.bp_changed(&path);
+        }
     }
 
     pub fn clear_breakpoints(&mut self) {
@@ -516,6 +552,9 @@ impl App {
 
     /// F5: continue a stopped session, or start debugging with the launch configuration that applies.
     pub fn debug_start_or_continue(&mut self) {
+        if self.dbgui.build.is_some() {
+            return self.say("building… (the session starts when the build finishes)");
+        }
         if let Some(d) = self.dbg.as_mut() {
             match d.state() {
                 State::Stopped { .. } => return d.resume(),
@@ -602,10 +641,23 @@ impl App {
         self.run_task("cargo build", "Build for debugging");
     }
 
-    /// An adapter of the registry (`delve`, `ghp`, ...): started, given the breakpoints and the launch request.
+    /// An adapter of the registry (`delve`, `ghp`, ...): built first when it has a prelaunch step (on a
+    /// worker thread), then started, given the breakpoints and the launch request. The project's
+    /// `.lumen/launch.json` may override the program, args, env, cwd and the adapter.
     fn start_adapter_debug(&mut self, id: &str, path: &Path) {
+        if self.dbgui.build.is_some() {
+            return self.say("a debug build is still running");
+        }
+        let ovs = dm::load_launch(&self.root).unwrap_or_else(|e| {
+            self.say_for(e, 6);
+            Vec::new()
+        });
+        let ov = dm::launch_override(&ovs, id).cloned();
+        let adapter_id = ov.as_ref().and_then(|o| o.adapter.clone()).unwrap_or_else(|| id.to_string());
         let reg = crate::dap_adapters::Registry::builtin();
-        let Some(adapter) = reg.get(id) else { return self.say(format!("no debug adapter registered: {id}")) };
+        let Some(adapter) = reg.get(&adapter_id) else {
+            return self.say(format!("no debug adapter registered: {adapter_id}"));
+        };
         // dlv builds the package itself, from the module root; other adapters run from the project.
         let root = if adapter.languages.iter().any(|l| l == "go") {
             path.ancestors()
@@ -615,22 +667,58 @@ impl App {
         } else {
             self.root.clone()
         };
-        // A build step first (`ghp build --debug` for pages): the program to debug is its output.
-        if adapter.prelaunch.is_some() {
-            self.say(format!("building for {}…", adapter.name));
-            if let Err(e) = adapter.run_prelaunch(path, &root) {
-                let msg = e.to_string();
-                self.panel.open = true;
-                self.panel.tab = PanelTab::Output;
-                self.panel.title = format!("{} build", adapter.name);
-                return self.say_for(format!("debug build failed: {}", msg.lines().next().unwrap_or("")), 6);
+        if adapter.prelaunch.is_none() {
+            return self.launch_adapter(&adapter_id, path, &root, ov.as_ref());
+        }
+        // A build step first (`ghp build --debug` for pages): the program to debug is its output. It runs
+        // off the UI thread; `pump_debug_build` starts the session when it finishes.
+        let name = if adapter.name.is_empty() { adapter.id.clone() } else { adapter.name.clone() };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (a, p, r, o, wake) = (adapter.clone(), path.to_path_buf(), root.clone(), ov.clone(), self.wake());
+        std::thread::spawn(move || {
+            let res = a.run_prelaunch_with(&p, &r, o.as_ref()).map_err(|e| e.to_string());
+            let _ = tx.send(res);
+            wake();
+        });
+        self.dbgui.build = Some(PendingBuild { rx, adapter: adapter_id, path: path.to_path_buf(), root, ov });
+        self.dbgui.build_log = vec![dm::console_line(ConsoleKind::Echo, &format!("building for {name}…"))];
+        self.open_debug_panel();
+        self.say(format!("building for {name}…"));
+    }
+
+    /// The build thread finished: start the session, or show why the build failed in the Debug Console.
+    fn pump_debug_build(&mut self) {
+        let res = match self.dbgui.build.as_ref().map(|b| b.rx.try_recv()) {
+            None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => Err("the build stopped unexpectedly".to_string()),
+            Some(Ok(r)) => r,
+        };
+        let Some(b) = self.dbgui.build.take() else { return };
+        self.request_redraw();
+        match res {
+            Ok(()) => {
+                self.dbgui.build_log.push(dm::console_line(ConsoleKind::Result, "build finished"));
+                self.launch_adapter(&b.adapter, &b.path, &b.root, b.ov.as_ref());
+            }
+            Err(msg) => {
+                for l in msg.lines() {
+                    self.dbgui.build_log.push(dm::console_line(ConsoleKind::Error, l));
+                }
+                self.open_debug_panel();
+                self.say_for(format!("debug build failed: {}", msg.lines().next().unwrap_or("")), 6);
             }
         }
-        let mut dap = match adapter.start(&root, self.wake()) {
+    }
+
+    /// Start adapter `id` on `path` (the build, if any, is done) and attach it.
+    fn launch_adapter(&mut self, id: &str, path: &Path, root: &Path, ov: Option<&dm::LaunchOverride>) {
+        let reg = crate::dap_adapters::Registry::builtin();
+        let Some(adapter) = reg.get(id) else { return self.say(format!("no debug adapter registered: {id}")) };
+        let mut dap = match adapter.start(root, self.wake()) {
             Ok(d) => d,
             Err(e) => return self.say(format!("could not start {}: {e}", adapter.command)),
         };
-        let mut session = adapter.session(path, &root);
+        let mut session = adapter.session_with(path, root, &[], ov);
         for (p, specs) in self.breakpoint_specs() {
             session.set_breakpoint_specs(&p, specs, &mut dap);
         }
@@ -675,6 +763,11 @@ impl App {
     }
 
     pub fn debug_stop(&mut self) {
+        if self.dbgui.build.take().is_some() {
+            // The build process runs to its end; its result is dropped.
+            self.dbgui.build_log.push(dm::console_line(ConsoleKind::Error, "build cancelled"));
+            return self.say("debug build cancelled");
+        }
         if let Some(mut d) = self.dbg.take() {
             d.stop();
         }
@@ -687,6 +780,9 @@ impl App {
         let Some(cfg) = self.dbgui.last.clone() else {
             return self.say("nothing to restart: start a session with F5 first");
         };
+        if self.dbgui.build.is_some() {
+            return;
+        }
         if let Some(mut d) = self.dbg.take() {
             d.stop();
         }
@@ -718,12 +814,13 @@ impl App {
     pub fn tool_enabled(&self, t: Tool) -> bool {
         let state = self.dbg.as_ref().map(Debugger::state);
         let stopped = matches!(state, Some(State::Stopped { .. }));
+        let building = self.dbgui.build.is_some();
         match t {
-            Tool::Continue => state.is_none() || stopped || state == Some(State::Terminated),
+            Tool::Continue => !building && (state.is_none() || stopped || state == Some(State::Terminated)),
             Tool::Over | Tool::Into | Tool::Out => stopped,
             Tool::Pause => state == Some(State::Running),
-            Tool::Restart => self.dbgui.last.is_some(),
-            Tool::Stop => state.is_some_and(|s| s != State::Terminated),
+            Tool::Restart => !building && self.dbgui.last.is_some(),
+            Tool::Stop => building || state.is_some_and(|s| s != State::Terminated),
         }
     }
 
@@ -744,6 +841,8 @@ impl App {
 
     /// Follow the adapter: when it stops, show the selected frame in the editor.
     pub fn pump_debug(&mut self) {
+        self.pump_debug_build();
+        self.follow_breakpoint_edits();
         let Some(d) = self.dbg.as_mut() else { return };
         if !d.pump() {
             return;
@@ -1284,6 +1383,9 @@ impl App {
     }
 
     fn debug_status_text(&self) -> String {
+        if self.dbgui.build.is_some() {
+            return "Building…".into();
+        }
         let Some(s) = self.dbg.as_ref().and_then(Debugger::session) else { return String::new() };
         match &s.state {
             State::Idle => "Starting…".into(),
@@ -1352,29 +1454,32 @@ impl App {
         if rows.is_empty() {
             return vec![RowSpec::text(vec![("Loading…".into(), dim)])];
         }
-        rows.into_iter()
-            .map(|r| {
-                let foldable = r.scope.is_some() || r.expandable();
-                let parts = if r.scope.is_some() {
-                    vec![(r.name.clone(), dim)]
-                } else {
-                    let mut p = vec![(r.name.clone(), c.accent_text), (" = ".to_string(), dim), (r.value.clone(), fg)];
-                    if r.loading {
-                        p.push(("  …".into(), dim));
-                    }
-                    p
-                };
-                RowSpec {
-                    indent: r.depth as i32 * 14,
-                    icon: foldable.then_some((if r.open { "ui/chevron_down" } else { "ui/chevron_right" }, dim)),
-                    reserve: true,
-                    parts,
-                    hit: foldable.then(|| DebugHit::Var { key: r.key.clone(), vars_ref: r.vars_ref, scope: r.scope }),
-                    bg: None,
-                    actions: Vec::new(),
-                }
-            })
-            .collect()
+        rows.into_iter().map(|r| self.tree_row_spec(r)).collect()
+    }
+
+    /// A Variables / Watch tree row: indent by depth, a chevron when it has children.
+    fn tree_row_spec(&self, r: dm::TreeRow) -> RowSpec {
+        let c = self.theme.chrome;
+        let (fg, dim) = (self.theme.foreground, c.tab_inactive_fg);
+        let foldable = r.scope.is_some() || r.expandable();
+        let parts = if r.scope.is_some() {
+            vec![(r.name.clone(), dim)]
+        } else {
+            let mut p = vec![(r.name.clone(), c.accent_text), (" = ".to_string(), dim), (r.value.clone(), fg)];
+            if r.loading {
+                p.push(("  …".into(), dim));
+            }
+            p
+        };
+        RowSpec {
+            indent: r.depth as i32 * 14,
+            icon: foldable.then_some((if r.open { "ui/chevron_down" } else { "ui/chevron_right" }, dim)),
+            reserve: true,
+            parts,
+            hit: foldable.then(|| DebugHit::Var { key: r.key.clone(), vars_ref: r.vars_ref, scope: r.scope }),
+            bg: None,
+            actions: Vec::new(),
+        }
     }
 
     fn debug_bp_rows(&self) -> Vec<RowSpec> {
@@ -1431,27 +1536,38 @@ impl App {
         if self.dbgui.watch.is_empty() {
             return vec![RowSpec::text(vec![("+ adds an expression to watch.".into(), dim)])];
         }
-        let sess = self.dbg.as_ref().and_then(Debugger::session);
-        self.dbgui
-            .watch
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                let mut parts = vec![(e.clone(), c.accent_text), (" = ".to_string(), dim)];
-                match sess.and_then(|s| s.watch_results.get(e)) {
-                    Some(Ok((v, _))) => parts.push((v.clone(), fg)),
-                    Some(Err(m)) => parts.push((m.clone(), c.error)),
-                    None => parts.push(("not available".into(), dim)),
-                }
-                RowSpec {
-                    indent: 0,
-                    icon: None,
-                    reserve: false,
-                    parts,
-                    hit: None,
-                    bg: None,
+        let Some(s) = self.dbg.as_ref().and_then(Debugger::session) else {
+            return self
+                .dbgui
+                .watch
+                .iter()
+                .enumerate()
+                .map(|(i, e)| RowSpec {
                     actions: vec![("ui/close", DebugHit::WatchRemove(i))],
+                    ..RowSpec::text(vec![
+                        (e.clone(), c.accent_text),
+                        (" = ".to_string(), dim),
+                        ("not available".into(), dim),
+                    ])
+                })
+                .collect();
+        };
+        // Structured values expand like variables (their children are fetched on demand).
+        dm::flatten_watch(s)
+            .into_iter()
+            .map(|(i, r)| {
+                if r.depth > 0 {
+                    return self.tree_row_spec(r);
                 }
+                let mut spec = self.tree_row_spec(r.clone());
+                spec.indent = 0;
+                spec.parts[2].1 = match s.watch_results.get(&r.name) {
+                    Some(Err(_)) => c.error,
+                    Some(Ok(_)) => fg,
+                    None => dim,
+                };
+                spec.actions = vec![("ui/close", DebugHit::WatchRemove(i))];
+                spec
             })
             .collect()
     }
@@ -1459,10 +1575,12 @@ impl App {
     fn debug_console_rows(&self) -> Vec<RowSpec> {
         let c = self.theme.chrome;
         let (fg, dim) = (self.theme.foreground, c.tab_inactive_fg);
-        let Some(d) = self.dbg.as_ref() else {
-            return vec![RowSpec::text(vec![("Program output and evaluations show here.".into(), dim)])];
+        let lines: &[String] = match self.dbg.as_ref() {
+            Some(d) => d.output(),
+            None if !self.dbgui.build_log.is_empty() => &self.dbgui.build_log,
+            None => return vec![RowSpec::text(vec![("Program output and evaluations show here.".into(), dim)])],
         };
-        d.output()
+        lines
             .iter()
             .map(|l| {
                 let (kind, text) = dm::classify(l);
@@ -1886,6 +2004,47 @@ mod tests {
         app.debug_stop();
         assert!(app.dbg.is_none());
         assert_eq!(app.docs[i].bp_glyphs, [BpGlyph::Conditional, BpGlyph::Normal], "no session: no verification");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn breakpoints_follow_edits_and_the_session_is_told() {
+        let (_g, mut app, dir, i) = go_app("bp-follow");
+        let src = dir.join("main.go");
+        app.toggle_breakpoint_at(3);
+        app.bp_set_condition(&src, 3, "a > 1");
+        assert_eq!(app.docs[i].bps, [3]);
+        {
+            let d = &mut app.docs[i];
+            d.ed.click(&mut d.buf, 0, false);
+            d.ed.insert_text(&mut d.buf, "// header\n");
+            d.sync_edits();
+        }
+        app.follow_breakpoint_edits();
+        assert_eq!(app.breakpoints[&src], [4], "the line moved down with the text");
+        assert_eq!(app.dbgui.meta[&src][&4].condition.as_deref(), Some("a > 1"), "and kept its condition");
+        assert_eq!(app.docs[i].bps, [4], "the gutter follows");
+        assert_eq!(dm::load(&app.root).lines.get(&src).map(Vec::as_slice), Some(&[4usize][..]), "and the saved state");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_debug_build_lands_in_the_console_without_a_session() {
+        let (_g, mut app, dir, _i) = go_app("bp-build");
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.dbgui.build =
+            Some(PendingBuild { rx, adapter: "ghp".into(), path: dir.join("a.ghp"), root: dir.clone(), ov: None });
+        assert!(app.tool_enabled(Tool::Stop) && !app.tool_enabled(Tool::Continue));
+        assert_eq!(app.debug_status_text(), "Building…");
+        app.pump_debug_build();
+        assert!(app.dbgui.build.is_some(), "still building");
+        tx.send(Err("`ghp build` failed\nline two".to_string())).unwrap();
+        app.pump_debug_build();
+        assert!(app.dbgui.build.is_none() && app.dbg.is_none());
+        assert!(app.panel.open && app.panel.tab == PanelTab::Debug);
+        let rows = app.debug_console_rows();
+        assert!(rows.iter().any(|r| r.parts[0].0 == "line two"), "the build output is in the Debug Console");
+        assert!(!app.debug_status_text().contains("Building"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
