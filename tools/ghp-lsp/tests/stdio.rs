@@ -65,7 +65,7 @@ fn invalid_json_and_non_utf8_bodies_get_an_error_and_the_session_goes_on() {
         assert_eq!(m["id"], Value::Null);
     }
     // A header that is not UTF-8, an unparsable length, and extra headers around a good frame.
-    c.send_raw(b"X-Garbage: \xff\xfe\r\nContent-Length: nope\r\n\r\n{}");
+    c.send_raw(b"X-Garbage: \xff\xfe\r\nContent-Length: nope\r\n\r\n{}\r\n");
     c.send_raw(b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\nContent-Length: 2\r\n\r\n{}");
     let m = c.next_message(WAIT).expect("an error reply for the empty object");
     assert_eq!(m["error"]["code"], rpc::INVALID_REQUEST);
@@ -309,7 +309,7 @@ fn fuzz_frame(r: &mut Rng, c: &mut Client) {
             c.send_frame(&body);
         }
         1 => c.send_frame(&serde_json::to_vec(&random_json(r, 3)).unwrap()),
-        2 => c.send_raw(b"X-Garbage: \xff\r\nContent-Length: nope\r\n\r\n{}"),
+        2 => c.send_raw(b"X-Garbage: \xff\r\nContent-Length: nope\r\n\r\n{}\r\n"),
         3 => c.send_frame(b"{\"jsonrpc\":\"2.0\",\"method\":"),
         4 | 5 => {
             // A notification.

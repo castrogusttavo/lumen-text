@@ -64,11 +64,12 @@ fn completion_and_late_diagnostics_through_the_real_binary() {
     c.open(&uri, &text);
     c.wait_for("textDocument/publishDiagnostics", |_| true, WAIT).expect("initial diagnostics");
 
-    // Member completion: only gopls can do it, so this also proves gopls has started.
-    let got = complete_until(&mut c, &uri, &after(&text, "user.Na", 7), "Name");
+    // Member completion right after the dot (gopls filters by what precedes the cursor): only gopls
+    // can do it, so this also proves gopls has started.
+    let got = complete_until(&mut c, &uri, &after(&text, "user.Na", 5), "Name");
     assert!(got.contains(&"Admin".to_string()) && got.contains(&"Greeting".to_string()), "{got:?}");
     // The same inside an attribute value.
-    let got = complete_until(&mut c, &uri, &after(&text, "user.Em", 7), "Email");
+    let got = complete_until(&mut c, &uri, &after(&text, "user.Em", 5), "Email");
     assert!(got.contains(&"Name".to_string()), "{got:?}");
 
     // The cursor inside an empty tag is a Go position: the names in scope come back.

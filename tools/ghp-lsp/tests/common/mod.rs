@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::io::{BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -92,10 +92,7 @@ impl Client {
         if let Some(m) = self.backlog.pop_front() {
             return Some(m);
         }
-        match self.rx.recv_timeout(timeout) {
-            Ok(m) => Some(m),
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => None,
-        }
+        self.rx.recv_timeout(timeout).ok()
     }
 
     /// Send a request and return the complete response (`result` or `error`). Messages that
@@ -108,7 +105,10 @@ impl Client {
     }
 
     pub fn call(&mut self, method: &str, params: Value) -> Value {
-        self.call_with_timeout(method, params, WAIT).unwrap_or_else(|| panic!("no response to {method}"))
+        self.call_with_timeout(method, params, WAIT).unwrap_or_else(|| {
+            let status = self.child.try_wait();
+            panic!("no response to {method}; server status {status:?}; stderr:\n{}", self.stderr_text())
+        })
     }
 
     /// Wait for the response with this id.
