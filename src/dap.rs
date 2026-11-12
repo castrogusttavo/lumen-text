@@ -12,7 +12,7 @@
 
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -88,6 +88,10 @@ pub enum Pending {
     Locals,
     Variables(i64),
     Evaluate,
+    /// `evaluate` typed in the Debug Console, in a watch row, or by hovering the editor.
+    EvalRepl(String),
+    EvalWatch(String),
+    EvalHover(String),
     Disconnect,
     Other,
 }
@@ -367,6 +371,38 @@ impl Dap {
         )
     }
 
+    /// `setBreakpoints` with conditions and log messages (a logpoint has `log_message`).
+    pub fn set_breakpoints_spec(&mut self, source_path: &str, specs: &[BpSpec]) -> i64 {
+        let bps: Vec<Value> = specs
+            .iter()
+            .map(|b| {
+                let mut o = json!({"line": b.line});
+                if let Some(c) = b.condition.as_deref().filter(|c| !c.trim().is_empty()) {
+                    o["condition"] = json!(c);
+                }
+                if let Some(m) = b.log_message.as_deref().filter(|m| !m.is_empty()) {
+                    o["logMessage"] = json!(m);
+                }
+                o
+            })
+            .collect();
+        let lines: Vec<usize> = specs.iter().map(|b| b.line).collect();
+        self.request(
+            "setBreakpoints",
+            json!({"source": {"path": source_path}, "breakpoints": bps, "lines": lines}),
+            Pending::SetBreakpoints(source_path.to_string()),
+        )
+    }
+
+    /// `evaluate` in `context` (`repl`, `watch`, `hover`); `frame_id` is left out when unknown.
+    pub fn evaluate_in(&mut self, expr: &str, frame_id: Option<i64>, context: &str, what: Pending) -> i64 {
+        let mut a = json!({"expression": expr, "context": context});
+        if let Some(f) = frame_id {
+            a["frameId"] = json!(f);
+        }
+        self.request("evaluate", a, what)
+    }
+
     pub fn configuration_done(&mut self) -> i64 {
         self.request("configurationDone", json!({}), Pending::ConfigurationDone)
     }
@@ -428,6 +464,37 @@ pub struct Var {
     pub vars_ref: i64,
 }
 
+/// One breakpoint to send: a plain line, a conditional one or a logpoint.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BpSpec {
+    /// 1-based, as the protocol wants it.
+    pub line: usize,
+    pub condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
+/// What the adapter answered for one requested breakpoint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BpResult {
+    /// 1-based line the breakpoint ended up on.
+    pub line: usize,
+    pub verified: bool,
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThreadInfo {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Scope {
+    pub name: String,
+    pub vars_ref: i64,
+    pub expensive: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stop {
     pub reason: String,
@@ -469,6 +536,50 @@ pub fn parse_stopped(body: &Value) -> Stop {
     }
 }
 
+/// `(result, type)` of an `evaluate` answer.
+fn eval_text(body: &Value) -> (String, String) {
+    let s = |k: &str| body.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    (s("result"), s("type"))
+}
+
+pub fn parse_threads(body: &Value) -> Vec<ThreadInfo> {
+    let Some(arr) = body.get("threads").and_then(Value::as_array) else { return Vec::new() };
+    arr.iter()
+        .map(|t| ThreadInfo {
+            id: t.get("id").and_then(Value::as_i64).unwrap_or(0),
+            name: t.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+        })
+        .collect()
+}
+
+pub fn parse_scopes(body: &Value) -> Vec<Scope> {
+    let Some(arr) = body.get("scopes").and_then(Value::as_array) else { return Vec::new() };
+    arr.iter()
+        .map(|s| Scope {
+            name: s.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+            vars_ref: s.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
+            expensive: s.get("expensive").and_then(Value::as_bool).unwrap_or(false),
+        })
+        .collect()
+}
+
+/// The `setBreakpoints` answer matched to the lines that were requested (same order).
+pub fn parse_breakpoint_results(body: &Value, requested: &[usize]) -> Vec<BpResult> {
+    let arr = body.get("breakpoints").and_then(Value::as_array);
+    requested
+        .iter()
+        .enumerate()
+        .map(|(i, &asked)| {
+            let b = arr.and_then(|a| a.get(i));
+            BpResult {
+                line: b.and_then(|b| b.get("line")).and_then(Value::as_u64).map_or(asked, |l| l as usize),
+                verified: b.and_then(|b| b.get("verified")).and_then(Value::as_bool).unwrap_or(false),
+                message: b.and_then(|b| b.get("message")).and_then(Value::as_str).map(str::to_string),
+            }
+        })
+        .collect()
+}
+
 /// Pick the scope to show as "locals": the first non-expensive one, else the first.
 pub fn parse_locals_scope(body: &Value) -> Option<i64> {
     let arr = body.get("scopes")?.as_array()?;
@@ -502,6 +613,33 @@ pub struct Session {
     pub start_request: Option<(String, Value)>,
     /// Send `setExceptionBreakpoints` before `configurationDone` (js-debug expects it).
     pub exception_bps: bool,
+    /// Breakpoints with conditions / log messages; wins over `breakpoints` for the same file.
+    pub bp_specs: HashMap<String, Vec<BpSpec>>,
+    /// What the adapter said about each file's breakpoints (verified or not).
+    pub bp_results: HashMap<String, Vec<BpResult>>,
+    pub threads: Vec<ThreadInfo>,
+    /// Stack of each thread whose stack was fetched (the stopped one always; others on demand).
+    pub thread_frames: HashMap<i64, Vec<Frame>>,
+    /// Threads shown expanded in the call stack.
+    pub thread_open: HashSet<i64>,
+    /// The frame the Variables / Watch views follow: `(thread, index in its stack)`.
+    pub selected: Option<(i64, usize)>,
+    pub scopes: Vec<Scope>,
+    /// Loaded children of a `variablesReference` (scopes and expanded variables).
+    pub var_children: HashMap<i64, Vec<Var>>,
+    /// Tree path ("Locals/obj/field") of each reference seen, so expansions survive stepping.
+    pub ref_path: HashMap<i64, String>,
+    /// Tree paths the user expanded.
+    pub expanded: HashSet<String>,
+    /// Non-expensive scopes the user folded (they are open by default).
+    pub collapsed: HashSet<String>,
+    pub watch: Vec<String>,
+    /// Watch expression -> `(value, type)` or the error text.
+    pub watch_results: HashMap<String, Result<(String, String), String>>,
+    /// The last hover evaluation: `(expression, value or error)`.
+    pub hover_result: Option<(String, Result<String, String>)>,
+    locals_ref: i64,
+    last_thread: i64,
 }
 
 impl Session {
@@ -519,6 +657,22 @@ impl Session {
             stop_on_entry,
             start_request: None,
             exception_bps: false,
+            bp_specs: HashMap::new(),
+            bp_results: HashMap::new(),
+            threads: Vec::new(),
+            thread_frames: HashMap::new(),
+            thread_open: HashSet::new(),
+            selected: None,
+            scopes: Vec::new(),
+            var_children: HashMap::new(),
+            ref_path: HashMap::new(),
+            expanded: HashSet::new(),
+            collapsed: HashSet::new(),
+            watch: Vec::new(),
+            watch_results: HashMap::new(),
+            hover_result: None,
+            locals_ref: 0,
+            last_thread: 1,
         }
     }
 
@@ -538,9 +692,132 @@ impl Session {
     /// Replace the breakpoints of one file; sent immediately if the debuggee is live.
     pub fn set_breakpoints(&mut self, path: &str, lines: &[usize], dap: &mut Dap) {
         self.breakpoints.insert(path.to_string(), lines.to_vec());
+        self.bp_specs.remove(path);
         if matches!(self.state, State::Running | State::Stopped { .. }) {
             dap.set_breakpoints(path, lines);
         }
+    }
+
+    /// Like [`set_breakpoints`](Self::set_breakpoints) with conditions and logpoints.
+    pub fn set_breakpoint_specs(&mut self, path: &str, specs: Vec<BpSpec>, dap: &mut Dap) {
+        self.breakpoints.insert(path.to_string(), specs.iter().map(|b| b.line).collect());
+        if matches!(self.state, State::Running | State::Stopped { .. }) {
+            dap.set_breakpoints_spec(path, &specs);
+        }
+        self.bp_specs.insert(path.to_string(), specs);
+    }
+
+    /// Interrupt a running debuggee (the adapter answers with a `stopped` event).
+    pub fn pause(&mut self, dap: &mut Dap) {
+        if self.state == State::Running {
+            dap.pause(self.last_thread.max(1));
+        }
+    }
+
+    /// The frame the Variables and Watch views follow.
+    pub fn selected_frame(&self) -> Option<&Frame> {
+        match self.selected {
+            Some((t, i)) => self.thread_frames.get(&t).and_then(|f| f.get(i)),
+            None => self.frames.first(),
+        }
+    }
+
+    /// Follow frame `idx` of thread `tid`: its scopes and the watch values are fetched again.
+    pub fn select_frame(&mut self, tid: i64, idx: usize, dap: &mut Dap) {
+        let Some(f) = self.thread_frames.get(&tid).and_then(|v| v.get(idx)).cloned() else { return };
+        if !matches!(self.state, State::Stopped { .. }) {
+            return;
+        }
+        self.selected = Some((tid, idx));
+        self.scopes.clear();
+        self.var_children.clear();
+        self.ref_path.clear();
+        self.locals.clear();
+        dap.scopes(f.id);
+        self.refresh_watch(dap);
+    }
+
+    /// Fold or unfold a thread of the call stack (its stack is fetched the first time).
+    pub fn toggle_thread(&mut self, tid: i64, dap: &mut Dap) {
+        if !self.thread_open.remove(&tid) {
+            self.thread_open.insert(tid);
+            if !self.thread_frames.contains_key(&tid) && matches!(self.state, State::Stopped { .. }) {
+                dap.stack_trace(tid);
+            }
+        }
+    }
+
+    /// Expand or collapse the variable at tree path `key`; children are fetched when missing.
+    pub fn toggle_var(&mut self, key: &str, vars_ref: i64, dap: &mut Dap) {
+        if self.expanded.remove(key) {
+            return;
+        }
+        self.expanded.insert(key.to_string());
+        if vars_ref > 0 && !self.var_children.contains_key(&vars_ref) {
+            dap.variables(vars_ref);
+        }
+    }
+
+    /// Fold or unfold a scope row (`Locals`, ...).
+    pub fn toggle_scope(&mut self, name: &str, vars_ref: i64, expensive: bool, dap: &mut Dap) {
+        if expensive {
+            return self.toggle_var(name, vars_ref, dap);
+        }
+        if !self.collapsed.remove(name) {
+            self.collapsed.insert(name.to_string());
+        }
+    }
+
+    /// Replace the watch list and evaluate it in the selected frame.
+    pub fn set_watch(&mut self, list: Vec<String>, dap: &mut Dap) {
+        self.watch_results.retain(|k, _| list.contains(k));
+        self.watch = list;
+        self.refresh_watch(dap);
+    }
+
+    pub fn refresh_watch(&mut self, dap: &mut Dap) {
+        if !matches!(self.state, State::Stopped { .. }) {
+            return;
+        }
+        let fid = self.selected_frame().map(|f| f.id);
+        for e in self.watch.clone() {
+            dap.evaluate_in(&e, fid, "watch", Pending::EvalWatch(e.clone()));
+        }
+    }
+
+    /// Debug Console input: echoed, then evaluated in the selected frame.
+    pub fn evaluate_repl(&mut self, expr: &str, dap: &mut Dap) {
+        self.output.push(crate::debug_model::console_line(crate::debug_model::ConsoleKind::Echo, expr));
+        if !matches!(self.state, State::Stopped { .. }) {
+            let m = "the program is not stopped: evaluate works at a breakpoint";
+            self.output.push(crate::debug_model::console_line(crate::debug_model::ConsoleKind::Error, m));
+            return;
+        }
+        let fid = self.selected_frame().map(|f| f.id);
+        dap.evaluate_in(expr, fid, "repl", Pending::EvalRepl(expr.to_string()));
+    }
+
+    /// Evaluate for the hover popup (answer lands in `hover_result`).
+    pub fn evaluate_hover(&mut self, expr: &str, dap: &mut Dap) {
+        if !matches!(self.state, State::Stopped { .. }) {
+            return;
+        }
+        let fid = self.selected_frame().map(|f| f.id);
+        dap.evaluate_in(expr, fid, "hover", Pending::EvalHover(expr.to_string()));
+    }
+
+    fn on_children(&mut self, r: i64, vars: Vec<Var>, dap: &mut Dap) {
+        let base = self.ref_path.get(&r).cloned().unwrap_or_default();
+        for v in &vars {
+            if v.vars_ref > 0 {
+                let key = format!("{base}/{}", v.name);
+                if self.expanded.contains(&key) {
+                    dap.variables(v.vars_ref);
+                }
+                self.ref_path.insert(v.vars_ref, key);
+            }
+        }
+        self.var_children.insert(r, vars);
     }
 
     pub fn resume(&mut self, dap: &mut Dap) {
@@ -571,6 +848,13 @@ impl Session {
     fn clear_stop(&mut self) {
         self.frames.clear();
         self.locals.clear();
+        self.thread_frames.clear();
+        self.thread_open.clear();
+        self.selected = None;
+        self.scopes.clear();
+        self.var_children.clear();
+        self.ref_path.clear();
+        self.hover_result = None;
     }
 
     pub fn handle(&mut self, msg: &DapMsg, dap: &mut Dap) {
@@ -581,7 +865,10 @@ impl Session {
             DapMsg::Event { event, body } => match event.as_str() {
                 "initialized" => {
                     for (path, lines) in &self.breakpoints {
-                        dap.set_breakpoints(path, lines);
+                        match self.bp_specs.get(path) {
+                            Some(specs) => dap.set_breakpoints_spec(path, specs),
+                            None => dap.set_breakpoints(path, lines),
+                        };
                     }
                     if self.exception_bps {
                         dap.set_exception_breakpoints();
@@ -595,9 +882,25 @@ impl Session {
                     let stop = parse_stopped(body);
                     self.state = State::Stopped { thread: stop.thread_id };
                     self.clear_stop();
+                    self.last_thread = stop.thread_id;
+                    self.selected = Some((stop.thread_id, 0));
+                    self.thread_open.insert(stop.thread_id);
                     dap.threads();
                     dap.stack_trace(stop.thread_id);
                     self.last_stop = Some(stop);
+                }
+                "breakpoint" => {
+                    // A breakpoint changed after the fact (verified late, or moved to another line).
+                    if let Some(b) = body.get("breakpoint")
+                        && let Some(line) = b.get("line").and_then(Value::as_u64)
+                    {
+                        let verified = b.get("verified").and_then(Value::as_bool).unwrap_or(true);
+                        for r in self.bp_results.values_mut().flatten() {
+                            if r.line == line as usize {
+                                r.verified = verified;
+                            }
+                        }
+                    }
                 }
                 "continued" => {
                     self.state = State::Running;
@@ -607,7 +910,10 @@ impl Session {
                 "output" => {
                     if let Some(t) = body.get("output").and_then(Value::as_str) {
                         let cat = body.get("category").and_then(Value::as_str).unwrap_or("console");
-                        if cat != "telemetry" {
+                        if cat == "stderr" {
+                            let k = crate::debug_model::ConsoleKind::Stderr;
+                            self.output.extend(t.lines().map(|l| crate::debug_model::console_line(k, l)));
+                        } else if cat != "telemetry" {
                             self.output.extend(t.lines().map(str::to_string));
                         }
                     }
@@ -617,6 +923,26 @@ impl Session {
             DapMsg::Response { seq_for, command, success, body, message } => {
                 let what = dap.take_pending(*seq_for).unwrap_or(Pending::Other);
                 if !success {
+                    let text = message
+                        .clone()
+                        .or_else(|| body.pointer("/error/format").and_then(Value::as_str).map(str::to_string))
+                        .unwrap_or_else(|| format!("{command} failed"));
+                    match &what {
+                        Pending::EvalRepl(_) => {
+                            let k = crate::debug_model::ConsoleKind::Error;
+                            self.output.push(crate::debug_model::console_line(k, &text));
+                            return;
+                        }
+                        Pending::EvalWatch(e) => {
+                            self.watch_results.insert(e.clone(), Err(text));
+                            return;
+                        }
+                        Pending::EvalHover(e) => {
+                            self.hover_result = Some((e.clone(), Err(text)));
+                            return;
+                        }
+                        _ => {}
+                    }
                     let stale = matches!(
                         what,
                         Pending::StackTrace(_) | Pending::Scopes(_) | Pending::Locals | Pending::Variables(_)
@@ -637,18 +963,101 @@ impl Session {
                         }
                         dap.launch(&self.program, &self.args, &self.cwd, self.stop_on_entry);
                     }
-                    Pending::StackTrace(_) => {
-                        self.frames = parse_stack_trace(body);
-                        if let Some(top) = self.frames.first() {
-                            dap.scopes(top.id);
+                    Pending::SetBreakpoints(path) => {
+                        let requested: Vec<usize> = match self.bp_specs.get(&path) {
+                            Some(s) => s.iter().map(|b| b.line).collect(),
+                            None => self.breakpoints.get(&path).cloned().unwrap_or_default(),
+                        };
+                        self.bp_results.insert(path, parse_breakpoint_results(body, &requested));
+                    }
+                    Pending::Threads => {
+                        if matches!(self.state, State::Stopped { .. }) {
+                            self.threads = parse_threads(body);
+                        }
+                    }
+                    Pending::StackTrace(tid) => {
+                        if !matches!(self.state, State::Stopped { .. }) {
+                            return;
+                        }
+                        let fr = parse_stack_trace(body);
+                        self.thread_frames.insert(tid, fr.clone());
+                        if tid == self.last_thread {
+                            self.frames = fr;
+                            if let Some(top) = self.frames.first() {
+                                dap.scopes(top.id);
+                            }
+                            self.refresh_watch(dap);
                         }
                     }
                     Pending::Scopes(_) => {
-                        if let Some(r) = parse_locals_scope(body) {
+                        if !matches!(self.state, State::Stopped { .. }) {
+                            return;
+                        }
+                        self.scopes = parse_scopes(body);
+                        for s in &self.scopes {
+                            self.ref_path.insert(s.vars_ref, s.name.clone());
+                        }
+                        let first = parse_locals_scope(body);
+                        if let Some(r) = first {
+                            self.locals_ref = r;
                             dap.request("variables", json!({"variablesReference": r}), Pending::Locals);
                         }
+                        let others: Vec<i64> = self
+                            .scopes
+                            .iter()
+                            .filter(|s| !s.expensive && s.vars_ref > 0 && Some(s.vars_ref) != first)
+                            .map(|s| s.vars_ref)
+                            .collect();
+                        for r in others {
+                            dap.variables(r);
+                        }
+                        // A scope the user opened earlier (an expensive one) is loaded again.
+                        let reopen: Vec<i64> = self
+                            .scopes
+                            .iter()
+                            .filter(|s| s.expensive && s.vars_ref > 0 && self.expanded.contains(&s.name))
+                            .map(|s| s.vars_ref)
+                            .collect();
+                        for r in reopen {
+                            dap.variables(r);
+                        }
                     }
-                    Pending::Locals => self.locals = parse_variables(body),
+                    Pending::Locals => {
+                        if !matches!(self.state, State::Stopped { .. }) {
+                            return;
+                        }
+                        let vars = parse_variables(body);
+                        self.locals = vars.clone();
+                        let r = self.locals_ref;
+                        self.on_children(r, vars, dap);
+                    }
+                    Pending::Variables(r) => {
+                        if matches!(self.state, State::Stopped { .. }) {
+                            let vars = parse_variables(body);
+                            self.on_children(r, vars, dap);
+                        }
+                    }
+                    Pending::EvalRepl(_) => {
+                        let (res, ty) = eval_text(body);
+                        let k = crate::debug_model::ConsoleKind::Result;
+                        let line = if ty.is_empty() { res } else { format!("{res}  ({ty})") };
+                        self.output.push(crate::debug_model::console_line(k, &line));
+                        // The evaluation may have changed state the views show.
+                        let fid = self.selected_frame().map(|f| f.id);
+                        if let Some(f) = fid {
+                            dap.scopes(f);
+                        }
+                        self.refresh_watch(dap);
+                    }
+                    Pending::EvalWatch(e) => {
+                        let (res, ty) = eval_text(body);
+                        self.watch_results.insert(e, Ok((res, ty)));
+                    }
+                    Pending::EvalHover(e) => {
+                        let (res, ty) = eval_text(body);
+                        let shown = if ty.is_empty() { res } else { format!("{res}\n// {ty}") };
+                        self.hover_result = Some((e, Ok(shown)));
+                    }
                     _ => {}
                 }
             }
@@ -733,6 +1142,8 @@ pub struct MultiSession {
     wake: Wake,
     /// Breakpoints applied to every session (path -> lines).
     pub breakpoints: HashMap<String, Vec<usize>>,
+    /// Same with conditions / logpoints (wins over `breakpoints` for a file).
+    pub bp_specs: HashMap<String, Vec<BpSpec>>,
     output: Vec<String>,
     /// Adapter process, killed on drop.
     adapter: Option<Child>,
@@ -765,6 +1176,7 @@ impl MultiSession {
             port,
             wake,
             breakpoints: HashMap::new(),
+            bp_specs: HashMap::new(),
             output: Vec::new(),
             adapter: None,
             trace: false,
@@ -817,7 +1229,7 @@ impl MultiSession {
         self.root_session.start(&mut self.root);
     }
 
-    fn stopped_child(&self) -> Option<usize> {
+    pub fn stopped_child(&self) -> Option<usize> {
         self.children.iter().position(|(_, s)| matches!(s.state, State::Stopped { .. }))
     }
 
@@ -852,6 +1264,10 @@ impl MultiSession {
         &self.output
     }
 
+    pub fn clear_output(&mut self) {
+        self.output.clear();
+    }
+
     pub fn resume(&mut self) {
         if let Some(i) = self.stopped_child() {
             let (d, s) = &mut self.children[i];
@@ -877,8 +1293,26 @@ impl MultiSession {
         }
     }
 
+    /// Interrupt every running session.
+    pub fn pause(&mut self) {
+        for (d, s) in &mut self.children {
+            s.pause(d);
+        }
+    }
+
+    /// Replace the breakpoints of one file (with conditions / logpoints) in the root and every child.
+    pub fn set_breakpoint_specs(&mut self, path: &str, specs: &[BpSpec]) {
+        self.breakpoints.insert(path.to_string(), specs.iter().map(|b| b.line).collect());
+        self.bp_specs.insert(path.to_string(), specs.to_vec());
+        self.root_session.set_breakpoint_specs(path, specs.to_vec(), &mut self.root);
+        for (d, s) in &mut self.children {
+            s.set_breakpoint_specs(path, specs.to_vec(), d);
+        }
+    }
+
     /// Replace the breakpoints of one file in the root and every child.
     pub fn set_breakpoints(&mut self, path: &str, lines: &[usize]) {
+        self.bp_specs.remove(path);
         self.breakpoints.insert(path.to_string(), lines.to_vec());
         self.root_session.set_breakpoints(path, lines, &mut self.root);
         for (d, s) in &mut self.children {
@@ -926,6 +1360,7 @@ impl MultiSession {
         dap.adapter_id = "pwa-node".into();
         let mut s = Session::with_request(request, configuration);
         s.breakpoints = self.breakpoints.clone();
+        s.bp_specs = self.bp_specs.clone();
         s.start(&mut dap);
         self.children.push((dap, s));
     }

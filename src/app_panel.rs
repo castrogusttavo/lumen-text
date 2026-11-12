@@ -61,7 +61,7 @@ pub struct Panel {
     pub scroll: f64, // px from the top of the content
     pub follow: bool,
     /// Debug tab: scroll (px) of the Stack / Variables / Output columns; Output sticks to the newest line.
-    pub dbg_scroll: [f64; 3],
+    pub dbg_scroll: [f64; 5],
     pub dbg_follow: bool,
     pub running: Option<Running>,
     pub ansi: Ansi,
@@ -81,7 +81,7 @@ impl Panel {
             plain: Vec::new(),
             scroll: 0.0,
             follow: true,
-            dbg_scroll: [0.0; 3],
+            dbg_scroll: [0.0; 5],
             dbg_follow: true,
             running: None,
             ansi: Ansi::new(),

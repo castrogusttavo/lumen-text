@@ -61,6 +61,8 @@ pub enum TipKey {
     Term(crate::app_terms::TermHit),
     /// The explorer's refresh button and the "Polling (NFS)" hint.
     Fs(crate::app_fswatch::FsTip),
+    /// A toolbar button of the Debug panel.
+    Debug(crate::app_debug::Tool),
 }
 
 /// Pointer-rest state (the text is resolved while drawing).
@@ -369,6 +371,9 @@ impl App {
         if let Some((r, k)) = self.tests_tip_at(x, y) {
             return Some((TipKey::Tests(k), r, true));
         }
+        if let Some((k, r)) = self.debug_tip_at(x, y) {
+            return Some((TipKey::Debug(k), r, false));
+        }
         if let Some((k, r, below)) = self.fswatch_tip_at(x, y) {
             return Some((TipKey::Fs(k), r, below));
         }
@@ -430,6 +435,7 @@ impl App {
             TipKey::Tests(k) => self.tests_tip(k),
             TipKey::Term(h) => self.terms_tip(h),
             TipKey::Fs(k) => self.fswatch_tip(k),
+            TipKey::Debug(k) => self.debug_tip(k),
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
                 Some(s) => t(&s.name, None, Some(format!("{} · line {}", symbol_kind_name(s.kind), s.sl + 1))),
                 None => TipText::default(),

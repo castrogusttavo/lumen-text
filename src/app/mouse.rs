@@ -25,6 +25,7 @@ impl App {
         self.jump = None; // a click gives up a pending "Jump to…"
         self.tests.focused = false; // a click in the Tests panel gives it back
         self.build.focused = false; // likewise for the Build panel
+        self.dbgui.focus = None; // and the Debug panel's input rows
         self.aipanel_mouse_pre(); // and for the AI panel
         if button == MouseButton::Right {
             return self.right_click();

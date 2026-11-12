@@ -781,6 +781,8 @@ impl App {
         self.git_status.clear();
         self.root = path;
         self.win_root_changed();
+        // Breakpoints, watches and the launch choice belong to the project.
+        self.debug_load();
         // The new project's `.lumen/` settings replace the old project's.
         self.projcfg_init();
         self.tree = Tree::for_config(self.root.clone(), &self.config);

@@ -85,6 +85,10 @@ pub struct Config {
     pub markdown_remote_images: bool,
     /// Diff view: ignore whitespace changes (like `-w`) in hunks and intraline highlights.
     pub diff_ignore_whitespace: bool,
+    /// Debugging: show the value of the expression under the pointer while stopped.
+    pub debug_hover_evaluate: bool,
+    /// Debugging: open the Debug panel when a session starts.
+    pub debug_open_panel: bool,
     /// Hide what `.gitignore` (and the global ignore file and `.git/info/exclude`) ignores in the explorer;
     /// off shows those entries dimmed.
     pub explorer_hide_gitignored: bool,
@@ -354,6 +358,8 @@ impl Default for Config {
             run_command: String::new(),
             markdown_remote_images: true,
             diff_ignore_whitespace: false,
+            debug_hover_evaluate: true,
+            debug_open_panel: true,
             test_watch: false,
             explorer_hide_gitignored: true,
             ai_notifications: true,
@@ -641,6 +647,8 @@ impl Config {
             run_command: v["run_command"].as_str().unwrap_or("").trim().to_string(),
             markdown_remote_images: v["markdown_remote_images"].as_bool().unwrap_or(true),
             diff_ignore_whitespace: v["diff_ignore_whitespace"].as_bool().unwrap_or(false),
+            debug_hover_evaluate: v["debug_hover_evaluate"].as_bool().unwrap_or(true),
+            debug_open_panel: v["debug_open_panel"].as_bool().unwrap_or(true),
             explorer_hide_gitignored: v["explorer_hide_gitignored"].as_bool().unwrap_or(true),
             ai_notifications: v["ai_notifications"].as_bool().unwrap_or(true),
             language_servers: v.get("language_servers").cloned().unwrap_or(Value::Null),
@@ -736,6 +744,8 @@ impl Config {
         v["markdown_remote_images"] = json!(self.markdown_remote_images);
         v["ai_notifications"] = json!(self.ai_notifications);
         v["diff_ignore_whitespace"] = json!(self.diff_ignore_whitespace);
+        v["debug_hover_evaluate"] = json!(self.debug_hover_evaluate);
+        v["debug_open_panel"] = json!(self.debug_open_panel);
         v["spell_check"] = json!(self.spell_check);
         v["inline_completion"] = json!(self.inline_completion);
         v["sidebar_width"] = json!(self.sidebar_width);
@@ -847,6 +857,8 @@ mod tests {
             run_command: "./out/app --port 8080".into(),
             markdown_remote_images: false,
             diff_ignore_whitespace: true,
+            debug_hover_evaluate: false,
+            debug_open_panel: false,
             explorer_hide_gitignored: false,
             ai_notifications: false,
             language_servers: json!({"rust": {"command": "ra"}}),

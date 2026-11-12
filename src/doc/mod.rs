@@ -123,6 +123,8 @@ pub struct Doc {
     pub sel_stack: Vec<crate::buffer::Sel>,
     pub symbols: Vec<Sym>,
     pub bps: Vec<usize>,
+    /// How each of `bps` is drawn (same order; missing entries are plain dots).
+    pub bp_glyphs: Vec<crate::debug_model::BpGlyph>,
     /// Bookmarked lines (0-based, sorted); they follow edits (see `bookmarks`).
     pub marks: Vec<usize>,
     pub minimap: bool,
@@ -265,6 +267,7 @@ impl Doc {
             sel_stack: Vec::new(),
             symbols: Vec::new(),
             bps: Vec::new(),
+            bp_glyphs: Vec::new(),
             marks: Vec::new(),
             minimap: true,
             sb: None,

@@ -105,7 +105,7 @@ pub struct Layout {
     pub bread: Rect,
     pub crumbs: Vec<(Rect, Crumb)>,
     pub sidebar_tabs: Vec<(Rect, SidebarMode)>,
-    pub debug_frames: Vec<(Rect, usize)>,
+    pub debug_hits: Vec<(Rect, crate::app_debug::DebugHit)>,
     pub panel_tabs: Vec<(Rect, crate::app_panel::PanelTab)>,
     pub overlay_rows: Vec<(Rect, usize)>,
     pub completion_rows: Vec<(Rect, usize)>,
@@ -216,6 +216,8 @@ pub struct App {
     pub split: Option<Box<crate::app_split::Split>>,
     pub breakpoints: std::collections::BTreeMap<PathBuf, Vec<usize>>,
     pub dbg_last_stop: Option<(String, usize)>,
+    /// Debug panel state that outlives a session: breakpoint metadata, watches, console input.
+    pub dbgui: crate::app_debug::DebugUi,
     pub pending_native: Option<PathBuf>,
     pub inbox: Option<std::sync::mpsc::Receiver<crate::instance::Msg>>,
     pub watcher: Option<crate::watcher::Watcher>,
@@ -369,6 +371,7 @@ impl App {
             split: None,
             breakpoints: Default::default(),
             dbg_last_stop: None,
+            dbgui: Default::default(),
             pending_native: None,
             inbox: None,
             watcher: None,
@@ -408,6 +411,8 @@ impl App {
         };
         // `.lumen/config.json` / `.lumen/config.local.json` on top of the user settings.
         app.projcfg_init();
+        // Breakpoints and watches remembered for this project (before the files open: they get their dots).
+        app.debug_load();
         app.refresh_git_status();
         app.watcher = crate::watcher::Watcher::new(app.wake()).ok();
         app.watch_dirs();

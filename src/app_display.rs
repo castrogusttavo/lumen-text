@@ -185,6 +185,8 @@ impl App {
             "ai_notifications" => self.config.ai_notifications = b.unwrap_or(true),
             // An open diff follows on its next draw (`diff_sync_ws`).
             "diff_ignore_whitespace" => self.config.diff_ignore_whitespace = b.unwrap_or(false),
+            "debug_hover_evaluate" => self.config.debug_hover_evaluate = b.unwrap_or(true),
+            "debug_open_panel" => self.config.debug_open_panel = b.unwrap_or(true),
             "build_command" | "run_command" => {
                 let cmd = v.as_str().unwrap_or("").trim().to_string();
                 if key == "build_command" {
@@ -293,18 +295,23 @@ impl App {
         true
     }
 
-    /// A click in the gutter's mark column toggles a breakpoint on that line. True when it did.
-    pub fn gutter_breakpoint_click(&mut self, x: f64, y: f64) -> bool {
+    /// The line (0-based) whose breakpoint cell is under (x, y), when breakpoints are shown.
+    pub fn gutter_bp_line_at(&self, x: f64, y: f64) -> Option<usize> {
         if !display::show_breakpoints() {
-            return false;
+            return None;
         }
-        let Some(d) = self.docs.get(self.active) else { return false };
+        let d = self.docs.get(self.active)?;
         let col = d.rect.x as f64..(d.rect.x + crate::display::BP_CLICK_W) as f64;
         if !col.contains(&x) || y < d.rect.y as f64 || y >= d.rect.bottom() as f64 || d.path().is_none() {
-            return false;
+            return None;
         }
         let (p, _) = d.hit_at((d.rect.x + d.gutter_w() + 1) as f64, y);
-        let line = d.buf.line_col(p).0;
+        Some(d.buf.line_col(p).0)
+    }
+
+    /// A click in the gutter's mark column toggles a breakpoint on that line. True when it did.
+    pub fn gutter_breakpoint_click(&mut self, x: f64, y: f64) -> bool {
+        let Some(line) = self.gutter_bp_line_at(x, y) else { return false };
         self.toggle_breakpoint_at(line);
         true
     }
