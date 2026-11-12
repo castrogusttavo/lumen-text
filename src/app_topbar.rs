@@ -780,7 +780,6 @@ impl App {
         self.eslint_busy.clear();
         self.git_status.clear();
         self.root = path;
-        crate::instance::set_root(&self.root);
         self.win_root_changed();
         // The new project's `.lumen/` settings replace the old project's.
         self.projcfg_init();

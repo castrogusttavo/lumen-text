@@ -465,8 +465,12 @@ impl App {
         if let Some(p) = d.path() {
             v["path"] = json!(p.to_string_lossy());
         }
-        if dirty || d.path().is_none() {
-            v["text"] = json!(d.buf.to_string());
+        // An image tab has no text: the receiving window reopens the file itself.
+        if d.img.is_none() {
+            v["encoding"] = json!(d.buf.encoding.id());
+            if dirty || d.path().is_none() {
+                v["text"] = json!(d.buf.to_string());
+            }
         }
         if let Some(g) = geom {
             v["window"] = g.to_json();
@@ -565,6 +569,12 @@ impl App {
         let d = &mut self.docs[idx];
         if let Some(t) = text {
             d.replace_text(t);
+        }
+        // Encoding and BOM travel with the text: saving the moved tab must not change the file's bytes.
+        if let Some(enc) = v["encoding"].as_str().and_then(crate::encoding::TextEncoding::from_id) {
+            if d.img.is_none() {
+                d.buf.encoding = enc;
+            }
         }
         let (line, col) = (v["line"].as_u64().unwrap_or(0) as usize, v["col"].as_u64().unwrap_or(0) as usize);
         let line = line.min(d.buf.line_count().saturating_sub(1));

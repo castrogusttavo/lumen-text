@@ -240,7 +240,10 @@ impl TrustStore {
         if let Some(d) = self.path.parent() {
             std::fs::create_dir_all(d)?;
         }
-        std::fs::write(&self.path, serde_json::to_string_pretty(&Value::Object(all)).unwrap_or_default())
+        // Windows share this file: write a temp file and rename it so a reader never sees half of it.
+        let tmp = self.path.with_extension(format!("tmp{}", std::process::id()));
+        std::fs::write(&tmp, serde_json::to_string_pretty(&Value::Object(all)).unwrap_or_default())?;
+        std::fs::rename(&tmp, &self.path)
     }
 }
 
