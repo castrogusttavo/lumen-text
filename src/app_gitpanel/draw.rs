@@ -361,7 +361,9 @@ impl App {
                     let r = Rect::new(body.x + 6, y, body.w - 12, h);
                     let hov = self.hv(r) && self.hv(vis);
                     let cur = gp.focused && !gp.msg_focus && gp.cursor == k;
-                    if cur {
+                    if gp.selected.contains(&ch.path) {
+                        cv.fill_round_clip(r, 8, c.accent.with_alpha(if cur || hov { 0x48 } else { 0x30 }), clip);
+                    } else if cur {
                         cv.fill_round_clip(r, 8, strong.with_alpha(0x1e), clip);
                     } else if hov {
                         cv.fill_round_clip(r, 8, strong.with_alpha(0x12), clip);
@@ -410,7 +412,7 @@ impl App {
                         }
                     }
                 }
-                _ => {}
+                r => self.gp_draw_stash_row(cv, gp, r, k, y, body),
             }
             y += h;
         }
@@ -587,118 +589,5 @@ impl App {
         let txt = fit(&mut self.tx, &txt, opt.w - 36, false);
         self.tx.draw_ui(cv, opt.x + 30, y + 8, &txt, if oh { strong } else { dim }, opt, false);
         gp.hits.push((opt, Hit::Opt));
-    }
-
-    pub(super) fn gp_draw_history(&mut self, cv: &mut Canvas, gp: &mut GitPanel, body: Rect) {
-        let c = self.theme.chrome;
-        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
-        // Incremental loading: keep a few screens of rows ahead of the scroll position.
-        let mut guard = 0;
-        while !gp.log_done && guard < 4 && (gp.scroll[1] as i32 + body.h + 600) >= gp.content_h() {
-            gp.load_more();
-            guard += 1;
-        }
-        if gp.commits.is_empty() {
-            let msg = "No commits";
-            let w = self.tx.ui_width(msg, false);
-            self.tx.draw_ui(cv, body.x + (body.w - w) / 2, body.y + 40, msg, dim, body, false);
-            return;
-        }
-        let total = gp.content_h() + 28;
-        gp.max_scroll[1] = (total - body.h).max(0) as f64;
-        gp.scroll[1] = gp.scroll[1].clamp(0.0, gp.max_scroll[1]);
-        let rows = gp.rows();
-        let now = now_secs();
-        let mut y = body.y - gp.scroll[1] as i32;
-        for (k, row) in rows.iter().enumerate() {
-            let h = GitPanel::row_h(*row);
-            if y + h < body.y || y > body.bottom() {
-                y += h;
-                continue;
-            }
-            let vis = Rect::new(body.x, y.max(body.y), body.w, (y + h).min(body.bottom()) - y.max(body.y));
-            let r = Rect::new(body.x + 6, y + 1, body.w - 12, h - 2);
-            let hov = self.hv(r) && self.hv(vis);
-            let cur = gp.focused && gp.cursor == k;
-            match *row {
-                Row::Commit(i) => {
-                    let e = &gp.commits[i];
-                    let open = gp.open_commit == Some(i);
-                    if open {
-                        cv.fill_round_clip(r, 8, strong.with_alpha(0x1a), body);
-                    } else if hov || cur {
-                        cv.fill_round_clip(r, 8, strong.with_alpha(if cur { 0x1e } else { 0x12 }), body);
-                    }
-                    self.tx.icon(
-                        cv,
-                        if open { "ui/chevron_down" } else { "ui/chevron_right" },
-                        r.x + 8,
-                        y + 17,
-                        16,
-                        dim,
-                        vis,
-                    );
-                    let subj = if e.subject.is_empty() { "(no subject)".to_string() } else { e.subject.clone() };
-                    let subj = fit(&mut self.tx, &subj, r.w - 44, open);
-                    self.tx.draw_ui(cv, r.x + 32, y + 7, &subj, strong, vis, open);
-                    let meta = format!("{}  ·  {}  ·  {}", e.short, e.author, git::ago((now - e.ts).max(0)));
-                    // Tags as small pills at the end of the second line (at most half of it).
-                    let tags = gp.tags.get(&e.hash).cloned().unwrap_or_default();
-                    let mut pill_right = r.right() - 10;
-                    let pill_min = r.x + 32 + (r.w - 44) / 2;
-                    for t in &tags {
-                        let label = fit(&mut self.tx, t, 120, false);
-                        let pw = self.tx.ui_width(&label, false) * 12 / 13 + 14;
-                        if pill_right - pw < pill_min {
-                            break;
-                        }
-                        let pr = Rect::new(pill_right - pw, y + 27, pw, 18);
-                        cv.fill_round_clip(pr, 8, c.accent.with_alpha(0x2e), vis);
-                        self.tx.draw_ui_sized(
-                            cv,
-                            pr.x + 7,
-                            pr.y + 1,
-                            &label,
-                            c.accent_text,
-                            pr.intersect(&vis),
-                            false,
-                            12.0,
-                        );
-                        pill_right -= pw + 4;
-                    }
-                    let meta = fit(&mut self.tx, &meta, pill_right - (r.x + 32) - 4, false);
-                    self.tx.draw_ui_sized(cv, r.x + 32, y + 28, &meta, dim, vis, false, 12.0);
-                    gp.hits.push((r.intersect(&vis), Hit::Commit(i)));
-                }
-                Row::CFile(j) => {
-                    let f = gp.files[j].clone();
-                    let sel = gp.open_file == Some(j);
-                    if sel {
-                        cv.fill_round_clip(r, 8, strong.with_alpha(0x1e), body);
-                    } else if hov || cur {
-                        cv.fill_round_clip(r, 8, strong.with_alpha(if cur { 0x1e } else { 0x12 }), body);
-                    }
-                    let letter = f.code.to_string();
-                    self.tx.draw_ui(cv, r.x + 34, y + 5, &letter, code_color(&c, f.code), vis, true);
-                    let (name, dir) = split_name(&f.path);
-                    let avail = r.w - 76;
-                    let nm = fit(&mut self.tx, name, avail, false);
-                    let nw = self.tx.ui_width(&nm, false);
-                    self.tx.draw_ui(cv, r.x + 56, y + 5, &nm, strong, vis, false);
-                    if !dir.is_empty() && avail - nw > 40 {
-                        let d = fit(&mut self.tx, dir, avail - nw - 10, false);
-                        self.tx.draw_ui_sized(cv, r.x + 56 + nw + 8, y + 7, &d, dim, vis, false, 12.0);
-                    }
-                    gp.hits.push((r.intersect(&vis), Hit::CFile(j)));
-                }
-                _ => {}
-            }
-            y += h;
-        }
-        let msg = if gp.log_done { format!("{} commits", gp.commits.len()) } else { "Loading…".to_string() };
-        let w = self.tx.ui_width(&msg, false);
-        self.tx.draw_ui(cv, body.x + (body.w - w) / 2, y + 4, &msg, dim, body, false);
-        let (pos, visible) = (gp.scroll[1], body.h as f64);
-        self.region_bar(cv, crate::scrollreg::Reg::GitLog, body, total as f64, visible, pos, 1.0, false);
     }
 }

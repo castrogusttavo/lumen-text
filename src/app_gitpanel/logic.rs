@@ -205,6 +205,7 @@ pub fn commit(top: &Path, msg: &str) -> Result<String, String> {
 }
 
 /// One page of the log, newest first.
+#[cfg(test)]
 pub fn log_page(top: &Path, skip: usize, n: usize) -> Vec<LogEntry> {
     let (s, n) = (format!("--skip={skip}"), format!("--max-count={n}"));
     git_run(top, &["log", &s, &n, LOG_FORMAT]).map(|o| parse_log(&o)).unwrap_or_default()

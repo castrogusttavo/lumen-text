@@ -45,6 +45,15 @@ pub enum Hit {
     Ask(usize),
     /// "Undo last commit" next to the Amend checkbox.
     UndoLast,
+    /// "Stash…" in the Stashes header.
+    StashNew,
+    /// Body of a stash row (expands its files), and its Apply / Pop / Drop buttons.
+    Stash(usize),
+    StashApply(usize),
+    StashPop(usize),
+    StashDrop(usize),
+    /// A file of the expanded stash.
+    SFile(usize),
 }
 
 /// Why the force-push card is showing.
@@ -95,9 +104,15 @@ pub enum Row {
     File(usize),
     Commit(usize),
     CFile(usize),
+    /// "No changes" line above the stashes of a clean tree.
+    NoChanges,
+    /// "Stashes" header (with the "Stash…" button).
+    StashHead,
+    Stash(usize),
+    /// A file of the expanded stash.
+    SFile(usize),
 }
 
-pub(super) const LOG_PAGE: usize = 60;
 pub(super) const HEAD_H: i32 = 44;
 pub(super) const BRANCH_H: i32 = 36;
 /// One line of the result / progress strip under the branch row.
@@ -106,7 +121,8 @@ pub(super) const STRIP_LINE: i32 = 17;
 pub(super) const PROMPT_H: i32 = 58;
 pub(super) const FILE_H: i32 = 30;
 pub(super) const SEC_H: i32 = 34;
-pub(super) const COMMIT_H: i32 = 52;
+pub(super) const COMMIT_H: i32 = 44;
+pub(super) const STASH_H: i32 = 42;
 pub(super) const CFILE_H: i32 = 28;
 pub(super) const AMEND_H: i32 = 28;
 /// Commit area around the message box: notice row, gaps, Amend row, Commit button.
@@ -184,8 +200,28 @@ pub struct GitPanel {
     pub state: RepoState,
     /// HEAD has a parent, so "Undo last commit" makes sense.
     pub can_undo: bool,
-    /// Commit hash -> its tags (pills on the History rows).
-    pub tags: std::collections::HashMap<String, Vec<String>>,
+    /// Worker streaming the history (None when nothing is loading).
+    pub loader: Option<HistLoader>,
+    /// Wakes the event loop when a page of history arrives (None in tests).
+    pub wake: Option<crate::lsp::Wake>,
+    /// Lanes of the loaded commits (parallel to `commits`).
+    pub graph: Graph,
+    /// Commit index -> its branch / tag / HEAD labels.
+    pub chips: std::collections::HashMap<usize, Vec<Chip>>,
+    /// Lane colours and the background they were made for.
+    pub lane_palette: Option<(Rgba, [Rgba; LANE_COLORS])>,
+    /// Stashes, newest first (re-read with the status).
+    pub stashes: Vec<StashEntry>,
+    /// Expanded stash (its files are listed under it) and its files.
+    pub open_stash: Option<usize>,
+    pub stash_files: Vec<CommitFile>,
+    pub open_sfile: Option<usize>,
+    /// Files selected with Ctrl / Shift + click (repository-relative paths): what "Stash" takes.
+    pub selected: std::collections::BTreeSet<String>,
+    /// Change index a Shift + click extends the selection from.
+    pub sel_anchor: Option<usize>,
+    /// Action asked for while the panel was taken out of the App (run right after it is back).
+    pub pending: Option<GitAct>,
 }
 
 impl GitPanel {
@@ -232,10 +268,20 @@ impl GitPanel {
             ask: None,
             state: RepoState::Clean,
             can_undo: false,
-            tags: std::collections::HashMap::new(),
+            loader: None,
+            wake: None,
+            graph: Graph::default(),
+            chips: std::collections::HashMap::new(),
+            lane_palette: None,
+            stashes: Vec::new(),
+            open_stash: None,
+            stash_files: Vec::new(),
+            open_sfile: None,
+            selected: std::collections::BTreeSet::new(),
+            sel_anchor: None,
+            pending: None,
         };
         p.refresh();
-        p.tags = p.top.as_deref().map(tag_map).unwrap_or_default();
         p
     }
 
@@ -255,8 +301,23 @@ impl GitPanel {
             Some(t) => (repo_state(t), git_run(t, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_ok()),
             None => (RepoState::Clean, false),
         };
+        // Stashes: the expanded one stays expanded while it exists (its index may have moved).
+        let open_sha = self.open_stash.and_then(|i| self.stashes.get(i)).map(|e| e.sha.clone());
+        self.stashes = self.top.as_deref().map(list_stashes).unwrap_or_default();
+        let still = open_sha.and_then(|s| self.stashes.iter().position(|e| e.sha == s));
+        if still.is_none() {
+            self.stash_files.clear();
+            self.open_sfile = None;
+        }
+        self.open_stash = still;
+        // The selection keeps the files that are still changed.
+        let changed: std::collections::HashSet<&str> = self.changes.iter().map(|c| c.path.as_str()).collect();
+        self.selected.retain(|p| changed.contains(p.as_str()));
+        if self.sel_anchor.is_some_and(|a| a >= self.changes.len()) {
+            self.sel_anchor = None;
+        }
         self.confirm = None;
-        let n = self.rows().len();
+        let n = self.row_count();
         self.cursor = self.cursor.min(n.saturating_sub(1));
     }
 
@@ -333,31 +394,20 @@ impl GitPanel {
     }
 
     pub fn reset_history(&mut self) {
-        self.commits.clear();
+        // Dropping the loader ends its worker (and the git process behind it).
+        self.loader = None;
+        self.commits = Vec::new();
+        self.graph.clear();
+        self.chips.clear();
         self.log_done = false;
         self.open_commit = None;
         self.files.clear();
         self.open_file = None;
         self.scroll[1] = 0.0;
-        self.tags = self.top.as_deref().map(tag_map).unwrap_or_default();
         if self.tab == Tab::History {
+            self.cursor = 0;
             self.load_more();
         }
-    }
-
-    pub fn load_more(&mut self) {
-        let Some(top) = self.top.clone() else {
-            self.log_done = true;
-            return;
-        };
-        if self.log_done {
-            return;
-        }
-        let page = log_page(&top, self.commits.len(), LOG_PAGE);
-        if page.len() < LOG_PAGE {
-            self.log_done = true;
-        }
-        self.commits.extend(page);
     }
 
     pub fn staged(&self) -> usize {
@@ -388,30 +438,74 @@ impl GitPanel {
                     v.push(Row::Header(g));
                     v.extend(idx.into_iter().map(Row::File));
                 }
-            }
-            Tab::History => {
-                for i in 0..self.commits.len() {
-                    v.push(Row::Commit(i));
-                    if self.open_commit == Some(i) {
-                        v.extend((0..self.files.len()).map(Row::CFile));
+                // Stashes after the changes; the header also offers "Stash…" when there is
+                // something to stash.
+                if !self.stashes.is_empty() {
+                    if self.changes.is_empty() {
+                        v.push(Row::NoChanges);
                     }
+                    v.push(Row::StashHead);
+                    for i in 0..self.stashes.len() {
+                        v.push(Row::Stash(i));
+                        if self.open_stash == Some(i) {
+                            v.extend((0..self.stash_files.len()).map(Row::SFile));
+                        }
+                    }
+                } else if !self.changes.is_empty() {
+                    v.push(Row::StashHead);
                 }
             }
+            Tab::History => v.extend((0..self.hist_len()).filter_map(|k| self.hist_row(k))),
         }
         v
     }
 
     pub fn row_h(r: Row) -> i32 {
         match r {
-            Row::Header(_) => SEC_H,
-            Row::File(_) => FILE_H,
+            Row::Header(_) | Row::StashHead => SEC_H,
+            Row::File(_) | Row::NoChanges => FILE_H,
             Row::Commit(_) => COMMIT_H,
-            Row::CFile(_) => CFILE_H,
+            Row::CFile(_) | Row::SFile(_) => CFILE_H,
+            Row::Stash(_) => STASH_H,
+        }
+    }
+
+    /// Rows of the active tab (the History tab counts them without listing them).
+    pub fn row_count(&self) -> usize {
+        match self.tab {
+            Tab::Changes => self.rows().len(),
+            Tab::History => self.hist_len(),
+        }
+    }
+
+    pub fn row_at(&self, k: usize) -> Option<Row> {
+        match self.tab {
+            Tab::Changes => self.rows().get(k).copied(),
+            Tab::History => self.hist_row(k),
+        }
+    }
+
+    /// Index of row `r` in the active tab.
+    pub fn index_of(&self, r: Row) -> Option<usize> {
+        match self.tab {
+            Tab::Changes => self.rows().iter().position(|x| *x == r),
+            Tab::History => self.hist_index(r),
+        }
+    }
+
+    /// Top of row `k` in content coordinates of the active tab.
+    pub fn row_top(&self, k: usize) -> i32 {
+        match self.tab {
+            Tab::Changes => self.rows().iter().take(k).map(|r| Self::row_h(*r)).sum(),
+            Tab::History => self.hist_top(k),
         }
     }
 
     pub fn content_h(&self) -> i32 {
-        self.rows().into_iter().map(Self::row_h).sum::<i32>() + 16
+        match self.tab {
+            Tab::Changes => self.rows().into_iter().map(Self::row_h).sum::<i32>() + 16,
+            Tab::History => self.hist_top(self.hist_len()) + 16,
+        }
     }
 
     pub fn hit_at(&self, x: f64, y: f64) -> Option<Hit> {
@@ -424,14 +518,14 @@ impl GitPanel {
 
     /// Move the keyboard cursor over rows, skipping section headers.
     pub fn move_cursor(&mut self, d: isize) {
-        let rows = self.rows();
+        let n = self.row_count() as isize;
         let mut i = self.cursor as isize;
         loop {
             i += d;
-            if i < 0 || i >= rows.len() as isize {
+            if i < 0 || i >= n {
                 return;
             }
-            if !matches!(rows[i as usize], Row::Header(_)) {
+            if !matches!(self.row_at(i as usize), Some(Row::Header(_) | Row::StashHead | Row::NoChanges) | None) {
                 self.cursor = i as usize;
                 return;
             }
@@ -441,10 +535,9 @@ impl GitPanel {
     /// Scroll the active tab so that rows `first..=last` are visible in a viewport of height
     /// `view`: the last row's bottom wins when the span fits, otherwise the first row's top.
     pub fn reveal_span(&mut self, first: usize, last: usize, view: i32) {
-        let rows = self.rows();
         let k = if self.tab == Tab::Changes { 0 } else { 1 };
-        let top: i32 = rows.iter().take(first).map(|r| Self::row_h(*r)).sum();
-        let bottom: i32 = rows.iter().take(last + 1).map(|r| Self::row_h(*r)).sum();
+        let top = self.row_top(first);
+        let bottom = self.row_top(last + 1);
         let (s, v) = (self.scroll[k], view as f64);
         if bottom - top > view || (top as f64) < s {
             self.scroll[k] = top as f64;
@@ -455,10 +548,9 @@ impl GitPanel {
 
     /// Scroll so that row `idx` is inside a viewport of height `view`.
     pub fn reveal(&mut self, view: i32) {
-        let rows = self.rows();
         let k = if self.tab == Tab::Changes { 0 } else { 1 };
-        let top: i32 = rows.iter().take(self.cursor).map(|r| Self::row_h(*r)).sum();
-        let h = rows.get(self.cursor).map_or(0, |r| Self::row_h(*r));
+        let top = self.row_top(self.cursor);
+        let h = self.row_at(self.cursor).map_or(0, Self::row_h);
         if (top as f64) < self.scroll[k] {
             self.scroll[k] = top as f64;
         } else if (top + h) as f64 > self.scroll[k] + view as f64 {
