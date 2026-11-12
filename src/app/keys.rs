@@ -36,6 +36,11 @@ impl App {
         if self.jump.is_some() && self.jump_key(ev) {
             return false;
         }
+        // Zen mode: Esc Esc leaves it (the first Esc still does its usual job below).
+        if self.zen_escape(&key) {
+            self.request_redraw();
+            return false;
+        }
         if self.update_card_key(&key) {
             self.request_redraw();
             return false;

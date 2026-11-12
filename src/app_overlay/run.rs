@@ -4,7 +4,7 @@ impl App {
     // ───────────── commands ─────────────
 
     pub fn run_cmd(&mut self, c: Cmd) {
-        if self.run_display_cmd(c) {
+        if self.run_display_cmd(c) || self.run_view_cmd(c) {
             return;
         }
         match c {
@@ -251,6 +251,15 @@ impl App {
             | Cmd::ToggleLsp
             | Cmd::ChooseBufferFont
             | Cmd::ChooseUiFont => {}
+            // Handled by `run_view_cmd` (app_view.rs) before this match.
+            Cmd::ToggleZen
+            | Cmd::ToggleTabBar
+            | Cmd::ToggleStatusBar
+            | Cmd::ExplorerSortName
+            | Cmd::ExplorerSortType
+            | Cmd::ExplorerSortModified
+            | Cmd::ExplorerSortMixed
+            | Cmd::ToggleFoldersFirst => {}
             Cmd::ToggleOutline => {
                 self.sidebar_open = true;
                 self.sidebar_mode = if self.sidebar_mode == crate::app::SidebarMode::Files {

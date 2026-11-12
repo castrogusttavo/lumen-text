@@ -143,6 +143,8 @@ pub struct Config {
     pub rulers: Vec<usize>,
     /// Inline diagnostics after the code: "off", "current_line" (default) or "all".
     pub inline_diagnostics: String,
+    /// Layout toggles, zen mode, explorer order and buffer font features (see [`ViewPrefs`]).
+    pub view: ViewPrefs,
 }
 
 /// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
@@ -322,6 +324,7 @@ impl Default for Config {
             layers: Default::default(),
             rulers: Vec::new(),
             inline_diagnostics: "current_line".into(),
+            view: ViewPrefs::default(),
         }
     }
 }
@@ -613,6 +616,7 @@ impl Config {
             inline_diagnostics: crate::assist::InlineDiags::from_name(v["inline_diagnostics"].as_str().unwrap_or(""))
                 .name()
                 .to_string(),
+            view: ViewPrefs::from_json(v),
         }
     }
 
@@ -661,6 +665,7 @@ impl Config {
         if !self.languages.is_null() {
             v["languages"] = self.languages.clone();
         }
+        self.view.write_json(&mut v);
         v
     }
 
@@ -773,6 +778,17 @@ mod tests {
             layers: Default::default(),
             rulers: vec![80, 120],
             inline_diagnostics: "all".into(),
+            view: ViewPrefs {
+                show_tabs: false,
+                show_status_bar: false,
+                zen_max_width: 120,
+                explorer_sort: "modified".into(),
+                explorer_folders_first: false,
+                buffer_font_features: [("zero".to_string(), 1), ("cv02".to_string(), 0), ("cv05".to_string(), 3)]
+                    .into_iter()
+                    .collect(),
+                buffer_letter_spacing: 0.5,
+            },
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);
@@ -1095,5 +1111,109 @@ mod tests {
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p).sidebar_width, 312, "persisted");
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// `explorer_sort` values: by name (folders first by default), by extension, newest first, or
+/// folders and files interleaved by name.
+pub const EXPLORER_SORTS: &[&str] = &["name", "type", "modified", "mixed"];
+
+/// Bounds of [`ViewPrefs::zen_max_width`] (columns of the centered text in zen mode).
+pub const ZEN_WIDTH_RANGE: (usize, usize) = (40, 400);
+
+/// `s` if it is an explorer order, else "name".
+pub fn normalize_explorer_sort(s: Option<&str>) -> String {
+    match s {
+        Some(m) if EXPLORER_SORTS.contains(&m) => m.to_string(),
+        _ => "name".to_string(),
+    }
+}
+
+/// Settings of the "your way" options, stored as top-level keys of config.json like the others:
+/// `show_tabs`, `show_status_bar`, `zen_max_width`, `explorer_sort`, `explorer_folders_first`,
+/// `buffer_font_features` (an object such as `{"zero": true, "ss01": true, "cv05": 3}`) and
+/// `buffer_letter_spacing` (px, -1 to 3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewPrefs {
+    pub show_tabs: bool,
+    pub show_status_bar: bool,
+    pub zen_max_width: usize,
+    pub explorer_sort: String,
+    pub explorer_folders_first: bool,
+    /// OpenType feature tag -> value (0 = off, 1 = on, n = alternate n) for the buffer font.
+    pub buffer_font_features: BTreeMap<String, u32>,
+    pub buffer_letter_spacing: f32,
+}
+
+impl Default for ViewPrefs {
+    fn default() -> Self {
+        Self {
+            show_tabs: true,
+            show_status_bar: true,
+            zen_max_width: 100,
+            explorer_sort: "name".into(),
+            explorer_folders_first: true,
+            buffer_font_features: BTreeMap::new(),
+            buffer_letter_spacing: 0.0,
+        }
+    }
+}
+
+impl ViewPrefs {
+    pub fn from_json(v: &Value) -> Self {
+        Self {
+            show_tabs: v["show_tabs"].as_bool().unwrap_or(true),
+            show_status_bar: v["show_status_bar"].as_bool().unwrap_or(true),
+            zen_max_width: v["zen_max_width"]
+                .as_u64()
+                .map_or(100, |n| (n as usize).clamp(ZEN_WIDTH_RANGE.0, ZEN_WIDTH_RANGE.1)),
+            explorer_sort: normalize_explorer_sort(v["explorer_sort"].as_str()),
+            explorer_folders_first: v["explorer_folders_first"].as_bool().unwrap_or(true),
+            buffer_font_features: crate::fontcfg::clean_features(&v["buffer_font_features"]),
+            buffer_letter_spacing: crate::fontcfg::clean_letter_spacing(
+                v["buffer_letter_spacing"].as_f64().unwrap_or(0.0),
+            ),
+        }
+    }
+
+    pub fn write_json(&self, v: &mut Value) {
+        v["show_tabs"] = json!(self.show_tabs);
+        v["show_status_bar"] = json!(self.show_status_bar);
+        v["zen_max_width"] = json!(self.zen_max_width);
+        v["explorer_sort"] = json!(self.explorer_sort);
+        v["explorer_folders_first"] = json!(self.explorer_folders_first);
+        v["buffer_font_features"] = crate::fontcfg::features_json(&self.buffer_font_features);
+        v["buffer_letter_spacing"] = json!(self.buffer_letter_spacing);
+    }
+}
+
+#[cfg(test)]
+mod view_prefs_tests {
+    use super::*;
+
+    #[test]
+    fn view_prefs_default_keep_the_current_look_and_are_cleaned_on_load() {
+        let d = Config::default().view;
+        assert!(d.show_tabs && d.show_status_bar && d.explorer_folders_first);
+        assert_eq!((d.zen_max_width, d.explorer_sort.as_str(), d.buffer_letter_spacing), (100, "name", 0.0));
+        assert!(d.buffer_font_features.is_empty());
+        let v: Value = serde_json::from_str(
+            r#"{"zen_max_width": 5, "explorer_sort": "size", "buffer_letter_spacing": 9,
+                "buffer_font_features": {"zero": true, "SS01": true, "cv02": false, "toolong": true, "cv05": 3, "x": 1}}"#,
+        )
+        .unwrap();
+        let p = ViewPrefs::from_json(&v);
+        assert_eq!(p.zen_max_width, ZEN_WIDTH_RANGE.0);
+        assert_eq!(p.explorer_sort, "name", "unknown order falls back");
+        assert_eq!(p.buffer_letter_spacing, 3.0);
+        let feats: Vec<(&str, u32)> = p.buffer_font_features.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        assert_eq!(feats, [("cv02", 0), ("cv05", 3), ("ss01", 1), ("zero", 1)], "bad tags are dropped");
+        let mut out = json!({});
+        p.write_json(&mut out);
+        assert_eq!(out["buffer_font_features"], json!({"cv02": false, "cv05": 3, "ss01": true, "zero": true}));
+        assert_eq!(ViewPrefs::from_json(&out), p, "round trip");
+        for s in EXPLORER_SORTS {
+            assert_eq!(normalize_explorer_sort(Some(s)), *s);
+        }
     }
 }

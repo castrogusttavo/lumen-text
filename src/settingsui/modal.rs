@@ -145,6 +145,14 @@ impl Modal {
         }
     }
 
+    /// A mouse combo while the shortcuts page records one (see [`KeybindsPage::record_mouse`]).
+    pub fn record_mouse(&mut self, ctrl: bool, shift: bool, alt: bool, button: &str) -> Option<Event> {
+        if self.page != Page::Keybinds {
+            return None;
+        }
+        self.keybinds.record_mouse(ctrl, shift, alt, button)
+    }
+
     /// Scroll by `dy` pixels (positive = the list scrolls down).
     pub fn wheel(&mut self, dy: f64) {
         match self.page {

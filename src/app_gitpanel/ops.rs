@@ -40,7 +40,9 @@ impl App {
     pub fn right_slot_rect(&self) -> Rect {
         let w = self.gp_width();
         let (ww, hh) = (self.size.0 as i32, self.size.1 as i32);
-        Rect::new(ww - w, crate::app::TOP_H, w, (hh - crate::app::TOP_H - crate::app::STATUS_H).max(0))
+        // Between the top and bottom bars, whichever of them are shown (zen mode, View toggles).
+        let (top, bottom) = (self.layout.topbar.h, self.layout.status.h);
+        Rect::new(ww - w, top, w, (hh - top - bottom).max(0))
     }
 
     /// Panel rectangle (as if open): the slot under its switch.

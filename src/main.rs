@@ -46,6 +46,7 @@ mod app_tooltip;
 mod app_topbar;
 mod app_unsaved;
 mod app_update;
+mod app_view;
 mod app_worktree;
 mod assist;
 mod backup;

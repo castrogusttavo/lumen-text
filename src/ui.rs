@@ -513,6 +513,9 @@ pub struct TextCtx {
     /// Buffer font weight / ligatures and UI font weight / ligatures (see `fontcfg`).
     buf_weight: u16,
     buf_ligs: bool,
+    /// Buffer OpenType features (`buffer_font_features`) and letter spacing in logical px.
+    buf_feats: Vec<([u8; 4], u32)>,
+    buf_spacing: f32,
     ui_weight: u16,
     ui_ligs: bool,
     /// The families found at startup (system monospace / sans-serif), used when a chosen one is missing.
@@ -739,6 +742,24 @@ fn plain_features() -> FontFeatures {
     f
 }
 
+/// Features for buffer text shaped by `Shaping::Advanced`: `liga` / `clig` / `calt` off unless
+/// ligatures are on (an explicit user entry for one of them wins), then the user's own features
+/// (`zero`, `ss01`, `cv02`, ...).
+fn buffer_features(ligs: bool, user: &[([u8; 4], u32)]) -> FontFeatures {
+    let mut f = FontFeatures::new();
+    if !ligs {
+        for t in [FeatureTag::STANDARD_LIGATURES, FeatureTag::CONTEXTUAL_LIGATURES, FeatureTag::CONTEXTUAL_ALTERNATES] {
+            if !user.iter().any(|(u, _)| u == t.as_bytes()) {
+                f.disable(t);
+            }
+        }
+    }
+    for (tag, v) in user {
+        f.set(FeatureTag::new(tag), *v);
+    }
+    f
+}
+
 /// Cell width in *logical* pixels: measured at the device size (`px * scale`) so that glyph
 /// advances match what is drawn, then divided back (fractional, e.g. 8.4 / 12.6 / 14.7 ...).
 fn measure_cell(fonts: &mut FontSystem, attrs: &Attrs, px: f32) -> f32 {
@@ -791,6 +812,8 @@ impl TextCtx {
             italic_ok: None,
             buf_weight: 400,
             buf_ligs: false,
+            buf_feats: Vec::new(),
+            buf_spacing: 0.0,
             ui_weight: 400,
             ui_ligs: true,
             user_faces: [Vec::new(), Vec::new()],
@@ -833,11 +856,26 @@ impl TextCtx {
         px
     }
 
-    /// Re-measure the buffer cell width (family, weight, size or scale changed).
+    /// Re-measure the buffer cell width (family, weight, size, letter spacing or scale changed).
+    /// The letter spacing is part of every glyph's advance, so it is part of the cell too: cursor
+    /// x positions, columns and box layout all follow.
     fn remeasure(&mut self) {
         let family = self.family.clone();
-        let attrs = buf_attrs(&family, self.buf_weight);
-        self.cell_w = measure_cell(&mut self.fonts, &attrs, font_size());
+        let attrs = self.buffer_attrs(&family);
+        self.cell_w = measure_cell(&mut self.fonts, &attrs, font_size()).max(1.0);
+    }
+
+    /// Buffer font attributes: family, weight and letter spacing (in em of the current size).
+    /// The OpenType features are added where `Shaping::Advanced` runs (see [`buffer_features`]).
+    fn buffer_attrs<'a>(&self, family: &'a Option<String>) -> Attrs<'a> {
+        let a = buf_attrs(family, self.buf_weight);
+        if self.buf_spacing == 0.0 { a } else { a.letter_spacing(self.buf_spacing / font_size()) }
+    }
+
+    /// Does buffer text need `Shaping::Advanced` even when it is plain ASCII (ligatures or
+    /// OpenType features are on)?
+    fn buffer_fancy(&self) -> bool {
+        self.buf_ligs || !self.buf_feats.is_empty()
     }
 
     pub fn reset_zoom(&mut self) -> f32 {
@@ -891,6 +929,10 @@ impl TextCtx {
         self.family = found.or_else(|| self.default_family.clone());
         self.buf_weight = spec.weight;
         self.buf_ligs = spec.ligatures;
+        self.buf_feats =
+            spec.features.iter().filter_map(|(k, v)| <[u8; 4]>::try_from(k.as_bytes()).ok().map(|t| (t, *v))).collect();
+        self.buf_spacing =
+            spec.letter_spacing.clamp(crate::fontcfg::LETTER_SPACING_RANGE.0, crate::fontcfg::LETTER_SPACING_RANGE.1);
         crate::fontcfg::store_buffer_size(spec.size.clamp(8.0, 40.0));
         crate::fontcfg::store_buffer_line_height(spec.line_height);
         self.rebuild_fonts();
@@ -958,16 +1000,43 @@ impl TextCtx {
         clip: Rect,
         size: f32,
     ) {
+        let a = Attrs::new().family(Family::Name(family)).color(to_color(color));
+        self.draw_family_attrs(cv, x, y, text, &a, clip, size);
+    }
+
+    /// Draw `text` in `family` at `size` px with the buffer font's OpenType features and letter
+    /// spacing applied: the buffer font picker's preview of what the code will look like.
+    pub fn draw_family_buffer(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        family: &str,
+        text: &str,
+        color: Rgba,
+        clip: Rect,
+        size: f32,
+    ) {
+        let mut a = Attrs::new()
+            .family(Family::Name(family))
+            .color(to_color(color))
+            .font_features(buffer_features(self.buf_ligs, &self.buf_feats));
+        if self.buf_spacing != 0.0 {
+            a = a.letter_spacing(self.buf_spacing / size.max(1.0));
+        }
+        self.draw_family_attrs(cv, x, y, text, &a, clip, size);
+    }
+
+    fn draw_family_attrs(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, a: &Attrs, clip: Rect, size: f32) {
         if text.is_empty() || clip.w <= 0 || clip.h <= 0 {
             return;
         }
         let lh = (size * 1.4).round();
-        let a = Attrs::new().family(Family::Name(family)).color(to_color(color));
         let s = scale();
         let mut b = TextBuf::new(&mut self.fonts, Metrics::new(size * s, lh * s));
         b.set_size(Some(4000.0 * s), Some(lh * 2.0 * s));
         b.set_wrap(Wrap::None);
-        b.set_text(text, &a, Shaping::Advanced, None);
+        b.set_text(text, a, Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.fonts, false);
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
         let (x, y) = (sc(x), sc(y));
@@ -994,14 +1063,15 @@ impl TextCtx {
     #[cfg(test)]
     pub fn buffer_text_width(&mut self, text: &str) -> f32 {
         let family = self.family.clone();
-        let mut attrs = buf_attrs(&family, self.buf_weight);
-        if !self.buf_ligs {
-            attrs = attrs.font_features(plain_features());
+        let mut attrs = self.buffer_attrs(&family);
+        let fancy = self.buffer_fancy();
+        if fancy || !self.buf_ligs {
+            attrs = attrs.font_features(buffer_features(self.buf_ligs, &self.buf_feats));
         }
         let s = scale();
         let mut b = TextBuf::new(&mut self.fonts, Metrics::new(font_size() * s, line_h() * s));
         b.set_size(Some(4000.0), Some(200.0));
-        b.set_text(text, &attrs, if self.buf_ligs { Shaping::Advanced } else { Shaping::Basic }, None);
+        b.set_text(text, &attrs, if fancy { Shaping::Advanced } else { Shaping::Basic }, None);
         b.shape_until_scroll(&mut self.fonts, false);
         b.layout_runs().next().map_or(0.0, |r| r.line_w) / s
     }
@@ -1058,11 +1128,11 @@ impl TextCtx {
             self.ensure_fallbacks();
         }
         let wide = pieces.iter().any(|(s, ..)| needs_fallback(s));
-        let ligs = self.buf_ligs;
+        let fancy = self.buffer_fancy();
         let family = self.family.clone();
-        let mut attrs = buf_attrs(&family, self.buf_weight);
-        if wide && !ligs {
-            attrs = attrs.font_features(plain_features());
+        let mut attrs = self.buffer_attrs(&family);
+        if wide || fancy {
+            attrs = attrs.font_features(buffer_features(self.buf_ligs, &self.buf_feats));
         }
         let s = scale();
         self.buf.set_metrics_and_size(
@@ -1072,7 +1142,7 @@ impl TextCtx {
         );
         self.buf.set_wrap(Wrap::None);
         let spans: Vec<(&str, Attrs)> = pieces.iter().map(|(s, c, f)| (*s, styled(&attrs, *c, *f))).collect();
-        self.buf.set_rich_text(spans, &attrs, if wide || ligs { Shaping::Advanced } else { Shaping::Basic }, None);
+        self.buf.set_rich_text(spans, &attrs, if wide || fancy { Shaping::Advanced } else { Shaping::Basic }, None);
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
         let (x, y) = (sc(x), sc(y));
         let (w, px) = (cv.w, &mut *cv.px);

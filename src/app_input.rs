@@ -198,9 +198,33 @@ pub struct InputState {
     pub sb_edge: crate::app_sidebar::SidebarEdge,
     /// Tab strip geometry and a tab being dragged to a new place.
     pub tabs: crate::app_tabdrag::TabStrip,
+    /// Touchpad pixels of a bound wheel combo (Ctrl+wheel zoom) not yet turned into a step.
+    pub wheel_acc: f64,
 }
 
 const HBAR_H: i32 = 12;
+/// Touchpad pixels per step of a bound wheel combo (a mouse wheel notch is one step).
+const WHEEL_STEP_PX: f64 = 50.0;
+
+/// Steps of a bound wheel combo for one event (positive = up): a notch is one, touchpad pixels
+/// add up in `acc` until they make a whole step (a reversal starts over).
+pub fn wheel_steps(delta: MouseScrollDelta, acc: &mut f64) -> i32 {
+    match delta {
+        MouseScrollDelta::LineDelta(_, y) => {
+            let n = y.round() as i32;
+            if n == 0 && y != 0.0 { y.signum() as i32 } else { n.clamp(-5, 5) }
+        }
+        MouseScrollDelta::PixelDelta(p) => {
+            if *acc != 0.0 && acc.signum() != p.y.signum() {
+                *acc = 0.0;
+            }
+            *acc += p.y;
+            let n = (*acc / WHEEL_STEP_PX).trunc();
+            *acc -= n * WHEEL_STEP_PX;
+            n as i32
+        }
+    }
+}
 
 impl App {
     /// The wheel event reduced to (dx, dy) positive = down / right. Shift turns vertical into
@@ -222,8 +246,79 @@ impl App {
         WheelIn { dx, dy, pixels }
     }
 
+    // ── mouse bindings (keybindings.json mouse combos, see `keymap::MOUSE_DEFAULTS`) ──
+
+    /// Back / forward side buttons: what the keymap binds to `mouse4` / `mouse5` (NavBack /
+    /// NavForward by default), or a combo for the shortcuts page while it records one.
+    pub fn mouse_side_button(&mut self, button: winit::event::MouseButton) {
+        let name = if button == winit::event::MouseButton::Back { "mouse4" } else { "mouse5" };
+        if self.settings_record_mouse(name) {
+            return self.request_redraw();
+        }
+        if !self.overlay.is_none() {
+            return;
+        }
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        if let Some(id) = self.keymap.lookup_mouse(ctrl, shift, alt, name).map(str::to_string) {
+            self.run_mouse_action(&id);
+        }
+    }
+
+    /// Run a mouse binding's target: a mouse-only action (`PastePrimary` pastes the primary
+    /// selection at the caret; `AddCursor` only means something on a click in the text, see
+    /// `mouse_down`) or any palette command id.
+    pub fn run_mouse_action(&mut self, id: &str) {
+        match id {
+            "none" | "AddCursor" => {}
+            "PastePrimary" => {
+                let text = self.clip.get_primary();
+                if let Some(d) = self.docs.get_mut(self.active) {
+                    d.ed.paste(&mut d.buf, &text);
+                    d.reveal = true;
+                }
+            }
+            _ => {
+                self.run_bound(id);
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// The wheel with a bound combo (`ctrl+wheelup` / `ctrl+wheeldown` zoom by default): runs the
+    /// command once per notch. True when the event was taken (it does not scroll then).
+    fn wheel_binding(&mut self, delta: MouseScrollDelta) -> bool {
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => y as f64,
+            MouseScrollDelta::PixelDelta(p) => p.y,
+        };
+        if dy == 0.0 {
+            return false;
+        }
+        if (ctrl || alt) && self.settings_record_mouse(if dy > 0.0 { "wheelup" } else { "wheeldown" }) {
+            return true;
+        }
+        let km = &self.keymap;
+        let up = km.lookup_mouse(ctrl, shift, alt, "wheelup").filter(|id| *id != "none").map(str::to_string);
+        let down = km.lookup_mouse(ctrl, shift, alt, "wheeldown").filter(|id| *id != "none").map(str::to_string);
+        if up.is_none() && down.is_none() {
+            self.inp.wheel_acc = 0.0;
+            return false;
+        }
+        let steps = wheel_steps(delta, &mut self.inp.wheel_acc);
+        if let Some(id) = if steps > 0 { up } else { down } {
+            for _ in 0..steps.unsigned_abs() {
+                self.run_mouse_action(&id);
+            }
+        }
+        true
+    }
+
     pub fn on_wheel(&mut self, delta: MouseScrollDelta) {
         let (x, y) = self.mouse;
+        if self.wheel_binding(delta) {
+            return self.request_redraw();
+        }
         if self.hover_wheel(delta) {
             return self.request_redraw();
         }
@@ -916,5 +1011,58 @@ mod tests {
         let mut ds = DragSel::press(&mut d, 3, 1, false);
         ds.update(&mut d, 200, 200);
         assert_eq!(sel(&d), (3, 200));
+    }
+
+    #[test]
+    fn bound_wheel_steps_per_notch_and_per_touchpad_distance() {
+        let mut acc = 0.0;
+        assert_eq!(wheel_steps(MouseScrollDelta::LineDelta(0.0, 1.0), &mut acc), 1);
+        assert_eq!(wheel_steps(MouseScrollDelta::LineDelta(0.0, -1.0), &mut acc), -1);
+        assert_eq!(wheel_steps(MouseScrollDelta::LineDelta(0.0, 0.3), &mut acc), 1, "a partial notch is a step");
+        assert_eq!(wheel_steps(MouseScrollDelta::LineDelta(0.0, 40.0), &mut acc), 5, "capped");
+        let px = |y: f64| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, y));
+        assert_eq!(wheel_steps(px(20.0), &mut acc), 0);
+        assert_eq!(wheel_steps(px(20.0), &mut acc), 0);
+        assert_eq!(wheel_steps(px(20.0), &mut acc), 1, "60 px make one step, 10 px stay");
+        assert!((acc - 10.0).abs() < 1e-9);
+        assert_eq!(wheel_steps(px(-30.0), &mut acc), 0, "a reversal starts over");
+        assert_eq!(wheel_steps(px(-30.0), &mut acc), -1);
+    }
+
+    #[test]
+    fn mouse_bindings_dispatch() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        let _g = lock();
+        let dir = tmp("mousebind");
+        let mut app = test_app(&dir);
+        // Ctrl+wheel zooms (one step per notch), the plain wheel does not.
+        let size = crate::ui::font_size();
+        app.mods = winit::keyboard::ModifiersState::CONTROL;
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, 1.0));
+        assert_eq!(crate::ui::font_size(), size + 1.0, "Ctrl+wheel up zooms in");
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -1.0));
+        assert_eq!(crate::ui::font_size(), size);
+        app.mods = winit::keyboard::ModifiersState::empty();
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, 1.0));
+        assert_eq!(crate::ui::font_size(), size, "the plain wheel scrolls");
+        // A user binding for the side button runs its command; "none" switches Ctrl+wheel off.
+        app.keymap = crate::keymap::Keymap::from_json(r#"{"mouse4": "ToggleSidebar", "ctrl+wheelup": "none"}"#);
+        let open = app.sidebar_open;
+        app.mouse_side_button(winit::event::MouseButton::Back);
+        assert_eq!(app.sidebar_open, !open);
+        app.mods = winit::keyboard::ModifiersState::CONTROL;
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, 1.0));
+        assert_eq!(crate::ui::font_size(), size, "disabled");
+        app.mods = winit::keyboard::ModifiersState::empty();
+        // The primary selection lands at the caret.
+        app.clip.set_primary("XY");
+        let d = &mut app.docs[0];
+        d.ed.click(&mut d.buf, 0, false);
+        app.active = 0;
+        app.run_mouse_action("PastePrimary");
+        let text = app.docs[0].buf.to_string();
+        assert!(text.starts_with("XYseed"), "{text}");
+        drop(app);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

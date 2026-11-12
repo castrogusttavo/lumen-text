@@ -54,6 +54,9 @@ impl App {
         if let (Some(dst), Some(src)) = (v.as_object_mut(), crate::settings_ext::values(c).as_object()) {
             dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
         }
+        if let (Some(dst), Some(src)) = (v.as_object_mut(), crate::app_view::values(c).as_object()) {
+            dst.extend(src.iter().map(|(k, x)| (k.clone(), x.clone())));
+        }
         v
     }
 
@@ -104,6 +107,8 @@ impl App {
             .filter(|(c, id)| keymap::default_combo(id) != Some(*c))
             .map(|(c, id)| (c.to_string(), id.to_string()));
         kb.add_default_aliases(aliases);
+        // Built-in mouse combos (side buttons, Ctrl+wheel, Alt+click, ...) own their combos too.
+        kb.add_default_aliases(keymap::MOUSE_DEFAULTS.iter().map(|(c, id)| (c.to_string(), id.to_string())));
         let mut m = Modal::new(sp, kb, page);
         m.user_defaults = m.settings.defaults_value();
         m.scope = Some(crate::projcfg::Scope::User);
@@ -139,6 +144,16 @@ impl App {
         let Overlay::Settings(m) = &mut self.overlay else { return };
         let e = m.mouse_down(x, y);
         self.apply_settings_event(e);
+    }
+
+    /// A mouse combo pressed while the shortcuts page records one (Ctrl/Alt+click, middle, the
+    /// side buttons, Ctrl/Alt+wheel). True when it was taken.
+    pub fn settings_record_mouse(&mut self, button: &str) -> bool {
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        let Overlay::Settings(m) = &mut self.overlay else { return false };
+        let Some(e) = m.record_mouse(ctrl, shift, alt, button) else { return false };
+        self.apply_settings_event(e);
+        true
     }
 
     pub fn settings_wheel(&mut self, delta: MouseScrollDelta) {
@@ -393,7 +408,7 @@ impl App {
                 self.config.git_pull_strategy = crate::config::clean_pull_strategy(s.as_deref().unwrap_or(""))
             }
             _ => {
-                if !self.apply_ext_setting(key, v) {
+                if !self.apply_ext_setting(key, v) && !self.apply_view_setting(key, v) {
                     return;
                 }
             }
