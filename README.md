@@ -98,6 +98,7 @@ and no GPU driver:
 - Ignore whitespace in diffs (`-w`): header toggle, `w` key or `diff_ignore_whitespace`; staging a hunk or lines still stages their real text
 - Compare with any branch, tag or commit (or a typed ref like `HEAD~3`): "Git: Compare with branch or commit…", "Compare two refs…", "Compare file with…"; the list of changed files opens each one side by side (`]` / `[` next / previous file, `f` the list), and its first entry switches to "since the branches diverged" (merge base, like a pull request; `main...` typed does the same)
 - 3-way merge editor for merge, rebase and cherry-pick conflicts: Incoming | Current panes over the editable result, per-conflict checkboxes, conflict navigation and "Mark resolved" (stages the file)
+- Right-to-left text: lines with Arabic, Hebrew or Persian are shown in visual order (Unicode bidirectional algorithm, joined Arabic shaping), with caret, click and selection mapped to the logical text; the Markdown preview and hover cards reorder and right-align RTL paragraphs. Lines without RTL letters never leave the fast path
 
 **Debugging**
 - Breakpoints in the gutter, step over/into/out, stack, variables and output tab
@@ -381,6 +382,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `inline_diagnostics` | `"current_line"` | The most severe problem of a line after its code: `"off"`, `"current_line"` or `"all"` |
 | `ram_display` | `"long"` | `"long"` (numbers) or `"short"` (a chip icon) |
 | `local_history` / `local_history_max_entries` | `true` / `50` | Keep a snapshot of a file on every save and before a reload from disk (*File: Local history*); snapshots kept per file, 1 to 1000 |
+| `bidi_paragraph` | `"auto"` | Direction of lines with Arabic, Hebrew or Persian text: `auto` (the first strong letter decides) or `ltr` (every line left to right, right-to-left words still reordered) |
 | `explorer_hide_gitignored` | `true` | Hide what `.gitignore`, the global ignore file and `.git/info/exclude` ignore; `false` shows those entries dimmed |
 | `watcher_poll_ms` | `2000` | Interval of the polling fallback used where inotify cannot be trusted (NFS, SMB, FUSE, 9p, FAT/exFAT, watch limit reached): only open files and expanded folders are checked (250 to 60000) |
 | `status_items` | `{}` | Map of bottom-bar item id to `true`/`false` (`search`, `problems`, `terminal`, `debug`, `git`, `ram`, `position`, `indent`, `encoding`, `language`) |
@@ -561,6 +563,7 @@ cargo build --release                                       # build.rs embeds th
 ## Known limitations
 
 - The interface is English only for now; other languages need a string layer (see the roadmap).
+- RTL editing is logical (arrows, Home/End walk the text order, the caret shows a small direction flag); a Hebrew/Arabic line is reordered but not right-aligned to the window, and inlay hints are not shown on those lines. Selecting with the mouse across direction runs highlights separate pieces.
 - No TextMate `injections` (code embedded in Markdown/HTML gets only the outer grammar).
 - Opening a very large file and jumping to its end leaves that stretch uncolored for a few seconds.
 - Full-project mode (default) can use several hundred MB on very large projects; the opt-in lean mode

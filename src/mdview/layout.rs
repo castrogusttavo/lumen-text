@@ -364,6 +364,12 @@ impl math::TextMeasure for UiMeasure<'_> {
     }
 }
 
+/// Right edge of a laid-out line (once right-to-left text is reordered, the last run is not
+/// necessarily the rightmost).
+pub(super) fn line_right(line: &[Run]) -> f32 {
+    line.iter().map(|r| r.x + r.w).fold(0.0, f32::max)
+}
+
 pub(super) fn push_piece(line: &mut Vec<Run>, x: f32, text: &str, flags: Fl, link: u32, w: f32) {
     if flags & (F_CODE | F_KBD | F_MATH) == 0
         && let Some(l) = line.last_mut()
@@ -703,7 +709,58 @@ impl Lay<'_> {
         while lines.len() > 1 && lines.last().is_some_and(|l| l.is_empty()) {
             lines.pop();
         }
+        if wrap {
+            self.bidi_lines(&mut lines, width.max(1) as f32, si, bold_base);
+        }
         lines
+    }
+
+    /// Right-to-left text in a wrapped block: the runs of each line (split into words and spaces)
+    /// are put in visual order (UAX #9 over the words, see `bidi::place`), and a block whose first
+    /// strong char is right-to-left is right-aligned in `width`. Blocks without RTL text are left
+    /// untouched (one byte scan).
+    pub(super) fn bidi_lines(&mut self, lines: &mut [Vec<Run>], width: f32, si: usize, bold_base: bool) {
+        if !lines.iter().flatten().any(|r| !is_math(r.flags) && crate::bidi::has_rtl(&r.text)) {
+            return;
+        }
+        let rtl = lines
+            .iter()
+            .flatten()
+            .filter(|r| !is_math(r.flags))
+            .find_map(|r| crate::bidi::first_strong_rtl(&r.text))
+            .unwrap_or(false);
+        for line in lines.iter_mut() {
+            let mut units: Vec<Run> = Vec::with_capacity(line.len());
+            for r in line.drain(..) {
+                if r.flags & (F_CODE | F_KBD | F_MATH) != 0 || !r.text.contains(' ') {
+                    units.push(r);
+                    continue;
+                }
+                let bold = bold_base || r.flags & F_B != 0;
+                let rsi = run_si(r.flags, si);
+                let mut rest = r.text.as_str();
+                while !rest.is_empty() {
+                    let sp = rest.starts_with(' ');
+                    let end = rest.find(|c: char| (c == ' ') != sp).unwrap_or(rest.len());
+                    let (tok, tail) = rest.split_at(end);
+                    rest = tail;
+                    let w = self.m.w(self.tx, tok, bold, rsi);
+                    units.push(Run { x: 0.0, w, text: tok.to_string(), flags: r.flags, link: r.link });
+                }
+            }
+            let widths: Vec<f32> = units.iter().map(|u| u.w).collect();
+            let xs = {
+                let texts: Vec<&str> =
+                    units.iter().map(|u| if is_math(u.flags) { "\u{FFFC}" } else { u.text.as_str() }).collect();
+                crate::bidi::place(&texts, &widths, rtl)
+            };
+            let total: f32 = widths.iter().sum();
+            let off = if rtl { (width - total).max(0.0) } else { 0.0 };
+            for (u, x) in units.iter_mut().zip(xs) {
+                u.x = x + off;
+            }
+            *line = units;
+        }
     }
 
     /// Truncate a plain string to `max_w` (adds "..."); returns text and width in px.
@@ -1004,7 +1061,7 @@ impl Lay<'_> {
                 let avail = colw[c] - 2 * CELL_PAD_X;
                 let mut ty = ry + CELL_PAD_Y;
                 for line in lines {
-                    let lw = line.last().map_or(0.0, |r| r.x + r.w).round() as i32;
+                    let lw = line_right(&line).round() as i32;
                     let ox = match aligns.get(c) {
                         Some(Alignment::Right) => (avail - lw).max(0),
                         Some(Alignment::Center) => ((avail - lw) / 2).max(0),

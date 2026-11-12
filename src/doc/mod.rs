@@ -699,21 +699,39 @@ impl Doc {
             });
             (col, hit)
         };
+        // A line with right-to-left text: visual x -> logical offset through its bidi layout
+        // (chars `c0..c1` of the row; such rows show no inlay hints).
+        let para = crate::bidi::para();
+        let bidi_hit = |text: &str, c0: usize, c1: usize| {
+            crate::bidi::row(text, c0, c1, tab_w, para).map(|b| c0 + b.hit((docx / cw).max(0.0)))
+        };
         if !self.vm_live() {
             let line = row.min(self.buf.line_count() - 1);
             let text = self.buf.line(line);
+            if let Some(col) = bidi_hit(&text, 0, usize::MAX) {
+                return (self.buf.pos(line, col), None);
+            }
             let (col, hit) = hinted(line, &text, self.inlay.hints.hints_on(line), None);
             return (self.buf.pos(line, col), hit);
         }
         let (line, sub) = self.view.map.line_at_row(row);
         let text = self.buf.line(line);
         if self.view.cols == 0 {
+            if let Some(col) = bidi_hit(&text, 0, usize::MAX) {
+                return (self.buf.pos(line, col), None);
+            }
             let (col, hit) = hinted(line, &text, self.inlay.hints.hints_on(line), None);
             return (self.buf.pos(line, col), hit);
         }
         let breaks = self.view.breaks(&text);
         let len = text.chars().count();
         let (c0, c1) = crate::docview::row_range(&breaks, sub, len);
+        if let Some(mut c) = bidi_hit(&text, c0, c1) {
+            if sub < breaks.len() {
+                c = c.min(c1.saturating_sub(1).max(c0)); // not the last row: stay before the wrap point
+            }
+            return (self.buf.pos(line, c), None);
+        }
         let rowtext: String = text.chars().skip(c0).take(c1 - c0).collect();
         let rh = crate::inlay::row_hints(self.inlay.hints.hints_on(line), len, c0, c1, sub >= breaks.len());
         let (rc, hit) = hinted(line, &rowtext, &rh.hints, Some(&rh.idx));

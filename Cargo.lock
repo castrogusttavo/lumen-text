@@ -1020,6 +1020,7 @@ dependencies = [
  "softbuffer",
  "tiny-skia 0.12.0",
  "ttf-parser",
+ "unicode-bidi",
  "unicode-width",
  "vte",
  "windows-sys 0.61.2",
