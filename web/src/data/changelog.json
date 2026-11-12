@@ -1,0 +1,104 @@
+[
+  {
+    "version": "2026.11.12.1",
+    "date": "2026-11-12",
+    "title": "Never lose work, agents in parallel, a bigger editor",
+    "summary": "The biggest release so far: 15 features across data safety, parallel AI agents, editing, Git, settings, language servers and windows.",
+    "groups": [
+      {
+        "area": "Never lose work",
+        "items": [
+          { "title": "Local history", "text": "A snapshot on every save and right before a file is reloaded because another program rewrote it. File: Local history lists them, diffs against the buffer and restores one as a single undo step; deleted files stay reachable." },
+          { "title": "Hot exit and crash recovery", "text": "Quitting keeps unsaved tabs (untitled ones too) and reopens them next time without a prompt. Buffers are also backed up a few seconds after each edit, so a crash or a kill loses almost nothing." },
+          { "title": "Persistent undo", "text": "The undo tree of a file survives closing it and restarting, as long as the file was not changed elsewhere (2 MB per file, 48 MB overall)." },
+          { "title": "File encodings", "text": "UTF-8 with or without BOM, UTF-16 LE/BE and Windows-1252 are detected and saved back the same way. Reopen or save with another encoding (Latin, KOI8-R, Shift_JIS, GBK, Big5...) from the bottom bar. Binary files are refused with a clear message." },
+          { "title": "Save as administrator", "text": "When a save is refused for permissions, a card offers to write the file in place through pkexec (Linux) or the macOS password prompt, keeping its owner and mode." },
+          { "title": "Reopen closed tab", "text": "Ctrl+Shift+T brings back the last 20 closed tabs with cursor, selection, scroll and split pane." },
+          { "title": "Confirm before killing a job", "text": "Closing a terminal, quitting or restarting asks first when a shell is running a command, a task is alive or an agent session is working. An idle shell closes without a question." }
+        ]
+      },
+      {
+        "area": "Agents in parallel",
+        "items": [
+          { "title": "Several AI sessions", "text": "One tab per session in the AI panel, each with its own terminal, status and working folder. A badge sums up how many wait for you; Ctrl+Alt+A jumps to the next one." },
+          { "title": "Desktop notifications", "text": "A system notification when a session waits for you or finishes while Lumen is in the background (once per turn)." },
+          { "title": "Paste into the agent", "text": "Long text goes as one bracketed paste, never cut. An image on the clipboard is left to the agent to read; files copied in a file manager paste as paths." },
+          { "title": "Git worktrees", "text": "List, create, open (here or in a new window), remove and prune worktrees, and start an agent session inside one." },
+          { "title": "Several terminals", "text": "Terminal tabs with rename and a two-pane split, each with its own shell and scrollback." },
+          { "title": "Kitty keyboard protocol", "text": "Modern TUIs (Claude Code, Codex, Neovim, Helix) now receive unambiguous Esc, Ctrl+key and modified Enter/Tab/Backspace." }
+        ]
+      },
+      {
+        "area": "Editing",
+        "items": [
+          { "title": "Replace in project", "text": "Ctrl+Shift+H: case, whole word and regex with $1 captures, a preview of every replacement, replace one match, a file or everything after a count confirmation." },
+          { "title": "Macros", "text": "Record with Ctrl+Shift+R, replay with Ctrl+Alt+R or N times, as one undo step. Save them by name and bind them in keybindings.json." },
+          { "title": "Column selection", "text": "Shift+Alt+drag, middle-button drag or Ctrl+Shift+Alt+arrows: one cursor per line in visual columns." },
+          { "title": "Jump to character", "text": "Alt+J: type one or two characters and a label appears over each visible match (flash / easymotion style)." },
+          { "title": "EditorConfig", "text": "indent, tab width, end of line, charset, trim trailing whitespace, final newline and max line length, with the usual section globs." },
+          { "title": "Whitespace tools", "text": "Render whitespace (boundary, trailing, all), trim trailing whitespace and insert a final newline on save as one undo step." },
+          { "title": "Rulers and inline diagnostics", "text": "Column rulers, and Error Lens style messages after the code (off, current line or all)." },
+          { "title": "Highlights and linked editing", "text": "The symbol under the caret lights its other occurrences; renaming an HTML/JSX tag renames its pair live." },
+          { "title": "Right-to-left text", "text": "Arabic, Hebrew and Persian lines are shown in visual order with joined shaping, and caret, click and selection map back to the logical text. Markdown preview and hover cards follow." },
+          { "title": "Multiple windows", "text": "Ctrl+Shift+N, open a folder in a new window, drag a tab out of the window (unsaved text included). Starting lumen-text with no arguments reopens every window of the last run." }
+        ]
+      },
+      {
+        "area": "Git",
+        "items": [
+          { "title": "Stashes", "text": "Stash everything or selected files, apply, pop, drop and inspect a stash's diff from the Git panel." },
+          { "title": "Commit graph", "text": "Coloured lanes with merge and fork curves, branch/tag/HEAD labels, streamed a page at a time (smooth on 100k commits). Right click to check out, branch, tag, cherry-pick, revert or copy the hash." },
+          { "title": "Compare with any ref", "text": "Compare the tree or a file with a branch, tag, commit or typed ref (HEAD~3, main...), or two refs against each other." },
+          { "title": "Line staging", "text": "Select rows in the diff and stage, unstage or revert only those lines." },
+          { "title": "Ignore whitespace", "text": "A toggle for side-by-side diffs (git diff -w); staging still uses the real text." },
+          { "title": "3-way merge editor", "text": "Incoming and Current panes over an editable Result, per-conflict checkboxes, a resolved counter and Mark resolved that stages the file." },
+          { "title": "Always up to date", "text": "git checkout, commit and pull typed in a terminal refresh the branch, gutter and status. On NFS, SMB, FUSE and similar file systems Lumen polls the open files instead; there is also a Refresh command and a refresh on window focus." }
+        ]
+      },
+      {
+        "area": "Language servers and testing",
+        "items": [
+          { "title": "Whole-project Problems", "text": "The Problems panel can show every problem the servers know about, not just the open files (LSP pull diagnostics)." },
+          { "title": "Formatter choice and code actions on save", "text": "Pick the formatter per language (auto, Biome, Prettier, a language server or none) and run organize imports / fix all before saving, with a timeout so a hung server never blocks a save." },
+          { "title": "Inline completions", "text": "Opt-in ghost text from any server that supports textDocument/inlineCompletion, such as GitHub Copilot with your own login. Tab accepts, Ctrl+Right takes a word, Alt+] cycles." },
+          { "title": "Spell checking", "text": "Opt-in harper-ls and typos-lsp as companion servers, with their fixes in the Ctrl+. menu." },
+          { "title": "Python virtualenvs", "text": "The project's venv is found and handed to pyright and ruff; Python: Select interpreter pins another one." },
+          { "title": "Test coverage", "text": "Covered, partial and uncovered bars in the gutter, plus per-file percentages in the explorer and status bar (Vitest, Jest, cargo llvm-cov, any lcov or Cobertura file)." }
+        ]
+      },
+      {
+        "area": "Your way",
+        "items": [
+          { "title": "Per-project settings", "text": ".lumen/config.json and a personal config.local.json override your settings, with per-language overrides and a User | Project switch in the settings window. Commands coming from a project file need a one-time trust prompt." },
+          { "title": "Mouse bindings", "text": "Side buttons, middle click and modifier + click or wheel can be bound in keybindings.json." },
+          { "title": "Zen mode", "text": "Ctrl+K Z hides every bar and centers the text; Esc Esc restores the layout exactly." },
+          { "title": "Explorer sorting", "text": "By name (numbers by value), type, date or mixed, with folders first or not." },
+          { "title": "Font features", "text": "OpenType features (zero, ss01...) and letter spacing for the code font, previewed in the font picker." },
+          { "title": "Image viewer", "text": "PNG, JPEG, GIF, WebP and SVG open as a picture with zoom and pan; SVG has a Preview | Source switch." }
+        ]
+      }
+    ],
+    "enhancements": [
+      "Restart to update no longer asks you to save first when hot exit is on.",
+      "Quitting or restarting also asks when an agent session, a terminal job, a task or a Build & Run process is alive.",
+      "Middle-button: a drag selects a column, and a click that does not move still pastes the primary selection (now on release).",
+      "Starting lumen-text with a folder that is not open yet opens its own window instead of being swallowed by the running one; an already-open folder is raised.",
+      "Refreshing git status uses --no-optional-locks, so it never rewrites .git/index and cannot trigger itself.",
+      "Switching projects restores the unsaved buffers of the project you switch to.",
+      "Opening or regaining focus checks changed open files, the git state and expanded folders, and refreshes only what changed.",
+      "The commit menu gained Checkout, Create branch/tag here, Revert, Copy hash and Undo last commit.",
+      "Ctrl+wheel zooms by default, and the back/forward mouse buttons navigate.",
+      "Language servers can open a document or web page (window/showDocument).",
+      "Git commit message files get their own language so the spell checkers apply.",
+      "The settings window gained Files, AI and Git rows, and a User | Project scope.",
+      "Pull requests now verify in about 3.5 minutes (was 6.7) and a release publishes in about 6.6 minutes (was 12.3)."
+    ],
+    "fixes": [
+      "Ctrl+X with several cursors no longer cuts the character before a cursor that sits at the end of a shorter line.",
+      "Git events arriving within 400 ms of a tree refresh were dropped, which often lost the HEAD update of a checkout; they are now deferred instead.",
+      "A folder deleted and recreated could keep a stale inotify watch and stop reporting changes; the watch is replaced.",
+      "Image tabs cannot overwrite their file on save.",
+      "Hot-exit backups are kept per window, so two windows of one project do not sweep each other's unsaved buffers."
+    ]
+  }
+]

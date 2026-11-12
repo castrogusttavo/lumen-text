@@ -1,0 +1,27 @@
+---
+import SectionHead from "./SectionHead.astro";
+import changelog from "../data/changelog.json";
+import { url } from "../lib/url";
+const latest = changelog[0]!;
+// One highlight per area of the release: the first item of each group, so the section never drifts from the changelog.
+const picks = latest.groups.map((g) => ({ area: g.area, ...g.items[0]! }));
+---
+<section class="container-x py-24" id="new">
+  <SectionHead eyebrow={`New in ${latest.version}`}>
+    <Fragment slot="title">The <span class="accent-word">biggest</span> release so far</Fragment>
+    {latest.summary}
+  </SectionHead>
+  <ul class="mt-14 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+    {picks.map((p) => (
+      <li class="rounded-card border border-line bg-card p-6" data-reveal>
+        <span class="font-mono text-xs uppercase tracking-[0.14em] text-faint">{p.area}</span>
+        <h3 class="mt-2 text-lg font-medium tracking-tight">{p.title}</h3>
+        <p class="mt-2 text-[15px] leading-relaxed text-muted">{p.text}</p>
+      </li>
+    ))}
+  </ul>
+  <div class="mt-10 flex flex-wrap items-center justify-center gap-3">
+    <a class="btn btn-primary h-11" href={url("/changelog")}>Read the changelog</a>
+    <a class="btn h-11" href={url("/roadmap")}>See the roadmap</a>
+  </div>
+</section>
