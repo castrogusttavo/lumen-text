@@ -828,7 +828,8 @@ impl Editor {
         let before = self.sel;
         let opens = matches!(prev, Some('{') | Some('[') | Some('('));
         let between_tags = self.jsx && prev == Some('>') && next == Some('<') && buf.char_at(e + 1) == Some('/');
-        let opens = opens || between_tags || (self.ghp && ghp_opens_block(&buf.slice(buf.line_start(l), s)));
+        let ghp_opens = self.ghp && ghp_opens_block(&buf.slice(buf.line_start(l), s));
+        let opens = opens || between_tags;
         let between = (opens && prev.and_then(closer) == next) || between_tags;
         if between {
             let text = format!("{eol}{indent}{}{eol}{indent}", self.indent);
@@ -836,7 +837,7 @@ impl Editor {
             let caret = s + eol.chars().count() + indent.chars().count() + self.indent.chars().count();
             self.set_caret_keep_group(buf, caret);
         } else {
-            let extra = if opens { self.indent.as_str() } else { "" };
+            let extra = if opens || ghp_opens { self.indent.as_str() } else { "" };
             let text = format!("{eol}{indent}{extra}");
             buf.replace(s, e, &text, EditKind::Other, before);
             self.set_caret_keep_group(buf, s + text.chars().count());
