@@ -159,6 +159,9 @@ pub struct Config {
     /// Inline completions (ghost text) from language servers that offer them; also starts GitHub
     /// Copilot's `copilot-language-server` when it is installed (see `app_inline`).
     pub inline_completion: bool,
+    /// Paragraph direction of lines with right-to-left text (see `bidi`): "auto" (the first strong
+    /// char decides, the default) or "ltr" (always left to right; RTL runs are still reordered).
+    pub bidi_paragraph: String,
 }
 
 /// `problems_scope` values; anything else is "open_files".
@@ -388,6 +391,7 @@ impl Default for Config {
             formatter: BTreeMap::new(),
             code_actions_on_save: BTreeMap::new(),
             inline_completion: false,
+            bidi_paragraph: "auto".into(),
         }
     }
 }
@@ -699,6 +703,7 @@ impl Config {
             formatter: parse_formatter(&v["formatter"]),
             code_actions_on_save: parse_code_actions(&v["code_actions_on_save"]),
             inline_completion: v["inline_completion"].as_bool().unwrap_or(false),
+            bidi_paragraph: crate::bidi::normalize(v["bidi_paragraph"].as_str()),
         }
     }
 
@@ -758,6 +763,7 @@ impl Config {
             _ if !self.code_actions_on_save.is_empty() => v["code_actions_on_save"] = json!(self.code_actions_on_save),
             _ => {}
         }
+        v["bidi_paragraph"] = json!(self.bidi_paragraph);
         self.view.write_json(&mut v);
         v
     }
@@ -887,6 +893,7 @@ mod tests {
             formatter: [("python".to_string(), "lsp:ruff".to_string())].into(),
             code_actions_on_save: [("*".to_string(), vec!["source.fixAll".to_string()])].into(),
             inline_completion: true,
+            bidi_paragraph: "ltr".into(),
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

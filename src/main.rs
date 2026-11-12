@@ -55,6 +55,7 @@ mod app_view;
 mod app_worktree;
 mod assist;
 mod backup;
+mod bidi;
 mod bigfile;
 mod bookmarks;
 mod buffer;

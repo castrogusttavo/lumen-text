@@ -3,7 +3,7 @@
 
 use crate::theme::Rgba;
 use cosmic_text::{
-    Attrs, Buffer as TextBuf, Color, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping, SwashCache,
+    Align, Attrs, Buffer as TextBuf, Color, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping, SwashCache,
     UnderlineStyle, Wrap, fontdb,
 };
 use std::{
@@ -508,6 +508,8 @@ pub struct TextCtx {
     /// Every font file already in the database (main, variants, UI, fallbacks), canonicalized.
     loaded: Vec<PathBuf>,
     fallbacks_loaded: bool,
+    /// Arabic / Hebrew faces looked up (see [`TextCtx::ensure_rtl_fonts`]).
+    rtl_loaded: bool,
     /// Cached result of [`TextCtx::italic_works`].
     italic_ok: Option<bool>,
     /// Buffer font weight / ligatures and UI font weight / ligatures (see `fontcfg`).
@@ -566,6 +568,8 @@ fn find_font(query: &str) -> Option<PathBuf> {
             "sans-serif" => vec!["SFNS.ttf", "Helvetica.ttc"],
             "emoji" => vec!["Apple Color Emoji.ttc"],
             "noto sans symbols 2" => vec!["Apple Symbols.ttf"],
+            "noto sans arabic" => vec!["GeezaPro.ttc"],
+            "noto sans hebrew" => vec!["ArialHB.ttc"],
             _ => vec![],
         }
     };
@@ -724,6 +728,39 @@ fn fallback_candidates(loaded: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// Faces for right-to-left code and prose when the loaded fonts lack them: Arabic, then Hebrew.
+/// A monospace face with both (DejaVu Sans Mono) is preferred, then Noto, then whatever
+/// fontconfig picks for the language. Windows needs none (Segoe UI, the interface font, has both).
+fn rtl_candidates(loaded: &[PathBuf]) -> Vec<PathBuf> {
+    let fc = cfg!(all(unix, not(target_os = "macos")));
+    let queries: [(&[&str], u32); 2] = [
+        (&["DejaVu Sans Mono", "Noto Sans Arabic", "sans-serif:lang=ar"], 0x0627),
+        (&["DejaVu Sans Mono", "Noto Sans Hebrew", "sans-serif:lang=he"], 0x05D0),
+    ];
+    let mut out: Vec<PathBuf> = Vec::new();
+    for (qs, probe) in queries {
+        let covering = if fc { files_covering(probe) } else { Vec::new() };
+        if fc && loaded.iter().chain(out.iter()).any(|p| covering.contains(p)) {
+            continue; // already covered
+        }
+        for q in qs {
+            let Some(p) = find_font(q) else { continue };
+            let p = canon(&p);
+            if fc && !covering.contains(&p) {
+                continue;
+            }
+            if !loaded.contains(&p)
+                && !out.contains(&p)
+                && std::fs::metadata(&p).is_ok_and(|m| m.len() <= MAX_FALLBACK_BYTES)
+            {
+                out.push(p);
+            }
+            break;
+        }
+    }
+    out
+}
+
 /// True if `s` has a char >= U+2000 (UTF-8 lead byte >= 0xE2): the cheap trigger for loading
 /// fallback fonts. Latin, Latin-1 and Greek/Cyrillic never need them.
 fn needs_fallback(s: &str) -> bool {
@@ -809,6 +846,7 @@ impl TextCtx {
             icons: crate::icons::Icons::new(),
             loaded,
             fallbacks_loaded: false,
+            rtl_loaded: false,
             italic_ok: None,
             buf_weight: 400,
             buf_ligs: false,
@@ -842,6 +880,23 @@ impl TextCtx {
             return;
         }
         for p in fallback_candidates(&self.loaded) {
+            if !load_into(self.fonts.db_mut(), &p).is_empty() {
+                self.loaded.push(p);
+            }
+        }
+    }
+
+    /// Load Arabic and Hebrew faces if the loaded fonts lack them. Cheap no-op after the first
+    /// call; called when right-to-left text is first drawn, so other sessions never pay for it.
+    pub fn ensure_rtl_fonts(&mut self) {
+        if self.rtl_loaded {
+            return;
+        }
+        self.rtl_loaded = true;
+        if self.sys_all {
+            return;
+        }
+        for p in rtl_candidates(&self.loaded) {
             if !load_into(self.fonts.db_mut(), &p).is_empty() {
                 self.loaded.push(p);
             }
@@ -1036,7 +1091,7 @@ impl TextCtx {
         let mut b = TextBuf::new(&mut self.fonts, Metrics::new(size * s, lh * s));
         b.set_size(Some(4000.0 * s), Some(lh * 2.0 * s));
         b.set_wrap(Wrap::None);
-        b.set_text(text, a, Shaping::Advanced, None);
+        b.set_text(text, a, Shaping::Advanced, Some(Align::Left));
         b.shape_until_scroll(&mut self.fonts, false);
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
         let (x, y) = (sc(x), sc(y));
@@ -1142,7 +1197,12 @@ impl TextCtx {
         );
         self.buf.set_wrap(Wrap::None);
         let spans: Vec<(&str, Attrs)> = pieces.iter().map(|(s, c, f)| (*s, styled(&attrs, *c, *f))).collect();
-        self.buf.set_rich_text(spans, &attrs, if wide || fancy { Shaping::Advanced } else { Shaping::Basic }, None);
+        self.buf.set_rich_text(
+            spans,
+            &attrs,
+            if wide || fancy { Shaping::Advanced } else { Shaping::Basic },
+            Some(Align::Left),
+        );
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
         let (x, y) = (sc(x), sc(y));
         let (w, px) = (cv.w, &mut *cv.px);
@@ -1164,6 +1224,109 @@ impl TextCtx {
                 }
             }
         });
+    }
+
+    /// Draw one row of bidirectional code on the cell grid (see `bidi`): `pieces` hold the row's
+    /// text in logical order with its colors and styles (no tabs or newlines), and `cells[i]` is
+    /// the (first cell, cell count) of its char `i`, cell 0 starting at `x`; `rtl` is the
+    /// paragraph direction. The text is shaped as a whole (Arabic letters join, brackets mirror in
+    /// right-to-left runs), then every cluster is centred on its own cells, so glyphs line up with
+    /// the caret and the selection exactly as left-to-right code does. `y` is the row's top.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_cells(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        pieces: &[(String, Rgba, u8)],
+        cells: &[(usize, usize)],
+        rtl: bool,
+        clip: Rect,
+    ) {
+        if pieces.is_empty() || cells.is_empty() || clip.w <= 0 || clip.h <= 0 {
+            return;
+        }
+        self.ensure_fallbacks();
+        self.ensure_rtl_fonts();
+        let family = self.family.clone();
+        let attrs = buf_attrs(&family, self.buf_weight).font_features(plain_features());
+        // A direction mark first, so cosmic-text resolves the paragraph direction the caller laid
+        // the row out with (it decides the direction of neutrals such as brackets).
+        let mark = if rtl { "\u{200F}" } else { "\u{200E}" };
+        let mut spans: Vec<(&str, Attrs)> = Vec::with_capacity(pieces.len() + 1);
+        spans.push((mark, attrs.clone()));
+        spans.extend(pieces.iter().map(|(t, c, f)| (t.as_str(), styled(&attrs, *c, *f))));
+        // Byte offset in the text after the mark -> char index.
+        let mut char_of: Vec<usize> = Vec::new();
+        for (ci, ch) in pieces.iter().flat_map(|(t, ..)| t.chars()).enumerate() {
+            char_of.extend(std::iter::repeat_n(ci, ch.len_utf8()));
+        }
+        if char_of.is_empty() {
+            return;
+        }
+        let s = scale();
+        self.buf.set_metrics_and_size(
+            Metrics::new(font_size() * s, line_h() * s),
+            Some(1.0e7),
+            Some(line_h() * 2.0 * s),
+        );
+        self.buf.set_wrap(Wrap::None);
+        self.buf.set_rich_text(spans, &attrs, Shaping::Advanced, Some(Align::Left));
+        self.buf.shape_until_scroll(&mut self.fonts, false);
+        let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
+        let cw = self.cell_w * s;
+        let (ox, oy) = (sc(x) as f32, sc(y) as f32);
+        let (w, px) = (cv.w, &mut *cv.px);
+        let white = Color::rgba(255, 255, 255, 255);
+        let m = mark.len();
+        let last = char_of.len() - 1;
+        for run in self.buf.layout_runs() {
+            let gs = run.glyphs;
+            let mut i = 0;
+            while i < gs.len() {
+                let (st, en) = (gs[i].start, gs[i].end);
+                let mut j = i + 1;
+                while j < gs.len() && gs[j].start == st {
+                    j += 1;
+                }
+                let group = &gs[i..j];
+                i = j;
+                if st < m {
+                    continue; // the direction mark
+                }
+                let a = char_of[(st - m).min(last)];
+                let b = char_of[(en.max(st + 1) - 1 - m).min(last)];
+                let (mut c0, mut c1) = (usize::MAX, 0usize);
+                for c in a..=b {
+                    if let Some(&(cx, cn)) = cells.get(c) {
+                        c0 = c0.min(cx);
+                        c1 = c1.max(cx + cn);
+                    }
+                }
+                if c0 >= c1 {
+                    continue;
+                }
+                let (mut g0, mut g1) = (f32::MAX, f32::MIN);
+                for g in group {
+                    g0 = g0.min(g.x);
+                    g1 = g1.max(g.x + g.w);
+                }
+                let dx = ox + c0 as f32 * cw + ((c1 - c0) as f32 * cw - (g1 - g0)) / 2.0 - g0;
+                for g in group {
+                    let pg = g.physical((dx, oy + run.line_y), 1.0);
+                    let (bx, by) = (pg.x, pg.y);
+                    let color = g.color_opt.unwrap_or(white);
+                    self.swash.with_pixels(&mut self.fonts, pg.cache_key, color, |gx, gy, c| {
+                        let (pxx, py) = (bx + gx, by + gy);
+                        if py < clip.y || py >= clip.bottom() || pxx < clip.x || pxx >= clip.right() {
+                            return;
+                        }
+                        let k = (py * w + pxx) as usize;
+                        px[k] = blend_px(px[k], Rgba(c.r(), c.g(), c.b(), c.a()));
+                    });
+                }
+            }
+        }
     }
 
     /// Width in px of `text` in the UI font.
@@ -1211,7 +1374,7 @@ impl TextCtx {
         let mut b = TextBuf::new(&mut self.fonts, Metrics::new(sz * s, lh * s));
         b.set_size(Some(8000.0 * s), Some(lh * 2.0 * s));
         b.set_wrap(Wrap::None);
-        b.set_text(text, &a, Shaping::Advanced, None);
+        b.set_text(text, &a, Shaping::Advanced, Some(Align::Left));
         b.shape_until_scroll(&mut self.fonts, false);
         let mut idx = vec![0usize; text.len() + 1];
         for (ci, (bi, _)) in text.char_indices().enumerate() {
@@ -1289,7 +1452,7 @@ impl TextCtx {
         self.ui_buf.set_wrap(Wrap::None);
         let spans: Vec<(&str, Attrs)> =
             pieces.iter().map(|(s, c)| (s.as_str(), base.clone().color(to_color(*c)))).collect();
-        self.ui_buf.set_rich_text(spans, &base, Shaping::Advanced, None);
+        self.ui_buf.set_rich_text(spans, &base, Shaping::Advanced, Some(Align::Left));
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
         let (x, y) = (sc(x), sc(y));
         let (w, px) = (cv.w, &mut *cv.px);
@@ -1404,7 +1567,7 @@ impl TextCtx {
         let mut b = TextBuf::new(&mut self.fonts, Metrics::new(size * s, lh * s));
         b.set_size(Some(4000.0 * s), Some(lh * 2.0 * s));
         b.set_wrap(Wrap::None);
-        b.set_text(text, &a, Shaping::Advanced, None);
+        b.set_text(text, &a, Shaping::Advanced, Some(Align::Left));
         b.shape_until_scroll(&mut self.fonts, false);
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
         let (x, y) = (sc(x), sc(y));

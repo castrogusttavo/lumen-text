@@ -149,6 +149,7 @@ pub fn apply(c: &crate::config::Config) {
     set_breakpoints(c.show_breakpoints);
     set_scrollbar(Scrollbar::from_name(&c.scrollbar));
     set_whitespace(crate::whitespace::Render::from_name(&c.render_whitespace));
+    crate::bidi::set_para(crate::bidi::Para::from_name(&c.bidi_paragraph));
 }
 
 // ── auto-hide scrollbars ──

@@ -144,3 +144,38 @@ pub(super) fn window_pieces(
         None => put(0, line.len(), fg, 0, &mut vc),
     }
 }
+
+/// Colored pieces of bytes [b0, b1) of `line` in logical order, for a bidirectional row (see
+/// `TextCtx::draw_cells`). Tabs become spaces: same byte length, so glyph clusters still point at
+/// the right chars, and the row layout gives the tab its cells.
+pub(super) fn plain_pieces(
+    line: &str,
+    spans: Option<&Spans>,
+    b0: usize,
+    b1: usize,
+    fg: Rgba,
+    out: &mut Vec<(String, Rgba, u8)>,
+) {
+    let mut put = |x: usize, y: usize, color: Rgba, flags: u8| {
+        let (x, y) = (x.max(b0), y.min(b1));
+        if x < y && line.is_char_boundary(x) && line.is_char_boundary(y) {
+            out.push((line[x..y].replace('\t', " "), color, flags));
+        }
+    };
+    match spans {
+        Some(sp) => {
+            let mut at = 0;
+            for &(s, e, c, f) in sp.iter() {
+                if s > at {
+                    put(at, s, fg, 0);
+                }
+                put(s, e, c, f);
+                at = at.max(e);
+            }
+            if at < line.len() {
+                put(at, line.len(), fg, 0);
+            }
+        }
+        None => put(0, line.len(), fg, 0),
+    }
+}

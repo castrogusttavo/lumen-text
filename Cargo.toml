@@ -52,6 +52,7 @@ similar = "3.2.1"
 softbuffer = "0.4.8"
 tiny-skia = { version = "0.12.0", default-features = false, features = ["std"] }
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std", "opentype-layout"] }
+unicode-bidi = "0.3.18"
 unicode-width = "0.2.2"
 vte = "0.15.0"
 winit = "0.30.13"

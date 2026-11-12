@@ -165,6 +165,10 @@ impl App {
                 display::set_scrollbar(Scrollbar::from_name(&self.config.scrollbar));
                 display::touch();
             }
+            "bidi_paragraph" => {
+                self.config.bidi_paragraph = crate::bidi::normalize(v.as_str());
+                crate::bidi::set_para(crate::bidi::Para::from_name(&self.config.bidi_paragraph));
+            }
             // Read by the Markdown reader on its next draw.
             "markdown_remote_images" => self.config.markdown_remote_images = b.unwrap_or(true),
             // Read when the app quits / the next backup pass runs, and when a file is opened or closed.

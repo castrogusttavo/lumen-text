@@ -365,6 +365,9 @@ impl Doc {
     pub fn caret_geom(&self, c: usize) -> (usize, usize) {
         let (line, col) = self.buf.line_col(c);
         let text = self.buf.line(line);
+        if let Some((row, c0, b)) = self.bidi_row(line, col, &text) {
+            return (row, b.caret(col.saturating_sub(c0)));
+        }
         if !self.vm_live() {
             return (line, self.inlay.hints.vcol(line, &text, col, self.ed.tab_w, false));
         }
@@ -412,6 +415,35 @@ impl Doc {
     /// Ctrl+Shift+Alt+arrows: grow / shrink the column selection (folded lines are skipped).
     pub fn column_select(&mut self, dl: isize, dc: isize) {
         self.ed.column_select(&self.buf, dl, dc, self.view.folds.hidden_ranges());
+    }
+
+    /// Bidirectional layout of the row that holds char `col` of `line` (`text`), with the row's
+    /// global index and first char. `None` for a line without right-to-left text.
+    pub fn bidi_row(&self, line: usize, col: usize, text: &str) -> Option<(usize, usize, crate::bidi::Row)> {
+        if !crate::bidi::has_rtl(text) {
+            return None;
+        }
+        let len = text.chars().count();
+        let (row, c0, c1) = if !self.vm_live() {
+            (line, 0, len)
+        } else if self.view.cols == 0 {
+            (self.view.map.row_of(line), 0, len)
+        } else {
+            let breaks = self.view.breaks(text);
+            let (sub, _) = locate(&breaks, col);
+            let sub = sub.min(self.view.map.rows_in(line).saturating_sub(1));
+            let (r0, r1) = row_range(&breaks, sub, len);
+            (self.view.map.row_of(line) + sub, r0, r1)
+        };
+        crate::bidi::row(text, c0, c1, self.ed.tab_w, crate::bidi::para()).map(|b| (row, c0, b))
+    }
+
+    /// Direction of the text at the caret position `c` when its line is bidirectional (drawn as a
+    /// flag on the caret), `None` on a plain left-to-right line.
+    pub fn caret_rtl(&self, c: usize) -> Option<bool> {
+        let (line, col) = self.buf.line_col(c);
+        let text = self.buf.line(line);
+        self.bidi_row(line, col, &text).map(|(_, c0, b)| b.caret_rtl(col.saturating_sub(c0)))
     }
 
     /// First and last logical line touched by the viewport (for LSP requests keyed by line).

@@ -178,6 +178,13 @@ pub fn defs() -> Vec<SettingDef> {
             Choice(&["open_files", "project"]),
         ),
         d(
+            "bidi_paragraph",
+            "Editor display",
+            "Right-to-left paragraphs",
+            "Lines with Arabic, Hebrew or Persian text are shown in visual order. Auto gives each line the direction of its first letter (a Hebrew line reads from the right); Ltr keeps every line left to right and only reorders the right-to-left words inside it.",
+            Choice(&["auto", "ltr"]),
+        ),
+        d(
             "build_command",
             "Build",
             "Build command",
@@ -237,6 +244,7 @@ pub fn defaults() -> Value {
         "rulers": "", "inline_diagnostics": "current_line",
         "problems_scope": "open_files",
         "inline_completion": false,
+        "bidi_paragraph": "auto",
     })
 }
 
@@ -259,6 +267,7 @@ pub fn values(c: &Config) -> Value {
         "rulers": crate::assist::rulers_text(&c.rulers), "inline_diagnostics": c.inline_diagnostics,
         "problems_scope": c.problems_scope,
         "inline_completion": c.inline_completion,
+        "bidi_paragraph": c.bidi_paragraph,
     })
 }
 
