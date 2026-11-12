@@ -8,6 +8,9 @@ on:
   push:
     branches: [main]
     paths: ["web/**", ".github/workflows/web.yml", "src/keymap.rs", "src/app_overlay/**", "src/settingsui/**", "src/config.rs"]
+  # Pull requests only build (no deploy), so stale generated docs data or a broken page shows up before the merge.
+  pull_request:
+    paths: ["web/**", ".github/workflows/web.yml", "src/keymap.rs", "src/app_overlay/**", "src/settingsui/**", "src/config.rs", "src/settings_ext.rs"]
   release:
     types: [published]
   workflow_dispatch:
@@ -16,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pages
+  group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.ref) || 'pages' }}
   cancel-in-progress: true
 
 jobs:
@@ -56,6 +59,7 @@ jobs:
 
   deploy:
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pages: write
