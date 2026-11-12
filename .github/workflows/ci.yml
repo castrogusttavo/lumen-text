@@ -404,6 +404,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write # to dispatch the Web workflow after publishing (see the last step)
     env:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
@@ -515,3 +516,9 @@ jobs:
             --target "${GITHUB_SHA}" \
             --title "lumen-text ${VERSION}" \
             --notes-file release-notes.md
+      # A release created with GITHUB_TOKEN does not fire the Web workflow's `release: published`
+      # trigger (GitHub never starts workflows from token-made events), so the site kept showing the
+      # previous version. workflow_dispatch is the one event a token may start: rebuild the site, whose
+      # build reads the latest release.
+      - name: Refresh the website (download page and release notes)
+        run: gh workflow run web.yml --repo "${GITHUB_REPOSITORY}" --ref main
