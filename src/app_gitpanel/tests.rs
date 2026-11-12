@@ -236,7 +236,7 @@ fn staged_plus_modified_in_a_real_repo() {
     assert_eq!(gp.changes.len(), 2);
     assert_eq!(
         gp.rows(),
-        vec![Row::Header(Group::Staged), Row::File(0), Row::Header(Group::Changes), Row::File(1)],
+        vec![Row::Header(Group::Staged), Row::File(0), Row::Header(Group::Changes), Row::File(1), Row::StashHead],
         "one row under each group"
     );
     assert_eq!((gp.changes[0].group, gp.changes[1].group), (Group::Staged, Group::Changes));
