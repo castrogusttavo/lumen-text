@@ -277,6 +277,34 @@ mod imp {
 
 pub use imp::Pty;
 
+/// End the process groups led by `pids` before the app exits: SIGHUP + SIGTERM, a short grace
+/// period, then SIGKILL. Synchronous on purpose: `Drop` only reaps from a detached thread, and on
+/// exit (`process::exit`, or the event loop returning) that thread never gets to send the SIGKILL,
+/// which left a terminal's background jobs (dev servers, `tsc`) running after Lumen closed.
+/// Pass only leaders this process has not reaped yet (their pid stays reserved), so a recycled
+/// pid is never signalled. Signalling a group that is already gone is harmless.
+#[cfg(unix)]
+pub fn kill_groups(pids: &[u32]) {
+    let groups: Vec<i32> = pids.iter().filter_map(|p| i32::try_from(*p).ok()).filter(|p| *p > 1).collect();
+    if groups.is_empty() {
+        return;
+    }
+    for g in &groups {
+        // SAFETY: plain signal calls on groups this process created.
+        unsafe {
+            libc::killpg(*g, libc::SIGHUP);
+            libc::killpg(*g, libc::SIGTERM);
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    for g in &groups {
+        unsafe { libc::killpg(*g, libc::SIGKILL) };
+    }
+}
+
+#[cfg(not(unix))]
+pub fn kill_groups(_pids: &[u32]) {}
+
 /// Longest command line [`Pty::foreground_job`] reports (it ends up in a one-line question).
 #[cfg(unix)]
 const MAX_JOB_NAME: usize = 60;
@@ -430,6 +458,32 @@ mod tests {
         let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
         let gone = unsafe { libc::kill(pid, 0) } != 0 || state.split_whitespace().nth(2) == Some("Z");
         assert!(gone, "the grandchild was signalled with the group");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kill_groups_ends_a_group_that_ignores_hangup_and_term() {
+        // A dev server that traps HUP/TERM (and outlives its shell) must still die when Lumen quits.
+        let dir = std::env::temp_dir().join(format!("lumen-pty-kill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("pid");
+        let script = format!("(trap '' HUP TERM; sleep 30) & echo $! > '{}'; echo started; wait", pidfile.display());
+        let (pty, reader) = Pty::spawn_cmd(&dir, "sh", &["-c", &script], &[], 10, 60).unwrap();
+        let out = read_until(reader, "started");
+        assert!(out.contains("started"), "{out:?}");
+        let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        super::kill_groups(&[pty.pid().unwrap()]);
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // SAFETY: signal 0 only checks that the process exists.
+        while std::time::Instant::now() < end && unsafe { libc::kill(pid, 0) } == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        let gone = unsafe { libc::kill(pid, 0) } != 0 || state.split_whitespace().nth(2) == Some("Z");
+        assert!(gone, "the process that ignores HUP and TERM was killed");
+        drop(pty);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

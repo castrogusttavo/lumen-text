@@ -768,7 +768,7 @@ impl App {
         self.request_redraw();
     }
 
-    fn build_stop_quiet(&mut self) -> bool {
+    pub(crate) fn build_stop_quiet(&mut self) -> bool {
         let Some(mut r) = self.build.proc.take() else { return false };
         tasks::kill_group(r.pid);
         let _ = r.child.wait();

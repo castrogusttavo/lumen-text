@@ -486,10 +486,28 @@ impl App {
         self.save_session();
         self.win_close();
         self.debug_shutdown();
+        // Everything with a process group of its own goes down together, then the handles are reaped.
+        self.kill_terminal_groups();
         self.stop_task();
+        self.build_stop_quiet();
         for l in &mut self.lsps {
             l.shutdown();
         }
         true
+    }
+
+    /// Closing Lumen ends everything its terminals, agent sessions, task and Build & Run job
+    /// started (dev servers, `tsc`, ...), not only their shells: the exit paths skip `Drop`.
+    fn kill_terminal_groups(&mut self) {
+        let pids: Vec<u32> = self
+            .terms
+            .tabs
+            .iter()
+            .filter_map(|t| t.term.live_group())
+            .chain(self.ai.sessions.iter().filter_map(|s| s.term.live_group()))
+            .chain(self.panel.running.as_ref().and_then(|r| u32::try_from(r.pid).ok()))
+            .chain(self.build.proc.as_ref().and_then(|r| u32::try_from(r.pid).ok()))
+            .collect();
+        crate::pty::kill_groups(&pids);
     }
 }

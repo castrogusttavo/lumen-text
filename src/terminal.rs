@@ -1216,6 +1216,12 @@ impl Term {
         self.pty.pid()
     }
 
+    /// The process group to end at exit: only while the program still runs (a finished one may
+    /// have been reaped, and its pid recycled).
+    pub fn live_group(&self) -> Option<u32> {
+        if self.alive { self.pty.pid() } else { None }
+    }
+
     /// End the program (SIGHUP to its process group on Unix); its last screen stays readable.
     pub fn hangup(&mut self) {
         self.pty.hangup();
