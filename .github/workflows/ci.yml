@@ -83,18 +83,21 @@ jobs:
         run: |
           go install github.com/go-delve/delve/cmd/dlv@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      # ghp's module is named `ghp` (not go-installable), so build the CLI from a pinned commit.
-      # Pin: merge commit of GHP PR #80 (`ghp build --debug` + //line directives naming the project pages);
-      - uses: actions/checkout@v7
-        with:
-          repository: GHP-GoLang-Framework/ghp
-          ref: ee88708d58e13bcc05c024a729165e93da3b1627
-          path: ghp-src
-      - name: Build ghp
+      # GHP is a separate project: use its latest released `ghp` (releases are cut on every merge to
+      # its main), checked against the release's checksums.txt. It must already know `ghp build --debug`.
+      - name: Install the released ghp
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          gh release download -R GHP-GoLang-Framework/ghp -D "$d" -p 'ghp_*_linux_amd64.tar.gz' -p checksums.txt
+          (cd "$d" && grep ' ghp_.*_linux_amd64\.tar\.gz$' checksums.txt | sha256sum -c -)
           mkdir -p "$HOME/.local/bin"
-          (cd ghp-src && go build -o "$HOME/.local/bin/ghp" ./src/cmd)
+          tar xzf "$d"/ghp_*_linux_amd64.tar.gz -C "$HOME/.local/bin" ghp
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/ghp" --version
+          "$HOME/.local/bin/ghp" help | grep -q -- '--debug' || { echo "this ghp release has no 'build --debug'" >&2; exit 1; }
       - name: DAP against real dlv (breakpoint hit + variable read, Go and GHP pages)
         run: cargo test --release --locked dap_tests -- --ignored --nocapture --test-threads=1
 
@@ -178,9 +181,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-${{ matrix.arch }}
-          workspaces: |
-            .
-            tools/ghp-lsp
+          workspaces: .
       - name: HugeIcons Pro masks (only when the maintainer's token is available)
         shell: bash
         env:
@@ -204,8 +205,6 @@ jobs:
           got="$(target/release/lumen-text --version)"
           echo "$got"
           [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
-      - name: Build ghp-lsp (GHP language server, shipped next to the editor)
-        uses: ./.github/actions/build-ghp-lsp
       - name: Package (tar.gz, deb, rpm, AppImage)
         shell: bash
         run: |
@@ -222,7 +221,7 @@ jobs:
         if: matrix.arch == 'x86_64'
         run: |
           packaging/arch/build-arch.sh "dist/lumen-text-${VERSION}-linux-x86_64.tar.gz" "$VERSION" dist
-          tar -I zstd -tf dist/*.pkg.tar.zst | grep -q '^usr/bin/ghp-lsp$'
+          tar -I zstd -tf dist/*.pkg.tar.zst | grep -q '^usr/bin/lumen-text$'
       - name: Inspect packages
         run: |
           set -x
@@ -231,13 +230,13 @@ jobs:
           dpkg-deb --contents dist/*.deb | head -30
           # Licensed HugeIcons masks live inside the binary only, never as loose package files.
           ! dpkg-deb --contents dist/*.deb | grep -q hugeicons
-          dpkg-deb --contents dist/*.deb | grep -q '/usr/bin/ghp-lsp$'
-          tar tzf dist/*-linux-*.tar.gz | grep -q '/bin/ghp-lsp$'
+          dpkg-deb --contents dist/*.deb | grep -q '/usr/bin/lumen-text$'
+          tar tzf dist/*-linux-*.tar.gz | grep -q '/bin/lumen-text$'
           ! tar tzf dist/*-linux-*.tar.gz | grep -q hugeicons
           tools/ci-debian.sh debian:bookworm-slim "rpm" bash -c '
             set -ex
             ! rpm -qpl dist/*.rpm | grep -q hugeicons
-            rpm -qpl dist/*.rpm | grep -q "^/usr/bin/ghp-lsp$"
+            rpm -qpl dist/*.rpm | grep -q "^/usr/bin/lumen-text$"
             rpm -qp --info dist/*.rpm
             rpm -qpl dist/*.rpm | head -30
             rpm -qp --requires dist/*.rpm'
@@ -249,7 +248,7 @@ jobs:
           sudo dpkg -i ./dist/lumen-text_*.deb
           lumen-text --version
           test -f /usr/share/lumen-text/assets/language-manifest.json
-          test -x /usr/bin/ghp-lsp
+          test -x /usr/bin/lumen-text
           # Headless render: proves fonts, assets lookup and the CPU renderer work from the installed layout.
           d="$(mktemp -d)"; echo hello > "$d/f.txt"
           HOME="$d" XDG_CONFIG_HOME="$d/c" XDG_STATE_HOME="$d/s" \
@@ -277,9 +276,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-windows
-          workspaces: |
-            .
-            tools/ghp-lsp
+          workspaces: .
       - name: HugeIcons cache key (month, so new upstream icons arrive by themselves)
         id: hi
         shell: bash
@@ -304,8 +301,6 @@ jobs:
           [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
           # The C runtime must be linked in (.cargo/config.toml): a PC without the VC++ Redistributable has no VCRUNTIME140.dll.
           ! grep -qa 'VCRUNTIME140' target/release/lumen-text.exe || { echo "lumen-text.exe imports VCRUNTIME140.dll: crt-static is not in effect" >&2; exit 1; }
-      - name: Build ghp-lsp (GHP language server, shipped next to the editor)
-        uses: ./.github/actions/build-ghp-lsp
       - name: Package (zip)
         run: |
           mkdir -p dist
@@ -316,7 +311,7 @@ jobs:
         run: |
           d="$(mktemp -d)"
           unzip -q dist/lumen-text-*-windows-x86_64.zip -d "$d/pkg"
-          test -f "$d"/pkg/lumen-text-*/ghp-lsp.exe
+          test -f "$d"/pkg/lumen-text-*/lumen-text.exe
           echo hello > "$d/f.txt"
           HOME="$d" timeout 90 "$d"/pkg/lumen-text-*/lumen-text.exe --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"
@@ -354,9 +349,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-macos-${{ matrix.arch }}
-          workspaces: |
-            .
-            tools/ghp-lsp
+          workspaces: .
       - name: HugeIcons cache key (month, so new upstream icons arrive by themselves)
         id: hi
         shell: bash
@@ -381,8 +374,6 @@ jobs:
           got="$(target/release/lumen-text --version)"
           echo "$got"
           [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
-      - name: Build ghp-lsp (GHP language server, shipped next to the editor)
-        uses: ./.github/actions/build-ghp-lsp
       - name: Package (.app in a .dmg, ad-hoc signed)
         shell: bash
         run: |
@@ -398,7 +389,7 @@ jobs:
           app="$mnt/Lumen Text.app/Contents/MacOS/lumen-text"
           ! find "$mnt/Lumen Text.app" -name '*hugeicons*' | grep -q . || { echo "hugeicons leaked into the app" >&2; exit 1; }
           "$app" --version
-          test -x "$mnt/Lumen Text.app/Contents/MacOS/ghp-lsp"
+          test -x "$mnt/Lumen Text.app/Contents/MacOS/lumen-text"
           d="$(mktemp -d)"; echo hello > "$d/f.txt"
           HOME="$d" "$app" --size 600x300 --snap "$d/snap" --keys "wait:200;snap:a" "$d/f.txt"
           test -s "$d/snap/a.png"

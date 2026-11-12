@@ -5,14 +5,15 @@ section: Using Lumen
 order: 4.2
 ---
 
-[GHP](https://github.com/GHP-GoLang-Framework/ghp) is a Go framework whose pages are `.ghp` templates: HTML with `<go:if>`, `<go:for>`, `<go:switch>` tags and Go expressions. Lumen edits them with their own highlighting, a bundled language server (`ghp-lsp`) and a debugger that stops inside the `.ghp` file, not in the generated Go.
+[GHP](https://github.com/GHP-GoLang-Framework/ghp) is a Go framework whose pages are `.ghp` templates: HTML with `<go:if>`, `<go:for>`, `<go:switch>` tags and Go expressions. Lumen edits them with their own highlighting, a language server (`ghp-lsp`) and a debugger that stops inside the `.ghp` file, not in the generated Go.
 
 ## Setup
 
-Lumen ships `ghp-lsp` next to the editor (in `bin/`, next to the `.exe` on Windows, inside the app bundle on macOS). The rest is yours to install; nothing is downloaded or started behind your back.
+GHP is its own project, and so are its tools: Lumen only finds them and talks to them, like any other language server. Install what you need; nothing is downloaded or started behind your back.
 
 | Tool | What for | Install |
 | --- | --- | --- |
+| `ghp-lsp` | the GHP language server | the archive for your OS from [GHP-GoLang-Framework/ghp-lsp](https://github.com/GHP-GoLang-Framework/ghp-lsp/releases); put `ghp-lsp` on `PATH` or in `~/.local/share/lumen-text/lsp/bin` |
 | `ghp` | `ghp build --debug` before a debug session | a release from [GHP-GoLang-Framework/ghp](https://github.com/GHP-GoLang-Framework/ghp/releases) |
 | `dlv` (Delve) | stepping and breakpoints | `go install github.com/go-delve/delve/cmd/dlv@latest` |
 | `gopls` | completion, hover and diagnostics for the Go expressions inside a page | `go install golang.org/x/tools/gopls@latest` |
@@ -69,7 +70,7 @@ For a page that needs arguments, an environment or another binary, create `.lume
 
 | Symptom | What to check |
 | --- | --- |
-| No colours or diagnostics in a `.ghp` file | Open *LSP: Show server log*. `ghp-lsp` must be next to the editor binary or on `PATH`; a build from source needs `cargo install --path tools/ghp-lsp`. |
+| No colours or diagnostics in a `.ghp` file | Open *LSP: Show server log*. `ghp-lsp` must be on `PATH` or in `~/.local/share/lumen-text/lsp/bin` (see the table above). |
 | Go expressions have no completion or errors | `gopls` is not installed or does not find `go.mod`. Install it (table above) and reopen the file. |
 | *ghp not found (install: ...)* in the status bar | `ghp` is not on `PATH`. Install a release and restart Lumen if it was started from the desktop menu. |
 | *dlv not found* | `go install github.com/go-delve/delve/cmd/dlv@latest`; `~/go/bin` is searched. |

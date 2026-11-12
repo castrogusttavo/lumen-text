@@ -31,7 +31,6 @@ sha256sums_aarch64=('SKIP')
 package() {
   cd "$_name-$pkgver-linux-$CARCH"
   install -Dm755 "bin/$_name" "$pkgdir/usr/bin/$_name"
-  [ -f bin/ghp-lsp ] && install -Dm755 bin/ghp-lsp "$pkgdir/usr/bin/ghp-lsp"
   # config::assets_dir() looks at <exe dir>/../share/lumen-text/assets.
   install -dm755 "$pkgdir/usr/share/$_name"
   cp -r "share/$_name/assets" "$pkgdir/usr/share/$_name/assets"

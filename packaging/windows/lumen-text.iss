@@ -57,7 +57,7 @@ OutputDir={#OutDir}
 OutputBaseFilename={#OutName}
 ; Upgrades: ask Windows (Restart Manager) to close a running Lumen, and never restart the PC.
 CloseApplications=yes
-CloseApplicationsFilter=lumen-text.exe,ghp-lsp.exe
+CloseApplicationsFilter=lumen-text.exe
 RestartApplications=no
 ; The PATH and file-association tasks tell Explorer and other programs to re-read their settings.
 ChangesEnvironment=yes

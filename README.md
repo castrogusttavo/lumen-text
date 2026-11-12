@@ -120,7 +120,7 @@ is in the [changelog](https://castrogusttavo.github.io/lumen-text/changelog), an
 - Launch configurations are detected: Go `package main` through delve, TypeScript/JavaScript through js-debug, Rust and C through `gdb` DAP, and `.ghp` projects through the `ghp` adapter. `Debug: Select launch configuration…` (or the toolbar) picks one when several apply
 - Breakpoints follow edits like bookmarks (lines inserted above move them, a running session gets the new lines). Watch values with fields expand into their children. Builds before a session (`ghp build --debug`) run in the background: the toolbar shows *Building…* and a failed build prints its output in the Debug Console
 - `.lumen/launch.json` overrides `program`, `args`, `env`, `cwd` and `adapter` of the Go (delve) and GHP launches per project. GHP debug binaries go to `.lumen/ghp-debug/` (`app.exe` on Windows), which ignores itself in git
-- GHP pages (`.ghp`): highlighting, tag indentation, the bundled `ghp-lsp` language server (Go expressions through `gopls`) and debugging that stops in the page; setup and troubleshooting in the docs page *GHP pages*
+- GHP pages (`.ghp`): highlighting, tag indentation, the `ghp-lsp` language server (installed separately) (Go expressions through `gopls`) and debugging that stops in the page; setup and troubleshooting in the docs page *GHP pages*
 
 **Terminal**
 - Integrated PTY terminal with an xterm-compatible emulator (`vte`): truecolor, bold / dim / italic / underline / strikethrough, wide characters, 5,000-line scrollback, alternate screen (`vim`, `less`), bracketed paste, mouse and focus reporting, synchronized output, OSC titles, hyperlinks (`Ctrl+click`), clipboard and notifications

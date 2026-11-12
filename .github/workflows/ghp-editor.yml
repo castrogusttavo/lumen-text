@@ -2,8 +2,8 @@ name: GHP in the editor
 
 # Lumen's side of GHP support: the `ghp` TextMate grammar, language registration, editing rules and
 # the ghp-lsp wiring (src/lsp_matrix.rs `lsp_ghp`: the editor starts the real server for a broken
-# .ghp and shows its diagnostics). The server is the standalone package in tools/ghp-lsp; until its
-# binary (src/main.rs) is in the tree the end-to-end test skips itself.
+# .ghp and shows its diagnostics). ghp-lsp is its own project (github.com/GHP-GoLang-Framework/ghp-lsp):
+# the test runs against the pinned released binary, like any other language server in the matrix.
 on:
   push:
     branches: [main]
@@ -14,7 +14,6 @@ on:
       - "src/editor.rs"
       - "src/highlight.rs"
       - "src/textmate.rs"
-      - "tools/ghp-lsp/**"
       - ".github/workflows/ghp-editor.yml"
   pull_request:
     paths:
@@ -24,12 +23,13 @@ on:
       - "src/editor.rs"
       - "src/highlight.rs"
       - "src/textmate.rs"
-      - "tools/ghp-lsp/**"
       - ".github/workflows/ghp-editor.yml"
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  # The released ghp-lsp the end-to-end test talks to (bump deliberately).
+  GHP_LSP_VERSION: v0.1.0
 
 concurrency:
   group: ghp-editor-${{ github.ref }}
@@ -45,9 +45,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: |
-            .
-            tools/ghp-lsp
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-go@v5
         with:
@@ -57,17 +54,23 @@ jobs:
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Unit tests (grammar goldens, GHP editing rules, registry)
         run: cargo test --release --locked ghp
-      - name: Build ghp-lsp
-        id: server
+      - name: Install the released ghp-lsp (pinned, checked against SHA256SUMS)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -f tools/ghp-lsp/src/main.rs ]; then
-            cargo build --release --locked --manifest-path tools/ghp-lsp/Cargo.toml
-            echo "$PWD/tools/ghp-lsp/target/release" >> "$GITHUB_PATH"
-            echo "present=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::tools/ghp-lsp has no binary yet: the end-to-end test is skipped"
-          fi
+          set -euo pipefail
+          target=x86_64-unknown-linux-gnu
+          asset="ghp-lsp-${GHP_LSP_VERSION}-${target}.tar.gz"
+          d="$(mktemp -d)"
+          gh release download "$GHP_LSP_VERSION" -R GHP-GoLang-Framework/ghp-lsp -D "$d" -p "$asset" -p SHA256SUMS
+          (cd "$d" && grep " \*\?${asset}\$" SHA256SUMS | sha256sum -c -)
+          mkdir -p "$d/x" "$HOME/.local/share/lumen-text/lsp/bin"
+          tar xzf "$d/$asset" -C "$d/x"
+          bin="$(find "$d/x" -type f -name ghp-lsp | head -n1)"
+          test -n "$bin"
+          install -m755 "$bin" "$HOME/.local/share/lumen-text/lsp/bin/ghp-lsp"
+          echo "$HOME/.local/share/lumen-text/lsp/bin" >> "$GITHUB_PATH"
       - name: Lumen starts ghp-lsp and shows diagnostics for a broken .ghp
         env:
-          LUMEN_REQUIRE_GHP_LSP: ${{ steps.server.outputs.present }}
+          LUMEN_REQUIRE_GHP_LSP: "1"
         run: cargo test --release --locked lsp_ghp -- --ignored --nocapture --test-threads=1

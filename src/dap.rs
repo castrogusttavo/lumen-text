@@ -780,21 +780,12 @@ pub fn parse_breakpoints(body: &Value, requested: &[usize]) -> Vec<BpResult> {
 }
 
 /// Make an adapter-reported source path comparable with the editor's: relative paths are joined
-/// to `root`, `.`/`..` are folded, and a path inside a deleted `ghp-stage-*` build dir (the staged
-/// copy `ghp build` compiles) is mapped back to the same relative path under `root`.
+/// to `root` and `.`/`..` are folded.
 pub fn normalize_source_path(path: &str, root: &Path) -> String {
     use std::path::{Component, PathBuf};
     let mut p = PathBuf::from(path);
     if p.is_relative() {
         p = root.join(p);
-    }
-    if !p.exists() {
-        let s = p.to_string_lossy().replace('\\', "/");
-        if let Some(i) = s.find("/ghp-stage-")
-            && let Some((_, rel)) = s[i + 1..].split_once('/')
-        {
-            p = root.join(rel);
-        }
     }
     let mut out = PathBuf::new();
     for c in p.components() {

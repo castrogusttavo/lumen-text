@@ -559,7 +559,7 @@ pub fn search_dirs(root: &Path) -> Vec<PathBuf> {
         dirs.extend(std::env::split_paths(&p));
     }
     dirs.extend(user_tool_dirs());
-    // Servers shipped next to Lumen (`ghp-lsp` in the release packages: bin/, the zip root, Contents/MacOS).
+    // A server unpacked next to the editor executable (a release archive extracted beside it) is found too.
     dirs.extend(std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)));
     dirs
 }

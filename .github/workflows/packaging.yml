@@ -1,15 +1,13 @@
 name: packaging
 
 # Dry run of the release packaging, on pull requests. The release jobs in ci.yml only run on a push to
-# main, so without this the first release would be the first time the packaging scripts meet ghp-lsp.
-# Here the real ghp-lsp is built for each OS/arch a PR host can run, and the real packaging scripts
-# wrap it; a copy of ghp-lsp stands in for the editor binary (the editor itself is built and
-# smoke-tested by ci.yml). Every package must contain ghp-lsp.
+# main, so without this the first release would be the first time the packaging scripts run.
+# Here the real packaging scripts wrap a tiny stand-in for the editor binary on each OS/arch a PR host
+# can run (the editor itself is built and smoke-tested by ci.yml); the Windows job builds the real exe.
 on:
   pull_request:
     paths:
       - "packaging/**"
-      - "tools/ghp-lsp/**"
       - "src/update.rs"
       - "src/app_update.rs"
       - "src/update_key.pub"
@@ -29,21 +27,15 @@ concurrency:
 
 jobs:
   linux:
-    name: ghp-lsp in the Linux packages (x86_64)
+    name: Linux packages (x86_64)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: tools/ghp-lsp
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: ./.github/actions/build-ghp-lsp
       - name: Package (tar.gz, deb, rpm, AppDir, Arch)
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp "$GHP_LSP_BIN" dist/standin-editor
+          printf 'int main(void){return 0;}' | cc -x c -o dist/standin-editor -
           bin=dist/standin-editor
           packaging/tarball/build-tarball.sh "$bin" "$VERSION" x86_64 dist
           packaging/deb/build-deb.sh "$bin" "$VERSION" x86_64 dist
@@ -51,54 +43,17 @@ jobs:
           # Only the AppDir (appimagetool is a download; the layout is what matters here).
           LUMEN_NO_APPIMAGETOOL=1 packaging/appimage/build-appimage.sh "$bin" "$VERSION" x86_64 dist
           packaging/arch/build-arch.sh "dist/lumen-text-${VERSION}-linux-x86_64.tar.gz" "$VERSION" dist
-      - name: Every package carries ghp-lsp
+      - name: Every package carries the editor
         run: |
           set -euo pipefail
           ls -l dist
-          dpkg-deb --contents dist/*.deb | grep '/usr/bin/ghp-lsp$' >/dev/null
-          tar tzf dist/*-linux-*.tar.gz | grep '/bin/ghp-lsp$' >/dev/null
-          tar -I zstd -tf dist/*.pkg.tar.zst | grep '^usr/bin/ghp-lsp$' >/dev/null
-          test -x dist/AppDir/usr/bin/ghp-lsp
+          dpkg-deb --contents dist/*.deb | grep '/usr/bin/lumen-text$' >/dev/null
+          tar tzf dist/*-linux-*.tar.gz | grep '/bin/lumen-text$' >/dev/null
+          tar -I zstd -tf dist/*.pkg.tar.zst | grep '^usr/bin/lumen-text$' >/dev/null
+          test -x dist/AppDir/usr/bin/lumen-text
           tools/ci-debian.sh debian:bookworm-slim "rpm" bash -c '
             set -ex
-            rpm -qpl dist/*.rpm | grep -q "^/usr/bin/ghp-lsp$"'
-      - name: The packaged copy still speaks LSP (tar.gz layout)
-        run: |
-          set -euo pipefail
-          d="$(mktemp -d)"
-          tar xzf dist/*-linux-*.tar.gz -C "$d"
-          bin="$(echo "$d"/lumen-text-*/bin/ghp-lsp)"
-          msg() { printf 'Content-Length: %d\r\n\r\n%s' "${#1}" "$1"; }
-          out="$({
-            msg '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
-            msg '{"jsonrpc":"2.0","id":2,"method":"shutdown"}'
-            msg '{"jsonrpc":"2.0","method":"exit"}'
-          } | "$bin")" || true
-          echo "$out" | grep '"capabilities"' >/dev/null
-
-  windows:
-    name: ghp-lsp.exe in the Windows zip
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: tools/ghp-lsp
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: ./.github/actions/build-ghp-lsp
-      - name: Package (zip)
-        run: |
-          mkdir -p dist
-          cp "$GHP_LSP_BIN" dist/standin-editor.exe
-          packaging/windows/build-zip.sh dist/standin-editor.exe "$VERSION" x86_64 dist
-          unzip -l dist/*.zip | grep 'ghp-lsp.exe' >/dev/null
-          d="$(mktemp -d)"
-          unzip -q dist/lumen-text-*-windows-x86_64.zip -d "$d/pkg"
-          test -f "$d"/pkg/lumen-text-*/ghp-lsp.exe
+            rpm -qpl dist/*.rpm | grep -q "^/usr/bin/lumen-text$"'
 
   windows-installer:
     name: Windows installer and in-app update (real exe)
@@ -115,9 +70,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: packaging-windows-installer
-          workspaces: |
-            .
-            tools/ghp-lsp
+          workspaces: .
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Git defaults for the tests (no CRLF conversion on Windows)
         run: git config --global core.autocrlf false
@@ -131,7 +84,6 @@ jobs:
           ! grep -qa 'VCRUNTIME140' target/release/lumen-text.exe || { echo "lumen-text.exe imports VCRUNTIME140.dll: crt-static is not in effect" >&2; exit 1; }
       - name: Updater unit tests on Windows
         run: "cargo test --release --locked update::"
-      - uses: ./.github/actions/build-ghp-lsp
       - uses: ./.github/actions/setup-innosetup
       - name: Package (zip and installer)
         run: |
@@ -139,6 +91,7 @@ jobs:
           packaging/windows/build-zip.sh target/release/lumen-text.exe "$E2E_VERSION" x86_64 dist
           packaging/windows/build-setup.sh target/release/lumen-text.exe "$E2E_VERSION" x86_64 dist
           ls -l dist
+          unzip -l dist/*.zip | grep 'lumen-text.exe' >/dev/null
       - name: Installer test (silent install, upgrade, uninstall)
         shell: pwsh
         run: packaging/windows/test-installer.ps1 -Setup "dist/lumen-text-$env:E2E_VERSION-windows-x86_64-setup.exe" -Version "$env:E2E_VERSION" -ExpectVersionOutput "lumen-text $env:E2E_VERSION"
@@ -152,7 +105,7 @@ jobs:
           retention-days: 3
 
   macos:
-    name: ghp-lsp in the macOS app (${{ matrix.arch }})
+    name: macOS app (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -162,22 +115,16 @@ jobs:
           - { arch: x86_64, runner: macos-15-intel }
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: tools/ghp-lsp
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: ./.github/actions/build-ghp-lsp
       - name: Package (.app in a .dmg, ad-hoc signed)
         shell: bash
         run: |
           mkdir -p dist
-          cp "$GHP_LSP_BIN" dist/standin-editor
+          printf 'int main(void){return 0;}' | cc -x c -o dist/standin-editor -
           # The binary must be the architecture of its runner (the app is not universal).
           file dist/standin-editor | grep "${{ matrix.arch == 'aarch64' && 'arm64' || 'x86_64' }}" >/dev/null
           packaging/macos/build-app.sh dist/standin-editor "$VERSION" "${{ matrix.arch }}" dist
           mnt="$(mktemp -d)"
           hdiutil attach dist/*.dmg -mountpoint "$mnt" -nobrowse -quiet
           trap 'hdiutil detach "$mnt" -quiet || true' EXIT
-          test -x "$mnt/Lumen Text.app/Contents/MacOS/ghp-lsp"
+          test -x "$mnt/Lumen Text.app/Contents/MacOS/lumen-text"
           codesign --verify --deep --strict "$mnt/Lumen Text.app"

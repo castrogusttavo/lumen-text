@@ -37,7 +37,7 @@ try {
 
   Write-Host "== silent install"
   Install 1
-  foreach ($f in "lumen-text.exe", "ghp-lsp.exe", "lumen-text.ico", "LICENSE", "unins000.exe", "assets\language-manifest.json") {
+  foreach ($f in "lumen-text.exe", "lumen-text.ico", "LICENSE", "unins000.exe", "assets\language-manifest.json") {
     Assert (Test-Path (Join-Path $dir $f)) "missing $f in the install dir"
   }
   Assert (-not (Test-Path (Join-Path $dir "assets\icons\hugeicons"))) "hugeicons leaked into the installer"
