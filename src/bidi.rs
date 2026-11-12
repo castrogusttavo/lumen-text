@@ -179,6 +179,7 @@ impl Row {
         self.cells.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
