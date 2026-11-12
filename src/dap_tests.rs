@@ -362,6 +362,8 @@ fn breakpoint_specs_threads_tree_watch_and_eval_against_the_fake_adapter() {
     assert!(pump(&mut dap, &mut s, |s| s.state == St::Terminated, 5));
     s.evaluate_repl("a", &mut dap);
     assert!(s.output.last().is_some_and(|l| classify(l).0 == ConsoleKind::Error), "not stopped: no request");
+}
+
 #[test]
 fn parse_breakpoints_pairs_requested_lines_and_flags_unverified() {
     let body = json!({"breakpoints": [
