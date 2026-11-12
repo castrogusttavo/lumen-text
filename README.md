@@ -76,6 +76,9 @@ and no GPU driver:
   dirty one) and prune. The branch chip shows a worktree icon when the project is a linked worktree
 - Stashes in the panel: stash everything or the selected files (Ctrl / Shift + click; untracked files on request), apply, pop, drop, view a stash's files and diff; a stash that conflicts opens the conflicting file. Palette: `Git: Stash…`, `Git: Stash Pop`, `Git: Stashes…`
 - Commit graph in the History tab: coloured lanes of every branch with merge and fork curves, branch / tag / HEAD labels, streamed a page at a time (smooth on 100k-commit repositories); right click a commit to check it out, branch or tag from it, cherry-pick, revert or copy its hash
+- Stage, unstage or revert single lines: select rows in the diff (drag, or `Shift+↓`/`Shift+↑`) and press `s` (or the "Stage lines" button) / `r`; CRLF files and missing final newlines are kept exact
+- Ignore whitespace in diffs (`-w`): header toggle, `w` key or `diff_ignore_whitespace`; staging a hunk or lines still stages their real text
+- Compare with any branch, tag or commit (or a typed ref like `HEAD~3`): "Git: Compare with branch or commit…", "Compare two refs…", "Compare file with…"; the list of changed files opens each one side by side (`]` / `[` next / previous file, `f` the list), and its first entry switches to "since the branches diverged" (merge base, like a pull request; `main...` typed does the same)
 
 **Debugging**
 - Breakpoints in the gutter, step over/into/out, stack, variables and output tab
@@ -274,6 +277,7 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Sidebar / focus explorer | `Ctrl+B` / `Ctrl+Shift+E` |
 | Explorer: new file / folder / rename / delete | `A` / `Shift+A` / `F2` / `Delete` |
 | Git panel | `Ctrl+Shift+G` (in a diff: `n` / `p` pick a hunk, `s` stage) |
+| In a diff | `Shift+↓` / `Shift+↑` or drag: select lines, `s` stage / unstage them (or the hunk), `r` revert them, `w` ignore whitespace, `]` / `[` / `f` next / previous / list of compared files, `Esc` drop the selection, then close |
 | Bottom panel / terminal | `Ctrl+J` / ``Ctrl+` `` |
 | New terminal | ``Ctrl+Shift+` `` (split, rename, next / previous: command palette or the strip's buttons) |
 | AI panel: show / focus / hide | `Ctrl+Shift+A` (back to the editor: click it or `Ctrl+1`) |
@@ -346,6 +350,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `status_items` | `{}` | Map of bottom-bar item id to `true`/`false` (`search`, `problems`, `terminal`, `debug`, `git`, `ram`, `position`, `indent`, `encoding`, `language`) |
 | `status_order` | position, indent, encoding, language, terminal, debug, git, ram | Order of the right-hand bottom-bar items |
 | `status_left_order` | sidebar, search, problems | Order of the left-hand bottom-bar items |
+| `diff_ignore_whitespace` | `false` | Side-by-side diffs ignore whitespace changes (`git diff -w`) in hunks and intraline highlights; also the diff header toggle (`w`) |
 | `git_pull_strategy` | `""` | `"merge"`, `"rebase"` or `"ff-only"`: how Pull integrates remote commits (empty = ask when the branches diverge) |
 | `git_worktree_dir` | `""` | Folder new worktrees go in, one sub-folder per branch (`~` and `{repo}` expanded, relative = to the main worktree); empty = `<repo>/../<repo>-worktrees` |
 | `tab_width` | `4` | Columns a tab character spans (2, 4 or 8); per-file picks live in the session |
@@ -417,6 +422,7 @@ src/
   kittykeys.rs, app_terms.rs  kitty keyboard protocol (flag stack, key encoder); the panel's terminal tabs and split
   git.rs, gitx.rs, gitsync.rs  status, blame, hunks, diff, history, conflicts, fetch/pull/push
   worktree.rs, app_worktree.rs  git worktrees: list, add/remove/prune (on the git worker), open here / in a new window
+  gitpatch.rs, gitcmp.rs   line-level staging patches; compare with any ref (refs, merge base, changed files)
   mdview/, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)
   fstype.rs, poller.rs, app_fswatch.rs  untrusted file systems (statfs), polling fallback, .git watching and refresh on focus
   search.rs, replace.rs     project search (gitignore-aware walk) and the replace engine (captures, line endings, atomic writes)

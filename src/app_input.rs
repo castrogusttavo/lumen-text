@@ -605,6 +605,7 @@ impl App {
         self.sidebar_edge_release();
         self.tab_drag_release();
         self.tree_drag_release();
+        self.diff_release();
         self.dragging_minimap = false;
         if self.regions.drag.take().is_some() {
             self.request_redraw();

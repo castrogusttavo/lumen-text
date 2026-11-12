@@ -23,7 +23,9 @@ pub struct DiffSrc {
     pub hunks: Vec<gitx::Hunk>,
     pub old: String,
     pub new: String,
-    /// Both versions exist (not untracked, added, deleted or unmerged): hunks can be applied.
+    /// Both versions exist (not untracked, added, deleted or unmerged).
+    pub both: bool,
+    /// `both`, and the hunks line up with the blocks: hunks and lines can be applied.
     pub editable: bool,
     /// The other side (staged / not staged) has changes too: a header button flips to it.
     pub can_flip: bool,
@@ -41,6 +43,10 @@ pub enum DiffBtn {
     Reject,
     /// Put a local-history snapshot back (see `app_localhist`).
     Restore,
+    /// Ignore / show whitespace changes.
+    Ws,
+    /// Stage / unstage the selected lines.
+    Lines,
 }
 
 pub struct DiffView {
@@ -62,6 +68,17 @@ pub struct DiffView {
     pub proposal: Option<u64>,
     /// A local-history snapshot against the current text: the header offers Restore.
     pub restore: Option<crate::app_localhist::Restore>,
+    /// The rows ignore whitespace changes (`-w`).
+    pub ws: bool,
+    /// `(old, new)` of a read-only diff, kept so the whitespace toggle can recompute the rows
+    /// (staging diffs keep theirs in `src`). None = rows only (cannot be recomputed).
+    pub texts: Option<Box<(String, String)>>,
+    /// Selected rows `(anchor, head)`, inclusive, for line staging (mouse drag / Shift+arrows).
+    pub sel: Option<(usize, usize)>,
+    /// The mouse is selecting rows.
+    pub drag: bool,
+    /// The comparison this file belongs to (`]` / `[` move between its files).
+    pub nav: Option<crate::app_gitcmp::Nav>,
 }
 
 impl DiffView {
@@ -80,7 +97,60 @@ impl DiffView {
             btns: Vec::new(),
             proposal: None,
             restore: None,
+            ws: false,
+            texts: None,
+            sel: None,
+            drag: false,
+            nav: None,
         }
+    }
+
+    /// A read-only diff of two texts that the whitespace toggle can recompute.
+    pub fn of_texts(title: String, left_name: String, right_name: String, old: String, new: String, ws: bool) -> Self {
+        let mut dv = DiffView::plain(title, left_name, right_name, gitx::side_by_side_ws(&old, &new, ws));
+        dv.ws = ws;
+        dv.texts = Some(Box::new((old, new)));
+        dv
+    }
+
+    /// The whitespace toggle applies (the texts are at hand).
+    pub fn can_ws(&self) -> bool {
+        self.proposal.is_none() && (self.src.is_some() || self.texts.is_some())
+    }
+
+    /// Recompute rows, blocks and hunks with whitespace ignored or not. Drops the selection.
+    pub fn set_ws(&mut self, ws: bool) {
+        if self.ws == ws || !self.can_ws() {
+            return;
+        }
+        self.ws = ws;
+        self.sel = None;
+        if let Some(src) = self.src.as_mut() {
+            self.rows = gitx::side_by_side_ws(&src.old, &src.new, ws);
+            src.hunks = gitx::hunks_ws(&src.old, &src.new, ws);
+            self.blocks = gitx::blocks(&self.rows);
+            src.editable = src.both && src.hunks.len() == self.blocks.len();
+        } else if let Some(t) = self.texts.as_ref() {
+            self.rows = gitx::side_by_side_ws(&t.0, &t.1, ws);
+            self.blocks = gitx::blocks(&self.rows);
+        }
+        self.cur = self.cur.min(self.blocks.len().saturating_sub(1));
+    }
+
+    /// Selected rows as an inclusive range, ordered.
+    pub fn sel_range(&self) -> Option<(usize, usize)> {
+        self.sel.map(|(a, b)| (a.min(b), a.max(b)))
+    }
+
+    /// Number of changed rows in the selection.
+    pub fn sel_changes(&self) -> usize {
+        let Some((lo, hi)) = self.sel_range() else { return 0 };
+        self.rows.iter().take(hi + 1).skip(lo).filter(|r| r.kind != RowKind::Same).count()
+    }
+
+    /// The block containing row `k`.
+    pub fn block_of(&self, k: usize) -> Option<usize> {
+        self.blocks.iter().position(|&(a, b)| (a..b).contains(&k))
     }
 
     /// Height of the header (a proposal's is taller: two lines and the Accept / Reject pills).
@@ -88,23 +158,24 @@ impl DiffView {
         if self.proposal.is_some() { 40 } else { 28 }
     }
 
-    /// The diff of one file on `side` of the index, with hunk staging. None = no differences there.
-    pub fn staging(top: &Path, rel: &str, old_rel: Option<&str>, side: Side, name: &str) -> Option<DiffView> {
+    /// The diff of one file on `side` of the index, with hunk staging. None = no differences
+    /// there (whitespace counts: a file with only whitespace changes opens, `ws` hides them).
+    pub fn staging(top: &Path, rel: &str, old_rel: Option<&str>, side: Side, name: &str, ws: bool) -> Option<DiffView> {
         let (old, new) = gitx::side_texts(top, rel, old_rel, side);
-        let editable = old.is_some() && new.is_some();
+        let both = old.is_some() && new.is_some();
         // Unmerged files have no index version: show HEAD against the file instead.
         let shown_old = match (&old, side) {
             (None, Side::Unstaged) => gitx::side_texts(top, rel, old_rel, Side::Staged).0.unwrap_or_default(),
             _ => old.clone().unwrap_or_default(),
         };
         let (old, new) = (shown_old, new.unwrap_or_default());
-        let rows = gitx::side_by_side(&old, &new);
-        if rows.iter().all(|r| r.kind == RowKind::Same) {
+        if old == new {
             return None;
         }
-        let hunks = gitx::hunks(&old, &new);
+        let rows = gitx::side_by_side_ws(&old, &new, ws);
+        let hunks = gitx::hunks_ws(&old, &new, ws);
         let blocks = gitx::blocks(&rows);
-        let editable = editable && hunks.len() == blocks.len();
+        let editable = both && hunks.len() == blocks.len();
         let (left, right, what) = match side {
             Side::Unstaged => ("Index", "Current", "changes"),
             Side::Staged => ("HEAD", "Index", "staged"),
@@ -117,21 +188,35 @@ impl DiffView {
             hunks,
             old,
             new,
+            both,
             editable,
             can_flip: false,
             name: name.to_string(),
         };
         let mut dv = DiffView::plain(format!("{name} — {what}"), left.into(), right.into(), rows);
         dv.src = Some(src);
+        dv.ws = ws;
         Some(dv)
     }
 
     /// `staging` on `side`, falling back to the other side when this one has nothing; marks
     /// `can_flip` when both have changes.
     pub fn staging_auto(top: &Path, rel: &str, old_rel: Option<&str>, side: Side, name: &str) -> Option<DiffView> {
+        Self::staging_auto_ws(top, rel, old_rel, side, name, false)
+    }
+
+    /// [`DiffView::staging_auto`] with whitespace changes ignored or not.
+    pub fn staging_auto_ws(
+        top: &Path,
+        rel: &str,
+        old_rel: Option<&str>,
+        side: Side,
+        name: &str,
+        ws: bool,
+    ) -> Option<DiffView> {
         let other = if side == Side::Unstaged { Side::Staged } else { Side::Unstaged };
-        let first = Self::staging(top, rel, old_rel, side, name);
-        let second = Self::staging(top, rel, old_rel, other, name);
+        let first = Self::staging(top, rel, old_rel, side, name, ws);
+        let second = Self::staging(top, rel, old_rel, other, name, ws);
         match (first, second) {
             (Some(mut a), Some(_)) => {
                 if let Some(s) = a.src.as_mut() {
@@ -197,24 +282,25 @@ impl App {
         let Some(d) = self.docs.get(self.active) else { return };
         let base = d.git_base.clone().unwrap_or_default();
         let cur = d.buf.to_string();
-        let rows = gitx::side_by_side(&base, &cur);
-        if rows.iter().all(|r| r.kind == RowKind::Same) {
+        if base == cur {
             return self.say("no differences from HEAD");
         }
-        self.diff =
-            Some(DiffView::plain(format!("{} — HEAD vs. current file", d.name), "HEAD".into(), "Current".into(), rows));
+        let title = format!("{} — HEAD vs. current file", d.name);
+        let ws = self.config.diff_ignore_whitespace;
+        self.diff = Some(DiffView::of_texts(title, "HEAD".into(), "Current".into(), base, cur, ws));
     }
 
     pub fn open_diff_commit(&mut self, path: &Path, commit: &str, subject: &str) {
         let old = gitx::parent_file_at(path, commit).unwrap_or_default();
         let new = gitx::file_at(path, commit).unwrap_or_default();
-        let rows = gitx::side_by_side(&old, &new);
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        self.diff = Some(DiffView::plain(
+        self.diff = Some(DiffView::of_texts(
             format!("{name} — {commit}  {subject}"),
             format!("{commit}^"),
             commit.to_string(),
-            rows,
+            old,
+            new,
+            self.config.diff_ignore_whitespace,
         ));
     }
 
@@ -266,10 +352,38 @@ impl App {
                 return true;
             }
         }
-        if matches!(key, Key::Character(c) if c.as_str() == "s") && self.diff.as_ref().is_some_and(|d| d.src.is_some())
-        {
-            let cur = self.diff.as_ref().map_or(0, |d| d.cur);
-            self.diff_toggle_block(cur);
+        self.diff_sync_ws();
+        let staging = self.diff.as_ref().is_some_and(|d| d.src.is_some());
+        let ch = match key {
+            Key::Character(c) => c.as_str(),
+            _ => "",
+        };
+        match ch {
+            "s" if staging => {
+                if self.diff.as_ref().is_some_and(|d| d.sel_changes() > 0) {
+                    self.diff_lines(false);
+                } else {
+                    let cur = self.diff.as_ref().map_or(0, |d| d.cur);
+                    self.diff_toggle_block(cur);
+                }
+                return true;
+            }
+            "r" if staging => {
+                self.diff_lines(true);
+                return true;
+            }
+            "w" => {
+                self.diff_toggle_ws();
+                return true;
+            }
+            "]" | "[" | "f" if self.diff.as_ref().is_some_and(|d| d.nav.is_some()) => {
+                self.cmp_nav_key(ch);
+                return true;
+            }
+            _ => {}
+        }
+        if shift && matches!(key, Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp)) {
+            self.diff_extend_sel(if matches!(key, Key::Named(NamedKey::ArrowDown)) { 1 } else { -1 });
             return true;
         }
         if matches!(key, Key::Character(c) if c.as_str() == "r")
@@ -283,6 +397,8 @@ impl App {
         let page = (area_h / line_h() as i32 - 3).max(1) as f64;
         let max = (dv.rows.len() as f64 - ((area_h - dv.head_h()) / line_h() as i32) as f64).max(0.0);
         match key {
+            // Esc drops the line selection first, then closes.
+            Key::Named(NamedKey::Escape) if dv.sel.is_some() => dv.sel = None,
             Key::Named(NamedKey::Escape) => self.diff = None,
             Key::Character(c) if c.as_str() == "q" => self.diff = None,
             Key::Named(NamedKey::ArrowDown) => dv.scroll = (dv.scroll + 1.0).min(max),
@@ -327,6 +443,8 @@ impl App {
                 .say("hunk-by-hunk only works for files that already exist in HEAD and the index; use the checkbox");
         }
         let Some(h) = src.hunks.get(i).copied() else { return };
+        // Under "ignore whitespace" the hunk's ranges are still real lines: its patch carries
+        // them exactly, and whitespace-only changes elsewhere stay where they are.
         let staging = src.side == Side::Unstaged;
         if let Err(e) = gitx::toggle_hunk(&src.top, &src.rel, src.side, &src.old, &src.new, &h) {
             return self.say(format!("git: {e}"));
@@ -337,14 +455,14 @@ impl App {
     }
 
     /// Re-read the open staging diff after the index changed; `keep` is the block to stay near.
-    fn diff_reload(&mut self, keep: usize) {
+    pub(crate) fn diff_reload(&mut self, keep: usize) {
         let Some(dv) = self.diff.take() else { return };
         let Some(src) = dv.src.as_ref() else {
             self.diff = Some(dv);
             return;
         };
         let (scroll, old_rel) = (dv.scroll, src.old_rel.clone());
-        self.diff = DiffView::staging_auto(&src.top, &src.rel, old_rel.as_deref(), src.side, &src.name);
+        self.diff = DiffView::staging_auto_ws(&src.top, &src.rel, old_rel.as_deref(), src.side, &src.name, dv.ws);
         let area_h = self.diff_area().h;
         match self.diff.as_mut() {
             Some(nd) => {
@@ -361,7 +479,8 @@ impl App {
     pub fn diff_flip(&mut self) {
         let Some(src) = self.diff.as_ref().and_then(|d| d.src.as_ref()) else { return };
         let side = if src.side == Side::Unstaged { Side::Staged } else { Side::Unstaged };
-        if let Some(nd) = DiffView::staging_auto(&src.top, &src.rel, src.old_rel.as_deref(), side, &src.name) {
+        let ws = self.diff.as_ref().is_some_and(|d| d.ws);
+        if let Some(nd) = DiffView::staging_auto_ws(&src.top, &src.rel, src.old_rel.as_deref(), side, &src.name, ws) {
             self.diff = Some(nd);
         }
     }
@@ -387,6 +506,8 @@ impl App {
             DiffBtn::Accept => self.ide_decide(true),
             DiffBtn::Reject => self.ide_decide(false),
             DiffBtn::Restore => self.hist_restore(),
+            DiffBtn::Ws => self.diff_toggle_ws(),
+            DiffBtn::Lines => self.diff_lines(false),
         }
         true
     }
@@ -405,6 +526,7 @@ impl App {
     }
 
     pub fn draw_diff(&mut self, cv: &mut Canvas) {
+        self.diff_sync_ws();
         let editor = self.diff_area();
         let Some(dv) = &self.diff else { return };
         let (rows_total, scroll) = (dv.rows.len(), dv.scroll);
@@ -445,6 +567,30 @@ impl App {
             btns.push((r, DiffBtn::Restore));
             hint_right = r.x - 10;
         }
+        // The whitespace toggle (any diff whose texts are at hand).
+        let Some(dv) = &self.diff else { return };
+        if dv.can_ws() {
+            let on = dv.ws;
+            let label = if editor.w - half >= 560 { "Ignore whitespace" } else { "Ignore ws" };
+            let w = self.tx.ui_width(label, false) + 20 + 16;
+            let r = Rect::new(hint_right - w, editor.y + 3, w, head_h - 6);
+            let hov = r.contains(self.mouse.0, self.mouse.1);
+            if on {
+                cv.fill_round(r, 7, c.accent.with_alpha(if hov { 0x50 } else { 0x38 }));
+            } else {
+                cv.fill_round(r, 7, fg.with_alpha(if hov { 0x1c } else { 0x0c }).over(c.sidebar_bg));
+                cv.ring(r, 7, c.border);
+            }
+            // A small check box: filled when whitespace is ignored.
+            let bx = Rect::new(r.x + 9, r.y + (r.h - 10) / 2, 10, 10);
+            cv.ring(bx, 2, if on { c.accent_text } else { dim });
+            if on {
+                cv.fill_round(Rect::new(bx.x + 2, bx.y + 2, 6, 6), 1, c.accent_text);
+            }
+            self.tx.draw_ui(cv, r.x + 25, r.y + 3, label, if on { c.accent_text } else { fg }, r, false);
+            btns.push((r, DiffBtn::Ws));
+            hint_right = r.x - 10;
+        }
         if proposal {
             let title = dv.title.clone();
             self.draw_proposal_head(cv, Rect::new(editor.x, editor.y, editor.w, head_h), &title, &mut btns);
@@ -467,6 +613,8 @@ impl App {
         let mut lp: Vec<(String, Rgba)> = Vec::new();
         let mut rp: Vec<(String, Rgba)> = Vec::new();
         let cur_block = dv.blocks.get(dv.cur).copied().filter(|_| staging.is_some());
+        let sel = dv.sel_range();
+        let sel_bg = self.theme.selection;
         for (k, row) in dv.rows.iter().enumerate().skip(first).take(n) {
             let y = lr.y + (k - first) as i32 * lh - off;
             if cur_block.is_some_and(|(a, b)| k >= a && k < b) {
@@ -484,10 +632,15 @@ impl App {
             if let Some(b) = rbg {
                 cv.fill_clip(Rect::new(rr.x, y, rr.w, lh), b, rr);
             }
+            // Selected rows (line staging): both panes, over the change colours.
+            if sel.is_some_and(|(a, b)| (a..=b).contains(&k)) {
+                cv.fill_clip(Rect::new(lr.x + 3, y, lr.w - 3, lh), sel_bg, lr);
+                cv.fill_clip(Rect::new(rr.x, y, rr.w, lh), sel_bg, rr);
+            }
             if row.kind == RowKind::Changed
                 && let (Some((_, l)), Some((_, r))) = (&row.left, &row.right)
             {
-                let (lrg, rrg) = gitx::changed_ranges(l, r);
+                let (lrg, rrg) = gitx::changed_ranges_ws(l, r, dv.ws);
                 // Ranges are in characters; tabs expand to the configured width on screen.
                 let tab = self.config.tab_width;
                 for (a, b) in lrg {
@@ -532,8 +685,34 @@ impl App {
                 (false, false) => "Unstage",
             };
             let bw = self.tx.ui_width(label, false) + 20;
+            // With changed lines selected, their button sits on the first selected row instead.
+            let lines_at = sel.filter(|_| dv.sel_changes() > 0).map(|(a, _)| a);
+            if let Some(a) = lines_at.filter(|&a| (first..first + n).contains(&a)) {
+                let label = if side == Side::Unstaged { "Stage lines" } else { "Unstage lines" };
+                let w = self.tx.ui_width(label, false) + 20;
+                let y = lr.y + (a - first) as i32 * lh - off;
+                let r = Rect::new(rr.right() - 22 - w, y + 1, w, lh - 2);
+                let hov = editable && r.contains(self.mouse.0, self.mouse.1);
+                let fill = if editable {
+                    c.accent.with_alpha(if hov { 0xe0 } else { 0xc0 })
+                } else {
+                    c.accent.with_alpha(0x30)
+                };
+                cv.fill_round_clip(r, 6, fill.over(c.sidebar_bg), rr);
+                self.tx.draw_ui_sized(
+                    cv,
+                    r.x + 10,
+                    r.y + 1,
+                    label,
+                    if editable { c.on_accent } else { dim },
+                    r,
+                    false,
+                    12.0,
+                );
+                btns.push((r, DiffBtn::Lines));
+            }
             for (i, &(a, _)) in dv.blocks.iter().enumerate() {
-                if a < first || a >= first + n {
+                if a < first || a >= first + n || lines_at == Some(a) {
                     continue;
                 }
                 let y = lr.y + (a - first) as i32 * lh - off;
@@ -588,13 +767,22 @@ impl App {
         let c = self.theme.chrome;
         let half = editor.w / 2;
         let left = format!("{}   ·   {}", dv.left_name, dv.title);
-        let narrow = hint_right - editor.x - half < 330;
-        let hint = match (staging, narrow) {
-            (true, false) => format!("{}   ·   Esc closes · n/p block · s stage", dv.right_name),
-            (true, true) => format!("{}  ·  n/p · s", dv.right_name),
+        let room = hint_right - editor.x - half;
+        let files =
+            dv.nav.as_ref().map(|n| format!("  ·  file {}/{}", n.at + 1, n.cmp.files.len())).unwrap_or_default();
+        let hint = match (staging, room) {
+            (true, r) if r >= 560 => {
+                format!("{}   ·   Esc closes · n/p block · s stage · Shift+↓ or drag: lines · r revert", dv.right_name)
+            }
+            (true, r) if r >= 330 => format!("{}   ·   Esc closes · n/p block · s stage", dv.right_name),
+            (true, _) => format!("{}  ·  n/p · s", dv.right_name),
+            (false, r) if dv.nav.is_some() && r >= 420 => {
+                format!("{}{files}   ·   ] [ next/prev file · f files · n block", dv.right_name)
+            }
             (false, _) if dv.restore.is_some() => {
                 format!("{}   ·   Esc closes · n next block · r restore", dv.right_name)
             }
+            (false, _) if dv.nav.is_some() => format!("{}{files}  ·  ] [ · f", dv.right_name),
             (false, _) => format!("{}   ·   Esc closes · n next block", dv.right_name),
         };
         let fg = self.theme.foreground;

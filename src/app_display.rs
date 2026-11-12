@@ -176,6 +176,8 @@ impl App {
             "insert_final_newline" => self.config.insert_final_newline = b.unwrap_or(false),
             // Read when a session next finishes or asks.
             "ai_notifications" => self.config.ai_notifications = b.unwrap_or(true),
+            // An open diff follows on its next draw (`diff_sync_ws`).
+            "diff_ignore_whitespace" => self.config.diff_ignore_whitespace = b.unwrap_or(false),
             "build_command" | "run_command" => {
                 let cmd = v.as_str().unwrap_or("").trim().to_string();
                 if key == "build_command" {
