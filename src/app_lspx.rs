@@ -48,8 +48,8 @@ pub struct Plan {
 
 #[derive(Default)]
 pub struct LspX {
-    /// The `language_servers` value the registry was built from (`None`: not built yet).
-    src: Option<Value>,
+    /// The `language_servers` value and `spell_check` setting the registry was built from (`None`: not built yet).
+    src: Option<(Value, bool)>,
     pub reg: Registry,
     pub health: HashMap<(String, PathBuf), Health>,
     plans: RefCell<HashMap<(PathBuf, Option<&'static str>), Rc<Plan>>>,
@@ -120,12 +120,13 @@ impl App {
 
     /// Rebuild the registry when `language_servers` changed in the configuration.
     pub(crate) fn lspx_sync_config(&mut self) {
-        if self.lspx.src.as_ref() == Some(&self.config.language_servers) {
+        let spell = self.config.spell_check;
+        if self.lspx.src.as_ref().is_some_and(|(v, s)| *s == spell && *v == self.config.language_servers) {
             return;
         }
         let first = self.lspx.src.is_none();
-        let reg = Registry::with_user(&self.config.language_servers);
-        self.lspx.src = Some(self.config.language_servers.clone());
+        let reg = Registry::with_options(&self.config.language_servers, spell);
+        self.lspx.src = Some((self.config.language_servers.clone(), spell));
         self.lspx.plans.borrow_mut().clear();
         if !reg.errors.is_empty() {
             let n = reg.errors.len();
@@ -781,7 +782,11 @@ impl App {
         let cs: Vec<usize> =
             self.lspx_open_companions(i).into_iter().filter(|&c| self.lsps[c].has_cap("codeActionProvider")).collect();
         for &c in &cs {
-            self.lsps[c].request("textDocument/codeAction", real_params(params, &real), Pending::CodeActions);
+            let mut p = real_params(params, &real);
+            if let Some(id) = self.lsps[c].generic.as_ref().map(|g| g.id.clone()) {
+                self.docs[i].with_diag_data(&id, &mut p["context"]["diagnostics"]);
+            }
+            self.lsps[c].request("textDocument/codeAction", p, Pending::CodeActions);
         }
         cs.len()
     }

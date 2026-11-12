@@ -42,7 +42,8 @@ Use `--release`: debug builds of the tokenizer and renderer are far too slow for
 Kotlin, TypeScript, JavaScript, CSS/SCSS/Less, HTML, JSON, YAML, TOML, Python, Go, Rust, Ruby, PHP, Lua, Zig, Bash,
 Markdown, Dockerfile) through the real servers and checks that each starts and answers with diagnostics, hover and
 completion. It needs the servers installed, so it is `#[ignore]`d in the normal run; CI runs it in the job
-"Language servers".
+"Language servers". `lsp_matrix_spell` does the same for the spell checkers (harper-ls, typos-lsp): each must flag a
+misspelled word as info and offer its fixes in the code-action menu (`LUMEN_LSP_ONLY=spell` runs only those).
 
 ```sh
 tools/install-lsp-servers.sh                  # pinned servers into ~/.local/share/lumen-text/lsp (Linux)

@@ -109,6 +109,9 @@ pub struct Doc {
     diags_eslint: Vec<Diag>,
     /// Diagnostics of the registry servers, by server id (merged and deduplicated into `diags`).
     diags_ext: Vec<(String, Vec<Diag>)>,
+    /// Raw diagnostics of registry servers that carry a `data` field, by server id: a code-action
+    /// request hands them back verbatim (typos-lsp builds its fixes from `data.corrections`).
+    diag_data: Vec<(String, Vec<serde_json::Value>)>,
     pub eslint_due: Option<Instant>,
     /// Test outcomes from the last run: (0-based line, passed). Drawn in the gutter.
     pub test_marks: Vec<(usize, Option<bool>)>,
@@ -176,6 +179,8 @@ pub struct Doc {
     pub blame: Option<(usize, String)>,
     /// Side-by-side Markdown reader (None = closed, costs nothing).
     pub md: Option<Box<crate::app_md::MdState>>,
+    /// Image tab (PNG, JPEG, GIF, WebP, SVG): the picture shown instead of the text (see `imgview`).
+    pub img: Option<Box<crate::imgview::ImgView>>,
     /// LSP inlay hints for the lines around the viewport (empty = no cost anywhere).
     pub inlay: crate::inlay::InlayState,
     /// Pinned tab (drawn first, kept by "Close all").
@@ -244,6 +249,7 @@ impl Doc {
             diags_lint: Vec::new(),
             diags_eslint: Vec::new(),
             diags_ext: Vec::new(),
+            diag_data: Vec::new(),
             eslint_due: None,
             test_marks: Vec::new(),
             sel_stack: Vec::new(),
@@ -295,6 +301,7 @@ impl Doc {
             snippet: None,
             blame: None,
             md: None,
+            img: None,
             inlay: Default::default(),
             pinned: false,
             fileconf: Default::default(),
@@ -393,7 +400,17 @@ impl Doc {
     /// [`reload_from_disk`](Self::reload_from_disk) decoding the file as `enc` (`None` = detect).
     pub fn reload_as(&mut self, enc: Option<crate::encoding::TextEncoding>) -> std::io::Result<()> {
         let Some(path) = self.path().map(Path::to_path_buf) else { return Ok(()) };
-        let fresh = Buffer::open_as(&path, enc)?;
+        if let Some(v) = self.img.as_mut() {
+            v.reload();
+            if v.kind == crate::imgview::Kind::Raster {
+                // No text to reload: the picture is decoded again on the next frame.
+                self.disk_mtime = self.stat_mtime();
+                self.conflict = false;
+                return Ok(());
+            }
+        }
+        let mut fresh = Buffer::open_as(&path, enc)?;
+        fresh.read_only = self.buf.read_only; // an SVG tab showing its picture stays read-only
         let sel = self.ed.sel;
         self.buf = fresh;
         let len = self.buf.len_chars();
@@ -447,6 +464,31 @@ impl Doc {
             None => self.diags_ext.push((server.to_string(), v)),
         }
         self.rebuild_diags();
+    }
+
+    /// Remember the raw diagnostics of `server` that carry `data` (empty: forget them).
+    pub fn set_diag_data(&mut self, server: &str, v: Vec<serde_json::Value>) {
+        let at = self.diag_data.iter().position(|(n, _)| n == server);
+        match (at, v.is_empty()) {
+            (Some(i), true) => {
+                self.diag_data.remove(i);
+            }
+            (Some(i), false) => self.diag_data[i].1 = v,
+            (None, true) => {}
+            (None, false) => self.diag_data.push((server.to_string(), v)),
+        }
+    }
+
+    /// Swap the entries of a code-action `context.diagnostics` list that `server` published with a
+    /// `data` field for its raw originals (same range and message), so the server gets its data back.
+    pub fn with_diag_data(&self, server: &str, list: &mut serde_json::Value) {
+        let Some((_, raw)) = self.diag_data.iter().find(|(n, _)| n == server) else { return };
+        let Some(items) = list.as_array_mut() else { return };
+        for it in items.iter_mut() {
+            if let Some(r) = raw.iter().find(|r| r["range"] == it["range"] && r["message"] == it["message"]) {
+                *it = r.clone();
+            }
+        }
     }
 
     /// Does the document hold diagnostics of `server` (see [`Doc::set_ext_diags`])?

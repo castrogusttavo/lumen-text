@@ -420,6 +420,101 @@ fn lsp_matrix() {
     assert!(failed.is_empty(), "failing languages: {failed:?}");
 }
 
+/// The spell checkers (companions, off unless `spell_check` is on): each one, alone, must start
+/// for a plain-text file and a Markdown file, flag the misspelled words as "info" (never an error)
+/// and put its fixes in the `Ctrl+.` menu ("receive" for "recieve"; harper-ls also offers to add
+/// the word to a dictionary, a bare LSP `Command`).
+#[test]
+#[ignore = "needs real language servers installed"]
+fn lsp_matrix_spell() {
+    let _g = lock();
+    let only: Option<Vec<String>> =
+        std::env::var("LUMEN_LSP_ONLY").ok().map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+    let base = std::env::temp_dir().join(format!("lumen-lsp-spell-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let prose = "We will recieve the seperate files tomorow.\n";
+    let files = [("notes.txt", prose.to_string()), ("README.md", format!("# Notes\n\n{prose}"))];
+    let mut table = Vec::new();
+    let mut failed = Vec::new();
+    for &id in crate::lspreg::SPELL_SERVERS {
+        if only.as_ref().is_some_and(|o| !o.iter().any(|n| n == id || n == "spell")) {
+            continue;
+        }
+        for (name, text) in &files {
+            let dir = base.join(format!("{id}-{}", name.replace('.', "-")));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(name), text).unwrap();
+            let dir = crate::paths::canonical(&dir).unwrap();
+            let mut app = test_app(&dir);
+            app.config.spell_check = true;
+            // One spell checker at a time, and no Markdown primary: what is seen is this server's.
+            let other: Vec<&str> = crate::lspreg::SPELL_SERVERS.iter().copied().filter(|s| *s != id).collect();
+            let mut ls = serde_json::json!({"marksman": {"enabled": false}});
+            for o in other {
+                ls[o] = serde_json::json!({"enabled": false});
+            }
+            app.config.language_servers = ls;
+            let t0 = Instant::now();
+            let mut note = String::new();
+            let Some(i) = app.open_path(&dir.join(name), None) else {
+                failed.push(format!("{id} {name}: could not open"));
+                continue;
+            };
+            app.active = i;
+            let started = pump(&mut app, 30_000, |a| a.lsps.iter().any(|l| l.name == id && l.ready));
+            let diags = started && pump(&mut app, 30_000, |a| a.docs[i].has_ext_diags(id));
+            let ms = t0.elapsed().as_millis();
+            let flagged: Vec<String> = app.docs[i]
+                .diags
+                .iter()
+                .map(|d| {
+                    let (l, c0, c1) = (d.sl, d.sc, d.ec);
+                    let word: String = app.docs[i].buf.line(l).chars().skip(c0).take(c1.saturating_sub(c0)).collect();
+                    if d.severity != 3 {
+                        note = format!("severity {} for {word}", d.severity);
+                    }
+                    word
+                })
+                .collect();
+            // Fixes for the first misspelled word.
+            let mut labels: Vec<String> = Vec::new();
+            if diags {
+                let text = app.docs[i].buf.to_string();
+                let at = text[..text.find("recieve").unwrap()].chars().count() + 2;
+                let d = &mut app.docs[i];
+                d.ed.click(&mut d.buf, at, false);
+                app.overlay = crate::app_overlay::Overlay::None;
+                app.code_actions();
+                pump(&mut app, 15_000, |a| matches!(a.overlay, crate::app_overlay::Overlay::Picker(_)));
+                if let crate::app_overlay::Overlay::Picker(p) = &app.overlay {
+                    labels = p.items.iter().map(|it| it.label.clone()).collect();
+                }
+            }
+            stop(&mut app);
+            let fix = labels.iter().any(|l| l.contains("receive"));
+            let dict = id != "harper-ls" || labels.iter().any(|l| l.to_lowercase().contains("dictionary"));
+            let ok = started && flagged.iter().any(|w| w == "recieve") && note.is_empty() && fix && dict;
+            let line = format!(
+                "{id:<10} {name:<10} start {:<3} flagged {:<28} fixes {:<3} {:>6} ms  {}{}",
+                if started { "yes" } else { "NO" },
+                flagged.join(","),
+                labels.len(),
+                ms,
+                labels.iter().take(4).cloned().collect::<Vec<_>>().join(" | "),
+                if note.is_empty() { String::new() } else { format!("  [{note}]") },
+            );
+            eprintln!("{line}");
+            table.push(line);
+            if !ok {
+                failed.push(format!("{id} {name}"));
+            }
+        }
+    }
+    eprintln!("\n===== LSP spell matrix =====\n{}\n", table.join("\n"));
+    let _ = std::fs::remove_dir_all(&base);
+    assert!(failed.is_empty(), "failing spell checks: {failed:?}");
+}
+
 /// Open real files (`LUMEN_LSP_FILES=a:b:c`), each in an `App` rooted at its project, and report
 /// what the servers say. Never fails: it is a survey for false positives on real code.
 #[test]

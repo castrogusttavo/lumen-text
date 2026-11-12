@@ -604,6 +604,9 @@ pub fn language_for(path: &str) -> Option<&'static str> {
         "justfile" | ".justfile" => Some("just"),
         ".bashrc" | ".bash_profile" | ".zshrc" | ".zprofile" | ".profile" | "pkgbuild" => Some("shellscript"),
         ".env" => Some("dotenv"),
+        // Messages git asks the editor to write (`git commit`, `git merge`, `git tag -a`, `git rebase -i`).
+        "commit_editmsg" | "merge_msg" | "tag_editmsg" | "squash_msg" => Some("git-commit"),
+        "git-rebase-todo" => Some("git-rebase"),
         "go.mod" | "go.sum" | "go.work" => None,
         _ if lower.starts_with("dockerfile.") || lower.ends_with(".dockerfile") => Some("docker"),
         _ if lower.starts_with(".env.") => Some("dotenv"),

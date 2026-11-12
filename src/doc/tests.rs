@@ -95,3 +95,24 @@ fn sticky_band_snaps_to_the_row_grid_at_rest() {
     // While the text glides the band keeps its size.
     assert_eq!(sticky_band_h(2, lh, 9, false), 44);
 }
+
+#[test]
+fn code_actions_get_back_the_data_a_server_attached_to_its_diagnostics() {
+    let mut d = Doc::new(Buffer::from_str("we recieve it\n"), None, None, "//", 8.0);
+    let range = serde_json::json!({"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 10}});
+    let raw = serde_json::json!({"range": range, "message": "`recieve` should be `receive`", "severity": 3,
+        "data": {"corrections": ["receive"], "typo": "recieve"}});
+    d.set_diag_data("typos-lsp", vec![raw.clone()]);
+    let plain = serde_json::json!({"range": range, "message": "`recieve` should be `receive`", "severity": 3});
+    let other = serde_json::json!({"range": range, "message": "something else", "severity": 1});
+    let mut list = serde_json::json!([plain.clone(), other.clone()]);
+    d.with_diag_data("typos-lsp", &mut list);
+    assert_eq!(list, serde_json::json!([raw, other]), "only the matching entry is swapped");
+    let mut list = serde_json::json!([plain.clone()]);
+    d.with_diag_data("harper-ls", &mut list);
+    assert_eq!(list, serde_json::json!([plain.clone()]), "another server's data is never handed out");
+    d.set_diag_data("typos-lsp", Vec::new());
+    let mut list = serde_json::json!([plain.clone()]);
+    d.with_diag_data("typos-lsp", &mut list);
+    assert_eq!(list, serde_json::json!([plain]), "forgotten");
+}

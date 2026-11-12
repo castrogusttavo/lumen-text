@@ -78,6 +78,30 @@ pub(crate) fn parse_edits(v: &Value) -> Vec<LspEdit> {
     v.as_array().map(|a| a.iter().filter_map(parse_edit).collect()).unwrap_or_default()
 }
 
+/// One entry of a `textDocument/codeAction` answer as a menu item. A `CodeAction` with an edit
+/// applies it; one with only `data` / a `command` is resolved or executed when chosen; a bare
+/// `Command` (harper-ls: "Add … to the user dictionary") is executed when chosen. `server` names the
+/// registry server that answered, so the right one gets the follow-up request.
+fn code_action_item(a: &Value, server: Option<&str>) -> Option<Item> {
+    let title = a["title"].as_str()?;
+    let lazy = |mut a: Value| {
+        if let Some(n) = server {
+            a["__server"] = json!(n);
+        }
+        Action::WorkspaceEdit(json!({"__resolve": a}))
+    };
+    let action = if a["edit"].is_object() {
+        Action::WorkspaceEdit(a["edit"].clone())
+    } else if a["command"].is_string() {
+        lazy(json!({"title": title, "command": a}))
+    } else if a["data"].is_object() || a["command"].is_object() {
+        lazy(a.clone())
+    } else {
+        return None;
+    };
+    Some(Item { label: title.to_string(), detail: a["kind"].as_str().unwrap_or("").to_string(), action })
+}
+
 impl App {
     // ───────────── lifecycle ─────────────
 
@@ -930,6 +954,13 @@ impl App {
         let Some(i) = self.doc_by_uri(uri) else { return };
         let d = &mut self.docs[i];
         let mut out = Vec::new();
+        // Spelling is never an error: whatever a spell checker says shows as "info" (dotted underline).
+        let spell = crate::lspreg::is_spell_server(source);
+        if lint == Some(false) {
+            let with_data =
+                items.as_array().into_iter().flatten().filter(|it| !it["data"].is_null()).cloned().collect();
+            d.set_diag_data(source, with_data);
+        }
         for it in items.as_array().into_iter().flatten() {
             let r = &it["range"];
             let (Some(sl), Some(sc), Some(el), Some(ec)) = (
@@ -954,7 +985,7 @@ impl App {
                 sc: c0,
                 el: l1,
                 ec: c1,
-                severity: it["severity"].as_u64().unwrap_or(1) as u8,
+                severity: if spell { 3 } else { it["severity"].as_u64().unwrap_or(1) as u8 },
                 message: it["message"].as_str().unwrap_or("").to_string(),
                 code,
                 source: if source.is_empty() {
@@ -1425,23 +1456,7 @@ impl App {
 
     fn on_code_actions(&mut self, li: usize, v: &Value) {
         let server = self.lsps.get(li).filter(|l| l.is_generic()).map(|l| l.name.clone());
-        let mut items = Vec::new();
-        for a in v.as_array().into_iter().flatten() {
-            let Some(title) = a["title"].as_str() else { continue };
-            let action = if a["edit"].is_object() {
-                Action::WorkspaceEdit(a["edit"].clone())
-            } else if a["data"].is_object() || a["command"].is_object() {
-                // Resolved lazily when chosen.
-                let mut a = a.clone();
-                if let Some(n) = &server {
-                    a["__server"] = json!(n);
-                }
-                Action::WorkspaceEdit(json!({"__resolve": a}))
-            } else {
-                continue;
-            };
-            items.push(Item { label: title.to_string(), detail: a["kind"].as_str().unwrap_or("").to_string(), action });
-        }
+        let items = v.as_array().into_iter().flatten().filter_map(|a| code_action_item(a, server.as_deref())).collect();
         self.actions_response(items);
     }
 
@@ -2132,6 +2147,36 @@ impl App {
 #[cfg(test)]
 mod lang_tests {
     use super::*;
+
+    #[test]
+    fn code_actions_with_edits_commands_and_bare_commands_all_reach_the_menu() {
+        let resolve = |it: &Item| match &it.action {
+            Action::WorkspaceEdit(v) => v["__resolve"].clone(),
+            _ => Value::Null,
+        };
+        // typos-lsp / harper-ls: "Replace with" carries its edit (applied directly).
+        let fix = json!({"title": "Replace with: receive", "kind": "quickfix", "edit": {"changes": {}},
+            "command": {"title": "Record lint statistic", "command": "HarperRecordLint"}});
+        let it = code_action_item(&fix, Some("harper-ls")).unwrap();
+        assert_eq!((it.label.as_str(), it.detail.as_str()), ("Replace with: receive", "quickfix"));
+        assert!(matches!(&it.action, Action::WorkspaceEdit(v) if v.get("changes").is_some()));
+        // harper-ls: "Add to the user dictionary" is a bare Command, executed on the server that sent it.
+        let add = json!({"title": "Add \"recieve\" to the user dictionary.", "command": "HarperAddToUserDict",
+            "arguments": ["recieve", "file:///x/a.md"]});
+        let it = code_action_item(&add, Some("harper-ls")).unwrap();
+        let r = resolve(&it);
+        assert_eq!(r["command"]["command"], json!("HarperAddToUserDict"));
+        assert_eq!(r["command"]["arguments"], json!(["recieve", "file:///x/a.md"]));
+        assert_eq!(r["__server"], json!("harper-ls"));
+        // typos-lsp: a CodeAction that only has a command object.
+        let ignore = json!({"title": "Ignore `recieve` in the project", "command": {"command": "ignore-in-project",
+            "arguments": [{"typo": "recieve"}]}});
+        let r = resolve(&code_action_item(&ignore, Some("typos-lsp")).unwrap());
+        assert_eq!(r["command"]["command"], json!("ignore-in-project"));
+        // Nothing to do, or no title: not listed.
+        assert!(code_action_item(&json!({"title": "noop"}), None).is_none());
+        assert!(code_action_item(&json!({"command": "X"}), None).is_none());
+    }
 
     #[test]
     fn language_ids_follow_the_document_language() {

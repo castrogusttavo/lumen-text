@@ -125,6 +125,7 @@ impl App {
             // Ctrl+Shift+V is also "paste" outside Markdown files: let it through.
             let paste = cmd == Some(crate::app_overlay::Cmd::MarkdownPreview)
                 && !self.active_is_markdown()
+                && !self.active_is_svg()
                 && ctrl
                 && shift
                 && !alt;
@@ -154,6 +155,11 @@ impl App {
             return r;
         }
 
+        // A tab showing a picture: arrows pan, + / - zoom, nothing edits its (hidden) text.
+        if self.focus == Focus::Editor && self.img_key(ev) {
+            self.request_redraw();
+            return false;
+        }
         if self.completion_key(&key) {
             self.request_redraw();
             return false;

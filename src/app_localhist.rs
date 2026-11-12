@@ -44,6 +44,9 @@ impl App {
     /// Snapshot document `i`'s text in the background (after a save, before a reload or a restore).
     pub fn hist_snapshot(&self, i: usize, source: Source) {
         let (Some(store), Some(d)) = (self.hist_store(), self.docs.get(i)) else { return };
+        if d.img.as_ref().is_some_and(|v| v.kind == crate::imgview::Kind::Raster) {
+            return; // a picture has no text to keep
+        }
         if let Some(p) = d.path() {
             localhist::record_buf(&store, p, &d.buf, source);
         }

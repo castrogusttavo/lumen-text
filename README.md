@@ -74,6 +74,7 @@ and no GPU driver:
   handed to pyright/basedpyright (`python.pythonPath`, `venvPath` + `venv`) and activated for ruff (a ruff or basedpyright
   installed in the venv is preferred); *Python: Select interpreter…* pins another one per project; the language item's tooltip
   shows the active interpreter
+- Spell checking (opt-in, `spell_check`): [harper-ls](https://github.com/Automattic/harper) (spelling and grammar in comments, strings, Markdown, plain text and commit messages) and [typos-lsp](https://github.com/tekumara/typos-lsp) run as companions when installed; their slips get a dotted info underline (never an error) and `Ctrl+.` offers the fixes and *add to dictionary*
 - Vitest/Jest runs with pass/fail marks in the gutter, `package.json` and `cargo` tasks with an ANSI output panel
 
 **Git**
@@ -116,6 +117,11 @@ and no GPU driver:
 
 **Markdown preview**
 - Side-by-side reader (`Ctrl+Shift+V`) with live updates, scroll sync in both directions, highlighted code blocks, clickable links
+
+**Images**
+- PNG, JPEG, GIF, WebP (animated GIF / WebP play when small enough, otherwise the first frame) and SVG open as a picture in their tab, with the decoders of the Markdown preview (no webview): checkerboard behind transparency, fit to the pane by default, `Ctrl+wheel` (around the pointer) / `Ctrl+=` / `Ctrl+-` / `Ctrl+0` (fit, then 100%) to zoom, drag / wheel / arrows to pan; the status bar shows size, file size and zoom
+- SVG: a *Preview | Source* switch (top right, or `Ctrl+Shift+V`); the source is the normal editor and the preview follows unsaved edits
+- Big pictures are decoded once and kept downscaled (at most 8 megapixels); the pixels go with the tab. Works in split panes and comes back with the session
 
 **Split panes**
 - Up to six panes (a row of four, or a grid up to 3x2), moveable tabs, per-pane focus shortcuts, saved with the session; the Markdown reader and the diff open inside the focused pane
@@ -299,7 +305,7 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Debug: start / stop / breakpoint | `F5` / `Shift+F5` / `F9` (or click the gutter) |
 | Bookmark: toggle / next / previous | `Ctrl+F2` / `Ctrl+Alt+F2` / `Ctrl+Alt+Shift+F2` |
 | Debug: step over / into / out | `F10` / `F11` / `Shift+F11` |
-| Zoom in / out / reset | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` (or `Ctrl+wheel`) |
+| Zoom in / out / reset | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` (or `Ctrl+wheel`; on an image tab: the picture) |
 | Navigate back / forward | `Alt+Left` / `Alt+Right` (or the mouse back / forward buttons) |
 | Zen mode | `Ctrl+K Z` (leave: `Esc Esc` or `Ctrl+K Z`) |
 | Next occurrence / all occurrences | `Ctrl+D` / `Ctrl+Shift+L` |
@@ -310,7 +316,7 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Fold / unfold | `Ctrl+Shift+[` / `Ctrl+Shift+]` |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) |
 | Snippet expand / next field | `Tab` after the prefix (`fn`, `clg`, `it`, `desc`, `us`, `rfc`...) / `Tab` |
-| Markdown reader | `Ctrl+Shift+V` |
+| Markdown reader (on an SVG: preview / source) | `Ctrl+Shift+V` |
 | Split right / below | `Ctrl+\` / `Ctrl+K \` |
 | Focus pane 1..4 | `Ctrl+1`..`Ctrl+4`; `Ctrl+K Left/Right` previous/next pane |
 | Move tab to another pane / close pane | `Ctrl+K Shift+Left/Right` / `Ctrl+K Shift+W` |
@@ -342,6 +348,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `enable_lsp` | `true` | Master switch for every language server |
 | `render_whitespace` | `"none"` | Draw spaces as dots and tabs as arrows: `"none"`, `"boundary"` (all but single spaces between words), `"trailing"` or `"all"`; theme key `editorWhitespace.foreground` |
 | `trim_trailing_whitespace` / `insert_final_newline` | `false` / `false` | On save: strip spaces and tabs at line ends (never in Markdown, where two spaces are a line break, unless `.editorconfig` says so) / end the file with a line break. A file's `.editorconfig` overrides both |
+| `spell_check` | `false` | Spell checking through the companion servers harper-ls and typos-lsp (they start only when installed; a server's own `language_servers.<id>.enabled` wins) |
 | `ui_scale` | `0` | `0` = automatic from the window scale factor, else up to 4 |
 | `format_on_save` | `false` | Run the formatter on save |
 | `hot_exit` | `true` | Quitting keeps every unsaved buffer (untitled ones too) under `$XDG_STATE_HOME/lumen-text/backups/<project>/` and reopens them, unsaved, with the session; dirty buffers are also backed up ~2 s after the last edit (at most every 10 s while typing) for crashes. A backup goes away when its buffer is saved or closed without saving. `false` asks before quitting, as before |
@@ -481,6 +488,7 @@ src/
   worktree.rs, app_worktree.rs  git worktrees: list, add/remove/prune (on the git worker), open here / in a new window
   gitpatch.rs, gitcmp.rs   line-level staging patches; compare with any ref (refs, merge base, changed files)
   mdview/, mdimg.rs, hover_md.rs  Markdown reader and rich hover (pulldown-cmark)
+  imgview.rs, app_img.rs   image tabs (picture, zoom / pan, SVG preview / source)
   fstype.rs, poller.rs, app_fswatch.rs  untrusted file systems (statfs), polling fallback, .git watching and refresh on focus
   search.rs, replace.rs     project search (gitignore-aware walk) and the replace engine (captures, line endings, atomic writes)
   macros.rs                keyboard macros (record, replay as one undo step, macros.json)
@@ -492,7 +500,7 @@ packaging/  tarball, deb, rpm, Arch, AppImage, Flatpak scripts
 ```
 
 Dependencies are deliberately few and compiled with minimal features (`encoding_rs` only for legacy encodings, `image-webp`, `png`, `zune-jpeg`
-and `gif` only for Markdown images). The binary is a single executable plus the `assets` directory.
+and `gif` only for Markdown images and image tabs). The binary is a single executable plus the `assets` directory.
 
 ## Performance notes
 
