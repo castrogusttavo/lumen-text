@@ -302,6 +302,8 @@ jobs:
           got="$(target/release/lumen-text.exe --version)"
           echo "$got"
           [ "$got" = "lumen-text ${VERSION}" ] || { echo "version stamp mismatch" >&2; exit 1; }
+          # The C runtime must be linked in (.cargo/config.toml): a PC without the VC++ Redistributable has no VCRUNTIME140.dll.
+          ! grep -qa 'VCRUNTIME140' target/release/lumen-text.exe || { echo "lumen-text.exe imports VCRUNTIME140.dll: crt-static is not in effect" >&2; exit 1; }
       - name: Build ghp-lsp (GHP language server, shipped next to the editor)
         uses: ./.github/actions/build-ghp-lsp
       - name: Package (zip)
