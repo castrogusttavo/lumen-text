@@ -10,7 +10,7 @@
 <body>
     <go:if user.Admin/>
         <p><go= user.Greeting() /></p>
-    <go:elif len(items) > 2/>
+    <go:elif (len(items) > 2)/>
         <p>many</p>
     <go:else/>
         <p>plain</p>
