@@ -1443,7 +1443,7 @@ impl App {
 
     fn debug_var_rows(&self) -> Vec<RowSpec> {
         let c = self.theme.chrome;
-        let (fg, dim) = (self.theme.foreground, c.tab_inactive_fg);
+        let dim = c.tab_inactive_fg;
         let Some(s) = self.dbg.as_ref().and_then(Debugger::session) else {
             return vec![RowSpec::text(vec![("Variables appear when the program stops.".into(), dim)])];
         };

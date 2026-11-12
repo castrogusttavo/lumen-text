@@ -52,9 +52,9 @@ jobs:
         run: |
           set -euo pipefail
           ls -l dist
-          dpkg-deb --contents dist/*.deb | grep -q '/usr/bin/ghp-lsp$'
-          tar tzf dist/*-linux-*.tar.gz | grep -q '/bin/ghp-lsp$'
-          tar -I zstd -tf dist/*.pkg.tar.zst | grep -q '^usr/bin/ghp-lsp$'
+          dpkg-deb --contents dist/*.deb | grep '/usr/bin/ghp-lsp$' >/dev/null
+          tar tzf dist/*-linux-*.tar.gz | grep '/bin/ghp-lsp$' >/dev/null
+          tar -I zstd -tf dist/*.pkg.tar.zst | grep '^usr/bin/ghp-lsp$' >/dev/null
           test -x dist/AppDir/usr/bin/ghp-lsp
           tools/ci-debian.sh debian:bookworm-slim "rpm" bash -c '
             set -ex
@@ -71,7 +71,7 @@ jobs:
             msg '{"jsonrpc":"2.0","id":2,"method":"shutdown"}'
             msg '{"jsonrpc":"2.0","method":"exit"}'
           } | "$bin")" || true
-          echo "$out" | grep -q '"capabilities"'
+          echo "$out" | grep '"capabilities"' >/dev/null
 
   windows:
     name: ghp-lsp.exe in the Windows zip
@@ -92,7 +92,7 @@ jobs:
           mkdir -p dist
           cp "$GHP_LSP_BIN" dist/standin-editor.exe
           packaging/windows/build-zip.sh dist/standin-editor.exe "$VERSION" x86_64 dist
-          unzip -l dist/*.zip | grep -q 'ghp-lsp.exe'
+          unzip -l dist/*.zip | grep 'ghp-lsp.exe' >/dev/null
           d="$(mktemp -d)"
           unzip -q dist/lumen-text-*-windows-x86_64.zip -d "$d/pkg"
           test -f "$d"/pkg/lumen-text-*/ghp-lsp.exe
@@ -120,7 +120,7 @@ jobs:
           mkdir -p dist
           cp "$GHP_LSP_BIN" dist/standin-editor
           # The binary must be the architecture of its runner (the app is not universal).
-          file dist/standin-editor | grep -q "${{ matrix.arch == 'aarch64' && 'arm64' || 'x86_64' }}"
+          file dist/standin-editor | grep "${{ matrix.arch == 'aarch64' && 'arm64' || 'x86_64' }}" >/dev/null
           packaging/macos/build-app.sh dist/standin-editor "$VERSION" "${{ matrix.arch }}" dist
           mnt="$(mktemp -d)"
           hdiutil attach dist/*.dmg -mountpoint "$mnt" -nobrowse -quiet

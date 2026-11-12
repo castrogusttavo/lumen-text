@@ -30,5 +30,5 @@ runs:
           msg '{"jsonrpc":"2.0","id":2,"method":"shutdown"}'
           msg '{"jsonrpc":"2.0","method":"exit"}'
         } | "$bin")" || true
-        echo "$out" | grep -q '"capabilities"' || { echo "ghp-lsp did not answer initialize: $out" >&2; exit 1; }
+        echo "$out" | grep '"capabilities"' >/dev/null || { echo "ghp-lsp did not answer initialize: $out" >&2; exit 1; }
         echo "GHP_LSP_BIN=$bin" >> "$GITHUB_ENV"
