@@ -117,6 +117,7 @@ impl Lanes {
     }
 
     /// Columns currently in use (tests, diagnostics).
+    #[cfg(test)]
     pub fn active(&self) -> usize {
         self.lanes.iter().filter(|l| l.is_some()).count()
     }
@@ -238,7 +239,7 @@ pub fn parse_decorations(d: &str) -> Vec<Chip> {
         };
         v.push(chip);
     }
-    v.sort_by(|a, b| a.kind.cmp(&b.kind));
+    v.sort_by_key(|c| c.kind);
     v
 }
 
