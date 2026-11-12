@@ -616,7 +616,7 @@ impl Config {
             inline_diagnostics: crate::assist::InlineDiags::from_name(v["inline_diagnostics"].as_str().unwrap_or(""))
                 .name()
                 .to_string(),
-            view: ViewPrefs::from_json(&v),
+            view: ViewPrefs::from_json(v),
         }
     }
 
