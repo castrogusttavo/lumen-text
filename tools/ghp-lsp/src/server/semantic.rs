@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use super::docs::Doc;
 use crate::ast::{Node, Span};
+use crate::line_index::Position;
 
 pub const TYPES: &[&str] = &["keyword", "operator", "string", "namespace"];
 const KEYWORD: u32 = 0;
@@ -44,7 +45,10 @@ fn collect(doc: &Doc) -> Vec<(Span, u32)> {
     toks
 }
 
-pub fn full(doc: &Doc) -> Value {
+/// The LSP token array (`[deltaLine, deltaStart, length, type, modifiers, ...]`) of the whole
+/// document, or of the tokens that start inside `range` (`(start, end)` positions, end exclusive).
+/// Deltas are always relative to the start of the document, as the protocol wants.
+pub fn data(doc: &Doc, range: Option<(Position, Position)>) -> Vec<u32> {
     let mut data: Vec<u32> = Vec::new();
     let (mut pl, mut pc) = (0u32, 0u32);
     for (span, ty) in collect(doc) {
@@ -53,12 +57,39 @@ pub fn full(doc: &Doc) -> Value {
         if a.line != b.line || b.character <= a.character {
             continue;
         }
+        if let Some((from, to)) = range
+            && (a < from || a >= to)
+        {
+            continue;
+        }
         let dl = a.line - pl;
         let dc = if dl == 0 { a.character - pc } else { a.character };
         data.extend([dl, dc, b.character - a.character, ty, 0]);
         (pl, pc) = (a.line, a.character);
     }
-    json!({"data": data})
+    data
+}
+
+pub fn full(doc: &Doc) -> Value {
+    json!({"data": data(doc, None)})
+}
+
+/// `textDocument/semanticTokens/range`.
+pub fn range(doc: &Doc, from: Position, to: Position) -> Value {
+    json!({"data": data(doc, Some((from, to)))})
+}
+
+/// The single edit that turns `old` into `new` (common prefix and suffix kept), as the
+/// `edits` of a `textDocument/semanticTokens/full/delta` result. Empty when nothing changed.
+pub fn delta(old: &[u32], new: &[u32]) -> Vec<Value> {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let max_suffix = old.len().min(new.len()) - prefix;
+    let suffix = old.iter().rev().zip(new.iter().rev()).take(max_suffix).take_while(|(a, b)| a == b).count();
+    let (del, ins) = (&old[prefix..old.len() - suffix], &new[prefix..new.len() - suffix]);
+    if del.is_empty() && ins.is_empty() {
+        return Vec::new();
+    }
+    vec![json!({"start": prefix, "deleteCount": del.len(), "data": ins})]
 }
 
 #[cfg(test)]
@@ -96,6 +127,40 @@ mod tests {
     fn utf16_columns() {
         let t = tokens("😀<go:if a/>");
         assert_eq!(t[0], [0, 2, 6, 0, 0]);
+    }
+
+    fn apply(old: &[u32], edits: &[Value]) -> Vec<u32> {
+        let mut out = old.to_vec();
+        for e in edits.iter().rev() {
+            let (s, d) = (e["start"].as_u64().unwrap() as usize, e["deleteCount"].as_u64().unwrap() as usize);
+            let ins: Vec<u32> = e["data"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+            out.splice(s..s + d, ins);
+        }
+        out
+    }
+
+    #[test]
+    fn range_keeps_document_relative_deltas() {
+        let d = Doc::new(1, "<go:if a/>\n<go:endif/>\n<go:for x/>\n<go:endfor/>".into());
+        let p = |line, character| Position { line, character };
+        let all = data(&d, None);
+        let tail = data(&d, Some((p(2, 0), p(4, 0))));
+        // The `for` tokens start on line 2: the first delta is relative to the document start.
+        assert_eq!(&tail[..5], &[2, 0, 7, 0, 0]);
+        assert!(tail.len() < all.len());
+        assert_eq!(data(&d, Some((p(0, 0), p(9, 0)))), all);
+        assert!(data(&d, Some((p(8, 0), p(9, 0)))).is_empty());
+    }
+
+    #[test]
+    fn delta_edits_reproduce_the_new_tokens() {
+        let old = data(&Doc::new(1, "<go:if a/>\n<go:endif/>".into()), None);
+        for text in ["<go:if a/>\n<go:endif/>", "x\n<go:if a/>\n<go:endif/>", "<go:for a/>\n<go:endfor/>", ""] {
+            let new = data(&Doc::new(2, text.into()), None);
+            let edits = delta(&old, &new);
+            assert_eq!(apply(&old, &edits), new, "{text:?}");
+            assert_eq!(edits.is_empty(), old == new);
+        }
     }
 
     #[test]

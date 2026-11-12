@@ -420,7 +420,34 @@ fn lsp_matrix() {
     assert!(failed.is_empty(), "failing languages: {failed:?}");
 }
 
-/// GHP templates (`.ghp`): Lumen starts `ghp-lsp` for a broken template and shows its diagnostics.
+/// Completion at char offset `at` of document `i`, the way the editor asks for it (`trigger` is the
+/// typed trigger character, if any). Returns the labels of the list that came back.
+fn complete_at(app: &mut App, i: usize, at: usize, trigger: Option<char>, wait_ms: u64) -> Vec<String> {
+    app.completion = None;
+    let d = &mut app.docs[i];
+    d.ed.click(&mut d.buf, at, false);
+    app.request_completion(trigger);
+    pump(app, wait_ms, |a| a.completion.as_ref().is_some_and(|c| !c.items.is_empty()));
+    app.completion.as_ref().map(|c| c.items.iter().map(|it| it.label.clone()).collect()).unwrap_or_default()
+}
+
+/// Ask for completion at `at` until `want` is among the labels (gopls needs a while to load the
+/// module; until then `ghp-lsp` answers from the page's own scope analysis).
+fn complete_until(app: &mut App, i: usize, at: usize, trigger: Option<char>, want: &str) -> Vec<String> {
+    let end = Instant::now() + Duration::from_secs(90);
+    loop {
+        let got = complete_at(app, i, at, trigger, 4000);
+        if got.iter().any(|l| l == want) || Instant::now() >= end {
+            return got;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// GHP templates (`.ghp`): Lumen starts `ghp-lsp` for a template with a Go module around it, shows
+/// its diagnostics, and gets hover and completion for the Go expressions through the real client:
+/// scope-based names right away, then gopls' members (`user.` -> `Name`, `Admin`) and package-level
+/// names (`Current`), also inside an empty `<go= />`.
 /// Skips (passes) while `ghp-lsp` is not installed, unless `LUMEN_REQUIRE_GHP_LSP` is set (CI does
 /// once the server is in the tree). Build it with `cargo build --release --manifest-path tools/ghp-lsp/Cargo.toml`
 /// and put `tools/ghp-lsp/target/release` on PATH.
@@ -441,18 +468,39 @@ fn lsp_ghp() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("pages")).unwrap();
     std::fs::write(dir.join("go.mod"), "module demo\n\ngo 1.22\n").unwrap();
-    // `<go:if>` is never closed: the server must say so.
-    let page = "<!doctype html>\n<html>\n<body>\n    <go:if user.Admin/>\n        <p>admin</p>\n</body>\n</html>\n";
+    // The Go the page talks to: a sibling `.go` file names the package of the page's Go code.
+    std::fs::write(
+        dir.join("pages/models.go"),
+        "package pages\n\ntype User struct {\n\tName  string\n\tAdmin bool\n}\n\nfunc Current() User { return User{Name: \"Ada\", Admin: true} }\n",
+    )
+    .unwrap();
+    // `<go:if>` is never closed: the server must say so. `<go= />` is empty on purpose.
+    let page = "<!doctype html>\n<html>\n<body>\n    <go user := Current() />\n    <p><go= user.Name /></p>\n    <p><go= /></p>\n    <go:if user.Admin/>\n        <p>admin</p>\n</body>\n</html>\n";
     std::fs::write(dir.join("pages/home.ghp"), page).unwrap();
     let dir = crate::paths::canonical(&dir).unwrap();
     let mut app = test_app(&dir);
-    let o = exercise(&mut app, &dir.join("pages/home.ghp"), Some("user.Admin"), true, 60);
-    stop(&mut app);
+    let o = exercise(&mut app, &dir.join("pages/home.ghp"), Some("user.Name"), true, 60);
     eprintln!("\n===== GHP =====\n{}\n", row("ghp", &o));
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(o.started, "ghp-lsp did not start: {}", o.note);
     assert_eq!(o.server, "ghp-lsp");
     assert!(!o.diags.is_empty(), "no diagnostics for an unclosed <go:if>");
+    assert!(o.hover, "no hover on a Go expression");
+    assert!(o.completion, "no completion at `us|er.Name`");
+
+    let i = app.active;
+    let text = app.docs[i].buf.to_string();
+    let char_at = |needle: &str, delta: usize| text[..text.find(needle).unwrap()].chars().count() + delta;
+
+    // Right after the dot, only gopls knows the members of `user`.
+    let members = complete_until(&mut app, i, char_at("user.Name", 5), Some('.'), "Admin");
+    // The cursor inside the empty `<go= />` is a Go position: gopls offers the package-level names
+    // (`Current`, from the sibling file) next to the local `user`.
+    let in_empty = complete_until(&mut app, i, char_at("<go= /></p>", 5), None, "Current");
+    stop(&mut app);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(members.iter().any(|l| l == "Name") && members.iter().any(|l| l == "Admin"), "members: {members:?}");
+    assert!(in_empty.iter().any(|l| l == "Current"), "package-level names in `<go= />`: {in_empty:?}");
+    assert!(in_empty.iter().any(|l| l == "user"), "local names in `<go= />`: {in_empty:?}");
 }
 
 /// The spell checkers (companions, off unless `spell_check` is on): each one, alone, must start

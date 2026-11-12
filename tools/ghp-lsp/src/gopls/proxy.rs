@@ -15,7 +15,7 @@
 use super::sourcemap::{Position, Range, TextIndex};
 use super::virtual_doc::{ExprRegion, Options, VirtualDoc, build};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -23,6 +23,19 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// `Mutex::lock` that ignores poisoning. A handler that panicked (the server catches that and
+/// answers with an error) must not turn every later request into a panic of its own: the data
+/// behind these locks is plain bookkeeping that stays consistent between statements.
+pub trait LockExt<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockExt<T> for Mutex<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
 
 // ---------------------------------------------------------------------------------------------
 // JSON-RPC framing
@@ -167,6 +180,11 @@ pub struct Config {
     pub package: Option<String>,
     /// Never look for or start gopls (the host falls back to its own scope analysis).
     pub disabled: bool,
+    /// Start (and restart) gopls on a background thread. The call that needs it returns at once
+    /// with "unavailable" (so the host answers from its own scope analysis) until gopls has
+    /// initialized; [`Event::Started`] / [`Event::Restarted`] and the first diagnostics follow.
+    /// With `false` the call that needs gopls waits for it, which suits tests and simple hosts.
+    pub background_start: bool,
 }
 
 impl Default for Config {
@@ -178,6 +196,7 @@ impl Default for Config {
             restart_window: Duration::from_secs(60),
             package: None,
             disabled: false,
+            background_start: false,
         }
     }
 }
@@ -229,6 +248,9 @@ pub enum Event {
     Crashed(PathBuf),
     /// gopls was restarted after a crash.
     Restarted(PathBuf),
+    /// The first gopls of this module root finished starting in the background
+    /// ([`Config::background_start`]); its open documents were handed over.
+    Started(PathBuf),
 }
 
 /// A gopls diagnostic translated into `.ghp` coordinates.
@@ -323,7 +345,7 @@ impl Server {
                 dispatch(&msg, &stdin, &pending, &shared, &events);
             }
             alive.store(false, Ordering::SeqCst);
-            pending.lock().unwrap().clear(); // drops senders: waiting requests see `Crashed`
+            pending.lock_ok().clear(); // drops senders: waiting requests see `Crashed`
             let _ = events.send(Event::Crashed(root_for_thread));
         });
 
@@ -352,7 +374,7 @@ impl Server {
     }
 
     fn send(&self, v: &Value) -> Result<(), ProxyError> {
-        let mut g = self.stdin.lock().unwrap();
+        let mut g = self.stdin.lock_ok();
         write_message(&mut *g, v).map_err(|e| ProxyError::Io(e.to_string()))
     }
 
@@ -363,7 +385,7 @@ impl Server {
     /// Bring this process up to date with `snap`: `didOpen` the first time, afterwards a single
     /// incremental `didChange` (nothing at all when the text is unchanged).
     fn sync_doc(&self, snap: &Snapshot) -> Result<(), ProxyError> {
-        let mut synced = self.synced.lock().unwrap();
+        let mut synced = self.synced.lock_ok();
         match synced.get(&snap.uri) {
             None => self.notify(
                 "textDocument/didOpen",
@@ -396,13 +418,13 @@ impl Server {
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        self.pending.lock_ok().insert(id, tx);
         if !self.alive.load(Ordering::SeqCst) {
-            self.pending.lock().unwrap().remove(&id);
+            self.pending.lock_ok().remove(&id);
             return Err(ProxyError::Crashed);
         }
         if let Err(e) = self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})) {
-            self.pending.lock().unwrap().remove(&id);
+            self.pending.lock_ok().remove(&id);
             return Err(e);
         }
         let started = Instant::now();
@@ -410,7 +432,7 @@ impl Server {
             let cancelled = cancel.is_cancelled();
             let elapsed = started.elapsed();
             if cancelled || elapsed >= timeout {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending.lock_ok().remove(&id);
                 let _ = self.notify("$/cancelRequest", json!({"id": id}));
                 return Err(if cancelled { ProxyError::Cancelled } else { ProxyError::Timeout });
             }
@@ -450,20 +472,20 @@ fn dispatch(
                 Value::Null
             };
             let reply = json!({"jsonrpc": "2.0", "id": id, "result": result});
-            let _ = write_message(&mut *stdin.lock().unwrap(), &reply);
+            let _ = write_message(&mut *stdin.lock_ok(), &reply);
         }
         (Some("textDocument/publishDiagnostics"), None) => {
             let uri = msg["params"]["uri"].as_str().unwrap_or_default().to_string();
             let list = msg["params"]["diagnostics"].as_array().cloned().unwrap_or_default();
-            shared.diags.lock().unwrap().insert(normalize_uri(&uri), list);
-            let ghp = shared.docs.lock().unwrap().iter().find(|(_, d)| uri_eq(&d.go_uri, &uri)).map(|(p, _)| p.clone());
+            shared.diags.lock_ok().insert(normalize_uri(&uri), list);
+            let ghp = shared.docs.lock_ok().iter().find(|(_, d)| uri_eq(&d.go_uri, &uri)).map(|(p, _)| p.clone());
             if let Some(p) = ghp {
                 let _ = events.send(Event::Diagnostics(p));
             }
         }
         (None, Some(id)) => {
             if let Some(id) = id.as_i64()
-                && let Some(tx) = pending.lock().unwrap().remove(&id)
+                && let Some(tx) = pending.lock_ok().remove(&id)
             {
                 let _ = tx.send(msg.clone());
             }
@@ -534,6 +556,8 @@ fn detect_package(dir: &Path) -> Option<String> {
 #[derive(Default)]
 struct Supervision {
     servers: HashMap<PathBuf, Arc<Server>>,
+    /// Module roots whose gopls is being started on a background thread.
+    starting: HashSet<PathBuf>,
     restarts: HashMap<PathBuf, Vec<Instant>>,
     gave_up: Vec<PathBuf>,
     notified_missing: bool,
@@ -545,7 +569,7 @@ pub struct Bridge {
     bin: Option<PathBuf>,
     shared: Arc<Shared>,
     events: Sender<Event>,
-    sup: Mutex<Supervision>,
+    sup: Arc<Mutex<Supervision>>,
 }
 
 impl Bridge {
@@ -560,7 +584,7 @@ impl Bridge {
                 bin,
                 shared: Arc::new(Shared::default()),
                 events: tx,
-                sup: Mutex::new(Supervision::default()),
+                sup: Arc::new(Mutex::new(Supervision::default())),
             },
             rx,
         )
@@ -573,7 +597,7 @@ impl Bridge {
     /// The server for `root`, starting or restarting it as needed. `None` = unavailable.
     fn server(&self, root: &Path) -> Option<Arc<Server>> {
         let Some(bin) = self.bin.as_ref() else {
-            let mut sup = self.sup.lock().unwrap();
+            let mut sup = self.sup.lock_ok();
             if !sup.notified_missing && !self.cfg.disabled {
                 sup.notified_missing = true;
                 let _ = self.events.send(Event::Status(
@@ -584,9 +608,9 @@ impl Bridge {
             }
             return None;
         };
-        let mut guard = self.sup.lock().unwrap();
+        let mut guard = self.sup.lock_ok();
         let sup = &mut *guard;
-        if sup.gave_up.iter().any(|r| r == root) {
+        if sup.gave_up.iter().any(|r| r == root) || sup.starting.contains(root) {
             return None;
         }
         let was_running = if let Some(s) = sup.servers.get(root) {
@@ -613,12 +637,18 @@ impl Bridge {
             }
             hist.push(now);
         }
+        if self.cfg.background_start {
+            sup.starting.insert(root.to_path_buf());
+            drop(guard);
+            self.start_in_background(bin.clone(), root.to_path_buf(), was_running);
+            return None;
+        }
         match Server::spawn(bin, root, self.shared.clone(), self.events.clone(), self.cfg.request_timeout) {
             Ok(s) => {
                 sup.servers.insert(root.to_path_buf(), s.clone());
                 drop(guard);
                 if was_running {
-                    self.replay(root, &s);
+                    replay(&self.shared, root, &s);
                     let _ = self.events.send(Event::Restarted(root.to_path_buf()));
                 }
                 Some(s)
@@ -631,15 +661,37 @@ impl Bridge {
         }
     }
 
-    /// Re-open every document of `root` on a fresh server.
-    fn replay(&self, root: &Path, s: &Server) {
-        let snaps: Vec<Snapshot> = {
-            let docs = self.shared.docs.lock().unwrap();
-            docs.values().filter(|d| d.root == root).map(Doc::snapshot).collect()
-        };
-        for snap in &snaps {
-            let _ = s.sync_doc(snap);
-        }
+    /// Spawn gopls for `root` off the caller's thread, then hand it every open document.
+    ///
+    /// The documents are synced twice, around publishing the server: edits that arrive while the
+    /// first pass runs find no server yet (and are skipped), the second pass picks them up.
+    fn start_in_background(&self, bin: PathBuf, root: PathBuf, restart: bool) {
+        let (shared, events, sup) = (self.shared.clone(), self.events.clone(), self.sup.clone());
+        let timeout = self.cfg.request_timeout;
+        std::thread::spawn(move || match Server::spawn(&bin, &root, shared.clone(), events.clone(), timeout) {
+            Ok(s) => {
+                replay(&shared, &root, &s);
+                {
+                    let mut sup = sup.lock_ok();
+                    sup.starting.remove(&root);
+                    sup.servers.insert(root.clone(), s.clone());
+                }
+                replay(&shared, &root, &s);
+                let _ = events.send(if restart { Event::Restarted(root) } else { Event::Started(root) });
+            }
+            Err(e) => {
+                let mut sup = sup.lock_ok();
+                sup.starting.remove(&root);
+                sup.gave_up.push(root);
+                let _ = events.send(Event::Status(format!("could not start gopls: {e}")));
+            }
+        });
+    }
+
+    /// Whether the gopls of `ghp_path`'s module is still starting in the background.
+    pub fn is_starting(&self, ghp_path: &Path) -> bool {
+        let root = module_root(ghp_path.parent().unwrap_or(Path::new(".")));
+        self.sup.lock_ok().starting.contains(&root)
     }
 
     // ---- document lifecycle ------------------------------------------------------------------
@@ -655,7 +707,7 @@ impl Bridge {
         let go_uri = path_to_uri(&PathBuf::from(format!("{}.go", ghp_path.display())));
 
         let snap = {
-            let mut docs = self.shared.docs.lock().unwrap();
+            let mut docs = self.shared.docs.lock_ok();
             let d = docs.entry(ghp_path.to_path_buf()).or_insert_with(|| Doc {
                 root: root.clone(),
                 go_uri: go_uri.clone(),
@@ -671,13 +723,13 @@ impl Bridge {
     }
 
     pub fn close(&self, ghp_path: &Path) {
-        let doc = self.shared.docs.lock().unwrap().remove(ghp_path);
+        let doc = self.shared.docs.lock_ok().remove(ghp_path);
         if let Some(d) = doc {
-            self.shared.diags.lock().unwrap().remove(&normalize_uri(&d.go_uri));
-            let server = self.sup.lock().unwrap().servers.get(&d.root).cloned();
+            self.shared.diags.lock_ok().remove(&normalize_uri(&d.go_uri));
+            let server = self.sup.lock_ok().servers.get(&d.root).cloned();
             if let Some(s) = server {
                 let _ = s.notify("textDocument/didClose", json!({"textDocument": {"uri": d.go_uri}}));
-                s.synced.lock().unwrap().remove(&d.go_uri);
+                s.synced.lock_ok().remove(&d.go_uri);
             }
         }
     }
@@ -689,7 +741,7 @@ impl Bridge {
             return false;
         }
         let root = module_root(ghp_path.parent().unwrap_or(Path::new(".")));
-        !self.sup.lock().unwrap().gave_up.contains(&root)
+        !self.sup.lock_ok().gave_up.contains(&root)
     }
 
     /// Kill the gopls process serving `ghp_path`'s module, as a crash would. Test hook: the bridge
@@ -697,9 +749,9 @@ impl Bridge {
     #[doc(hidden)]
     pub fn kill_server_for_test(&self, ghp_path: &Path) {
         let root = module_root(ghp_path.parent().unwrap_or(Path::new(".")));
-        let server = self.sup.lock().unwrap().servers.get(&root).cloned();
+        let server = self.sup.lock_ok().servers.get(&root).cloned();
         if let Some(s) = server {
-            let _ = s.child.lock().unwrap().kill();
+            let _ = s.child.lock_ok().kill();
         }
     }
 
@@ -715,7 +767,7 @@ impl Bridge {
         cancel: &CancelToken,
     ) -> Result<Option<Value>, ProxyError> {
         let (root, go_uri, gpos) = {
-            let docs = self.shared.docs.lock().unwrap();
+            let docs = self.shared.docs.lock_ok();
             let Some(d) = docs.get(ghp_path) else { return Ok(None) };
             let Some(gp) = d.vdoc.map.ghp_pos_to_go(pos) else { return Ok(None) };
             (d.root.clone(), d.go_uri.clone(), gp)
@@ -760,16 +812,16 @@ impl Bridge {
     /// Go text of the page (scaffolding, structural syntax errors) is dropped: the GHP parser
     /// reports those.
     pub fn diagnostics(&self, ghp_path: &Path) -> Vec<Diagnostic> {
-        let docs = self.shared.docs.lock().unwrap();
+        let docs = self.shared.docs.lock_ok();
         let Some(d) = docs.get(ghp_path) else { return vec![] };
-        let raw = self.shared.diags.lock().unwrap().get(&normalize_uri(&d.go_uri)).cloned().unwrap_or_default();
+        let raw = self.shared.diags.lock_ok().get(&normalize_uri(&d.go_uri)).cloned().unwrap_or_default();
         raw.iter().filter_map(|v| translate_diagnostic(&d.vdoc, v)).collect()
     }
 
     // ---- result translation ------------------------------------------------------------------
 
     fn translate(&self, ghp: &Path, v: Value, kind: Translate) -> Value {
-        let docs = self.shared.docs.lock().unwrap();
+        let docs = self.shared.docs.lock_ok();
         let Some(d) = docs.get(ghp) else { return v };
         let ghp_uri = path_to_uri(ghp);
         match kind {
@@ -777,6 +829,17 @@ impl Bridge {
             Translate::Hover => translate_hover(&d.vdoc, v),
             Translate::Locations => translate_locations(&d.vdoc, &d.go_uri, &ghp_uri, v),
         }
+    }
+}
+
+/// Re-open every document of `root` on `s` (a fresh process, or a late sync).
+fn replay(shared: &Shared, root: &Path, s: &Server) {
+    let snaps: Vec<Snapshot> = {
+        let docs = shared.docs.lock_ok();
+        docs.values().filter(|d| d.root == root).map(Doc::snapshot).collect()
+    };
+    for snap in &snaps {
+        let _ = s.sync_doc(snap);
     }
 }
 
@@ -1160,9 +1223,9 @@ mod tests {
         };
         let snap = |v: i64, t: &str| Snapshot { uri: "file:///p.ghp.go".into(), version: v, text: t.into() };
         server.sync_doc(&snap(1, "a")).unwrap();
-        assert_eq!(server.synced.lock().unwrap()["file:///p.ghp.go"], "a");
+        assert_eq!(server.synced.lock_ok()["file:///p.ghp.go"], "a");
         server.sync_doc(&snap(2, "ab")).unwrap();
         server.sync_doc(&snap(2, "ab")).unwrap();
-        assert_eq!(server.synced.lock().unwrap()["file:///p.ghp.go"], "ab");
+        assert_eq!(server.synced.lock_ok()["file:///p.ghp.go"], "ab");
     }
 }

@@ -70,6 +70,8 @@ struct Writer<'a> {
     src: &'a str,
     text: String,
     segs: Vec<Segment>,
+    /// Where the Go text of an empty tag would start (see [`SourceMap::with_slots`]).
+    slots: Vec<Segment>,
 }
 
 impl Writer<'_> {
@@ -116,7 +118,7 @@ pub fn build(src: &str, regions: &[ExprRegion], opts: &Options) -> VirtualDoc {
         }
     }
 
-    let mut w = Writer { src, text: String::new(), segs: Vec::new() };
+    let mut w = Writer { src, text: String::new(), segs: Vec::new(), slots: Vec::new() };
     w.raw(&format!("package {}\n\n", opts.package));
     if !managed.is_empty() {
         w.raw("import (\n");
@@ -150,6 +152,10 @@ pub fn build(src: &str, regions: &[ExprRegion], opts: &Options) -> VirtualDoc {
         };
         w.raw("\t");
         w.raw(before);
+        if range.is_empty() && !matches!(r.kind, Else | EndIf | EndFor | EndSwitch | Default) {
+            // `<go= | />`: the tag takes Go text but has none yet; keep a cursor slot.
+            w.slots.push(Segment { ghp_start: r.start, go_start: w.text.len(), len: 0 });
+        }
         w.mapped(range);
         w.raw(after);
         w.raw("\n");
@@ -159,7 +165,7 @@ pub fn build(src: &str, regions: &[ExprRegion], opts: &Options) -> VirtualDoc {
     // are reported (and anything about these lines is unmapped and dropped anyway).
     w.raw("var _ = http.StatusOK\nvar _ = fmt.Sprint\nvar _ = html.EscapeString\nvar _ = io.EOF\n");
 
-    let map = SourceMap::new(w.segs, src, &w.text);
+    let map = SourceMap::new(w.segs, src, &w.text).with_slots(w.slots);
     VirtualDoc { text: w.text, map }
 }
 
