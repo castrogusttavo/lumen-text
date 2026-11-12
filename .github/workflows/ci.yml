@@ -83,7 +83,19 @@ jobs:
         run: |
           go install github.com/go-delve/delve/cmd/dlv@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - name: DAP against real dlv (breakpoint hit + variable read)
+      # ghp's module is named `ghp` (not go-installable), so build the CLI from a pinned commit.
+      # Pin: merge commit of GHP PR #80 (`ghp build --debug` + //line directives naming the project pages);
+      - uses: actions/checkout@v7
+        with:
+          repository: GHP-GoLang-Framework/ghp
+          ref: ee88708d58e13bcc05c024a729165e93da3b1627
+          path: ghp-src
+      - name: Build ghp
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          (cd ghp-src && go build -o "$HOME/.local/bin/ghp" ./src/cmd)
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: DAP against real dlv (breakpoint hit + variable read, Go and GHP pages)
         run: cargo test --release --locked dap_tests -- --ignored --nocapture --test-threads=1
 
   perf:

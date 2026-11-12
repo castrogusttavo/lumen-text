@@ -1,0 +1,11 @@
+<go:import ("strings")/>
+
+<go greeting := strings.ToUpper("hello") />
+<go count := len(greeting) />
+<!doctype html>
+<html>
+<body>
+<p>demo</p>
+<h1><go= greeting /> <go= count /></h1>
+</body>
+</html>
