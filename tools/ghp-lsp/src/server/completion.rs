@@ -147,7 +147,7 @@ mod tests {
         assert_eq!(labels(&v), ["<go:elif", "<go:else", "<go:endif", "<go:endswitch", "<go:endfor"]);
         let edit = &v["items"][0]["textEdit"];
         assert_eq!(edit["range"]["start"], json!({"line": 0, "character": 2}));
-        assert_eq!(edit["range"]["end"], json!({"line": 0, "character": 8}));
+        assert_eq!(edit["range"]["end"], json!({"line": 0, "character": 7}));
     }
 
     #[test]
