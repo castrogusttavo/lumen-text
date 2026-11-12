@@ -246,6 +246,9 @@ impl App {
         if self.lspx_apply_setting(key, v) {
             return;
         }
+        if self.inline_apply_setting(key, v) {
+            return;
+        }
         let b = v.as_bool();
         let s = v.as_str().map(str::to_string);
         match key {

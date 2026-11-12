@@ -50,6 +50,8 @@ pub struct Plan {
 pub struct LspX {
     /// The `language_servers` value and `spell_check` setting the registry was built from (`None`: not built yet).
     src: Option<(Value, bool)>,
+    /// The `inline_completion` setting it was built with (it switches the Copilot companion).
+    src_inline: bool,
     pub reg: Registry,
     pub health: HashMap<(String, PathBuf), Health>,
     plans: RefCell<HashMap<(PathBuf, Option<&'static str>), Rc<Plan>>>,
@@ -125,11 +127,15 @@ impl App {
     /// Rebuild the registry when `language_servers` changed in the configuration.
     pub(crate) fn lspx_sync_config(&mut self) {
         let spell = self.config.spell_check;
-        if self.lspx.src.as_ref().is_some_and(|(v, s)| *s == spell && *v == self.config.language_servers) {
+        let inline = self.config.inline_completion;
+        let same = self.lspx.src.as_ref().is_some_and(|(v, s)| *s == spell && *v == self.config.language_servers);
+        if same && self.lspx.src_inline == inline {
             return;
         }
         let first = self.lspx.src.is_none();
-        let reg = Registry::with_options(&self.config.language_servers, spell);
+        let mut reg = Registry::with_options(&self.config.language_servers, spell);
+        crate::app_inline::gate_copilot(&mut reg, &self.config.language_servers, inline);
+        self.lspx.src_inline = inline;
         self.lspx.src = Some((self.config.language_servers.clone(), spell));
         self.lspx.plans.borrow_mut().clear();
         if !reg.errors.is_empty() {
@@ -138,8 +144,11 @@ impl App {
             self.say_for(format!("language_servers: {}{more}", reg.errors[0]), 10);
         }
         self.lspx.reg = reg;
-        if !first {
+        if !first && !same {
             self.lspx_restart_all();
+        } else if !first {
+            // Only inline completion was switched: the other servers keep running.
+            self.inline_copilot_switched();
         }
     }
 
@@ -161,7 +170,12 @@ impl App {
             .for_doc(d.lang, &key.0)
             .into_iter()
             .map(|s| {
-                let root = s.root_for(&key.0);
+                // One Copilot per project, not one per folder without a `.git`.
+                let root = if s.id == crate::app_inline::COPILOT && key.0.starts_with(&self.root) {
+                    self.root.clone()
+                } else {
+                    s.root_for(&key.0)
+                };
                 PlanEntry {
                     id: s.id.clone(),
                     exe: s.resolve_for(&root),
@@ -394,7 +408,7 @@ impl App {
     }
 
     /// Documents that were open on a server that is gone lose its diagnostics and must reopen.
-    fn lspx_forget_docs(&mut self, l: &Lsp) {
+    pub(crate) fn lspx_forget_docs(&mut self, l: &Lsp) {
         let Some(g) = &l.generic else { return };
         self.lspx.problems.clear_source(&g.id);
         for i in 0..self.docs.len() {
@@ -596,6 +610,7 @@ impl App {
         self.lsps[li].log_line("app", &format!("initialized {server} {ver}"));
         self.say(format!("{id} ready"));
         self.lspx_rearm(li);
+        self.inline_on_server_ready(li);
     }
 
     /// Ask again for tokens, outline and diagnostics of the documents of server `li`
@@ -641,7 +656,7 @@ impl App {
                 }
             }
             "$/progress" => self.lspx_progress(li, params),
-            _ => {}
+            _ => self.inline_on_notification(li, method, params),
         }
         true
     }
@@ -717,7 +732,8 @@ impl App {
                 self.ws_refresh_requested();
                 Value::Null
             }
-            // window/workDoneProgress/create, window/showMessageRequest, window/showDocument...
+            "window/showDocument" => self.lsp_show_document(params),
+            // window/workDoneProgress/create, window/showMessageRequest...
             _ => Value::Null,
         };
         self.lsps[li].respond(rid.clone(), result);

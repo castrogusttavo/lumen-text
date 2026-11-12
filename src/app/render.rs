@@ -95,6 +95,8 @@ impl App {
         let minimaps = self.zen_hide_minimaps();
         busy |= self.draw_split_other(cv, dt);
         crate::perf::lap!("split_other");
+        // Inline suggestion: follow the latest keystroke before the document draws its ghost text.
+        self.inline_sync();
         if let Some(d) = self.docs.get_mut(self.active) {
             d.cell_w = self.tx.cell_w;
             busy |= d.draw(

@@ -101,6 +101,13 @@ Tests in `src/` use the same building blocks (`App`, `Editor`, `Buffer`) directl
 `script::send_keys(&mut app, "ctrl+shift+r;type:abc;enter")` sends key tokens to a test `App` without the rendering and settling of `--keys` (see the macro tests); saved macros (`macros.json`) use the same tokens.
 Tests must not write to `/tmp` or your real config: use `std::env::temp_dir()` subfolders that they clean up, or `CARGO_TARGET_TMPDIR`.
 
+### Inline completions
+
+`src/inline.rs` holds the pure part (request lifecycle, parsing, typing through, geometry) and `src/app_inline.rs`
+the app glue and GitHub Copilot's sign-in. The fake server `examples/fake_lsp.rs` answers inline completions with
+`FAKE_INLINE=1` and plays Copilot's sign-in with `FAKE_COPILOT=1`, so `cargo test --release inline` covers the whole
+flow without a real Copilot account.
+
 ## Code style
 
 - `cargo fmt`-style formatting and warning-free `cargo build --release`; follow the surrounding code (the project uses long lines in places, do not reformat unrelated code).

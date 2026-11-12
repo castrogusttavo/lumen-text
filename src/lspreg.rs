@@ -128,8 +128,12 @@ impl ServerSpec {
         }
     }
 
-    /// Does this server handle a document of language `lang` / file extension `ext`?
+    /// Does this server handle a document of language `lang` / file extension `ext`? A language
+    /// `"*"` matches every document (GitHub Copilot's inline completions).
     pub fn applies(&self, lang: Option<&str>, ext: &str) -> bool {
+        if self.languages.iter().any(|l| l == "*") {
+            return true;
+        }
         let ext = ext.trim_start_matches('.').to_ascii_lowercase();
         let hit = |s: &String| {
             let s = s.trim_start_matches('.');
@@ -667,6 +671,19 @@ mod tests {
     }
 
     #[test]
+    fn copilot_is_an_off_by_default_companion_for_every_file() {
+        let r = Registry::builtin();
+        let c = r.get("copilot").expect("copilot in the table");
+        assert_eq!((c.role, c.enabled, c.args.clone()), (Role::Companion, false, vec!["--stdio".to_string()]));
+        assert!(c.applies(Some("rust"), "rs") && c.applies(None, "") && c.applies(None, "weird"));
+        assert!(c.init_options_for(Path::new("/p"))["editorInfo"]["name"].is_string());
+        assert!(!r.for_doc(Some("rust"), Path::new("/x/a.rs")).iter().any(|s| s.id == "copilot"));
+        let on = Registry::with_user(&json!({"copilot": {"enabled": true}}));
+        let ids: Vec<String> = on.for_doc(None, Path::new("/x/notes.txt")).iter().map(|s| s.id.clone()).collect();
+        assert_eq!(ids, vec!["copilot"]);
+    }
+
+    #[test]
     fn matching_is_by_language_or_extension() {
         let r = Registry::builtin();
         let ids = |lang, p: &str| r.for_doc(lang, Path::new(p)).iter().map(|s| s.id.clone()).collect::<Vec<_>>();
@@ -931,7 +948,12 @@ mod tests {
         .filter_map(|f| crate::highlight::language_for(f))
         .collect();
         for s in &Registry::builtin().servers {
-            assert!(s.languages.iter().any(|l| assigned.contains(&l.as_str())), "{}: {:?}", s.id, s.languages);
+            assert!(
+                s.languages.iter().any(|l| l == "*" || assigned.contains(&l.as_str())),
+                "{}: {:?}",
+                s.id,
+                s.languages
+            );
         }
     }
 

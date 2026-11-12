@@ -156,6 +156,9 @@ pub struct Config {
     /// Code action kinds run (in order) before formatting on save, per language id ("*" = every
     /// language), e.g. `["source.organizeImports", "source.fixAll"]`.
     pub code_actions_on_save: BTreeMap<String, Vec<String>>,
+    /// Inline completions (ghost text) from language servers that offer them; also starts GitHub
+    /// Copilot's `copilot-language-server` when it is installed (see `app_inline`).
+    pub inline_completion: bool,
 }
 
 /// `problems_scope` values; anything else is "open_files".
@@ -384,6 +387,7 @@ impl Default for Config {
             problems_scope: "open_files".into(),
             formatter: BTreeMap::new(),
             code_actions_on_save: BTreeMap::new(),
+            inline_completion: false,
         }
     }
 }
@@ -694,6 +698,7 @@ impl Config {
             problems_scope: normalize_problems_scope(v["problems_scope"].as_str()),
             formatter: parse_formatter(&v["formatter"]),
             code_actions_on_save: parse_code_actions(&v["code_actions_on_save"]),
+            inline_completion: v["inline_completion"].as_bool().unwrap_or(false),
         }
     }
 
@@ -727,6 +732,7 @@ impl Config {
         v["ai_notifications"] = json!(self.ai_notifications);
         v["diff_ignore_whitespace"] = json!(self.diff_ignore_whitespace);
         v["spell_check"] = json!(self.spell_check);
+        v["inline_completion"] = json!(self.inline_completion);
         v["sidebar_width"] = json!(self.sidebar_width);
         v["git_worktree_dir"] = json!(self.git_worktree_dir);
         v["scrollbar_v"] = json!(2);
@@ -880,6 +886,7 @@ mod tests {
             problems_scope: "project".into(),
             formatter: [("python".to_string(), "lsp:ruff".to_string())].into(),
             code_actions_on_save: [("*".to_string(), vec!["source.fixAll".to_string()])].into(),
+            inline_completion: true,
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

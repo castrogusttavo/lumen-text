@@ -122,6 +122,13 @@ pub fn defs() -> Vec<SettingDef> {
             Bool,
         ),
         d(
+            "inline_completion",
+            "Editor display",
+            "Inline completions",
+            "Faded suggestions at the cursor from language servers that offer them (LSP inline completion), such as GitHub Copilot's copilot-language-server once you install it (npm i -g @github/copilot-language-server) and run \"Copilot: Sign in\". Tab accepts, Ctrl+Right accepts a word, Esc dismisses, Alt+] / Alt+[ show other suggestions, Alt+\\ asks now. Lumen never handles API keys.",
+            Bool,
+        ),
+        d(
             "markdown_remote_images",
             "Editor display",
             "Markdown remote images",
@@ -229,6 +236,7 @@ pub fn defaults() -> Value {
         "diff_ignore_whitespace": false,
         "rulers": "", "inline_diagnostics": "current_line",
         "problems_scope": "open_files",
+        "inline_completion": false,
     })
 }
 
@@ -250,6 +258,7 @@ pub fn values(c: &Config) -> Value {
         "diff_ignore_whitespace": c.diff_ignore_whitespace,
         "rulers": crate::assist::rulers_text(&c.rulers), "inline_diagnostics": c.inline_diagnostics,
         "problems_scope": c.problems_scope,
+        "inline_completion": c.inline_completion,
     })
 }
 

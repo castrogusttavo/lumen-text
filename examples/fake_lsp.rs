@@ -14,6 +14,8 @@
 //! diagnostics for every `*.fk` file of the root right after `initialized`), `FAKE_ACTIONS=1`
 //! (`source.organizeImports` with an edit, `source.fixAll` through `codeAction/resolve`),
 //! `FAKE_HANG_ACTIONS=1` (never answer `source.*` code action requests).
+//! `FAKE_INLINE=1` (`textDocument/inlineCompletion`, see `inline_items`), `FAKE_COPILOT=1` (Copilot's
+//! `checkStatus` / `signIn` / `signOut` with a device code; `executeCommand` signs in).
 //! A document containing `CRASH` kills the server. Every line containing `FIXME` gets a warning.
 use serde_json::{Value, json};
 use std::io::{BufRead, Read, Write};
@@ -151,6 +153,23 @@ fn insert_top(uri: &Value, line: &str) -> Value {
     json!({"changes": changes})
 }
 
+/// Inline suggestions at `pos` of `text`: a two-line one carrying a command, a snippet, and one
+/// whose range covers the character before the cursor. Each names the trigger kind it answered.
+fn inline_items(text: &str, pos: &Value, kind: u64) -> Value {
+    let (line, ch) = (pos["line"].as_u64().unwrap_or(0), pos["character"].as_u64().unwrap_or(0));
+    let mut items = vec![
+        json!({"insertText": format!("_k{kind}();\nnext_line();"),
+               "command": {"title": "accepted", "command": "fake.accept", "arguments": ["one"]}}),
+        json!({"insertText": {"kind": "snippet", "value": "alt(${1:arg})$0"}}),
+    ];
+    let prev = text.lines().nth(line as usize).and_then(|l| l.chars().nth((ch as usize).checked_sub(1)?));
+    if let Some(prev) = prev {
+        items.push(json!({"insertText": format!("{prev}_ranged"),
+            "range": {"start": {"line": line, "character": ch - 1}, "end": {"line": line, "character": ch}}}));
+    }
+    json!({"items": items})
+}
+
 fn main() {
     let name = std::env::var("FAKE_NAME").unwrap_or_else(|_| "fake".into());
     let mut root = String::new();
@@ -212,6 +231,10 @@ fn main() {
                     caps["codeActionProvider"] = json!({"codeActionKinds": ["quickfix", "source.organizeImports", "source.fixAll"], "resolveProvider": true});
                 }
                 root = m["params"]["rootUri"].as_str().unwrap_or("").trim_start_matches("file://").to_string();
+                if env("FAKE_INLINE") {
+                    caps["inlineCompletionProvider"] = json!({});
+                    caps["executeCommandProvider"] = json!({"commands": ["fake.accept"]});
+                }
                 reply(json!({"capabilities": caps, "serverInfo": {"name": format!("fake-{name}"), "version": "0.1"}}));
             }
             "initialized" => {
@@ -373,6 +396,39 @@ fn main() {
                     );
                 }
             }
+            "textDocument/inlineCompletion" => {
+                let uri = m["params"]["textDocument"]["uri"].as_str().unwrap_or("");
+                let text = docs.get(uri).cloned().unwrap_or_default();
+                let kind = m["params"]["context"]["triggerKind"].as_u64().unwrap_or(0);
+                eprintln!("inline request kind {kind}");
+                reply(inline_items(&text, &m["params"]["position"], kind));
+            }
+            "workspace/executeCommand" => {
+                let cmd = m["params"]["command"].as_str().unwrap_or("");
+                eprintln!("executed {cmd} {}", m["params"]["arguments"]);
+                if cmd == "github.copilot.finishDeviceFlow" {
+                    reply(json!({"status": "OK", "user": "octocat"}));
+                    send(
+                        &json!({"jsonrpc": "2.0", "method": "didChangeStatus", "params": {"kind": "Normal", "message": "", "busy": false}}),
+                    );
+                } else {
+                    reply(Value::Null);
+                }
+            }
+            "checkStatus" if env("FAKE_COPILOT") => {
+                let signed = std::path::Path::new(&std::env::var("FAKE_STATE").unwrap_or_default()).exists();
+                reply(if signed {
+                    json!({"status": "OK", "user": "octocat"})
+                } else {
+                    json!({"status": "NotSignedIn"})
+                });
+            }
+            "signIn" if env("FAKE_COPILOT") => reply(json!({
+                "status": "PromptUserDeviceFlow", "userCode": "ABCD-1234", "verificationUri": "https://example.invalid/device",
+                "expiresIn": 900, "interval": 5,
+                "command": {"command": "github.copilot.finishDeviceFlow", "title": "Sign in", "arguments": []}
+            })),
+            "signOut" if env("FAKE_COPILOT") => reply(json!({"status": "NotSignedIn"})),
             "shutdown" => reply(Value::Null),
             "exit" => return,
             _ => {

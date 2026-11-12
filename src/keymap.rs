@@ -90,6 +90,9 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+shift+h", "ProjectReplace"),
     ("ctrl+shift+r", "MacroRecord"),
     ("ctrl+alt+r", "MacroReplay"),
+    ("alt+\\", "InlineSuggest"),
+    ("alt+]", "InlineNext"),
+    ("alt+[", "InlinePrev"),
     // Chords: `Ctrl+K` then a letter.
     ("ctrl+k r", "RepeatTask"),
     ("ctrl+k x", "StopTask"),

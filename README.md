@@ -63,6 +63,7 @@ and no GPU driver:
 - Semantic tokens, optional code lens and inlay hints, optional auto-import
 - Document highlights: the caret resting on a symbol lights its read/write occurrences (`textDocument/documentHighlight`; the same word when no server offers it)
 - Linked editing: renaming an opening tag renames the closing one live, one undo step (`textDocument/linkedEditingRange`: tsgo for JSX/TSX, the HTML server for HTML)
+- **Inline completions** (opt-in, setting `inline_completion`): faded ghost text from any language server with `textDocument/inlineCompletion`, such as GitHub Copilot's `copilot-language-server` with your own login (*Copilot: Sign in*, device code; Lumen never handles API keys). `Tab` accepts, `Ctrl+Right` takes a word, `Esc` dismisses, `Alt+]` / `Alt+[` cycle, `Alt+\` asks; a status bar item shows on / off / signed out / loading
 - Full-project mode (default; also reacts to files changed, created or deleted on disk) versus an opt-in lean mode; uses the project's own `tsgo` or a bundled one
 - Formatting with the project's Biome or Prettier (falls back to `tsgo`), or the formatter you pick per language
   (`formatter`); code actions on save (`code_actions_on_save`, e.g. organize imports and fix all, ~1 s timeout each,
@@ -289,6 +290,8 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Go to line | `Ctrl+G` |
 | Definition / references / rename | `F12` (or `Ctrl+click`) / `Shift+F12` / `F2` |
 | Completion / signature help | `Ctrl+Space` / `Ctrl+Shift+Space` |
+| Inline suggestion: accept / next word / dismiss | `Tab` / `Ctrl+Right` / `Esc` (only while one shows) |
+| Inline suggestion: ask now / next / previous | `Alt+\` / `Alt+]` / `Alt+[` |
 | Hover | mouse resting, or `Ctrl+K I` |
 | Quick fix | `Ctrl+.` |
 | Next / previous problem | `F8` / `Shift+F8` |
@@ -367,6 +370,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `tsgo_source` | `"auto"` | `"auto"` (project's own, else bundled), `"project"`, `"bundled"` |
 | `language_servers` | `{}` | Add, replace or switch off language servers, e.g. `{"rust": {"command": "my-ra"}, "python": {"enabled": false}, "my-server": {"command": "x", "languages": ["foo"]}}`; fields `command`, `args`, `env`, `languages`, `extensions`, `root_markers`, `initialization_options`, `settings`, `enabled`, `role`, `requires`. Mistakes are reported in the status bar, never fatal |
 | `code_lens` / `inlay_hints` | `false` | Optional LSP extras (cost server CPU) |
+| `inline_completion` | `false` | Inline completions (ghost text) from language servers that offer them; also starts GitHub Copilot's `copilot-language-server` when installed (see [Language servers](web/src/content/docs/language-servers.md#inline-completions-ghost-text)) |
 | `inlay_hints_params` / `inlay_hints_types` | `true` | With `inlay_hints` on: show parameter names / inferred types separately. Ctrl+click a type goes to its definition; double click a `: T` hint inserts the annotation |
 | `minimap` / `minimap_style` | `true` / `"subtle"` | `"subtle"` or `"normal"` |
 | `word_wrap` / `sticky_scroll` / `indent_guides` | `false` / `true` / `true` | Editor view options |

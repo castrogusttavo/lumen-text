@@ -837,6 +837,8 @@ pub enum StatusBtn {
     Ai,
     /// Project settings (`.lumen/config.json`) are in effect (left group, only then).
     Project,
+    /// Inline completions (left group, while the setting is on): on / off / signed out / loading.
+    Inline,
 }
 
 /// Is it drawn as an icon button (as opposed to a text read-out)?
@@ -985,6 +987,7 @@ impl App {
         x = self.draw_fswatch_status(cv, x);
         x = self.draw_projcfg_status(cv, x);
         x = self.draw_img_status(cv, x);
+        x = self.draw_inline_status(cv, x);
 
         // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
         // (cursor position, indentation, language: clickable) and the memory figure, in any order.
@@ -1116,7 +1119,8 @@ impl App {
                     | StatusBtn::Update
                     | StatusBtn::Build
                     | StatusBtn::Ai
-                    | StatusBtn::Project => {}
+                    | StatusBtn::Project
+                    | StatusBtn::Inline => {}
                 }
                 ix += w + kinds.get(k + 1).map_or(0, |&n| status_gap(kind, n));
             }
@@ -1193,6 +1197,7 @@ impl App {
             StatusBtn::Build => self.build_toggle_panel(),
             StatusBtn::Ai => self.ai_badge_click(),
             StatusBtn::Project => self.open_project_settings(),
+            StatusBtn::Inline => self.inline_status_click(),
             StatusBtn::Ram => {}
         }
         true

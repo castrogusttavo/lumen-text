@@ -1039,6 +1039,9 @@ impl App {
             // Answers normally arrive parsed as `Msg::WsDiag`; this is an error (cancelled...).
             return self.ws_failed(li, &token, result.err());
         }
+        if matches!(what, Pending::InlineCompletion { .. } | Pending::Copilot(_)) {
+            return self.inline_on_response(li, what, result);
+        }
         if let (Pending::Initialize, Ok(v), true) = (&what, &result, self.lsps[li].is_generic()) {
             return self.lspx_initialized(li, v);
         }
@@ -1217,7 +1220,9 @@ impl App {
             | Pending::Multi { .. }
             | Pending::Highlight { .. }
             | Pending::LinkedEditing { .. }
-            | Pending::WorkspaceDiag { .. } => {}
+            | Pending::WorkspaceDiag { .. }
+            | Pending::InlineCompletion { .. }
+            | Pending::Copilot(_) => {}
         }
     }
 

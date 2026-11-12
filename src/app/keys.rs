@@ -119,6 +119,11 @@ impl App {
             self.request_redraw();
             return quit;
         }
+        // A visible inline suggestion owns Tab, Ctrl+Right and Esc (otherwise they keep their meaning).
+        if self.focus == Focus::Editor && self.inline_key(&key, ctrl, shift, alt) {
+            self.request_redraw();
+            return false;
+        }
         // One table: keybindings.json first ("none" disables), then keymap::DEFAULTS.
         if let Some(id) = self.keymap.lookup(ctrl, shift, alt, &key).map(str::to_string) {
             let cmd = crate::app_overlay::Cmd::from_id(&id);

@@ -92,6 +92,7 @@ pub fn capability_key(method: &str) -> Option<&'static str> {
         "textDocument/foldingRange" => "foldingRangeProvider",
         "textDocument/selectionRange" => "selectionRangeProvider",
         "textDocument/inlayHint" => "inlayHintProvider",
+        "textDocument/inlineCompletion" => "inlineCompletionProvider",
         "textDocument/codeLens" => "codeLensProvider",
         "textDocument/semanticTokens" | "textDocument/semanticTokens/full" => "semanticTokensProvider",
         "textDocument/diagnostic" => "diagnosticProvider",
