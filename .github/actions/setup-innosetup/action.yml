@@ -1,0 +1,17 @@
+name: Set up Inno Setup
+description: >
+  Install Inno Setup (pinned) on a Windows runner and export ISCC (absolute path of ISCC.exe) for
+  packaging/windows/build-setup.sh. Shared by the release job in ci.yml and the PR dry run in packaging.yml.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Inno Setup 6.4.3
+      shell: bash
+      run: |
+        set -euo pipefail
+        choco install innosetup --version=6.4.3 -y --no-progress
+        for c in "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/c/Program Files/Inno Setup 6/ISCC.exe"; do
+          if [ -f "$c" ]; then echo "ISCC=$c" >> "$GITHUB_ENV"; exit 0; fi
+        done
+        echo "ISCC.exe not found after installing Inno Setup" >&2; exit 1

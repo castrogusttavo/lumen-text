@@ -12,6 +12,7 @@ actual work and can be run locally with any release binary.
 | `lumen-text-<v>-1.<x86_64\|aarch64>.rpm` | Fedora, RHEL family, openSUSE | `rpm/build-rpm.sh` + `rpm/lumen-text.spec` |
 | `lumen-text-bin-<v>-1-x86_64.pkg.tar.zst` | Arch Linux, Manjaro, ... | `arch/build-arch.sh` + `arch/lumen-text-bin/PKGBUILD` |
 | `lumen-text-<v>-<arch>.AppImage` | any distribution | `appimage/build-appimage.sh` |
+| `lumen-text-<v>-windows-x86_64-setup.exe` + `.sha256` | Windows installer (Inno Setup, per user, self-updating, not code-signed) | `windows/build-setup.sh` + `windows/lumen-text.iss` |
 | `lumen-text-<v>-windows-x86_64.zip` + `.sha256` | portable Windows archive (exe + assets, not code-signed) | `windows/build-zip.sh` |
 | `lumen-text-<v>-macos-<aarch64\|x86_64>.dmg` + `.sha256` | `Lumen Text.app`, ad-hoc signed, not notarized | `macos/build-app.sh` |
 | `SHA256SUMS` | checksums of all of the above | (release job) |
@@ -22,11 +23,42 @@ private repositories). `.github/workflows/platforms.yml` builds and tests every 
 
 ## Updates and signing
 
-CI signs the AppImage, the tarballs, the Windows zip and the macOS dmgs (`<file>.minisig`, minisign) and publishes `latest.json` with
+CI signs the AppImage, the tarballs, the Windows zip and installer and the macOS dmgs (`<file>.minisig`, minisign) and publishes `latest.json` with
 all package URLs; the app's updater reads it. The user layout it maintains (and `lumen-text
 --install-user` creates) is `~/.local/share/lumen-text/<version>/{bin,share}` plus a `current`
 symlink, i.e. exactly the tarball contents, so the layout contract below holds there too. See
 CONTRIBUTING.md (Releases) for keys, secrets and rotation.
+
+## Windows installer
+
+`windows/build-setup.sh <exe> <v> x86_64 <outdir>` stages the files with `windows/stage.sh` (the same list the zip uses),
+turns `icons/png` into an `.ico` (`windows/make-ico.py`) and compiles `windows/lumen-text.iss` with Inno Setup (pinned
+in `.github/actions/setup-innosetup`; `choco install innosetup` locally, or set `ISCC`). The script hands the staged
+directory to the `.iss` as `/DStageDir=...`, so adding a file to `stage.sh` ships it in both formats.
+
+- Per user by default (`PrivilegesRequired=lowest`: `%LOCALAPPDATA%\Programs\Lumen`, no admin); the dialog or `/ALLUSERS`
+  installs for all users. Fixed `AppId` (`{B7C1E0D4-5A3F-4C8E-9E21-6F0A7D3C41B2}`), so a newer setup upgrades in place; `assets/`
+  is replaced wholesale. A running Lumen is closed through Restart Manager; the PC is never restarted.
+- Tasks: desktop icon (off), user `PATH` (on, `HKCU\Environment`, removed on uninstall), *Open with Lumen* / *Open folder in
+  Lumen* context menus (on), *Open with* entries for common file types (off, never takes over a default program).
+- Settings (`%APPDATA%\lumen-text`) and caches (`%LOCALAPPDATA%\lumen-text`) live outside the install directory. The
+  uninstaller keeps them; interactively it asks whether to delete them (default No); silently it never does.
+- Silent: `setup.exe /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER` plus optionally `/DIR=`, `/TASKS=`, `/LOG=`, `/RELAUNCH=1`
+  (start Lumen when done). Uninstall: `<dir>\unins000.exe /VERYSILENT`.
+- Not code-signed: SmartScreen warns on first run.
+
+**Self-update.** `src/update.rs` recognises an installer copy (`InstallKind::Setup`: `lumen-text.exe` next to `unins000.exe`
+under the user's profile) and uses the `windows-x86_64-setup` entry of `latest.json`: download, minisign check (same key
+and trusted comment as every other file), then on *Restart now* (or `lumen-text --update`) the app starts the verified setup
+silently (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /CLOSEAPPLICATIONS /DIR=<install dir> /RELAUNCH=1`) and exits;
+the installer replaces the files in place, keeps the settings and starts Lumen again. The portable zip and an all-users
+install (updating it needs elevation) only announce new versions with a link to the release page.
+
+**Tests.** `windows/test-installer.ps1` (silent install, assertions on files, uninstall entry, shortcuts, `PATH`, context
+menus, `--version`, upgrade over the previous install, silent uninstall, settings kept) and `windows/test-update.sh` (install
+V, serve a signed V+1 setup from a local server, `lumen-text --update`, assert the installed version became V+1; a wrong
+key and a replayed old file are rejected). Both run on `windows-latest` in `packaging.yml` (pull requests) and `ci.yml`
+(release).
 
 ## Layout contract
 

@@ -7,20 +7,12 @@ set -euo pipefail
 [ $# -eq 4 ] || { echo "usage: $0 <exe> <version> <arch> <outdir>" >&2; exit 2; }
 exe="$1"; version="$2"; arch="$3"; out="$4"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-root="$(cd "$here/../.." && pwd)"
 name="lumen-text-${version}-windows-${arch}"
 
 mkdir -p "$out"; out="$(cd "$out" && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 d="$work/$name"
-mkdir -p "$d"
-cp "$exe" "$d/lumen-text.exe"
-# The GHP language server next to the exe (GHP_LSP_BIN=path/to/ghp-lsp.exe).
-[ -n "${GHP_LSP_BIN:-}" ] && cp "$GHP_LSP_BIN" "$d/ghp-lsp.exe"
-cp -r "$root/assets" "$d/assets"
-# Licensed HugeIcons Pro masks live inside the binary only, never as loose files.
-rm -rf "$d/assets/icons/hugeicons" "$d/assets/icons/hugeicons_bulk"
-cp "$root/LICENSE" "$root/README.md" "$d/"
+"$here/stage.sh" "$exe" "$d"   # the file list is shared with the installer (build-setup.sh)
 rm -f "$out/$name.zip"
 # Windows 10+ ships bsdtar (System32\tar.exe), which writes zip archives; Git Bash's own GNU tar does not.
 if command -v cygpath >/dev/null 2>&1; then

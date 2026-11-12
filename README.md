@@ -204,7 +204,7 @@ database holds a single font plus lazily loaded fallbacks.
 
 ## Install
 
-Pre-built packages for Linux (x86_64 and aarch64), Windows (portable zip) and macOS (`.dmg`, Apple Silicon and Intel) are attached to every
+Pre-built packages for Linux (x86_64 and aarch64), Windows (installer and portable zip) and macOS (`.dmg`, Apple Silicon and Intel) are attached to every
 [GitHub Release](https://github.com/castrogusttavo/lumen-text/releases). Versions use **CalVer
 `YYYY.M.D.N`** (year, month, day of the release, then a counter for that day), for example
 `2026.11.10.1`; tags are `vYYYY.M.D.N`. Every push to `main` that passes CI publishes a release.
@@ -222,8 +222,11 @@ Replace `<v>` below with the version you downloaded and verify with
 Release binaries need glibc 2.35 or newer (built on Ubuntu 22.04). The binary links only glibc;
 libxkbcommon, Wayland and X11 are loaded at run time. Details: [packaging/README.md](packaging/README.md).
 
-**Windows:** unzip `lumen-text-<v>-windows-x86_64.zip` and run `lumen-text.exe`. It is not code-signed, so SmartScreen
-asks for confirmation (*More info*, *Run anyway*).
+**Windows:** run `lumen-text-<v>-windows-x86_64-setup.exe` (per user, no admin; Start Menu shortcut, optional `PATH` entry and
+Explorer context menus; it updates itself like the Linux user install). Silent:
+`lumen-text-<v>-windows-x86_64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER` (`/DIR=`, `/TASKS=`, `/ALLUSERS`,
+`/LOG=` also work). Or unzip `lumen-text-<v>-windows-x86_64.zip` and run `lumen-text.exe` (portable, no self-update).
+Neither is code-signed, so SmartScreen asks for confirmation (*More info*, *Run anyway*).
 **macOS:** open `lumen-text-<v>-macos-<aarch64|x86_64>.dmg` and drag the app to Applications. It is ad-hoc signed but
 not notarized: right-click, *Open* the first time, or `xattr -dr com.apple.quarantine "/Applications/Lumen Text.app"`.
 `Cmd` acts as `Ctrl` for every shortcut.

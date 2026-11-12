@@ -339,6 +339,13 @@ impl App {
         if self.ask_before_restart() || !self.try_quit() {
             return;
         }
+        if let InstallKind::Setup(dir) = &self.upd.env.kind {
+            // Windows installer: `exe` is the verified setup; it replaces the files and relaunches Lumen.
+            if let Err(e) = update::spawn_setup(&exe, dir, true) {
+                eprintln!("{e}");
+            }
+            std::process::exit(0);
+        }
         spawn_detached(&exe, &self.root, matches!(self.upd.env.kind, InstallKind::AppImage(_)));
         std::process::exit(0);
     }
@@ -392,7 +399,11 @@ impl App {
                     );
                     buttons.push((Btn::Notes, "Open page", true));
                 } else {
-                    body.push("Download the new version from the releases page, or run \"lumen-text --install-user\" from it to get automatic updates.".to_string());
+                    body.push(if cfg!(windows) {
+                        "Download the new version from the releases page. The Windows installer (setup.exe) updates itself from then on.".to_string()
+                    } else {
+                        "Download the new version from the releases page, or run \"lumen-text --install-user\" from it to get automatic updates.".to_string()
+                    });
                     buttons.push((Btn::Notes, "Open page", true));
                 }
                 body.extend(notes(r));

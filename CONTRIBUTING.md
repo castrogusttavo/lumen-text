@@ -166,7 +166,7 @@ Short imperative summary (about 70 characters), no trailing period, optional bod
 ## Releases
 
 Maintainers do not tag by hand. Every push to `main` that passes `.github/workflows/ci.yml` triggers:
-`test` (build + tests) -> `version` (CalVer `YYYY.M.D.N`: today's UTC date plus the number of that day's tags + 1) -> `build-linux` (binary stamped with `LUMEN_VERSION`, `.tar.gz`, `.deb`, `.rpm`, AppImage, Arch package) -> `release` (`SHA256SUMS`, GitHub Release `vYYYY.M.D.N` with generated notes).
+`test` (build + tests) -> `version` (CalVer `YYYY.M.D.N`: today's UTC date plus the number of that day's tags + 1) -> `build-linux` (binary stamped with `LUMEN_VERSION`, `.tar.gz`, `.deb`, `.rpm`, AppImage, Arch package) and `build-windows` (portable `.zip` and the Inno Setup installer `*-windows-x86_64-setup.exe`, which CI installs, updates and uninstalls silently as a test) -> `release` (`SHA256SUMS`, GitHub Release `vYYYY.M.D.N` with generated notes).
 `Cargo.toml`'s `version` is only the fallback for local builds. Packaging details: [packaging/README.md](packaging/README.md). Pull requests run lint (fmt, clippy, release build) and tests in parallel; the perf job runs on every push to `main` (or on a pull request labelled `perf`), the language-server matrix (`lsp.yml`) only when LSP code changes.
 
 ### Auto-update: signing, secrets and `latest.json`
@@ -175,7 +175,7 @@ The in-app updater (`src/update.rs`, `src/app_update.rs`; user docs in the READM
 
 - **Public key**: `src/update_key.pub`, embedded in the binary with `include_str!`. It may contain several keys (concatenated `.pub` files); a signature is accepted when it was made by any of them.
 - **Secret key**: only in the GitHub Actions secret `MINISIGN_SECRET_KEY` (repository secret, the content of the key file, generated without a password). Never commit it (`*.key` is git-ignored) and never keep a copy on disk.
-- The `release` job installs `minisign`, signs every `*.AppImage`, `*.tar.gz`, Windows `*.zip` and macOS `*.dmg` with the trusted comment `lumen-text <version> <file name>` (the client requires exactly that, so an old signed file can't be replayed as a new release), verifies each signature against `src/update_key.pub` (a wrong secret fails the release instead of bricking updates), then writes and uploads `latest.json` plus the `.minisig` files next to the other release files. The release notes are generated once (`gh api .../releases/generate-notes`) and used both for the GitHub release and, truncated, in `latest.json`.
+- The `release` job installs `minisign`, signs every `*.AppImage`, `*.tar.gz`, Windows `*.zip` and `*-setup.exe` and macOS `*.dmg` with the trusted comment `lumen-text <version> <file name>` (the client requires exactly that, so an old signed file can't be replayed as a new release), verifies each signature against `src/update_key.pub` (a wrong secret fails the release instead of bricking updates), then writes and uploads `latest.json` plus the `.minisig` files next to the other release files. The release notes are generated once (`gh api .../releases/generate-notes`) and used both for the GitHub release and, truncated, in `latest.json`.
 - The app reads `https://github.com/castrogusttavo/lumen-text/releases/latest/download/latest.json`.
 
 `latest.json` (modeled on Tauri's updater manifest):
@@ -191,6 +191,7 @@ The in-app updater (`src/update.rs`, `src/app_update.rs`; user docs in the READM
     "linux-x86_64-deb":      { "url": ".../lumen-text_2026.11.10.1-1_amd64.deb", "signature": "" },
     "linux-x86_64-rpm":      { "url": ".../lumen-text-2026.11.10.1-1.x86_64.rpm", "signature": "" },
     "linux-x86_64-arch":     { "url": ".../lumen-text-bin-2026.11.10.1-1-x86_64.pkg.tar.zst", "signature": "" },
+    "windows-x86_64-setup":  { "url": ".../lumen-text-2026.11.10.1-windows-x86_64-setup.exe", "signature": "<base64 of the .minisig file>" },
     "windows-x86_64-zip":    { "url": ".../lumen-text-2026.11.10.1-windows-x86_64.zip", "signature": "<base64 of the .minisig file>" },
     "macos-aarch64-dmg":     { "url": ".../lumen-text-2026.11.10.1-macos-aarch64.dmg", "signature": "<base64 of the .minisig file>" },
     "macos-x86_64-dmg":      { "url": ".../lumen-text-2026.11.10.1-macos-x86_64.dmg", "signature": "<base64 of the .minisig file>" }
@@ -198,7 +199,7 @@ The in-app updater (`src/update.rs`, `src/app_update.rs`; user docs in the READM
 }
 ```
 
-`version` is the CalVer without `v`. `appimage` and `tarball` entries (also `linux-aarch64-*` when those artifacts exist) are the installable, signed ones; the `windows-*`/`macos-*` entries are signed but the app only announces them (link to the release page; no in-place update yet); `deb`/`rpm`/`arch` entries are informational (the app shows the install command, it never modifies a system-managed install).
+`version` is the CalVer without `v`. `appimage` and `tarball` entries (also `linux-aarch64-*` when those artifacts exist) are the installable, signed ones; the `windows-x86_64-setup` entry is applied by the app for copies installed with the Windows installer (it runs the verified setup silently and restarts; see packaging/README.md), the `windows-x86_64-zip`/`macos-*` entries are signed but the app only announces them (link to the release page; no in-place update); `deb`/`rpm`/`arch` entries are informational (the app shows the install command, it never modifies a system-managed install).
 
 **Rotating the key** (compromised key, or routine). The app only trusts the keys compiled into it, so rotate in two releases:
 

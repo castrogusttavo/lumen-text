@@ -94,15 +94,18 @@ const kind = (n: string) => (n.endsWith(".deb") ? ".deb" : n.endsWith(".rpm") ? 
         <article class="dl-stage plus" role="tabpanel" id="panel-windows" aria-labelledby="tab-windows" data-dlpanel="windows" data-os-card="windows">
           <div class="plus-b"></div>
           <div class="dl-os"><span class="dl-tile"><Icon name="windows" size={34} /></span>
-            <div><h2>Windows</h2><p>Windows 10 or newer · x86_64 · portable zip</p></div>
+            <div><h2>Windows</h2><p>Windows 10 or newer · x86_64 · installer or portable zip</p></div>
             <span class="dl-badge">Beta</span>
           </div>
           <div class="mt-8">
-            <a class="dl-cta dl-cta-main sm:max-w-md" href={dl(A.windows, "")} rel="noopener" data-download="windows">
-              <Icon name="download" size={22} /><span><strong>Download .zip</strong><small>{A.windows?.name ?? `lumen-text-${v}-windows-x86_64.zip`} {A.windows ? `· ${mb(A.windows.size)}` : ""}</small></span>
+            <a class="dl-cta dl-cta-main sm:max-w-md" href={dl(A.windowsSetup ?? A.windows, "")} rel="noopener" data-download="windows">
+              <Icon name="download" size={22} /><span><strong>Download installer (.exe)</strong><small>{A.windowsSetup?.name ?? `lumen-text-${v}-windows-x86_64-setup.exe`} {A.windowsSetup ? `· ${mb(A.windowsSetup.size)}` : ""}</small></span>
+            </a>
+            <a class="dl-cta sm:max-w-md mt-3" href={dl(A.windows, "")} rel="noopener">
+              <Icon name="download" size={22} /><span><strong>Portable .zip</strong><small>{A.windows?.name ?? `lumen-text-${v}-windows-x86_64.zip`} {A.windows ? `· ${mb(A.windows.size)}` : ""}</small></span>
             </a>
           </div>
-          <p class="dl-note"><Icon name="info" size={16} class="shrink-0" /> Unzip and run <code>lumen-text.exe</code>. It is not code-signed, so SmartScreen may warn: <em>More info</em>, then <em>Run anyway</em>.</p>
+          <p class="dl-note"><Icon name="info" size={16} class="shrink-0" /> Run the installer (no admin needed; it updates itself afterwards), or unzip the portable build and run <code>lumen-text.exe</code>. Neither is code-signed, so SmartScreen may warn: <em>More info</em>, then <em>Run anyway</em>.</p>
         </article>
 
         <!-- Linux -->

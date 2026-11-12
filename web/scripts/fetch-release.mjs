@@ -11,6 +11,7 @@ const kinds = [
   ["arch", /\.pkg\.tar\.zst$/],
   ["appimage", /x86_64\.AppImage$/],
   ["tarball", /linux-x86_64\.tar\.gz$/],
+  ["windowsSetup", /-windows-x86_64-setup\.exe$/],
   ["windows", /-windows-x86_64\.zip$/],
   ["macosArm", /-macos-aarch64\.dmg$/],
   ["macosIntel", /-macos-x86_64\.dmg$/],
@@ -48,7 +49,7 @@ try {
   try {
     const all = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=40`, { headers, signal: AbortSignal.timeout(15000) });
     if (all.ok) {
-      const list = (await all.json()).filter((r) => !r.draft).map((r) => ({ tag: r.tag_name, name: r.name, publishedAt: r.published_at, url: r.html_url, prerelease: r.prerelease, notes: r.body ?? "", assets: (r.assets ?? []).filter((a) => /\.(deb|rpm|AppImage|zst|tar\.gz|zip|dmg)$/.test(a.name)).map((a) => ({ name: a.name, url: a.browser_download_url, size: a.size })) }));
+      const list = (await all.json()).filter((r) => !r.draft).map((r) => ({ tag: r.tag_name, name: r.name, publishedAt: r.published_at, url: r.html_url, prerelease: r.prerelease, notes: r.body ?? "", assets: (r.assets ?? []).filter((a) => /\.(deb|rpm|AppImage|zst|tar\.gz|zip|exe|dmg)$/.test(a.name)).map((a) => ({ name: a.name, url: a.browser_download_url, size: a.size })) }));
       await writeFile(new URL("../src/data/releases.json", import.meta.url), JSON.stringify(list, null, 2) + "\n");
     }
   } catch { /* keep the committed list */ }
