@@ -134,7 +134,7 @@ impl App {
             Some(AiHit::New) => self.ai_new_session_menu(),
             Some(AiHit::Restart) => self.ai_respawn(),
             Some(AiHit::Session(i)) => self.ai_tab_click(i, button),
-            Some(AiHit::CloseSession(i)) => self.ai_close_session(i),
+            Some(AiHit::CloseSession(i)) => self.ai_close_request(i),
             Some(AiHit::Stop) => self.ai_stop(),
             Some(AiHit::Refresh) => {
                 self.ai_detect(true);
@@ -175,7 +175,7 @@ impl App {
     fn ai_tab_click(&mut self, i: usize, button: u8) {
         let Some(id) = self.ai.sessions.get(i).map(|s| s.id) else { return };
         if button == 1 {
-            return self.ai_close_session(i);
+            return self.ai_close_request(i);
         }
         if button != 0 {
             return;

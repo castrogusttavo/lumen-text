@@ -20,6 +20,8 @@ use winit::keyboard::{Key, NamedKey};
 pub enum AskAction {
     /// Kill the integrated terminal with this id (its foreground job goes with it).
     CloseTerminal(u32),
+    /// End the AI panel session with this id (its agent goes with it).
+    CloseAiSession(u64),
     /// Quit although processes are running.
     Quit,
     /// "Restart to update" although processes are running.
@@ -73,7 +75,8 @@ impl Ask {
 /// The question asked before running processes are killed by `action`: closing a terminal, or
 /// quitting / restarting the editor. `procs` names them (a command line, or a Build & Run job).
 pub fn procs_question(procs: &[String], action: AskAction) -> Ask {
-    let quitting = !matches!(action, AskAction::CloseTerminal(_));
+    let quitting = !matches!(action, AskAction::CloseTerminal(_) | AskAction::CloseAiSession(_));
+    let agent = matches!(action, AskAction::CloseAiSession(_));
     let title = match procs {
         [one] => format!("“{one}” is still running"),
         _ => format!("{} processes are still running", procs.len()),
@@ -84,7 +87,9 @@ pub fn procs_question(procs: &[String], action: AskAction) -> Ask {
         let more = if procs.len() > 3 { format!(" and {} more", procs.len() - 3) } else { String::new() };
         body.push(format!("{}{more}", shown.join(", ")));
     }
-    let (sentence, yes_label) = if quitting {
+    let (sentence, yes_label) = if agent {
+        ("Closing the session stops it. Close anyway?", "Close anyway")
+    } else if quitting {
         (
             if procs.len() == 1 { "Quitting stops it. Quit anyway?" } else { "Quitting stops them. Quit anyway?" },
             "Quit anyway",
@@ -159,6 +164,11 @@ impl App {
         }
         match action {
             AskAction::CloseTerminal(id) => self.close_terminal_id(id),
+            AskAction::CloseAiSession(id) => {
+                if let Some(i) = self.ai.index_of(id) {
+                    self.ai_close_session(i);
+                }
+            }
             AskAction::Quit => {
                 self.quit_procs_ok = true;
                 if self.try_quit() {
@@ -177,6 +187,7 @@ impl App {
     /// Build & Run job.
     pub fn running_procs(&self) -> Vec<String> {
         let mut v: Vec<String> = self.terms.tabs.iter().filter_map(|t| t.term.foreground_job()).collect();
+        v.extend(self.ai.sessions.iter().filter(|s| s.term.alive).map(|s| s.name.clone()));
         if self.panel.running.is_some() {
             v.push(self.panel.cmd.clone().unwrap_or_else(|| "task".into()));
         }

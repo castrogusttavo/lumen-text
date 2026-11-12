@@ -346,6 +346,20 @@ impl App {
         }
     }
 
+    /// Close session `i`, asking first when its agent still runs.
+    pub fn ai_close_request(&mut self, i: usize) {
+        match self.ai.sessions.get(i) {
+            Some(s) if s.term.alive => {
+                let q = crate::app_ask::procs_question(
+                    std::slice::from_ref(&s.name),
+                    crate::app_ask::AskAction::CloseAiSession(s.id),
+                );
+                self.show_ask(q);
+            }
+            _ => self.ai_close_session(i),
+        }
+    }
+
     /// Close session `i`: its agent (and everything it started) ends, the tab goes.
     pub fn ai_close_session(&mut self, i: usize) {
         if i >= self.ai.sessions.len() {
@@ -414,7 +428,7 @@ impl App {
     /// "AI: Close Session".
     pub fn ai_close_current(&mut self) {
         let i = self.ai.active;
-        self.ai_close_session(i);
+        self.ai_close_request(i);
     }
 
     /// "AI: Rename Session…": a prompt for the name of the session shown.
