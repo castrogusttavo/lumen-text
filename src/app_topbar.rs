@@ -768,7 +768,10 @@ impl App {
         }
         self.dbg_last_stop = None;
         // Pending prelaunch build, console, history and the rest of the panel's state.
+        // A teardown still winding down keeps running (its handle is kept, not detached).
+        let teardown = std::mem::take(&mut self.dbgui.teardown);
         self.dbgui = Default::default();
+        self.dbgui.teardown = teardown;
         // Terminals: every tab and split goes, with its shell.
         let ids: Vec<u32> = self.terms.tabs.iter().map(|t| t.id).collect();
         for id in ids {
