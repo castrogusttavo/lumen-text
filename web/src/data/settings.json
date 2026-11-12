@@ -769,5 +769,21 @@
   "help": "Side-by-side diffs ignore changes in spaces, tabs and line endings (git diff -w): such lines do not count as changed and are not highlighted. Staging a hunk or lines still stages their real text. Also a toggle in the diff header (key W).",
   "kind": "bool",
   "default": false
+ },
+ {
+  "key": "debug_hover_evaluate",
+  "section": "Build",
+  "label": "Evaluate on hover",
+  "help": "While a program is stopped at a breakpoint, resting the pointer on a variable or expression in the editor shows its current value.",
+  "kind": "bool",
+  "default": true
+ },
+ {
+  "key": "debug_open_panel",
+  "section": "Build",
+  "label": "Open the Debug panel on start",
+  "help": "Starting a debug session (F5) opens the Debug tab of the bottom panel: call stack, variables, breakpoints, watch and the Debug Console.",
+  "kind": "bool",
+  "default": true
  }
 ]
