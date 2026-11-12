@@ -143,6 +143,20 @@ pub fn defs() -> Vec<SettingDef> {
             Bool,
         ),
         d(
+            "rulers",
+            "Editor display",
+            "Rulers",
+            "Columns where thin vertical guide lines are drawn, separated by commas (for example 80, 120). Empty: none. A project's .editorconfig max_line_length adds one.",
+            Text,
+        ),
+        d(
+            "inline_diagnostics",
+            "Editor display",
+            "Inline diagnostics",
+            "Shows the most severe problem of a line after its code, faded and cut to the room left: Current line (the default) only on the caret's line, All on every line, Off never. Never drawn over the text.",
+            Choice(crate::assist::InlineDiags::NAMES),
+        ),
+        d(
             "build_command",
             "Build",
             "Build command",
@@ -199,6 +213,7 @@ pub fn defaults() -> Value {
         "render_whitespace": "none", "trim_trailing_whitespace": false, "insert_final_newline": false,
         "ai_notifications": true,
         "diff_ignore_whitespace": false,
+        "rulers": "", "inline_diagnostics": "current_line",
     })
 }
 
@@ -218,6 +233,7 @@ pub fn values(c: &Config) -> Value {
         "insert_final_newline": c.insert_final_newline,
         "ai_notifications": c.ai_notifications,
         "diff_ignore_whitespace": c.diff_ignore_whitespace,
+        "rulers": crate::assist::rulers_text(&c.rulers), "inline_diagnostics": c.inline_diagnostics,
     })
 }
 

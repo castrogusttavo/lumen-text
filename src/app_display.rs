@@ -200,7 +200,7 @@ impl App {
                     }
                 }
             }
-            _ => return false,
+            _ => return self.apply_assist_setting(key, v),
         }
         true
     }

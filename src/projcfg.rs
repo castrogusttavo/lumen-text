@@ -56,7 +56,7 @@ pub const COMMAND_KEYS: &[&str] = &["build_command", "run_command", "test_comman
 pub const SERVER_EXEC_FIELDS: &[&str] = &["command", "args", "env"];
 
 /// Keys a `languages.<id>` entry may override.
-pub const LANG_KEYS: &[&str] = &["tab_width", "format_on_save", "word_wrap", "inlay_hints"];
+pub const LANG_KEYS: &[&str] = &["tab_width", "format_on_save", "word_wrap", "inlay_hints", "rulers"];
 
 /// Which settings file the settings modal edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -492,6 +492,11 @@ impl Config {
 
     pub fn inlay_hints_for(&self, lang: Option<&str>) -> bool {
         self.lang_override(lang, "inlay_hints").and_then(Value::as_bool).unwrap_or(self.inlay_hints)
+    }
+
+    /// Ruler columns for documents of `lang` (a `rulers` override replaces the global list).
+    pub fn rulers_for(&self, lang: Option<&str>) -> Vec<usize> {
+        self.lang_override(lang, "rulers").map_or_else(|| self.rulers.clone(), crate::assist::parse_rulers)
     }
 
     /// Unknown keys of `languages` entries, as friendly messages.

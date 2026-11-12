@@ -562,6 +562,24 @@ impl Buffer {
         }
     }
 
+    /// Does the undo group of the last edit still accept edits (a user edit just made, not an
+    /// undo/redo or a closed group)?
+    pub fn joinable(&self) -> bool {
+        self.open && self.hist.cur_group().is_some()
+    }
+
+    /// Replace chars [start, end) inside the current undo group, whatever its kind: a change made in
+    /// answer to the user's edit (linked tag names) is undone and redone together with it.
+    pub fn replace_joined(&mut self, start: usize, end: usize, text: &str, before: Sel) {
+        let Some(kind) = self.hist.cur_group().map(|g| g.kind) else {
+            return self.replace(start, end, text, EditKind::Other, before);
+        };
+        let was = self.compound;
+        self.compound = true;
+        self.replace(start, end, text, kind, before);
+        self.compound = was;
+    }
+
     /// Stop merging further edits into the current undo group.
     pub fn close_group(&mut self) {
         if !self.compound {

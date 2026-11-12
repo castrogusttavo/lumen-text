@@ -10,6 +10,7 @@ impl App {
         let mut want = |t: Instant| next = Some(next.map_or(t, |n| n.min(t)));
 
         self.lsp_tick(now, &mut want);
+        self.assist_tick(now, &mut want);
         self.guard_lsp_memory(now, &mut want);
         if self.last_trim.elapsed() > Duration::from_secs(4) {
             self.last_trim = Instant::now();

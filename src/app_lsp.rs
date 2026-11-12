@@ -975,6 +975,9 @@ impl App {
         if let Pending::Multi { kind, serial } = what {
             return self.lspx_on_multi(li, kind, serial, result.unwrap_or(Value::Null));
         }
+        if matches!(what, Pending::Highlight { .. } | Pending::LinkedEditing { .. }) {
+            return self.assist_on_response(li, what, result);
+        }
         if let (Pending::Initialize, Ok(v), true) = (&what, &result, self.lsps[li].is_generic()) {
             return self.lspx_initialized(li, v);
         }
@@ -1149,7 +1152,10 @@ impl App {
                     self.say("action made no changes");
                 }
             }
-            Pending::ExecuteCommand | Pending::Multi { .. } => {}
+            Pending::ExecuteCommand
+            | Pending::Multi { .. }
+            | Pending::Highlight { .. }
+            | Pending::LinkedEditing { .. } => {}
         }
     }
 

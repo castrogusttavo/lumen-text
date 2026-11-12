@@ -143,6 +143,19 @@ pub enum Pending {
         kind: crate::lspmerge::MultiKind,
         serial: u64,
     },
+    /// `textDocument/documentHighlight` for the document at (real) `uri`; `order` 0 is the primary.
+    Highlight {
+        uri: String,
+        serial: u64,
+        order: usize,
+    },
+    /// `textDocument/linkedEditingRange` for the document at (real) `uri`, buffer version `ver`.
+    LinkedEditing {
+        uri: String,
+        serial: u64,
+        ver: u64,
+        at: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -546,6 +559,8 @@ fn initialize_params(root: &Path, generic: Option<&Value>) -> Value {
                 "selectionRange": {},
                 "foldingRange": {"lineFoldingOnly": true},
                 "callHierarchy": {},
+                "documentHighlight": {"dynamicRegistration": false},
+                "linkedEditingRange": {"dynamicRegistration": false},
                 "codeLens": {},
                 "inlayHint": {"dynamicRegistration": false},
                 "semanticTokens": {

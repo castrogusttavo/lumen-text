@@ -239,6 +239,7 @@ impl App {
                 self.say(if on { "inlay hints: on" } else { "inlay hints: off" });
             }
             Cmd::ToggleGitBlame => self.toggle_git_blame(),
+            Cmd::CycleInlineDiagnostics => self.cycle_inline_diagnostics(),
             // Handled by `run_display_cmd` before this match.
             Cmd::ToggleBookmark
             | Cmd::NextBookmark

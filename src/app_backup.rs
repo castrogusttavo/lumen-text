@@ -253,6 +253,7 @@ impl App {
         d.indent_guides = self.config.indent_guides;
         d.sticky = self.config.sticky_scroll;
         d.set_word_wrap(self.config.word_wrap);
+        self.assist_setup(&mut d);
         self.docs.push(d);
         self.docs.len() - 1
     }

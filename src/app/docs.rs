@@ -60,6 +60,7 @@ impl App {
             }
             // `.editorconfig` is per file and wins over every settings layer.
             crate::app_filefmt::apply_editorconfig(&mut doc);
+            self.assist_setup(&mut doc);
             doc.git_base = git::head_text(&path);
             self.docs.push(doc);
             self.docs.len() - 1

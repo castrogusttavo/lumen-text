@@ -182,6 +182,8 @@ pub struct Doc {
     pub pinned: bool,
     /// What `.editorconfig` says about this file (see `app_filefmt`); empty when nothing.
     pub fileconf: crate::editorconfig::Props,
+    /// Rulers, inline diagnostics, document highlights and linked editing (see `assist`).
+    pub assist: crate::assist::Assist,
 }
 
 #[derive(Clone, Debug)]
@@ -296,6 +298,7 @@ impl Doc {
             inlay: Default::default(),
             pinned: false,
             fileconf: Default::default(),
+            assist: Default::default(),
         }
     }
 
@@ -518,6 +521,7 @@ impl Doc {
         self.eslint_due = Some(Instant::now() + std::time::Duration::from_millis(700));
         self.sel_stack.clear();
         let recs = self.view_on_edit(l);
+        let mirror = self.linked_follow(&recs);
         crate::bookmarks::on_edits(&mut self.marks, &recs);
         let buf = &self.buf;
         self.inlay.on_edits(&recs, l, buf.line_count(), &|p| buf.line_col(p));
@@ -543,6 +547,11 @@ impl Doc {
         self.git_stale = true;
         self.target = self.target.clamp(0.0, self.max_top());
         self.top = self.top.clamp(0.0, self.max_top());
+        if let Some(m) = mirror {
+            // Linked editing: the other tag names follow, in the same undo step.
+            self.linked_apply(m);
+            self.sync_edits();
+        }
         true
     }
 
