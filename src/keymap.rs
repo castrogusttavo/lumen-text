@@ -724,7 +724,7 @@ mod tests {
         bind_in(&mut m, "ctrl+shift+b", "ToggleSidebar");
         assert_eq!(m.get("ctrl+b").map(String::as_str), Some("none"));
         assert_eq!(m.get("ctrl+shift+b").map(String::as_str), Some("ToggleSidebar"));
-        let k = Keymap { map: m };
+        let k = Keymap { map: m, ..Default::default() };
         assert_eq!(k.lookup(true, false, false, &ch("b")), Some("none"));
         assert_eq!(k.lookup(true, true, false, &ch("b")), Some("ToggleSidebar"));
         // Binding a command to its own default adds nothing else; "none" itself is just stored.
@@ -808,7 +808,10 @@ mod tests {
                             assert!(crate::script::parse_combo(t).is_some(), "{name}: {combo} presses unknown {t}");
                         }
                     }
-                    None => assert!(*id == "none" || Cmd::from_id(id).is_some(), "{name}: {combo} -> unknown {id}"),
+                    None => assert!(
+                        *id == "none" || crate::app_overlay::Cmd::from_id(id).is_some(),
+                        "{name}: {combo} -> unknown {id}"
+                    ),
                 }
             }
         }
