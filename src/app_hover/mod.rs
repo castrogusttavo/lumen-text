@@ -79,6 +79,9 @@ pub enum Act {
     References,
     CopyType,
     QuickFix,
+    /// Ask the agent of the AI panel to explain / fix the diagnostic.
+    ExplainAi,
+    FixAi,
 }
 
 impl Act {
@@ -89,6 +92,8 @@ impl Act {
             Act::References => "References",
             Act::CopyType => "Copy type",
             Act::QuickFix => "Quick actions (Ctrl+.)",
+            Act::ExplainAi => "Explain with AI",
+            Act::FixAi => "Fix with AI",
         }
     }
 }

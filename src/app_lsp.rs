@@ -1461,6 +1461,10 @@ impl App {
         let params = mk(&real_uri);
         self.actions_expected += self.lspx_code_actions(i, &params);
         if self.actions_expected == 0 {
+            if self.ai_has_diag_at_cursor() {
+                let items = self.ai_action_items();
+                return self.open_code_actions_with(items);
+            }
             self.say("actions need a language server (none is running for this file)");
         }
     }
@@ -1479,7 +1483,11 @@ impl App {
         if self.actions_expected > 0 {
             return;
         }
-        let all = std::mem::take(&mut self.actions_items);
+        let mut all = std::mem::take(&mut self.actions_items);
+        // A problem under the caret can also go to the agent (the item runs the AI commands).
+        if self.ai_has_diag_at_cursor() {
+            all.extend(self.ai_action_items());
+        }
         if all.is_empty() {
             return self.say("no actions available here");
         }

@@ -211,7 +211,7 @@ impl App {
     /// commands work on the caret).
     pub fn hover_run(&mut self, act: Act) {
         let Some(h) = self.hover.take() else { return };
-        let target = if act == Act::QuickFix {
+        let target = if matches!(act, Act::QuickFix | Act::ExplainAi | Act::FixAi) {
             h.extra
                 .diags
                 .first()
@@ -235,6 +235,8 @@ impl App {
             Act::TypeDefinition => self.goto_definition(DefKind::TypeDefinition),
             Act::References => self.find_references(),
             Act::QuickFix => self.code_actions(),
+            Act::ExplainAi => self.ai_problem_at_cursor(crate::app_aipanel::AskMode::Explain),
+            Act::FixAi => self.ai_problem_at_cursor(crate::app_aipanel::AskMode::Fix),
             Act::CopyType => {}
         }
         self.request_redraw();

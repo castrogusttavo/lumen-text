@@ -95,6 +95,11 @@ pub struct Config {
     /// AI panel: a desktop notification when a session waits for you or is done while Lumen is
     /// not focused.
     pub ai_notifications: bool,
+    /// Prompt templates of "Explain" / "Fix with AI" (empty = built in, see `app_aipanel::explain`).
+    pub ai_prompt_explain: String,
+    pub ai_prompt_fix: String,
+    /// Lines of code around a problem that go into those prompts.
+    pub ai_prompt_context: u32,
     /// The user's `language_servers` object, kept verbatim (see `lspreg`); `Null` when absent.
     pub language_servers: Value,
     /// Buffer font: the code editor and everything monospace (terminal, output, diffs, code blocks).
@@ -366,6 +371,9 @@ impl Default for Config {
             test_watch: false,
             explorer_hide_gitignored: true,
             ai_notifications: true,
+            ai_prompt_explain: String::new(),
+            ai_prompt_fix: String::new(),
+            ai_prompt_context: 5,
             language_servers: Value::Null,
             buffer_font_family: String::new(),
             buffer_font_size: 14.0,
@@ -655,6 +663,9 @@ impl Config {
             debug_open_panel: v["debug_open_panel"].as_bool().unwrap_or(true),
             explorer_hide_gitignored: v["explorer_hide_gitignored"].as_bool().unwrap_or(true),
             ai_notifications: v["ai_notifications"].as_bool().unwrap_or(true),
+            ai_prompt_explain: v["ai_prompt_explain"].as_str().unwrap_or("").to_string(),
+            ai_prompt_fix: v["ai_prompt_fix"].as_str().unwrap_or("").to_string(),
+            ai_prompt_context: v["ai_prompt_context"].as_u64().map_or(5, |n| n.min(30) as u32),
             language_servers: v.get("language_servers").cloned().unwrap_or(Value::Null),
             scroll_speed: v["scroll_speed"].as_f64().map_or(1.0, |f| f as f32).clamp(0.1, 5.0),
             ui_scale: v["ui_scale"].as_f64().map_or(0.0, |f| f as f32).clamp(0.0, 4.0),
@@ -748,6 +759,9 @@ impl Config {
         v["run_command"] = json!(self.run_command);
         v["markdown_remote_images"] = json!(self.markdown_remote_images);
         v["ai_notifications"] = json!(self.ai_notifications);
+        v["ai_prompt_explain"] = json!(self.ai_prompt_explain);
+        v["ai_prompt_fix"] = json!(self.ai_prompt_fix);
+        v["ai_prompt_context"] = json!(self.ai_prompt_context);
         v["diff_ignore_whitespace"] = json!(self.diff_ignore_whitespace);
         v["debug_hover_evaluate"] = json!(self.debug_hover_evaluate);
         v["debug_open_panel"] = json!(self.debug_open_panel);
@@ -867,6 +881,9 @@ mod tests {
             debug_open_panel: false,
             explorer_hide_gitignored: false,
             ai_notifications: false,
+            ai_prompt_explain: "Why {message}?".into(),
+            ai_prompt_fix: "Fix {file}".into(),
+            ai_prompt_context: 9,
             language_servers: json!({"rust": {"command": "ra"}}),
             buffer_font_family: "JetBrains Mono".into(),
             buffer_font_size: 17.0,

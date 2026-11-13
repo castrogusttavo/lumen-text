@@ -232,6 +232,10 @@ pub fn act_hint(act: Act) -> Option<&'static str> {
         Act::BranchHere => "Creates a branch at this commit and switches to it",
         Act::TagHere => "Tags this commit (annotated when you give a message)",
         Act::UndoCommit => "Removes the last commit and keeps its changes staged (git reset --soft HEAD~1)",
+        Act::Run("AiExplainProblem") => {
+            "Sends the problem under the caret, with the code around it, to the agent to explain"
+        }
+        Act::Run("AiFixProblem") => "Asks the agent to fix the problem under the caret",
         Act::Run("AiSendSelection") => "Mentions the selected lines (file#L3-9) in the connected Claude Code",
         Act::Run("ReopenClosedTab") => {
             "Reopens the most recently closed tab where it was: same pane, cursor and scroll"
@@ -955,6 +959,7 @@ mod tests {
                 has_path: true,
                 reopen: true,
                 bp: None,
+                diag: true,
             };
             for e in crate::app_ctxmenu::entries_for(&t, &f) {
                 if let crate::app_ctxmenu::Entry::Item { act, label, .. } = e {

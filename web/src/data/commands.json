@@ -365,6 +365,51 @@
   "id": "AiSendSelection"
  },
  {
+  "label": "AI: Explain Problem at Cursor",
+  "shortcut": "",
+  "id": "AiExplainProblem"
+ },
+ {
+  "label": "AI: Fix Problem at Cursor",
+  "shortcut": "",
+  "id": "AiFixProblem"
+ },
+ {
+  "label": "AI: Explain Failed Test",
+  "shortcut": "",
+  "id": "AiExplainTest"
+ },
+ {
+  "label": "AI: Fix Failed Test",
+  "shortcut": "",
+  "id": "AiFixTest"
+ },
+ {
+  "label": "AI: Explain Build Error",
+  "shortcut": "",
+  "id": "AiExplainBuild"
+ },
+ {
+  "label": "AI: Fix Build Error",
+  "shortcut": "",
+  "id": "AiFixBuild"
+ },
+ {
+  "label": "AI: Send Terminal Selection to Agent",
+  "shortcut": "",
+  "id": "AiSendTerminal"
+ },
+ {
+  "label": "AI: Send File to Agent",
+  "shortcut": "",
+  "id": "AiSendFile"
+ },
+ {
+  "label": "AI: Send Problems Summary to Agent",
+  "shortcut": "",
+  "id": "AiSendProblems"
+ },
+ {
   "label": "AI: Next Session Waiting for You",
   "shortcut": "Ctrl+Alt+A",
   "id": "AiNextWaiting"

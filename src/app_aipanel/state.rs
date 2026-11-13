@@ -358,6 +358,8 @@ pub struct AiState {
     pub resizing: bool,
     /// The IDE bridge (Claude Code's diffs, selection, diagnostics, hooks).
     pub bridge: super::bridge::Bridge,
+    /// A prompt ("Explain" / "Fix with AI") waiting for its session to finish starting.
+    pub pending_prompt: Option<(u64, String)>,
     /// Desktop notifications "sent" (title, body): tests look here, nothing pops up.
     #[cfg(test)]
     pub sent: Vec<(String, String)>,
@@ -380,6 +382,7 @@ impl Default for AiState {
             hits: Vec::new(),
             resizing: false,
             bridge: Default::default(),
+            pending_prompt: None,
             #[cfg(test)]
             sent: Vec::new(),
         }
