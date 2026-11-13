@@ -364,6 +364,17 @@ fn start_io(
     (tx, rx, seq)
 }
 
+/// The address a TCP adapter announces on stdout: delve's `listening at: host:port` or
+/// CodeLLDB's `Listening on port N` (always on localhost).
+pub fn announced_addr(line: &str) -> Option<String> {
+    if let Some((_, addr)) = line.split_once("listening at:") {
+        return Some(addr.trim().to_string());
+    }
+    let (_, port) = line.split_once("Listening on port")?;
+    let port: u16 = port.trim().parse().ok()?;
+    Some(format!("127.0.0.1:{port}"))
+}
+
 impl Dap {
     fn assemble(
         child: Option<Child>,
@@ -517,9 +528,9 @@ impl Dap {
         thread::spawn(move || {
             let mut sent = false;
             read_lines(stdout, |line| {
-                if !sent && let Some((_, addr)) = line.split_once("listening at:") {
+                if !sent && let Some(addr) = announced_addr(&line) {
                     sent = true;
-                    let _ = atx.send(addr.trim().to_string());
+                    let _ = atx.send(addr);
                     return true;
                 }
                 let ok = ptx.send(ProgLine { stderr: false, text: line }).is_ok();

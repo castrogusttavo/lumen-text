@@ -794,3 +794,141 @@ fn delve_exec_quick_exit_reports_code_and_output() {
     d.stop_and_wait();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn announced_address_covers_delve_and_codelldb() {
+    use crate::dap::announced_addr;
+    assert_eq!(announced_addr("DAP server listening at: 127.0.0.1:43211").as_deref(), Some("127.0.0.1:43211"));
+    assert_eq!(announced_addr("DAP server listening at: [::1]:5").as_deref(), Some("[::1]:5"));
+    assert_eq!(announced_addr("Listening on port 40123").as_deref(), Some("127.0.0.1:40123"));
+    assert_eq!(announced_addr("Listening on port nope"), None);
+    assert_eq!(announced_addr("starting up"), None);
+}
+
+/// A python session against the scripted adapter: debugpy's launch request (adapter id `python`, the
+/// file as `program`, internal console) goes out and the stop/variables flow works as for any adapter.
+#[test]
+fn debugpy_session_sends_its_launch_request_to_the_fake_adapter() {
+    let (c2a_tx, c2a_rx) = channel();
+    let (a2c_tx, a2c_rx) = channel();
+    let (log_tx, log_rx) = channel();
+    let (req_tx, req_rx) = channel();
+    fake_adapter(c2a_rx, a2c_tx, log_tx, req_tx, "/w/app.py".into());
+    let mut dap = Dap::from_io(PipeR(a2c_rx, Vec::new()), PipeW(c2a_tx), Arc::new(|| {}));
+    dap.adapter_id = "python".into();
+    let mut s = Registry::builtin().get("debugpy").unwrap().session(Path::new("/w/app.py"), Path::new("/w"));
+    s.set_breakpoints("/w/app.py", &[2], &mut dap);
+    s.start(&mut dap);
+    assert!(pump(&mut dap, &mut s, |s| matches!(s.state, State::Stopped { .. }) && !s.locals.is_empty(), 5));
+    let sent: Vec<Value> = req_rx.try_iter().collect();
+    let init = sent.iter().find(|r| r["command"] == "initialize").unwrap();
+    assert_eq!(init["arguments"]["adapterID"], "python");
+    let launch = sent.iter().find(|r| r["command"] == "launch").unwrap();
+    assert_eq!(launch["arguments"]["program"], "/w/app.py");
+    assert_eq!(launch["arguments"]["type"], "python");
+    assert_eq!(launch["arguments"]["console"], "internalConsole");
+    assert!(launch["arguments"].get("request").is_none());
+    s.resume(&mut dap);
+    assert!(pump(&mut dap, &mut s, |s| s.state == State::Terminated, 5));
+    dap.disconnect(true);
+    let cmds: Vec<String> = log_rx.try_iter().collect();
+    assert!(cmds.iter().any(|c| c == "configurationDone"), "{cmds:?}");
+}
+
+/// Attach requests (debugpy to a `--listen` server, lldb-dap to a pid) are sent as `attach`.
+#[test]
+fn attach_requests_go_out_as_attach() {
+    let reg = Registry::builtin();
+    let ov =
+        crate::debug_model::LaunchOverride { request: Some("attach".into()), port: Some(5679), ..Default::default() };
+    let s = reg.get("debugpy").unwrap().session_with(Path::new("/w/a.py"), Path::new("/w"), &[], Some(&ov));
+    let (cmd, args) = s.start_request.unwrap();
+    assert_eq!(cmd, "attach");
+    assert_eq!((args["connect"]["host"].as_str(), args["connect"]["port"].as_u64()), (Some("127.0.0.1"), Some(5679)));
+    let ov = crate::debug_model::LaunchOverride { request: Some("attach".into()), pid: Some(31), ..Default::default() };
+    let s = reg.get("lldb-dap").unwrap().session_with(Path::new("/w/a.c"), Path::new("/w"), &[], Some(&ov));
+    let (cmd, args) = s.start_request.unwrap();
+    assert_eq!((cmd.as_str(), args["pid"].as_i64()), ("attach", Some(31)));
+}
+
+const PY_FIXTURE: &str = "def add(a, b):\n    s = a + b\n    return s\n\n\ntotal = 0\nfor i in range(3):\n    total = add(total, i)\nprint('total', total)\n";
+
+/// Real debugpy: a breakpoint hit and variable read on a tiny script, with the interpreter
+/// that `pyenv` finds (CI points `VIRTUAL_ENV` at a venv holding debugpy).
+/// `python -m pip install debugpy`, then `cargo test --release dap_tests -- --ignored debugpy`.
+#[test]
+#[ignore = "needs python with debugpy installed"]
+fn debugpy_breakpoint_and_variables() {
+    let dir = std::env::temp_dir().join(format!("lumen-dap-py-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("main.py");
+    std::fs::write(&src, PY_FIXTURE).unwrap();
+    let adapter = Registry::builtin().for_language("python").unwrap().clone();
+    let mut dap = adapter.start(&dir, Arc::new(|| {})).expect("start debugpy (pip install debugpy)");
+    let mut s = adapter.session(&src, &dir);
+    s.set_breakpoints(&src.to_string_lossy(), &[2], &mut dap);
+    s.start(&mut dap);
+    let hit = pump(&mut dap, &mut s, |s| matches!(s.state, State::Stopped { .. }) && !s.locals.is_empty(), 120);
+    eprintln!("state={:?} frames={:?} locals={:?} out={:?}", s.state, s.frames, s.locals, s.output);
+    assert!(hit, "breakpoint never hit");
+    assert_eq!(s.frames[0].line, 2);
+    assert!(s.frames[0].name.contains("add"), "{:?}", s.frames[0]);
+    let a = s.locals.iter().find(|v| v.name == "a").unwrap_or_else(|| panic!("no a in {:?}", s.locals));
+    assert_eq!(a.value, "0", "first call add(0, 0)");
+    let end = Instant::now() + Duration::from_secs(60);
+    while s.state != State::Terminated && Instant::now() < end {
+        s.resume(&mut dap);
+        pump(&mut dap, &mut s, |s| matches!(s.state, State::Stopped { .. } | State::Terminated), 10);
+    }
+    assert_eq!(s.state, State::Terminated);
+    assert!(s.output.iter().any(|l| l.contains("total 3")), "program output reaches the console: {:?}", s.output);
+    dap.disconnect(true);
+    drop(dap);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Real debugpy, attach: a script started with `python -m debugpy --listen PORT --wait-for-client`
+/// is attached to through a `launch.json`-style override and stops at its breakpoint.
+#[test]
+#[ignore = "needs python with debugpy installed"]
+fn debugpy_attach_to_a_listening_script() {
+    let dir = std::env::temp_dir().join(format!("lumen-dap-pyattach-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("main.py");
+    std::fs::write(&src, PY_FIXTURE).unwrap();
+    let adapter = Registry::builtin().for_language("python").unwrap().clone();
+    let python = adapter.resolve(&dir).expect("python");
+    let port = free_port();
+    let mut target = std::process::Command::new(&python)
+        .args(["-m", "debugpy", "--listen", &format!("127.0.0.1:{port}"), "--wait-for-client"])
+        .arg(&src)
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the script under debugpy");
+    let end = Instant::now() + Duration::from_secs(60);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() && Instant::now() < end {
+        thread::sleep(Duration::from_millis(100));
+    }
+    let ov = crate::debug_model::LaunchOverride {
+        config: "debugpy".into(),
+        request: Some("attach".into()),
+        port: Some(port),
+        ..Default::default()
+    };
+    let mut dap = adapter.start(&dir, Arc::new(|| {})).expect("start debugpy adapter");
+    let mut s = adapter.session_with(&src, &dir, &[], Some(&ov));
+    s.set_breakpoints(&src.to_string_lossy(), &[2], &mut dap);
+    s.start(&mut dap);
+    let hit = pump(&mut dap, &mut s, |s| matches!(s.state, State::Stopped { .. }) && !s.locals.is_empty(), 120);
+    eprintln!("state={:?} frames={:?} locals={:?} out={:?}", s.state, s.frames, s.locals, s.output);
+    assert!(hit, "breakpoint never hit after attach");
+    assert_eq!(s.frames[0].line, 2);
+    dap.disconnect(true);
+    drop(dap);
+    let _ = target.kill();
+    let _ = target.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+}

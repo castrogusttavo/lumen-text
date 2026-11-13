@@ -37,3 +37,12 @@ The Debug Console shows what the program prints: with Delve (Go and GHP pages) i
 ## Overriding a launch: `.lumen/launch.json`
 
 Go and GHP launches can be overridden per project with `.lumen/launch.json`: `program`, `args`, `env`, `cwd`, and `adapter`, for the configuration named by `config` (`delve` or `ghp`). The format is described in [GHP pages](/docs/ghp#overriding-the-launch-lumenlaunchjson). The file runs what it names when you press `F5`: keep it only in projects you trust.
+
+## Python, Rust, C and C++
+
+- **Python** uses `debugpy`. The adapter runs with the interpreter Lumen detects for the project (its virtualenv, see the Python interpreter picker), so install it there: `python -m pip install debugpy`. F5 on a `.py` file runs the file; breakpoints, stepping, variables and the console work as for Go.
+- **Rust** offers two configurations on a `.rs` file: *cargo build + gdb* and *cargo build + LLDB*. The LLDB one runs `cargo build --message-format=json` in the file's crate, debugs the binary cargo reports (the one of that file or package) and shows compiler errors in the Debug Console. With only LLDB installed it is the default.
+- **C and C++** use LLDB on `<dir>/<file name without extension>` (build it with `-g` first; set `program` in `launch.json` for another path).
+- LLDB is `lldb-dap` (LLVM 18+) when installed, else CodeLLDB's `codelldb`. When neither is, the status bar and the Debug Console name where to get them.
+
+To attach instead of launching, add an entry to `.lumen/launch.json` with `"request": "attach"`: `{"config": "debugpy", "request": "attach", "host": "127.0.0.1", "port": 5678}` for a script started with `python -m debugpy --listen 5678 --wait-for-client app.py`, or `{"config": "lldb-dap", "request": "attach", "pid": 4242}` for a running native process. The other keys (`program`, `args`, `env`, `cwd`) work as for Go. The configuration ids are `debugpy`, `lldb-rust` and `lldb-dap`.
