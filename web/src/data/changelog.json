@@ -1,5 +1,78 @@
 [
   {
+    "version": "2026.11.13.2",
+    "date": "2026-11-13",
+    "title": "Vim, remote folders, screen readers and a lighter way to see what runs",
+    "summary": "15 features: modal editing, structural navigation, Go to anything, a resource panel, SSH folders, an HTTP client, multi-root workspaces, snippets, accessibility, terminal and Git upgrades, more debuggers and AI shortcuts.",
+    "groups": [
+      {
+        "area": "Features",
+        "items": [
+          {
+            "title": "Vim mode and keymap presets",
+            "text": "Optional modal editing (counts, registers, operators, text objects, macros, ex commands) plus VS Code, Emacs and Vim presets."
+          },
+          {
+            "title": "Structural navigation",
+            "text": "Tree-sitter expand selection, jump between functions and classes, and Vim text objects, with no language server."
+          },
+          {
+            "title": "Go to anything",
+            "text": "Ctrl+P is one picker: files, @symbols, #workspace symbols and :line, with live preview; Ctrl+T opens workspace symbols."
+          },
+          {
+            "title": "Resource panel",
+            "text": "Click the RAM item for per-process memory of servers, terminals, agents and jobs, with Stop and Restart, plus an optional memory budget."
+          },
+          {
+            "title": "Faster startup",
+            "text": "--profile-startup prints a timeline; watcher, IDE bridge and project history now start after the first frame."
+          },
+          {
+            "title": "SSH remote folders",
+            "text": "Open, edit and save files over the system ssh with no agent on the host, plus a remote terminal and search."
+          },
+          {
+            "title": "HTTP client",
+            "text": "Run requests from .http and .rest files with environments, chaining and a response view."
+          },
+          {
+            "title": "Multi-root workspaces",
+            "text": "Several folders in one window through .lumen-workspace or .code-workspace files."
+          },
+          {
+            "title": "VS Code snippets",
+            "text": "Load and import .code-snippets with the full syntax: mirrors, choices, variables and regex transforms."
+          },
+          {
+            "title": "Screen reader support",
+            "text": "AccessKit tree for Orca, NVDA, Narrator and VoiceOver, built only while a screen reader is attached."
+          },
+          {
+            "title": "Terminal search, links and shell integration",
+            "text": "Scrollback search, clickable file:line and URLs, command marks, jump between commands."
+          },
+          {
+            "title": "Git blame card, interactive rebase and PR status",
+            "text": "Commit popover from the inline blame, a rebase planner without an editor, and the branch's GitHub PR through gh."
+          },
+          {
+            "title": "Python and LLDB debugging",
+            "text": "debugpy for Python and lldb-dap or codelldb for Rust, C and C++, with attach support in launch.json."
+          },
+          {
+            "title": "Test marks, run last and related-test watch",
+            "text": "Run marks in the gutter, Tests: Run last, and save-triggered runs scoped to the related tests."
+          },
+          {
+            "title": "Explain and fix with AI",
+            "text": "Send a diagnostic, failed test, build error or terminal selection to the agent as a compact prompt."
+          }
+        ]
+      }
+    ]
+  },
+  {
     "version": "2026.11.12.1",
     "date": "2026-11-12",
     "title": "Never lose work, agents in parallel, a bigger editor",
