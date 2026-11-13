@@ -185,6 +185,13 @@ pub fn defs() -> Vec<SettingDef> {
             Choice(&["auto", "ltr"]),
         ),
         d(
+            "accessibility",
+            "Editor display",
+            "Screen reader",
+            "Auto exposes the window to screen readers (Orca, NVDA, Narrator, VoiceOver) and builds the accessibility tree only while one is connected; On builds it from the start; Off never connects. Takes effect the next time Lumen starts.",
+            Choice(&["auto", "on", "off"]),
+        ),
+        d(
             "build_command",
             "Build",
             "Build command",
@@ -259,6 +266,7 @@ pub fn defaults() -> Value {
         "problems_scope": "open_files",
         "inline_completion": false,
         "bidi_paragraph": "auto",
+        "accessibility": "auto",
     })
 }
 
@@ -283,6 +291,7 @@ pub fn values(c: &Config) -> Value {
         "problems_scope": c.problems_scope,
         "inline_completion": c.inline_completion,
         "bidi_paragraph": c.bidi_paragraph,
+        "accessibility": c.accessibility,
     })
 }
 

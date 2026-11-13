@@ -166,6 +166,10 @@ pub struct Config {
     /// Paragraph direction of lines with right-to-left text (see `bidi`): "auto" (the first strong
     /// char decides, the default) or "ltr" (always left to right; RTL runs are still reordered).
     pub bidi_paragraph: String,
+    /// Screen reader support (AccessKit): "auto" (connect to the platform's accessibility API and
+    /// build the tree only while an assistive technology is attached, the default), "on" (also
+    /// build it before one asks) or "off" (never connect; takes effect at the next start).
+    pub accessibility: String,
 }
 
 /// `problems_scope` values; anything else is "open_files".
@@ -224,6 +228,14 @@ pub fn normalize_scrollbar(v: Option<&str>) -> String {
 pub fn normalize_updates(v: Option<&str>) -> String {
     match v {
         Some(m @ ("auto" | "notify" | "off")) => m.to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+/// `accessibility` setting values; anything else falls back to "auto".
+pub fn normalize_accessibility(v: Option<&str>) -> String {
+    match v {
+        Some(m @ ("auto" | "on" | "off")) => m.to_string(),
         _ => "auto".to_string(),
     }
 }
@@ -398,6 +410,7 @@ impl Default for Config {
             code_actions_on_save: BTreeMap::new(),
             inline_completion: false,
             bidi_paragraph: "auto".into(),
+            accessibility: "auto".into(),
         }
     }
 }
@@ -712,6 +725,7 @@ impl Config {
             code_actions_on_save: parse_code_actions(&v["code_actions_on_save"]),
             inline_completion: v["inline_completion"].as_bool().unwrap_or(false),
             bidi_paragraph: crate::bidi::normalize(v["bidi_paragraph"].as_str()),
+            accessibility: normalize_accessibility(v["accessibility"].as_str()),
         }
     }
 
@@ -774,6 +788,7 @@ impl Config {
             _ => {}
         }
         v["bidi_paragraph"] = json!(self.bidi_paragraph);
+        v["accessibility"] = json!(self.accessibility);
         self.view.write_json(&mut v);
         v
     }
@@ -906,6 +921,7 @@ mod tests {
             code_actions_on_save: [("*".to_string(), vec!["source.fixAll".to_string()])].into(),
             inline_completion: true,
             bidi_paragraph: "ltr".into(),
+            accessibility: "on".into(),
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

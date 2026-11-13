@@ -2,7 +2,9 @@
 // Release builds on Windows are GUI-subsystem programs (no console window); `winconsole` re-attaches
 // the parent console for command-line use.
 #![cfg_attr(all(windows, not(debug_assertions), not(test)), windows_subsystem = "windows")]
+mod a11y;
 mod app;
+mod app_a11y;
 mod app_aipanel;
 mod app_ask;
 mod app_assist;

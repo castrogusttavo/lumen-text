@@ -31,6 +31,7 @@ pub const GLOBAL_ONLY: &[&str] = &[
     "ui_scale",
     "scroll_speed",
     "updates",
+    "accessibility",
     "sidebar_width",
     "git_panel_width",
     "md_split",

@@ -723,6 +723,19 @@
   "default": "auto"
  },
  {
+  "key": "accessibility",
+  "section": "Editor display",
+  "label": "Screen reader",
+  "help": "Auto exposes the window to screen readers (Orca, NVDA, Narrator, VoiceOver) and builds the accessibility tree only while one is connected; On builds it from the start; Off never connects. Takes effect the next time Lumen starts.",
+  "kind": "choice",
+  "options": [
+   "auto",
+   "on",
+   "off"
+  ],
+  "default": "auto"
+ },
+ {
   "key": "build_command",
   "section": "Build",
   "label": "Build command",

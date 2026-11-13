@@ -165,6 +165,10 @@ impl App {
                 display::set_scrollbar(Scrollbar::from_name(&self.config.scrollbar));
                 display::touch();
             }
+            "accessibility" => {
+                self.config.accessibility = crate::config::normalize_accessibility(v.as_str());
+                self.a11y_setting_changed();
+            }
             "bidi_paragraph" => {
                 self.config.bidi_paragraph = crate::bidi::normalize(v.as_str());
                 crate::bidi::set_para(crate::bidi::Para::from_name(&self.config.bidi_paragraph));

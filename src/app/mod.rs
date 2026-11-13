@@ -271,6 +271,8 @@ pub struct App {
     pub zen: crate::app_view::Zen,
     /// This window among the others (slot, handoff target, geometry): see `app_window`.
     pub win: crate::app_window::WinState,
+    /// Screen reader support (AccessKit adapter and what it was last told): see `app_a11y`.
+    pub a11y: crate::app_a11y::A11y,
 }
 
 impl App {
@@ -408,6 +410,7 @@ impl App {
             proj: Default::default(),
             zen: Default::default(),
             win: Default::default(),
+            a11y: Default::default(),
         };
         // `.lumen/config.json` / `.lumen/config.local.json` on top of the user settings.
         app.projcfg_init();
@@ -503,7 +506,15 @@ impl ApplicationHandler<UserEvent> for App {
             attrs = WindowAttributesExtX11::with_name(attrs, "lumen-text", "lumen-text");
         }
         let attrs = self.win_attrs(el, attrs);
+        // The screen reader adapter must exist before the window is shown for the first time.
+        let a11y = self.config.accessibility != "off";
+        let attrs = if a11y { attrs.with_visible(false) } else { attrs };
         let window = Rc::new(el.create_window(attrs).expect("window"));
+        if a11y {
+            let wake = self.wake();
+            self.a11y.attach(el, &window, wake);
+            window.set_visible(true);
+        }
         window.set_cursor(Cursor::Icon(CursorIcon::Default));
         window.set_ime_allowed(true);
         let ctx = softbuffer::Context::new(window.clone()).expect("softbuffer ctx");
@@ -523,6 +534,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.exit_requested {
             return el.exit();
         }
+        self.a11y_sync();
         let next = self.tick();
         el.set_control_flow(match next {
             Some(t) => ControlFlow::WaitUntil(t),
@@ -531,6 +543,9 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, ev: WindowEvent) {
+        if let Some(g) = &self.gfx {
+            self.a11y.event(&g.window, &ev);
+        }
         match ev {
             WindowEvent::CloseRequested => {
                 if self.try_quit() {
