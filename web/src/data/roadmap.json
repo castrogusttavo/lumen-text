@@ -342,6 +342,111 @@
       "type": "feature",
       "title": "Windows installer",
       "text": "A setup program that installs Lumen per user and updates itself in place, like the Linux packages."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Vim mode and keymap presets",
+      "text": "Optional modal editing (counts, registers, operators, text objects, macros, ex commands) plus VS Code, Emacs and Vim presets."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Structural navigation",
+      "text": "Tree-sitter expand selection, jump between functions and classes, and Vim text objects, with no language server."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Go to anything",
+      "text": "Ctrl+P is one picker: files, @symbols, #workspace symbols and :line, with live preview; Ctrl+T opens workspace symbols."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Resource panel",
+      "text": "Click the RAM item for per-process memory of servers, terminals, agents and jobs, with Stop and Restart, plus an optional memory budget."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Faster startup",
+      "text": "--profile-startup prints a timeline; watcher, IDE bridge and project history now start after the first frame."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "SSH remote folders",
+      "text": "Open, edit and save files over the system ssh with no agent on the host, plus a remote terminal and search."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "HTTP client",
+      "text": "Run requests from .http and .rest files with environments, chaining and a response view."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Multi-root workspaces",
+      "text": "Several folders in one window through .lumen-workspace or .code-workspace files."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "VS Code snippets",
+      "text": "Load and import .code-snippets with the full syntax: mirrors, choices, variables and regex transforms."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Screen reader support",
+      "text": "AccessKit tree for Orca, NVDA, Narrator and VoiceOver, built only while a screen reader is attached."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Terminal search, links and shell integration",
+      "text": "Scrollback search, clickable file:line and URLs, command marks, jump between commands."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Git blame card, interactive rebase and PR status",
+      "text": "Commit popover from the inline blame, a rebase planner without an editor, and the branch's GitHub PR through gh."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Python and LLDB debugging",
+      "text": "debugpy for Python and lldb-dap or codelldb for Rust, C and C++, with attach support in launch.json."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Test marks, run last and related-test watch",
+      "text": "Run marks in the gutter, Tests: Run last, and save-triggered runs scoped to the related tests."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.13.2",
+      "title": "Explain and fix with AI",
+      "text": "Send a diagnostic, failed test, build error or terminal selection to the agent as a compact prompt."
     }
   ]
 }
