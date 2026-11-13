@@ -13,6 +13,7 @@ impl App {
         self.assist_tick(now, &mut want);
         self.inline_tick(now, &mut want);
         self.guard_lsp_memory(now, &mut want);
+        self.res_tick(now, &mut want);
         if self.last_trim.elapsed() > Duration::from_secs(4) {
             self.last_trim = Instant::now();
             crate::app_lsp::release_memory();

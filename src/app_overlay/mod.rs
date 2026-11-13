@@ -63,6 +63,8 @@ pub enum Action {
     Compare(crate::app_gitcmp::CmpPick),
     /// Trust prompt of the project settings and the Python interpreter picker (see `app_projcfg`).
     Project(crate::app_projcfg::ProjPick),
+    /// Resource panel rows and their Stop / Restart menus (see `resmon`).
+    Res(crate::resmon::ResPick),
 }
 
 #[derive(Clone)]

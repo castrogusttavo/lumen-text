@@ -1503,6 +1503,11 @@ impl Drop for MultiSession {
 }
 
 impl MultiSession {
+    /// Pid of the adapter process this session started, if it owns one.
+    pub fn adapter_pid(&self) -> Option<u32> {
+        self.adapter.as_ref().map(Child::id)
+    }
+
     /// Connect to a running js-debug server and begin the handshake (`initialize` + `launch`).
     pub fn connect(host: &str, port: u16, launch: Value, wake: Wake) -> io::Result<MultiSession> {
         let mut root = Dap::connect_tcp(host, port, wake.clone())?;

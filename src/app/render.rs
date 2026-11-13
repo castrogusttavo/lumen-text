@@ -560,6 +560,9 @@ impl App {
             let own = mem::snapshot().map_or(0, |m| m.pss_kb) as f64 / 1024.0;
             let mut s = format!("RAM {own:.0} MB");
             s.push_str(&self.lspx_ram_suffix());
+            if self.res.over {
+                s.push_str(" · over budget");
+            }
             self.mem_cache = (Instant::now(), s);
         }
         self.mem_cache.1.clone()

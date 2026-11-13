@@ -246,7 +246,7 @@ impl App {
         if self.lspx_apply_setting(key, v) {
             return;
         }
-        if self.inline_apply_setting(key, v) {
+        if self.inline_apply_setting(key, v) || self.res_apply_setting(key, v) {
             return;
         }
         let b = v.as_bool();

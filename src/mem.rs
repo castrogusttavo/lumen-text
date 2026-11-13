@@ -98,6 +98,22 @@ fn resident_kb(_pid: u32) -> Option<u64> {
     None
 }
 
+/// PSS and RSS of any process of ours; outside Linux both are the resident size.
+#[cfg(target_os = "linux")]
+pub fn mem_of(pid: u32) -> Option<MemSnapshot> {
+    let text = fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok()?;
+    let field = |name: &str| -> Option<u64> {
+        text.lines().find(|l| l.starts_with(name))?.split_whitespace().nth(1)?.parse().ok()
+    };
+    Some(MemSnapshot { pss_kb: field("Pss:")?, rss_kb: field("Rss:")? })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn mem_of(pid: u32) -> Option<MemSnapshot> {
+    let kb = resident_kb(pid)?;
+    Some(MemSnapshot { pss_kb: kb, rss_kb: kb })
+}
+
 #[cfg(target_os = "linux")]
 pub fn pss_of(pid: u32) -> Option<u64> {
     let text = fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok()?;

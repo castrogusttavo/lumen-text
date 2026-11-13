@@ -166,6 +166,9 @@ pub struct Config {
     /// Paragraph direction of lines with right-to-left text (see `bidi`): "auto" (the first strong
     /// char decides, the default) or "ltr" (always left to right; RTL runs are still reordered).
     pub bidi_paragraph: String,
+    /// Soft memory budget in MB for the editor and its language servers (0 = off): above it a
+    /// warning shows and the resource panel offers to stop idle servers (see `resmon`).
+    pub mem_budget_mb: u32,
 }
 
 /// `problems_scope` values; anything else is "open_files".
@@ -398,6 +401,7 @@ impl Default for Config {
             code_actions_on_save: BTreeMap::new(),
             inline_completion: false,
             bidi_paragraph: "auto".into(),
+            mem_budget_mb: 0,
         }
     }
 }
@@ -712,6 +716,7 @@ impl Config {
             code_actions_on_save: parse_code_actions(&v["code_actions_on_save"]),
             inline_completion: v["inline_completion"].as_bool().unwrap_or(false),
             bidi_paragraph: crate::bidi::normalize(v["bidi_paragraph"].as_str()),
+            mem_budget_mb: crate::resmon::clamp_budget(v["mem_budget_mb"].as_f64()),
         }
     }
 
@@ -748,6 +753,7 @@ impl Config {
         v["debug_open_panel"] = json!(self.debug_open_panel);
         v["spell_check"] = json!(self.spell_check);
         v["inline_completion"] = json!(self.inline_completion);
+        v["mem_budget_mb"] = json!(self.mem_budget_mb);
         v["sidebar_width"] = json!(self.sidebar_width);
         v["git_worktree_dir"] = json!(self.git_worktree_dir);
         v["scrollbar_v"] = json!(2);
@@ -906,6 +912,7 @@ mod tests {
             code_actions_on_save: [("*".to_string(), vec!["source.fixAll".to_string()])].into(),
             inline_completion: true,
             bidi_paragraph: "ltr".into(),
+            mem_budget_mb: 2048,
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

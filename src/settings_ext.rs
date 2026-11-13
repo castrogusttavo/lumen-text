@@ -185,6 +185,13 @@ pub fn defs() -> Vec<SettingDef> {
             Choice(&["auto", "ltr"]),
         ),
         d(
+            "mem_budget_mb",
+            "Status bar",
+            "Memory budget (MB)",
+            "Soft limit for the editor and its language servers (0 = off). Above it the memory item warns and the resource panel (click it) offers to stop idle servers; nothing is stopped by itself.",
+            Number { min: 0.0, max: 65536.0, step: 256.0 },
+        ),
+        d(
             "build_command",
             "Build",
             "Build command",
@@ -259,6 +266,7 @@ pub fn defaults() -> Value {
         "problems_scope": "open_files",
         "inline_completion": false,
         "bidi_paragraph": "auto",
+        "mem_budget_mb": 0,
     })
 }
 
@@ -283,6 +291,7 @@ pub fn values(c: &Config) -> Value {
         "problems_scope": c.problems_scope,
         "inline_completion": c.inline_completion,
         "bidi_paragraph": c.bidi_paragraph,
+        "mem_budget_mb": c.mem_budget_mb,
     })
 }
 

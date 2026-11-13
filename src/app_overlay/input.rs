@@ -306,6 +306,7 @@ impl App {
             Action::DebugConfig(id) => self.debug_pick_config(&id),
             Action::Compare(p) => self.cmp_pick(p),
             Action::Project(p) => self.projcfg_pick(p),
+            Action::Res(p) => self.res_pick(p),
             Action::UndoBranch(n) => {
                 if let Some(d) = self.docs.get_mut(self.active)
                     && let Some(sel) = d.buf.redo_branch(n)

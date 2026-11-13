@@ -723,6 +723,18 @@
   "default": "auto"
  },
  {
+  "key": "mem_budget_mb",
+  "section": "Status bar",
+  "label": "Memory budget (MB)",
+  "help": "Soft limit for the editor and its language servers (0 = off). Above it the memory item warns and the resource panel (click it) offers to stop idle servers; nothing is stopped by itself.",
+  "kind": "number",
+  "range": [
+   0,
+   65536
+  ],
+  "default": 0
+ },
+ {
   "key": "build_command",
   "section": "Build",
   "label": "Build command",
