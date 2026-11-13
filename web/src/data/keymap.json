@@ -248,6 +248,30 @@
   "id": "ShrinkSelection"
  },
  {
+  "combo": "ctrl+alt+down",
+  "id": "NextFunction"
+ },
+ {
+  "combo": "ctrl+alt+up",
+  "id": "PrevFunction"
+ },
+ {
+  "combo": "ctrl+alt+right",
+  "id": "NextClass"
+ },
+ {
+  "combo": "ctrl+alt+left",
+  "id": "PrevClass"
+ },
+ {
+  "combo": "ctrl+alt+f",
+  "id": "SelectFunction"
+ },
+ {
+  "combo": "ctrl+alt+c",
+  "id": "SelectClass"
+ },
+ {
   "combo": "ctrl+shift+alt+up",
   "id": "ColumnSelectUp"
  },

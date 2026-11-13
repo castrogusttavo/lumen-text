@@ -1522,7 +1522,7 @@ impl App {
     // ───────────── selection range / call hierarchy ─────────────
 
     pub fn expand_selection(&mut self) {
-        let Some((i, li)) = self.with_server() else { return self.say("expand selection needs the language server") };
+        let Some((i, li)) = self.with_server() else { return self.structural_expand() };
         let at = self.docs[i].ed.head();
         let (l, c) = self.docs[i].lsp_pos(at);
         let uri = self.docs[i].uri().unwrap_or_default();
