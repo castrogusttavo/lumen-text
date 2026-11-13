@@ -1064,7 +1064,7 @@ mod tests {
 
     #[test]
     fn ssh_args_multiplex_and_never_prompt() {
-        let t = Target::parse("me@h:2200").unwrap();
+        let t = Target::parse("ssh://me@h:2200").unwrap();
         let a = ssh_args(&t, true).join(" ");
         assert!(a.contains("BatchMode=yes") && a.contains("ControlMaster=auto") && a.contains("ControlPersist"), "{a}");
         assert!(a.ends_with("-p 2200"), "{a}");
