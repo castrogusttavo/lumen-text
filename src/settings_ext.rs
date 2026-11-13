@@ -190,6 +190,8 @@ pub fn defs() -> Vec<SettingDef> {
             "Memory budget (MB)",
             "Soft limit for the editor and its language servers (0 = off). Above it the memory item warns and the resource panel (click it) offers to stop idle servers; nothing is stopped by itself.",
             Number { min: 0.0, max: 65536.0, step: 256.0 },
+        ),
+        d(
             "vim_mode",
             "Editor",
             "Vim modal editing",

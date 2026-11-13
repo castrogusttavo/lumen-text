@@ -1280,7 +1280,6 @@ impl App {
             StatusBtn::Inline => self.inline_status_click(),
             StatusBtn::Ram => self.open_resources(),
             StatusBtn::Pr => self.pr_open(),
-            StatusBtn::Ram => {}
         }
         true
     }
