@@ -431,8 +431,19 @@ mod tests {
         app.ask_key(&Key::Named(NamedKey::Escape));
         assert!(app.terms.get(busy).is_some() && app.ask_open().is_none(), "cancel keeps the terminal");
 
-        // Quitting looks at every terminal; "Quit anyway" quits (the event loop exits next turn).
+        // "Terminal: Kill" acts on the active terminal: "Close anyway" kills the busy one only.
         let idle = app.terms.add(shell(&dir, "read x; true"), false);
+        app.terms.show(busy);
+        app.run_cmd(crate::app_overlay::Cmd::CloseTerminal);
+        assert_eq!(app.ask_open().map(|a| a.action.clone()), Some(AskAction::CloseTerminal(busy)));
+        app.ask_key(&Key::Named(NamedKey::ArrowRight));
+        app.ask_key(&Key::Named(NamedKey::Enter));
+        assert!(app.terms.get(busy).is_none(), "Close anyway kills the terminal");
+        assert!(app.terms.get(idle).is_some(), "the other terminal stays");
+
+        // Quitting looks at every terminal; "Quit anyway" quits (the event loop exits next turn).
+        let busy = app.terms.add(shell(&dir, "sleep 30; true"), false);
+        assert!(wait_job(&app, busy).is_some_and(|j| j.contains("sleep")));
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert_eq!(app.running_procs().len(), 1, "only the busy terminal counts");
         assert!(!app.try_quit(), "quit waits for the answer");
@@ -442,15 +453,6 @@ mod tests {
         assert!(!app.try_quit());
         app.ask_key(&Key::Character("y".into()));
         assert!(app.exit_requested, "Quit anyway quits");
-
-        // "Terminal: Kill" acts on the active terminal: "Close anyway" kills the busy one only.
-        app.terms.show(busy);
-        app.run_cmd(crate::app_overlay::Cmd::CloseTerminal);
-        assert_eq!(app.ask_open().map(|a| a.action.clone()), Some(AskAction::CloseTerminal(busy)));
-        app.ask_key(&Key::Named(NamedKey::ArrowRight));
-        app.ask_key(&Key::Named(NamedKey::Enter));
-        assert!(app.terms.get(busy).is_none(), "Close anyway kills the terminal");
-        assert!(app.terms.get(idle).is_some(), "the other terminal stays");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
