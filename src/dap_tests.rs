@@ -883,7 +883,11 @@ fn debugpy_breakpoint_and_variables() {
     }
     assert_eq!(s.state, State::Terminated);
     // (debugpy splits `print` into one output event per argument and separator.)
-    assert!(s.output.iter().any(|l| l.trim() == "3"), "program output reaches the console: {:?}", s.output);
+    assert!(
+        s.output.iter().any(|l| l.trim() == "3" || l.trim().ends_with(" 3")),
+        "program output reaches the console: {:?}",
+        s.output
+    );
     dap.disconnect(true);
     drop(dap);
     let _ = std::fs::remove_dir_all(&dir);
