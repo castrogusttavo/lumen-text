@@ -740,7 +740,7 @@ not json
         fake_tool(
             &dir,
             "cargo",
-            "echo '{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"rendered\":\"error: boom\\n\"}}'\nexit 101",
+            "printf '%s\\n' '{\"reason\":\"compiler-message\",\"message\":{\"level\":\"error\",\"rendered\":\"error: boom\\n\"}}'\nexit 101",
         );
         let e = a.run_prelaunch_program(&file, &dir, None).unwrap_err().to_string();
         assert!(e.contains("error: boom") && e.contains("failed"), "{e}");

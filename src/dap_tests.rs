@@ -881,7 +881,8 @@ fn debugpy_breakpoint_and_variables() {
         pump(&mut dap, &mut s, |s| matches!(s.state, State::Stopped { .. } | State::Terminated), 10);
     }
     assert_eq!(s.state, State::Terminated);
-    assert!(s.output.iter().any(|l| l.contains("total 3")), "program output reaches the console: {:?}", s.output);
+    // (debugpy splits `print` into one output event per argument and separator.)
+    assert!(s.output.iter().any(|l| l.trim() == "3"), "program output reaches the console: {:?}", s.output);
     dap.disconnect(true);
     drop(dap);
     let _ = std::fs::remove_dir_all(&dir);
@@ -899,9 +900,21 @@ fn debugpy_attach_to_a_listening_script() {
     let adapter = Registry::builtin().for_language("python").unwrap().clone();
     let python = adapter.resolve(&dir).expect("python");
     let port = free_port();
+    // debugpy's server takes one client, so probing its port would use it up: the launcher script
+    // drops a flag file once it listens instead.
+    let flag = dir.join("listening");
+    let launcher = dir.join("launcher.py");
+    std::fs::write(
+        &launcher,
+        format!(
+            "import debugpy, runpy\ndebugpy.listen(('127.0.0.1', {port}))\nopen({:?}, 'w').close()\ndebugpy.wait_for_client()\nrunpy.run_path({:?}, run_name='__main__')\n",
+            flag.to_string_lossy(),
+            src.to_string_lossy()
+        ),
+    )
+    .unwrap();
     let mut target = std::process::Command::new(&python)
-        .args(["-m", "debugpy", "--listen", &format!("127.0.0.1:{port}"), "--wait-for-client"])
-        .arg(&src)
+        .arg(&launcher)
         .current_dir(&dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -909,7 +922,7 @@ fn debugpy_attach_to_a_listening_script() {
         .spawn()
         .expect("start the script under debugpy");
     let end = Instant::now() + Duration::from_secs(60);
-    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() && Instant::now() < end {
+    while !flag.exists() && Instant::now() < end {
         thread::sleep(Duration::from_millis(100));
     }
     let ov = crate::debug_model::LaunchOverride {
