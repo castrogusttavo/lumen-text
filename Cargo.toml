@@ -59,3 +59,57 @@ unicode-width = "0.2.2"
 vte = "0.15.0"
 winit = "0.30.13"
 zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
+
+# Accessibility stack (AT-SPI over D-Bus on Linux): not hot code, so favour size over speed.
+[profile.release.package.accesskit_unix]
+opt-level = "s"
+[profile.release.package.accesskit_atspi_common]
+opt-level = "s"
+[profile.release.package.accesskit_consumer]
+opt-level = "s"
+[profile.release.package.atspi]
+opt-level = "s"
+[profile.release.package.atspi-common]
+opt-level = "s"
+[profile.release.package.atspi-proxies]
+opt-level = "s"
+[profile.release.package.zbus]
+opt-level = "s"
+[profile.release.package.zbus_names]
+opt-level = "s"
+[profile.release.package.zvariant]
+opt-level = "s"
+[profile.release.package.zvariant_utils]
+opt-level = "s"
+[profile.release.package.zbus_xml]
+opt-level = "s"
+[profile.release.package.zbus-lockstep]
+opt-level = "s"
+[profile.release.package.async-io]
+opt-level = "s"
+[profile.release.package.async-executor]
+opt-level = "s"
+[profile.release.package.async-process]
+opt-level = "s"
+[profile.release.package.async-lock]
+opt-level = "s"
+[profile.release.package.async-channel]
+opt-level = "s"
+[profile.release.package.async-broadcast]
+opt-level = "s"
+[profile.release.package.async-task]
+opt-level = "s"
+[profile.release.package.event-listener]
+opt-level = "s"
+[profile.release.package.blocking]
+opt-level = "s"
+[profile.release.package.futures-lite]
+opt-level = "s"
+[profile.release.package.enumflags2]
+opt-level = "s"
+[profile.release.package.endi]
+opt-level = "s"
+[profile.release.package.hex]
+opt-level = "s"
+[profile.release.package.ordered-stream]
+opt-level = "s"
