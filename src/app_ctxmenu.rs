@@ -341,6 +341,8 @@ pub enum Act {
     UndoCommit,
     Checkout,
     Revert,
+    /// Interactive rebase from this commit on (see `app_gitpanel::rebase`).
+    RebaseFrom,
     /// Changed files of the Git panel: stash them.
     StashFiles,
     /// Run a palette command by id (the editor's menu).
@@ -534,6 +536,7 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
                 sep(),
                 item(Act::CherryPick, "Cherry-pick", "ui/git_commit", ""),
                 item(Act::Revert, "Revert", "ui/rotate_ccw", ""),
+                item(Act::RebaseFrom, "Interactive Rebase from Here…", "ui/git_branch", ""),
                 sep(),
                 item(Act::CopyHash, "Copy Hash", "hugeicons/copy", ""),
             ];
@@ -1051,6 +1054,7 @@ impl App {
             | Act::UndoCommit
             | Act::Checkout
             | Act::Revert
+            | Act::RebaseFrom
             | Act::StashFiles
             | Act::Run(_) => {}
         }

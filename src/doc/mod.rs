@@ -185,6 +185,11 @@ pub struct Doc {
     /// current stop was selected (to shift later stops by what the user typed).
     pub snippet: Option<(Vec<(usize, usize)>, usize, usize)>,
     pub blame: Option<(usize, String)>,
+    /// The inline blame text as drawn last frame: a click on it opens the commit card.
+    pub blame_hit: Option<Rect>,
+    /// Lines (0-based) with pull request review comments, and the `App::gitbg.pr.rev` they are from.
+    pub pr_lines: Vec<usize>,
+    pub pr_rev: u64,
     /// Side-by-side Markdown reader (None = closed, costs nothing).
     pub md: Option<Box<crate::app_md::MdState>>,
     /// Image tab (PNG, JPEG, GIF, WebP, SVG): the picture shown instead of the text (see `imgview`).
@@ -317,6 +322,9 @@ impl Doc {
             conflict: false,
             snippet: None,
             blame: None,
+            blame_hit: None,
+            pr_lines: Vec::new(),
+            pr_rev: 0,
             md: None,
             img: None,
             inlay: Default::default(),

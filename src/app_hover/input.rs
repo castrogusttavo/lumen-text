@@ -249,6 +249,8 @@ impl App {
             self.hover = None;
             self.push_nav();
             self.open_path(std::path::Path::new(p), Some((l, c)));
+        } else if url.starts_with("lumen:git:") {
+            self.git_link(url);
         } else if url == "lumen:more" {
             self.hover_run(Act::Definition);
         } else if url == "lumen:more-type" {

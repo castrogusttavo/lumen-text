@@ -574,6 +574,7 @@ impl App {
                     self.docs.get(self.active).map(|d| format!("Current: {}", d.buf.encoding.label())),
                 ),
                 StatusBtn::Project => self.projcfg_tip(),
+                StatusBtn::Pr => t("Pull request", None, self.pr_tip()),
             },
         }
     }

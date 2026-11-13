@@ -437,6 +437,7 @@ impl Doc {
         self.fold_pills.clear();
         self.lens_hits.clear();
         self.conflict_hits.clear();
+        self.blame_hit = None;
     }
 }
 

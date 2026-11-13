@@ -650,6 +650,7 @@ impl Doc {
 
         // Inline git blame for the cursor line, after the code.
         let mut blame_end: Option<(usize, i32)> = None;
+        self.blame_hit = None;
         if let Some((bl, text)) = &self.blame
             && sel.is_empty()
             && *bl == cur_line
@@ -659,6 +660,7 @@ impl Doc {
             if x < body.right() {
                 tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, text, theme.line_number, body, false);
                 blame_end = Some((*bl, x + tx.ui_width(text, false)));
+                self.blame_hit = Some(Rect::new(x, ry(r), tx.ui_width(text, false), lh));
             }
         }
 
@@ -811,6 +813,13 @@ impl Doc {
                 if i0 < i1 {
                     cv.fill_clip(Rect::new(rect.x + gw0 - 6, ry(i0), 3, ry(i1 - 1) + lh - ry(i0)), color, rect);
                 }
+            }
+        }
+        // Pull request review comments: a small speech-bubble-colored square between the numbers and
+        // the git bars; a click on it opens the comments (see `App::pr_marker_click`).
+        for &l in &self.pr_lines {
+            if let Some(y) = line_y(l) {
+                cv.fill_round(Rect::new(rect.x + gw0 - 15, y + (lh - 7) / 2, 7, 7), 2, c.accent);
             }
         }
         for &(l, ok) in &self.test_marks {

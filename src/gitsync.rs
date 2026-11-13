@@ -189,6 +189,12 @@ pub enum Op {
     },
     /// `git worktree prune`: forget worktrees whose folder is gone.
     WorktreePrune,
+    /// Interactive rebase of a generated plan (see `gitrebase`): no editor ever opens.
+    Rebase(crate::gitrebase::RebasePlan),
+    /// `git rebase --continue` after the conflicts were resolved and staged.
+    RebaseContinue,
+    /// `git rebase --abort`.
+    RebaseAbort,
 }
 
 /// Everything a release is published with (the confirmation card shows all of it).
@@ -228,6 +234,7 @@ impl Op {
             Op::DeleteRemote { .. } => "Delete on remote",
             Op::Release(_) => "Release",
             Op::WorktreeAdd { .. } | Op::WorktreeRemove { .. } | Op::WorktreePrune => "Worktree",
+            Op::Rebase(_) | Op::RebaseContinue | Op::RebaseAbort => "Rebase",
         }
     }
 
@@ -244,6 +251,9 @@ impl Op {
             Op::WorktreeAdd { .. } => "Creating worktree",
             Op::WorktreeRemove { .. } => "Removing worktree",
             Op::WorktreePrune => "Pruning worktrees",
+            Op::Rebase(_) => "Rebasing",
+            Op::RebaseContinue => "Continuing the rebase",
+            Op::RebaseAbort => "Aborting the rebase",
         }
     }
 
@@ -260,6 +270,8 @@ impl Op {
             Op::WorktreeAdd { .. } => "Worktree created",
             Op::WorktreeRemove { .. } => "Worktree removed",
             Op::WorktreePrune => "Worktrees pruned",
+            Op::Rebase(_) | Op::RebaseContinue => "Rebase complete",
+            Op::RebaseAbort => "Rebase aborted",
         }
     }
 }
@@ -292,6 +304,19 @@ pub fn args_for(op: &Op, pull_configured: bool) -> Vec<String> {
         }
         Op::WorktreeRemove { path, force, locked } => crate::worktree::remove_args(path, *force, *locked),
         Op::WorktreePrune => crate::worktree::prune_args(),
+        Op::Rebase(p) => p.args(),
+        Op::RebaseContinue => s(&["rebase", "--continue"]),
+        Op::RebaseAbort => s(&["rebase", "--abort"]),
+    }
+}
+
+/// Environment variables a job's programs get on top of the fixed ones of [`step_command`]:
+/// `GIT_SEQUENCE_EDITOR` / `GIT_EDITOR` for the rebase operations, nothing for the others.
+pub fn env_for(op: &Op) -> Vec<(String, String)> {
+    match op {
+        Op::Rebase(p) => p.env(),
+        Op::RebaseContinue | Op::RebaseAbort => crate::gitrebase::resume_env(),
+        _ => Vec::new(),
     }
 }
 
@@ -502,7 +527,7 @@ fn finish(tx: &Sender<Msg>, wake: &(dyn Fn() + Send + Sync), r: Result<String, F
 
 /// One step of a job: never prompts (no terminal: new session; `GIT_TERMINAL_PROMPT=0`,
 /// `GH_PROMPT_DISABLED=1`), output piped.
-fn step_command(program: &str, top: &Path, args: &[String]) -> Command {
+fn step_command(program: &str, top: &Path, args: &[String], env: &[(String, String)]) -> Command {
     let mut cmd = Command::new(program);
     if program == "git" {
         cmd.arg("-C").arg(top);
@@ -515,6 +540,7 @@ fn step_command(program: &str, top: &Path, args: &[String]) -> Command {
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("NO_COLOR", "1")
         .env("LC_ALL", "C")
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -605,7 +631,8 @@ pub fn spawn(top: &Path, op: Op, wake: crate::lsp::Wake) -> Job {
         finish(&tx, &*wake, Ok(summarize(&op, "", &[])));
         return job;
     };
-    let mut child = match step_command(program, top, &args).spawn() {
+    let env = env_for(&op);
+    let mut child = match step_command(program, top, &args, &env).spawn() {
         Ok(c) => c,
         Err(e) => {
             finish(&tx, &*wake, Err(Fail { kind: FailKind::Other, text: format!("{program}: {e}") }));
@@ -628,7 +655,7 @@ pub fn spawn(top: &Path, op: Op, wake: crate::lsp::Wake) -> Job {
             if stop.load(Ordering::SeqCst) {
                 return finish(&tx, &*wake, Err(Fail { kind: FailKind::Cancelled, text: "Cancelled".into() }));
             }
-            child = match step_command(program, &top, &args).spawn() {
+            child = match step_command(program, &top, &args, &env).spawn() {
                 Ok(c) => c,
                 Err(e) => {
                     let text = format!("{program}: {e}");
