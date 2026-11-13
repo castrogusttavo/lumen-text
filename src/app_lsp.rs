@@ -1685,6 +1685,8 @@ impl App {
             if std::env::var_os("LUMEN_DEBUG").is_some() {
                 eprintln!("[lsp] completion skipped: no server");
             }
+            // No server: the snippets still complete.
+            self.snippet_completion(true);
             return;
         };
         let at = self.docs[i].ed.head();
@@ -1772,6 +1774,8 @@ impl App {
                 raw: it.clone(),
             });
         }
+        // The user's, the project's and the built-in snippets ride along with the server's list.
+        items.extend(crate::app_snippets::snippet_citems(&self.root, d.lang));
         if items.is_empty() {
             self.completion = None;
             return;
@@ -1784,7 +1788,7 @@ impl App {
         self.request_redraw();
     }
 
-    fn refilter_completion_into(&self, c: &mut Completion) {
+    pub(crate) fn refilter_completion_into(&self, c: &mut Completion) {
         let Some(d) = self.docs.get(self.active) else { return };
         let head = d.ed.head();
         let prefix = if head >= c.start { d.buf.slice(c.start, head) } else { String::new() };
@@ -1841,6 +1845,9 @@ impl App {
             }
         }
         if !ts {
+            if typed.is_some_and(is_ident) && self.completion.is_none() {
+                self.snippet_completion(false);
+            }
             return;
         }
         match typed {
@@ -1909,6 +1916,14 @@ impl App {
             Some(r) => (d.pos_from_lsp(r.sl, r.sc), d.pos_from_lsp(r.el, r.ec).max(head)),
             None => (c.start, head),
         };
+        // A snippet from our own files: expand it (tab stops, variables) instead of pasting text.
+        if let Some(body) = item.raw["__snippet"].as_str() {
+            let path = d.path().map(std::path::Path::to_path_buf);
+            let ctx = crate::app_snippets::env(&self.root, &mut self.clip, body, path.as_deref());
+            d.insert_snippet_ctx(s, e, body, ctx);
+            self.request_redraw();
+            return;
+        }
         d.buf.close_group();
         let before = d.ed.sel;
         d.buf.replace(s, e, &item.insert, EditKind::Other, before);

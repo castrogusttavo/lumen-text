@@ -296,12 +296,23 @@ impl App {
                             st -= 1;
                         }
                         let word = d.buf.slice(st, head);
-                        match crate::snippets::find(d.lang, &word) {
-                            Some(sn) => {
-                                d.insert_snippet(st, head, sn.body);
-                                true
+                        let (l, col) = d.buf.line_col(head);
+                        let before: String = d.buf.line(l).chars().take(col).collect();
+                        let store = crate::snippet_store::current(&self.root);
+                        if let Some((n, sn)) = store.lookup(d.lang, &before) {
+                            // The user's or project's snippet (VS Code syntax, variables, mirrors).
+                            let path = d.path().map(std::path::Path::to_path_buf);
+                            let ctx = crate::app_snippets::env(&self.root, &mut self.clip, &sn.body, path.as_deref());
+                            d.insert_snippet_ctx(head - n, head, &sn.body, ctx);
+                            true
+                        } else {
+                            match crate::snippets::find(d.lang, &word) {
+                                Some(sn) => {
+                                    d.insert_snippet(st, head, sn.body);
+                                    true
+                                }
+                                None => false,
                             }
-                            None => false,
                         }
                     } => {}
                 NamedKey::Tab
@@ -387,6 +398,7 @@ impl App {
         self.quit_armed = false;
         self.close_armed = None;
         if let Some(d) = self.docs.get_mut(self.active) {
+            d.snippet_sync();
             d.sync_edits();
         }
         self.on_typed(typed);

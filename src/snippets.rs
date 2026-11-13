@@ -49,70 +49,11 @@ pub fn find(lang: Option<&str>, prefix: &str) -> Option<&'static Snippet> {
     for_lang(lang).iter().find(|s| s.prefix == prefix)
 }
 
-pub struct Expanded {
-    pub text: String,
-    /// Tab stops in visiting order (`$1`, `$2`, … then `$0`), as char ranges into `text`.
-    pub stops: Vec<(usize, usize)>,
-}
+pub use crate::snippet_syntax::{Ctx, Expanded, expand as expand_with};
 
-/// Expand `body`, indenting continuation lines with `indent`.
+/// Expand `body` without a variable context, indenting continuation lines with `indent`.
 pub fn expand(body: &str, indent: &str) -> Expanded {
-    let chars: Vec<char> = body.chars().collect();
-    let mut text = String::new();
-    let mut n = 0usize; // chars in `text`
-    let mut stops: Vec<(u32, usize, usize)> = Vec::new(); // (index, start, end)
-    let mut i = 0;
-    let push = |text: &mut String, n: &mut usize, c: char| {
-        text.push(c);
-        *n += 1;
-    };
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '$' && i + 1 < chars.len() {
-            if chars[i + 1].is_ascii_digit() {
-                let mut j = i + 1;
-                let mut num = 0u32;
-                while j < chars.len() && chars[j].is_ascii_digit() {
-                    num = num * 10 + chars[j].to_digit(10).unwrap();
-                    j += 1;
-                }
-                stops.push((num, n, n));
-                i = j;
-                continue;
-            }
-            if chars[i + 1] == '{'
-                && let Some(close) = chars[i..].iter().position(|c| *c == '}')
-            {
-                let inner: String = chars[i + 2..i + close].iter().collect();
-                let (num, def) = inner.split_once(':').unwrap_or((inner.as_str(), ""));
-                if let Ok(num) = num.parse::<u32>() {
-                    let start = n;
-                    for d in def.chars() {
-                        push(&mut text, &mut n, d);
-                    }
-                    stops.push((num, start, n));
-                    i += close + 1;
-                    continue;
-                }
-            }
-        }
-        if c == '\n' {
-            push(&mut text, &mut n, '\n');
-            for ic in indent.chars() {
-                push(&mut text, &mut n, ic);
-            }
-        } else {
-            push(&mut text, &mut n, c);
-        }
-        i += 1;
-    }
-    // Visiting order: 1, 2, 3, … and `$0` last (at the end of the text if the body has none).
-    stops.sort_by_key(|(num, s, _)| (if *num == 0 { u32::MAX } else { *num }, *s));
-    let mut out: Vec<(usize, usize)> = stops.iter().map(|(_, s, e)| (*s, *e)).collect();
-    if !stops.iter().any(|(num, _, _)| *num == 0) {
-        out.push((n, n));
-    }
-    Expanded { text, stops: out }
+    expand_with(body, indent, &Ctx::default())
 }
 
 const HTML_TAGS: &[&str] = &[

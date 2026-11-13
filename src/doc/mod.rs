@@ -190,6 +190,8 @@ pub struct Doc {
     /// Active snippet: remaining/all stops (absolute char ranges), current index, buffer length when the
     /// current stop was selected (to shift later stops by what the user typed).
     pub snippet: Option<(Vec<(usize, usize)>, usize, usize)>,
+    /// Copies of the snippet's stops (same tab number used again), absolute char ranges.
+    pub snippet_mirrors: Vec<crate::snippet_syntax::Mirror>,
     pub blame: Option<(usize, String)>,
     /// Side-by-side Markdown reader (None = closed, costs nothing).
     pub md: Option<Box<crate::app_md::MdState>>,
@@ -325,6 +327,7 @@ impl Doc {
             disk_mtime,
             conflict: false,
             snippet: None,
+            snippet_mirrors: Vec::new(),
             blame: None,
             md: None,
             img: None,
@@ -339,10 +342,43 @@ impl Doc {
 
     /// Insert snippet `body` replacing chars [from, to) and start its tab-stop session.
     pub fn insert_snippet(&mut self, from: usize, to: usize, body: &str) {
+        self.insert_snippet_ctx(from, to, body, crate::snippet_syntax::Ctx::default())
+    }
+
+    /// Like [`Doc::insert_snippet`], resolving variables: the file, line and selection come from this
+    /// document, `ctx` supplies what only the app knows (clipboard, workspace).
+    pub fn insert_snippet_ctx(&mut self, from: usize, to: usize, body: &str, mut ctx: crate::snippet_syntax::Ctx) {
         use crate::buffer::{EditKind, Sel};
-        let (l, _) = self.buf.line_col(from);
-        let indent: String = self.buf.line(l).chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-        let ex = crate::snippets::expand(body, &indent);
+        let (l, col) = self.buf.line_col(from);
+        let line = self.buf.line(l);
+        let indent: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        if let Some(p) = self.buf.path.as_deref() {
+            ctx.filepath = p.to_string_lossy().into_owned();
+            ctx.filename = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            ctx.directory = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+        }
+        ctx.selection = self.ed.selected_text(&self.buf);
+        ctx.line_index = l;
+        ctx.cursor_index = 0;
+        ctx.current_word = {
+            let cs: Vec<char> = line.chars().collect();
+            let word = |c: &char| c.is_alphanumeric() || *c == '_';
+            let mut a = col.min(cs.len());
+            let mut b = a;
+            while a > 0 && word(&cs[a - 1]) {
+                a -= 1;
+            }
+            while b < cs.len() && word(&cs[b]) {
+                b += 1;
+            }
+            cs[a..b].iter().collect()
+        };
+        ctx.current_line = line;
+        ctx.line_comment = self.ed.comment.clone();
+        let (bs, be) = crate::snippet_store::block_comment(self.lang);
+        ctx.block_start = bs.to_string();
+        ctx.block_end = be.to_string();
+        let ex = crate::snippets::expand_with(body, &indent, &ctx);
         let before = self.ed.sel;
         self.buf.close_group();
         self.buf.replace(from, to, &ex.text, EditKind::Other, before);
@@ -352,33 +388,130 @@ impl Doc {
         self.ed.sel = Sel { anchor: first.0, head: first.1 };
         self.buf.set_after(self.ed.sel);
         self.snippet = if stops.len() > 1 { Some((stops, 0, self.buf.len_chars())) } else { None };
+        self.snippet_mirrors = if self.snippet.is_some() {
+            ex.mirrors
+                .into_iter()
+                .map(|m| crate::snippet_syntax::Mirror { start: from + m.start, end: from + m.end, ..m })
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.reveal = true;
         self.sync_edits();
+    }
+
+    /// What was typed into the current snippet stop shifts every later stop and rewrites the
+    /// stop's mirrors (live). Typing outside the stop ends the snippet session.
+    pub fn snippet_sync(&mut self) {
+        use crate::buffer::EditKind;
+        let Some((mut stops, idx, last_len)) = self.snippet.take() else { return };
+        let len = self.buf.len_chars();
+        let delta = len as isize - last_len as isize;
+        let (cs, ce) = stops[idx];
+        let new_end = (ce as isize + delta).max(cs as isize) as usize;
+        let head = self.ed.head();
+        if delta != 0 && !(cs..=new_end).contains(&head) {
+            self.snippet_mirrors.clear();
+            return;
+        }
+        let shift = |p: usize, by: isize| (p as isize + by).max(0) as usize;
+        let mut mirrors = std::mem::take(&mut self.snippet_mirrors);
+        if delta != 0 {
+            // Stops nested in the placeholder that was typed over are gone.
+            let mut keep = vec![true; stops.len()];
+            for (k, s) in stops.iter().enumerate().skip(idx + 1) {
+                if s.0 >= cs && s.1 <= ce {
+                    keep[k] = false;
+                }
+            }
+            for (k, s) in stops.iter_mut().enumerate().skip(idx + 1) {
+                if keep[k] && s.0 >= ce {
+                    s.0 = shift(s.0, delta);
+                    s.1 = shift(s.1, delta);
+                }
+            }
+            for m in &mut mirrors {
+                if m.start >= ce {
+                    m.start = shift(m.start, delta);
+                    m.end = shift(m.end, delta);
+                }
+            }
+            // Dropped stops collapse onto the end of the typed text so they stay valid.
+            for (k, s) in stops.iter_mut().enumerate().skip(idx + 1) {
+                if !keep[k] {
+                    *s = (new_end, new_end);
+                }
+            }
+            stops[idx].1 = new_end;
+        }
+        let value = self.buf.slice(stops[idx].0, stops[idx].1);
+        let mut order: Vec<usize> = (0..mirrors.len()).filter(|&k| mirrors[k].stop == idx).collect();
+        order.sort_by_key(|&k| std::cmp::Reverse(mirrors[k].start));
+        let mut touched = false;
+        for k in order {
+            let (ms, me) = (mirrors[k].start, mirrors[k].end);
+            if me > self.buf.len_chars()
+                || self.buf.slice(ms, me) == crate::snippet_syntax::mirror_text(&mirrors[k], &value)
+            {
+                continue;
+            }
+            let text = crate::snippet_syntax::mirror_text(&mirrors[k], &value);
+            if !touched {
+                self.buf.close_group();
+                touched = true;
+            }
+            let before = self.ed.sel;
+            self.buf.replace(ms, me, &text, EditKind::Other, before);
+            let by = text.chars().count() as isize - (me - ms) as isize;
+            mirrors[k].end = shift(me, by);
+            for (j, s) in stops.iter_mut().enumerate() {
+                if j != idx && s.0 >= me {
+                    s.0 = shift(s.0, by);
+                    s.1 = shift(s.1, by);
+                } else if j == idx && s.0 >= me {
+                    s.0 = shift(s.0, by);
+                    s.1 = shift(s.1, by);
+                    self.ed.sel =
+                        crate::buffer::Sel { anchor: shift(self.ed.sel.anchor, by), head: shift(self.ed.sel.head, by) };
+                }
+            }
+            for (j, m) in mirrors.iter_mut().enumerate() {
+                if j != k && m.start >= me {
+                    m.start = shift(m.start, by);
+                    m.end = shift(m.end, by);
+                }
+            }
+        }
+        if touched {
+            self.buf.set_after(self.ed.sel);
+            self.buf.close_group();
+        }
+        self.snippet_mirrors = mirrors;
+        self.snippet = Some((stops, idx, self.buf.len_chars()));
     }
 
     /// Tab inside a snippet: jump to the next stop. Returns false when no snippet is active.
     pub fn snippet_next(&mut self) -> bool {
         use crate::buffer::Sel;
-        let Some((stops, idx, last_len)) = self.snippet.take() else { return false };
-        let delta = self.buf.len_chars() as isize - last_len as isize;
-        let cur_start = stops[idx].0;
-        let mut stops = stops;
-        // What was typed inside the current stop shifts every later stop.
-        for s in stops.iter_mut().skip(idx + 1) {
-            if s.0 >= cur_start {
-                s.0 = (s.0 as isize + delta).max(0) as usize;
-                s.1 = (s.1 as isize + delta).max(0) as usize;
-            }
+        if self.snippet.is_none() {
+            return false;
         }
+        self.snippet_sync();
+        let Some((stops, idx, _)) = self.snippet.take() else { return false };
         let next = idx + 1;
         if next >= stops.len() {
+            self.snippet_mirrors.clear();
             return true;
         }
         let len = self.buf.len_chars();
         let (a, b) = (stops[next].0.min(len), stops[next].1.min(len));
         self.ed.sel = Sel { anchor: a, head: b };
         self.reveal = true;
-        self.snippet = if next + 1 < stops.len() { Some((stops, next, self.buf.len_chars())) } else { None };
+        if next + 1 < stops.len() {
+            self.snippet = Some((stops, next, self.buf.len_chars()));
+        } else {
+            self.snippet_mirrors.clear();
+        }
         true
     }
 

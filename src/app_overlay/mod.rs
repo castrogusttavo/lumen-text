@@ -67,6 +67,8 @@ pub enum Action {
     Res(crate::resmon::ResPick),
     /// Workspace folder pickers (see `app_workspace`).
     Workspace(crate::app_workspace::WsPick),
+    /// Snippet pickers (see `app_snippets`).
+    Snippet(crate::app_snippets::SnipPick),
 }
 
 #[derive(Clone)]

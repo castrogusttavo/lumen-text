@@ -267,6 +267,9 @@ pub enum Cmd {
     RemoteOpen,
     RemoteReconnect,
     RemoteSaveOverwrite,
+    SnippetsInsert,
+    SnippetsConfigure,
+    SnippetsImport,
 }
 
 impl Cmd {
@@ -544,4 +547,7 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Remote: Open folder over SSH…", "", Cmd::RemoteOpen),
     ("Remote: Reconnect", "", Cmd::RemoteReconnect),
     ("Remote: Save and overwrite the remote file", "", Cmd::RemoteSaveOverwrite),
+    ("Snippets: Insert…", "", Cmd::SnippetsInsert),
+    ("Snippets: Configure…", "", Cmd::SnippetsConfigure),
+    ("Snippets: Import from VS Code", "", Cmd::SnippetsImport),
 ];
