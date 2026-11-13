@@ -506,7 +506,7 @@ impl App {
             .filter_map(|t| t.term.live_group())
             .chain(self.ai.sessions.iter().filter_map(|s| s.term.live_group()))
             .chain(self.panel.running.as_ref().and_then(|r| u32::try_from(r.pid).ok()))
-            .chain(self.build.proc.as_ref().and_then(|r| u32::try_from(r.pid).ok()))
+            .chain(self.build.job_group())
             .collect();
         crate::pty::kill_groups(&pids);
     }

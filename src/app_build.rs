@@ -246,6 +246,11 @@ impl BuildState {
         self.proc.is_some()
     }
 
+    /// Process group of the running job (it leads its own session), for the exit teardown.
+    pub fn job_group(&self) -> Option<u32> {
+        self.proc.as_ref().and_then(|r| u32::try_from(r.pid).ok())
+    }
+
     /// The job that is alive, for a question naming it ("my-app (run)"); `None` when idle.
     pub fn running_label(&self) -> Option<String> {
         let job = self.job.filter(|_| self.running())?;
