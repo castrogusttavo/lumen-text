@@ -305,10 +305,8 @@ impl GitPanel {
 
 impl App {
     /// Repository of the project, or a message saying there is none.
-    pub(super) fn git_top(&mut self) -> Option<PathBuf> {
-        let top = git::toplevel(&self.git_root());
     pub(crate) fn git_top(&mut self) -> Option<PathBuf> {
-        let top = git::toplevel(&self.root);
+        let top = git::toplevel(&self.git_root());
         if top.is_none() {
             self.say("This folder is not a git repository");
         }
