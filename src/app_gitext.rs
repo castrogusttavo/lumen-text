@@ -24,7 +24,7 @@ use crate::{
 };
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc::{Receiver, TryRecvError, channel},
+    sync::mpsc::{TryRecvError, channel},
     time::{Duration, Instant},
 };
 
