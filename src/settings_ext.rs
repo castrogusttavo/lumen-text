@@ -206,6 +206,13 @@ pub fn defs() -> Vec<SettingDef> {
             Choice(&["vscode", "emacs", "vim"]),
         ),
         d(
+            "accessibility",
+            "Editor display",
+            "Screen reader",
+            "Auto exposes the window to screen readers (Orca, NVDA, Narrator, VoiceOver) and builds the accessibility tree only while one is connected; On builds it from the start; Off never connects. Takes effect the next time Lumen starts.",
+            Choice(&["auto", "on", "off"]),
+        ),
+        d(
             "build_command",
             "Build",
             "Build command",
@@ -303,6 +310,7 @@ pub fn defaults() -> Value {
         "bidi_paragraph": "auto",
         "mem_budget_mb": 0,
         "vim_mode": false, "keymap_preset": "vscode",
+        "accessibility": "auto",
     })
 }
 
@@ -330,6 +338,7 @@ pub fn values(c: &Config) -> Value {
         "bidi_paragraph": c.bidi_paragraph,
         "mem_budget_mb": c.mem_budget_mb,
         "vim_mode": c.vim_mode, "keymap_preset": c.keymap_preset,
+        "accessibility": c.accessibility,
     })
 }
 

@@ -178,6 +178,10 @@ pub struct Config {
     pub vim_mode: bool,
     /// Keymap preset on top of the built-in shortcuts: "vscode" (default), "emacs" or "vim".
     pub keymap_preset: String,
+    /// Screen reader support (AccessKit): "auto" (connect to the platform's accessibility API and
+    /// build the tree only while an assistive technology is attached, the default), "on" (also
+    /// build it before one asks) or "off" (never connect; takes effect at the next start).
+    pub accessibility: String,
 }
 
 /// `problems_scope` values; anything else is "open_files".
@@ -236,6 +240,14 @@ pub fn normalize_scrollbar(v: Option<&str>) -> String {
 pub fn normalize_updates(v: Option<&str>) -> String {
     match v {
         Some(m @ ("auto" | "notify" | "off")) => m.to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+/// `accessibility` setting values; anything else falls back to "auto".
+pub fn normalize_accessibility(v: Option<&str>) -> String {
+    match v {
+        Some(m @ ("auto" | "on" | "off")) => m.to_string(),
         _ => "auto".to_string(),
     }
 }
@@ -416,6 +428,7 @@ impl Default for Config {
             mem_budget_mb: 0,
             vim_mode: false,
             keymap_preset: "vscode".into(),
+            accessibility: "auto".into(),
         }
     }
 }
@@ -736,6 +749,7 @@ impl Config {
             mem_budget_mb: crate::resmon::clamp_budget(v["mem_budget_mb"].as_f64()),
             vim_mode: v["vim_mode"].as_bool().unwrap_or(false),
             keymap_preset: crate::keymap::normalize_preset(v["keymap_preset"].as_str()).to_string(),
+            accessibility: normalize_accessibility(v["accessibility"].as_str()),
         }
     }
 
@@ -804,6 +818,7 @@ impl Config {
         v["bidi_paragraph"] = json!(self.bidi_paragraph);
         v["vim_mode"] = json!(self.vim_mode);
         v["keymap_preset"] = json!(self.keymap_preset);
+        v["accessibility"] = json!(self.accessibility);
         self.view.write_json(&mut v);
         v
     }
@@ -942,6 +957,7 @@ mod tests {
             mem_budget_mb: 2048,
             vim_mode: true,
             keymap_preset: "emacs".into(),
+            accessibility: "on".into(),
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

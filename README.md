@@ -124,6 +124,7 @@ is in the [changelog](https://castrogusttavo.github.io/lumen-text/changelog), an
 - Compare with any branch, tag or commit (or a typed ref like `HEAD~3`): "Git: Compare with branch or commit…", "Compare two refs…", "Compare file with…"; the list of changed files opens each one side by side (`]` / `[` next / previous file, `f` the list), and its first entry switches to "since the branches diverged" (merge base, like a pull request; `main...` typed does the same)
 - 3-way merge editor for merge, rebase and cherry-pick conflicts: Incoming | Current panes over the editable result, per-conflict checkboxes, conflict navigation and "Mark resolved" (stages the file)
 - Right-to-left text: lines with Arabic, Hebrew or Persian are shown in visual order (Unicode bidirectional algorithm, joined Arabic shaping), with caret, click and selection mapped to the logical text; the Markdown preview and hover cards reorder and right-align RTL paragraphs. Lines without RTL letters never leave the fast path
+- Screen readers (Orca, NVDA, Narrator, VoiceOver) through AccessKit: the tree (tabs, editor lines with caret and selection, explorer, pickers, find bar, terminal, live status) is built only while one is connected; announces the caret line, the problem under it and mode changes. `accessibility`: `auto` / `on` / `off`
 
 **Debugging**
 - Breakpoints: click the gutter or `F9`; right click the gutter for a conditional breakpoint or a logpoint (prints a message instead of stopping), disable or remove. Verified breakpoints are solid dots, ones the adapter could not place are hollow. Breakpoints, watches and the launch choice are remembered per project
@@ -425,6 +426,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `bidi_paragraph` | `"auto"` | Direction of lines with Arabic, Hebrew or Persian text: `auto` (the first strong letter decides) or `ltr` (every line left to right, right-to-left words still reordered) |
 | `vim_mode` | `false` | Vim modal editing (Normal / Insert / Visual, counts, registers, operators, text objects, `.`, `q` / `@`, `:w :q :s`); see below |
 | `keymap_preset` | `"vscode"` | `"vscode"`, `"emacs"` or `"vim"` (the last turns Vim mode on); also in the palette as *Keymap: …* |
+| `accessibility` | `"auto"` | Screen reader support: `auto` (connect, build the tree only while a screen reader is attached), `on` (build it from the start) or `off` (never connect); applies at the next start |
 | `explorer_hide_gitignored` | `true` | Hide what `.gitignore`, the global ignore file and `.git/info/exclude` ignore; `false` shows those entries dimmed |
 | `watcher_poll_ms` | `2000` | Interval of the polling fallback used where inotify cannot be trusted (NFS, SMB, FUSE, 9p, FAT/exFAT, watch limit reached): only open files and expanded folders are checked (250 to 60000) |
 | `status_items` | `{}` | Map of bottom-bar item id to `true`/`false` (`search`, `problems`, `terminal`, `debug`, `git`, `ram`, `position`, `indent`, `encoding`, `language`) |

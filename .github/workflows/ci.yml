@@ -50,7 +50,8 @@ jobs:
         shell: bash
         run: |
           size=$(stat -c %s target/release/lumen-text)
-          budget=$((36 * 1024 * 1024))
+          # 38 MiB: tree-sitter grammars (about 5 MiB) and the AT-SPI/D-Bus stack of the screen reader support (about 5 MiB).
+          budget=$((38 * 1024 * 1024))
           echo "lumen-text release binary: $((size / 1024)) KiB (budget $((budget / 1024)) KiB)"
           [ "$size" -le "$budget" ] || { echo "binary size over budget" >&2; exit 1; }
 
