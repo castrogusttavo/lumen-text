@@ -232,6 +232,10 @@ pub enum Cmd {
     OpenFolderNewWindow,
     MoveTabToNewWindow,
     CloseWindow,
+    ToggleVimMode,
+    KeymapPresetVscode,
+    KeymapPresetEmacs,
+    KeymapPresetVim,
 }
 
 impl Cmd {
@@ -444,6 +448,10 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Macro: Replay…", "", Cmd::MacroReplayTimes),
     ("Macro: Save last as…", "", Cmd::MacroSave),
     ("Macro: Run saved…", "", Cmd::MacroRunSaved),
+    ("Vim: Toggle modal editing", "", Cmd::ToggleVimMode),
+    ("Keymap: VS Code preset (default)", "", Cmd::KeymapPresetVscode),
+    ("Keymap: Emacs preset", "", Cmd::KeymapPresetEmacs),
+    ("Keymap: Vim preset", "", Cmd::KeymapPresetVim),
     ("View: Toggle zen mode", "Ctrl+K Z", Cmd::ToggleZen),
     ("View: Toggle tab bar", "", Cmd::ToggleTabBar),
     ("View: Toggle status bar", "", Cmd::ToggleStatusBar),

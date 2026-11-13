@@ -185,6 +185,20 @@ pub fn defs() -> Vec<SettingDef> {
             Choice(&["auto", "ltr"]),
         ),
         d(
+            "vim_mode",
+            "Editor",
+            "Vim modal editing",
+            "Normal, Insert and Visual modes with counts, registers, operators and motions, text objects, `.` repeat, `q` / `@` macros and the ex commands :w :q :wq :e :s :d. Off by default and free when off. The Vim keymap preset turns it on too.",
+            Bool,
+        ),
+        d(
+            "keymap_preset",
+            "Editor",
+            "Keymap preset",
+            "Shortcut set on top of the built-in ones: vscode (the default), emacs (Ctrl+F/B/N/P, Ctrl+K, Ctrl+X chords, Alt+X commands) or vim (turns on Vim modal editing). keybindings.json still wins over a preset.",
+            Choice(&["vscode", "emacs", "vim"]),
+        ),
+        d(
             "build_command",
             "Build",
             "Build command",
@@ -259,6 +273,7 @@ pub fn defaults() -> Value {
         "problems_scope": "open_files",
         "inline_completion": false,
         "bidi_paragraph": "auto",
+        "vim_mode": false, "keymap_preset": "vscode",
     })
 }
 
@@ -283,6 +298,7 @@ pub fn values(c: &Config) -> Value {
         "problems_scope": c.problems_scope,
         "inline_completion": c.inline_completion,
         "bidi_paragraph": c.bidi_paragraph,
+        "vim_mode": c.vim_mode, "keymap_preset": c.keymap_preset,
     })
 }
 

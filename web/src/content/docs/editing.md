@@ -15,6 +15,12 @@ Every match is its own row with the old text struck through and the new text hig
 
 `Ctrl+Shift+R` starts and stops recording (a REC pill shows in the bottom bar). Keys, shortcuts, palette commands and typed text are recorded, not the mouse. `Ctrl+Alt+R` replays the last macro; *Macro: Replay…* asks for a count. A replay is one undo step. *Macro: Save last as…* writes `macros.json` in the config folder, *Macro: Run saved…* picks one, and `"ctrl+alt+1": "macro:name"` in `keybindings.json` binds it.
 
+## Vim mode and keymap presets
+
+Both are off by default. *Vim: Toggle modal editing* (or the `vim_mode` setting) adds Normal, Insert, Visual and Visual-line modes: counts, registers (`"a`, `"_`, `"+`), operators (`d c y > < gu gU g~`) with motions and text objects (words, paragraphs, brackets, quotes), `.` repeat, `u` and `Ctrl+R`, marks, `/` `?` `n` `N` `*` `#`, `q{reg}` / `@{reg}` macros (recorded like the keyboard macros above) and the ex commands `:w`, `:q`, `:wq`, `:e`, `:N`, `:s/a/b/g`, `:d`. The bottom bar shows the mode, the pending keys and the command line. Block visual mode is not implemented.
+
+*Keymap: VS Code / Emacs / Vim preset* (or `keymap_preset`) picks a shortcut set under your own `keybindings.json`. The Emacs preset gives `Ctrl+F/B/N/P/A/E/D/K/Y/W`, `Ctrl+S` search, the `Ctrl+X` chords and `Alt+X` for the palette; the Vim preset turns on Vim mode.
+
 ## Column selection and jump to character
 
 `Shift+Alt+drag`, middle-button drag or `Ctrl+Shift+Alt+arrows` select a box: one cursor per line, measured in visual columns with tabs expanded, with the cursor at the end of lines shorter than the box. Typing, paste (one clipboard line per cursor when the counts match), delete and copy go through the normal multi-cursor code. With word wrap the box follows buffer lines, not wrapped rows.

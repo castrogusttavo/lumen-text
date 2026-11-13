@@ -122,6 +122,73 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("explorer:delete", "DeletePath"),
 ];
 
+/// Keymap presets selectable in the settings (`keymap_preset`) and the palette. A preset is a
+/// table of rows like [`DEFAULTS`] consulted after the user's `keybindings.json` and before the
+/// built-in table. A row's command may be `none` (disable a built-in shortcut) or
+/// `key:<combo>[,<combo>]` (press other keys, see `App::inject_keys`: the cursor keys Emacs users expect).
+pub const PRESETS: &[&str] = &["vscode", "emacs", "vim"];
+
+/// Emacs: cursor keys, kill / yank, incremental search, `Ctrl+X` chords and `Alt+X` for the palette.
+pub const PRESET_EMACS: &[(&str, &str)] = &[
+    ("ctrl+f", "key:right"),
+    ("ctrl+b", "key:left"),
+    ("ctrl+n", "key:down"),
+    ("ctrl+p", "key:up"),
+    ("ctrl+a", "key:home"),
+    ("ctrl+e", "key:end"),
+    ("ctrl+d", "key:delete"),
+    ("ctrl+h", "key:backspace"),
+    ("ctrl+k", "key:shift+end,delete"),
+    ("ctrl+v", "key:pagedown"),
+    ("alt+v", "key:pageup"),
+    ("alt+f", "key:ctrl+right"),
+    ("alt+b", "key:ctrl+left"),
+    ("alt+d", "key:ctrl+delete"),
+    ("alt+shift+<", "key:ctrl+home"),
+    ("alt+shift+>", "key:ctrl+end"),
+    ("ctrl+w", "key:ctrl+x"),
+    ("alt+w", "key:ctrl+c"),
+    ("ctrl+y", "key:ctrl+v"),
+    ("ctrl+s", "Find"),
+    ("ctrl+r", "Find"),
+    ("ctrl+g", "key:escape"),
+    ("alt+x", "Commands"),
+    ("alt+;", "ToggleComment"),
+    ("ctrl+/", "Undo"),
+    ("alt+shift+%", "Replace"),
+    ("alt+g g", "GotoLine"),
+    ("ctrl+x ctrl+s", "Save"),
+    ("ctrl+x ctrl+f", "QuickOpen"),
+    ("ctrl+x b", "QuickOpen"),
+    ("ctrl+x k", "CloseTab"),
+    ("ctrl+x ctrl+c", "Quit"),
+    ("ctrl+x u", "Undo"),
+    ("ctrl+x h", "key:ctrl+a"),
+    ("ctrl+x 2", "SplitDown"),
+    ("ctrl+x 3", "SplitRight"),
+    ("ctrl+x o", "FocusOtherPane"),
+    ("ctrl+x 0", "ClosePane"),
+    ("ctrl+x ctrl+b", "ToggleSidebar"),
+    ("ctrl+x g", "GitPanel"),
+];
+
+/// Vim: the modal editing itself lives in `vim`; this adds the jump-list key.
+pub const PRESET_VIM: &[(&str, &str)] = &[("ctrl+o", "NavBack")];
+
+/// The canonical preset name for a setting value (anything unknown is "vscode").
+pub fn normalize_preset(name: Option<&str>) -> &'static str {
+    let n = name.map(|n| n.trim().to_lowercase());
+    PRESETS.iter().copied().find(|p| Some(*p) == n.as_deref()).unwrap_or("vscode")
+}
+
+fn preset_rows(name: &str) -> &'static [(&'static str, &'static str)] {
+    match name {
+        "emacs" => PRESET_EMACS,
+        "vim" => PRESET_VIM,
+        _ => &[],
+    }
+}
+
 /// Commands whose `Ctrl+<letter>` default also fires with Shift held (`Ctrl+Shift+W` closes the
 /// tab, `Ctrl+Shift+Q` quits, ...). An exact `Ctrl+Shift+<letter>` row or user binding still wins,
 /// which is why `Ctrl+Shift+G` opens the Git panel while `Ctrl+G` goes to a line.
@@ -188,6 +255,10 @@ pub fn bind_in(map: &mut HashMap<String, String>, combo: &str, id: &str) {
 #[derive(Default)]
 pub struct Keymap {
     map: HashMap<String, String>,
+    /// Rows of the active preset (empty for "vscode"); see [`PRESETS`].
+    preset: &'static [(&'static str, &'static str)],
+    /// While keys are injected for a `key:` row, the preset is skipped (no loops).
+    pub bypass: bool,
 }
 
 /// What the status bar shows while a chord waits for its second stroke: "ctrl+k" -> "Ctrl+K …".
@@ -294,7 +365,18 @@ impl Keymap {
                 }
             }
         }
-        Keymap { map }
+        Keymap { map, ..Default::default() }
+    }
+
+    /// Switch the preset (a name from [`PRESETS`]; unknown names mean "vscode").
+    pub fn set_preset(&mut self, name: &str) {
+        self.preset = preset_rows(normalize_preset(Some(name)));
+    }
+
+    /// The same keymap with a preset on.
+    pub fn with_preset(mut self, name: &str) -> Keymap {
+        self.set_preset(name);
+        self
     }
 
     pub fn load_from(path: &Path) -> Keymap {
@@ -316,6 +398,11 @@ impl Keymap {
     fn resolve(&self, cands: &[String]) -> Option<&str> {
         if let Some(v) = cands.iter().find_map(|c| self.map.get(c)) {
             return Some(v.as_str());
+        }
+        if !self.bypass
+            && let Some(id) = cands.iter().find_map(|c| self.preset.iter().find(|(k, _)| k == c).map(|(_, id)| *id))
+        {
+            return Some(id);
         }
         cands.iter().find_map(|c| DEFAULTS.iter().find(|(k, _)| k == c).map(|(_, id)| *id))
     }
@@ -360,7 +447,9 @@ impl Keymap {
     /// Does `prefix` (a normalized first stroke such as "ctrl+k") start any chord?
     pub fn is_chord_prefix(&self, prefix: &str) -> bool {
         let p = format!("{prefix} ");
-        self.map.keys().any(|k| k.starts_with(&p)) || DEFAULTS.iter().any(|(k, _)| k.starts_with(&p))
+        self.map.keys().any(|k| k.starts_with(&p))
+            || (!self.bypass && self.preset.iter().any(|(k, _)| k.starts_with(&p)))
+            || DEFAULTS.iter().any(|(k, _)| k.starts_with(&p))
     }
 
     /// The normalized first stroke of a chord for this key press, when it starts one.
@@ -704,5 +793,57 @@ mod tests {
         assert_eq!(k.lookup_mouse(true, false, false, "middle"), Some("none"), "the bare button's none covers it");
         // Mouse combos never leak into the key table.
         assert_eq!(k.lookup(true, false, false, &ch("click")), None);
+    }
+
+    #[test]
+    fn preset_rows_are_valid_and_unique() {
+        for (name, rows) in [("emacs", PRESET_EMACS), ("vim", PRESET_VIM)] {
+            let mut seen = std::collections::HashSet::new();
+            for (combo, id) in rows {
+                assert_eq!(normalize(combo), *combo, "{name}: {combo} is not normalized");
+                assert!(seen.insert(*combo), "{name}: {combo} twice");
+                match id.strip_prefix("key:") {
+                    Some(spec) => {
+                        for t in spec.split(',') {
+                            assert!(crate::script::parse_combo(t).is_some(), "{name}: {combo} presses unknown {t}");
+                        }
+                    }
+                    None => assert!(*id == "none" || Cmd::from_id(id).is_some(), "{name}: {combo} -> unknown {id}"),
+                }
+            }
+        }
+        assert_eq!(normalize_preset(Some(" Emacs ")), "emacs");
+        assert_eq!(normalize_preset(Some("vim")), "vim");
+        assert_eq!(normalize_preset(Some("nano")), "vscode");
+        assert_eq!(normalize_preset(None), "vscode");
+        assert!(PRESETS.iter().all(|p| normalize_preset(Some(p)) == *p));
+    }
+
+    #[test]
+    fn a_preset_sits_between_the_user_file_and_the_defaults() {
+        let k = Keymap::from_json(r#"{"ctrl+b": "none"}"#).with_preset("emacs");
+        assert_eq!(k.lookup(true, false, false, &ch("f")), Some("key:right"));
+        assert_eq!(k.lookup(true, false, false, &ch("s")), Some("Find"));
+        assert_eq!(k.lookup(true, false, false, &ch("b")), Some("none"), "the user's file wins");
+        assert_eq!(k.lookup(true, true, false, &ch("p")), Some("Commands"), "the built-ins answer the rest");
+        assert!(k.is_chord_prefix("ctrl+x"));
+        assert_eq!(
+            k.lookup(true, false, false, &ch("k")),
+            Some("key:shift+end,delete"),
+            "a plain binding beats the Ctrl+K chords"
+        );
+        assert_eq!(k.lookup_chord("ctrl+x", true, false, false, &ch("s")), Some("Save"));
+        assert_eq!(k.lookup_chord("ctrl+x", false, false, false, &ch("k")), Some("CloseTab"));
+        // Without a preset (or while keys are injected) nothing changes.
+        let plain = Keymap::default();
+        assert_eq!(plain.lookup(true, false, false, &ch("f")), Some("Find"));
+        assert!(!plain.is_chord_prefix("ctrl+x"));
+        let mut k = k;
+        k.bypass = true;
+        assert_eq!(k.lookup(true, false, false, &ch("f")), Some("Find"));
+        assert!(!k.is_chord_prefix("ctrl+x"));
+        k.bypass = false;
+        k.set_preset("vscode");
+        assert_eq!(k.lookup(true, false, false, &ch("f")), Some("Find"));
     }
 }

@@ -723,6 +723,27 @@
   "default": "auto"
  },
  {
+  "key": "vim_mode",
+  "section": "Editor",
+  "label": "Vim modal editing",
+  "help": "Normal, Insert and Visual modes with counts, registers, operators and motions, text objects, `.` repeat, `q` / `@` macros and the ex commands :w :q :wq :e :s :d. Off by default and free when off. The Vim keymap preset turns it on too.",
+  "kind": "bool",
+  "default": false
+ },
+ {
+  "key": "keymap_preset",
+  "section": "Editor",
+  "label": "Keymap preset",
+  "help": "Shortcut set on top of the built-in ones: vscode (the default), emacs (Ctrl+F/B/N/P, Ctrl+K, Ctrl+X chords, Alt+X commands) or vim (turns on Vim modal editing). keybindings.json still wins over a preset.",
+  "kind": "choice",
+  "options": [
+   "vscode",
+   "emacs",
+   "vim"
+  ],
+  "default": "vscode"
+ },
+ {
   "key": "build_command",
   "section": "Build",
   "label": "Build command",

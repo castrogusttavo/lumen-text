@@ -409,6 +409,8 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `ram_display` | `"long"` | `"long"` (numbers) or `"short"` (a chip icon) |
 | `local_history` / `local_history_max_entries` | `true` / `50` | Keep a snapshot of a file on every save and before a reload from disk (*File: Local history*); snapshots kept per file, 1 to 1000 |
 | `bidi_paragraph` | `"auto"` | Direction of lines with Arabic, Hebrew or Persian text: `auto` (the first strong letter decides) or `ltr` (every line left to right, right-to-left words still reordered) |
+| `vim_mode` | `false` | Vim modal editing (Normal / Insert / Visual, counts, registers, operators, text objects, `.`, `q` / `@`, `:w :q :s`); see below |
+| `keymap_preset` | `"vscode"` | `"vscode"`, `"emacs"` or `"vim"` (the last turns Vim mode on); also in the palette as *Keymap: …* |
 | `explorer_hide_gitignored` | `true` | Hide what `.gitignore`, the global ignore file and `.git/info/exclude` ignore; `false` shows those entries dimmed |
 | `watcher_poll_ms` | `2000` | Interval of the polling fallback used where inotify cannot be trusted (NFS, SMB, FUSE, 9p, FAT/exFAT, watch limit reached): only open files and expanded folders are checked (250 to 60000) |
 | `status_items` | `{}` | Map of bottom-bar item id to `true`/`false` (`search`, `problems`, `terminal`, `debug`, `git`, `ram`, `position`, `indent`, `encoding`, `language`) |
@@ -475,6 +477,18 @@ as headless `--keys` tokens:
 ```json
 { "ctrl+alt+1": "macro:wrap-bold" }
 ```
+
+A row's id can also be `key:<combo>[,<combo>]`, which presses those keys (the Emacs preset uses it: `"ctrl+f": "key:right"`).
+
+**Keymap presets** (`keymap_preset`, settings or palette): `vscode` is the default; `emacs` adds `Ctrl+F/B/N/P/A/E/D/K/Y/W`, `Ctrl+S`
+search, `Ctrl+X` chords (`Ctrl+X Ctrl+S` save, `Ctrl+X K` close, `Ctrl+X 2/3` splits) and `Alt+X` for the palette; `vim` turns on
+Vim mode. A preset sits between your `keybindings.json` (which wins) and the built-in shortcuts.
+
+**Vim mode** (`vim_mode`, off by default and free when off): the status bar shows the mode, `Esc` returns to Normal. Counts, `"a`
+registers (`"_`, `"+`), operators `d c y > < gu gU g~` with motions (`w b e W B E 0 ^ $ gg G f F t T ; , % { } n N * #`, marks),
+text objects (`iw aw ip ap i( a( i[ i{ i" i' i<`), visual and visual-line, `.` repeat, `u` / `Ctrl+R`, `q{reg}` / `@{reg}` macros and the
+ex commands `:w :q :q! :wq :x :e file :N :s/a/b/[g] :d` (with `%` or `'<,'>` ranges). Not included: block visual, `R`, `:g`, folds, and `ci"`
+style objects for tags and sentences (a tree-sitter provider can plug into `vim::TextObjects`).
 
 Mouse combinations work the same way: `mouse4` / `mouse5` (back / forward side buttons), `middle`, and
 `ctrl` / `shift` / `alt` with `click`, `middle`, `wheelup` or `wheeldown`. Clicks act in the editor's text

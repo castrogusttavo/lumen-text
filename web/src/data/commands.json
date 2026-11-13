@@ -1010,6 +1010,26 @@
   "id": "MacroRunSaved"
  },
  {
+  "label": "Vim: Toggle modal editing",
+  "shortcut": "",
+  "id": "ToggleVimMode"
+ },
+ {
+  "label": "Keymap: VS Code preset (default)",
+  "shortcut": "",
+  "id": "KeymapPresetVscode"
+ },
+ {
+  "label": "Keymap: Emacs preset",
+  "shortcut": "",
+  "id": "KeymapPresetEmacs"
+ },
+ {
+  "label": "Keymap: Vim preset",
+  "shortcut": "",
+  "id": "KeymapPresetVim"
+ },
+ {
   "label": "View: Toggle zen mode",
   "shortcut": "Ctrl+K Z",
   "id": "ToggleZen"

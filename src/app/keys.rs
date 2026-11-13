@@ -79,6 +79,15 @@ impl App {
             return false;
         }
 
+        // Vim modal editing (off by default): Normal / Visual keys and Esc from Insert.
+        if self.vim.is_some()
+            && self.focus == Focus::Editor
+            && self.chord.is_none()
+            && let Some(quit) = self.vim_key(ev)
+        {
+            self.request_redraw();
+            return quit;
+        }
         // User key bindings win over the built-in shortcuts.
         // The diff owns the keys of its pane, not the terminal's, nor a chord's second stroke.
         if self.diff.is_some()
