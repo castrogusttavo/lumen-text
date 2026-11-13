@@ -325,7 +325,7 @@ impl Term {
         let top = self.grid.abs_row(0, self.scroll_offset);
         let anchor = self.nav_line.unwrap_or(if up { top + rows } else { top });
         let target = if up {
-            self.ran().map(|c| c.prompt).filter(|p| *p < anchor && *p >= self.grid.first_line()).next_back()
+            self.ran().map(|c| c.prompt).rfind(|p| *p < anchor && *p >= self.grid.first_line())
         } else {
             self.ran().map(|c| c.prompt).find(|p| *p > anchor)
         };
