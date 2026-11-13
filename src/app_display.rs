@@ -63,7 +63,7 @@ impl App {
     /// (no diagnostics, hover, completion or definition requests either, since those need a
     /// running server). Every place that would start or talk to a server checks this one helper.
     pub fn lsp_enabled(&self) -> bool {
-        self.config.lsp_enabled()
+        self.config.lsp_enabled() && !crate::remote::is_remote(&self.root)
     }
 
     /// Re-apply the buffer and/or UI font group after a setting changed, then refresh whatever

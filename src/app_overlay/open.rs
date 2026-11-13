@@ -310,6 +310,25 @@ impl App {
         }
         let (root, generation, tx, wake) =
             (self.root.clone(), self.search_gen.clone(), self.search_tx.clone(), self.wake());
+        if let Some(session) = crate::remote::session_for(&root) {
+            // Remote folder: `rg` / `grep` run over there (see `remote`); replace is not available.
+            if q.replace.is_some() {
+                done.store(true, Ordering::SeqCst);
+                return self.say("Replace in files is not available on a remote folder");
+            }
+            thread::spawn(move || {
+                match session.search(&root, &q, search::MAX_HITS) {
+                    Ok(hits) if generation.load(Ordering::SeqCst) == my_gen => {
+                        let _ = tx.send((my_gen, hits));
+                    }
+                    Ok(_) => {}
+                    Err(e) => crate::remote::report(format!("remote search: {e}")),
+                }
+                done.store(true, Ordering::SeqCst);
+                wake();
+            });
+            return;
+        }
         thread::spawn(move || {
             search::search(&root, &q, &overrides, generation, my_gen, tx, || wake());
             done.store(true, Ordering::SeqCst);
@@ -332,6 +351,7 @@ impl App {
         self.pump_watcher();
         self.pump_update();
         self.pump_elevated();
+        self.pump_remote();
         let cur = self.search_gen.load(Ordering::SeqCst);
         let mut incoming: Vec<Hit> = Vec::new();
         while let Ok((g, hits)) = self.search_rx.try_recv() {

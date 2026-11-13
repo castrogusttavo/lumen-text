@@ -239,6 +239,9 @@ pub enum Cmd {
     HttpCopyResponse,
     HttpOpenResponse,
     HttpSaveResponse,
+    RemoteOpen,
+    RemoteReconnect,
+    RemoteSaveOverwrite,
 }
 
 impl Cmd {
@@ -488,4 +491,7 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("HTTP: Copy response body", "", Cmd::HttpCopyResponse),
     ("HTTP: Open response in editor", "", Cmd::HttpOpenResponse),
     ("HTTP: Save response to file", "", Cmd::HttpSaveResponse),
+    ("Remote: Open folder over SSH…", "", Cmd::RemoteOpen),
+    ("Remote: Reconnect", "", Cmd::RemoteReconnect),
+    ("Remote: Save and overwrite the remote file", "", Cmd::RemoteSaveOverwrite),
 ];

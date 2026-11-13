@@ -163,6 +163,8 @@ pub enum PromptKind {
         path: PathBuf,
         line: usize,
     },
+    /// "Remote: Open folder over SSH…": the address (see `app_remote`).
+    RemoteOpen,
 }
 
 pub struct Prompt {

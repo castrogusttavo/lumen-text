@@ -255,6 +255,7 @@ impl App {
                 PromptKind::AiRename { id } => self.ai_rename(id, &p.field.text),
                 PromptKind::BpCondition { path, line } => self.bp_set_condition(&path, line, &p.field.text),
                 PromptKind::BpLog { path, line } => self.bp_set_log(&path, line, &p.field.text),
+                PromptKind::RemoteOpen => self.remote_open_answer(&p.field.text),
             },
             Overlay::None => {}
         }
