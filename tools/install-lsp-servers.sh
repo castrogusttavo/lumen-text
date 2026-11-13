@@ -39,7 +39,7 @@ ZLS=0.15.1
 CSHARP_LS=0.28.0
 RUBY_LSP=0.26.11
 GOPLS=v0.24.0
-KOTLIN_LSP=263.7084.0
+KOTLIN_LSP=271.2085.0
 RUST_ANALYZER=2026-11-09   # only when rustup is not available
 # Spell checkers (companions, used when `spell_check` is on): release archives, checked against these sums.
 HARPER=3.0.0
