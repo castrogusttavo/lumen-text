@@ -366,6 +366,8 @@ impl App {
                     std::process::exit(0);
                 }
             }
+            // Handled by `run_snippet_cmd` above.
+            Cmd::SnippetsInsert | Cmd::SnippetsConfigure | Cmd::SnippetsImport => {}
         }
     }
 
