@@ -2221,8 +2221,14 @@ pub fn detect_tests(ext: &str, lines: &[String]) -> Vec<(usize, String)> {
             let Ok(re) = Regex::new(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)") else { return out };
             for (i, l) in lines.iter().enumerate() {
                 if let Some(c) = re.captures(l)
-                    && (i.saturating_sub(3)..i)
-                        .any(|k| ["#[test]", "::test]", "#[rstest", "#[test_case"].iter().any(|m| lines[k].contains(m)))
+                    && lines[..i]
+                        .iter()
+                        .rev()
+                        .take_while(|p| {
+                            let t = p.trim_start();
+                            t.is_empty() || t.starts_with("#[") || t.starts_with("//")
+                        })
+                        .any(|p| ["#[test]", "::test]", "#[rstest", "#[test_case"].iter().any(|m| p.contains(m)))
                 {
                     out.push((i, c[1].to_string()));
                 }
