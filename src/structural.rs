@@ -176,6 +176,10 @@ fn is_comment(k: &str) -> bool {
 }
 
 fn matches_object(n: &Node, obj: TextObject) -> bool {
+    // Keyword tokens share names with nodes (`class` in Java), only real nodes count.
+    if !n.is_named() {
+        return false;
+    }
     match obj {
         TextObject::Function => is_function_kind(n.kind()),
         TextObject::Class => is_class_kind(n),
@@ -372,7 +376,8 @@ pub fn definitions(tree: &Tree, obj: TextObject) -> Vec<usize> {
         let n = cur.node();
         let hit = match obj {
             TextObject::Function => {
-                is_function_kind(n.kind())
+                n.is_named()
+                    && is_function_kind(n.kind())
                     && (!is_anonymous_function(n.kind())
                         || n.parent().is_some_and(|p| p.kind() == "variable_declarator"))
             }
@@ -506,7 +511,7 @@ mod tests {
         assert!(RS[b].contains("let v"));
         let c = text_object(&t, RS, caret_in(RS, "// note"), TextObject::Comment, false).unwrap();
         assert_eq!(&RS[c.clone()], "// note\n        // more");
-        let ci = text_object(&t, RS, caret_in(RS, "// note"), TextObject::Comment, true).unwrap();
+        let ci = text_object(&t, RS, caret_in(RS, "note"), TextObject::Comment, true).unwrap();
         assert!(RS[ci].starts_with("note"));
     }
 
