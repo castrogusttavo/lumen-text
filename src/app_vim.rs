@@ -84,6 +84,10 @@ impl App {
             if !insert {
                 d.ed.clear_extra();
             }
+            // Tree-sitter text objects (`if`/`af` function, `ic`/`ac` class, `ia`/`aa` argument,
+            // `iC`/`aC` comment) for the file types with a bundled grammar.
+            vim.objects = crate::structural::Lang::from_path(std::path::Path::new(&d.name))
+                .map(|lang| Box::new(TsObjects(lang)) as Box<dyn crate::vim::TextObjects>);
             let indent = d.ed.indent.clone();
             let mut clip = ClipAdapter(&mut self.clip);
             let mut cx = Ctx { buf: &mut d.buf, sel: &mut d.ed.sel, clip: &mut clip, indent: &indent, page };
@@ -388,5 +392,31 @@ mod tests {
         assert_eq!(app.config.keymap_preset, "vscode");
         send_keys(&mut app, "ctrl+f");
         assert!(app.find.is_some(), "Ctrl+F is Find again");
+    }
+}
+
+/// Vim text objects answered by the tree-sitter grammar of the file (see `structural`).
+struct TsObjects(crate::structural::Lang);
+
+impl crate::vim::TextObjects for TsObjects {
+    fn object(&self, buf: &crate::buffer::Buffer, pos: usize, kind: char, inner: bool) -> Option<(usize, usize)> {
+        use crate::structural::{self, TextObject};
+        let obj = match kind {
+            'f' => TextObject::Function,
+            'c' => TextObject::Class,
+            'a' => TextObject::Argument,
+            'C' => TextObject::Comment,
+            _ => return None,
+        };
+        let rope = buf.snapshot();
+        if rope.len_bytes() > structural::MAX_BYTES {
+            return None;
+        }
+        let src = rope.to_string();
+        let tree = structural::parse(self.0, &src)?;
+        let at = rope.char_to_byte(pos.min(rope.len_chars()));
+        // An empty selection at the caret: the smallest object around it.
+        let r = structural::text_object(&tree, &src, at..at, obj, inner)?;
+        Some((rope.byte_to_char(r.start), rope.byte_to_char(r.end)))
     }
 }
