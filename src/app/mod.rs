@@ -172,6 +172,8 @@ pub struct App {
     pub search_due: Option<Instant>,
     /// Keyboard macros: recording, last macro, replay (see `macros`).
     pub macros: crate::macros::Macros,
+    /// Vim modal editing; `None` (the default) costs nothing (see `vim`).
+    pub vim: Option<Box<crate::vim::Vim>>,
 
     pub layout: Layout,
     pub last_frame: Instant,
@@ -347,6 +349,7 @@ impl App {
             search_rx: srx,
             search_due: None,
             macros: Default::default(),
+            vim: None,
             layout: Layout::default(),
             last_frame: Instant::now(),
             mods: ModifiersState::empty(),
@@ -427,6 +430,7 @@ impl App {
         };
         // `.lumen/config.json` / `.lumen/config.local.json` on top of the user settings.
         app.projcfg_init();
+        app.vim_startup();
         // Breakpoints and watches remembered for this project (before the files open: they get their dots).
         app.debug_load();
         app.refresh_git_status();

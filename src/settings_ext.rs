@@ -190,6 +190,18 @@ pub fn defs() -> Vec<SettingDef> {
             "Memory budget (MB)",
             "Soft limit for the editor and its language servers (0 = off). Above it the memory item warns and the resource panel (click it) offers to stop idle servers; nothing is stopped by itself.",
             Number { min: 0.0, max: 65536.0, step: 256.0 },
+            "vim_mode",
+            "Editor",
+            "Vim modal editing",
+            "Normal, Insert and Visual modes with counts, registers, operators and motions, text objects, `.` repeat, `q` / `@` macros and the ex commands :w :q :wq :e :s :d. Off by default and free when off. The Vim keymap preset turns it on too.",
+            Bool,
+        ),
+        d(
+            "keymap_preset",
+            "Editor",
+            "Keymap preset",
+            "Shortcut set on top of the built-in ones: vscode (the default), emacs (Ctrl+F/B/N/P, Ctrl+K, Ctrl+X chords, Alt+X commands) or vim (turns on Vim modal editing). keybindings.json still wins over a preset.",
+            Choice(&["vscode", "emacs", "vim"]),
         ),
         d(
             "build_command",
@@ -288,6 +300,7 @@ pub fn defaults() -> Value {
         "inline_completion": false,
         "bidi_paragraph": "auto",
         "mem_budget_mb": 0,
+        "vim_mode": false, "keymap_preset": "vscode",
     })
 }
 
@@ -314,6 +327,7 @@ pub fn values(c: &Config) -> Value {
         "inline_completion": c.inline_completion,
         "bidi_paragraph": c.bidi_paragraph,
         "mem_budget_mb": c.mem_budget_mb,
+        "vim_mode": c.vim_mode, "keymap_preset": c.keymap_preset,
     })
 }
 

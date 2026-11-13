@@ -208,7 +208,7 @@ impl App {
             }
             let _ = std::fs::write(&p, &text);
         }
-        self.keymap = keymap::Keymap::from_json(&text);
+        self.keymap = keymap::Keymap::from_json(&text).with_preset(&self.config.keymap_preset);
     }
 
     /// Palette command "Toggle git blame": same effect as the switch in the settings.
@@ -247,6 +247,9 @@ impl App {
             return;
         }
         if self.inline_apply_setting(key, v) || self.res_apply_setting(key, v) {
+            return;
+        }
+        if self.vim_apply_setting(key, v) {
             return;
         }
         let b = v.as_bool();

@@ -10,6 +10,9 @@ impl App {
         if self.run_inline_cmd(c) || self.run_snippet_cmd(c) {
             return;
         }
+        if self.run_vim_cmd(c) {
+            return;
+        }
         match c {
             Cmd::Save => self.save_active(),
             Cmd::CloseTab => {
@@ -392,7 +395,12 @@ impl App {
             | Cmd::InlinePrev
             | Cmd::ToggleInlineCompletion
             | Cmd::CopilotSignIn
-            | Cmd::CopilotSignOut => {}
+            | Cmd::CopilotSignOut
+            // Handled by `run_vim_cmd` before this match.
+            | Cmd::ToggleVimMode
+            | Cmd::KeymapPresetVscode
+            | Cmd::KeymapPresetEmacs
+            | Cmd::KeymapPresetVim => {}
             Cmd::Quit => {
                 if self.quit_all() {
                     std::process::exit(0);
@@ -438,6 +446,12 @@ impl App {
 
     /// Run the command a keybinding names (`"none"` does nothing; an unknown id says so).
     pub fn run_bound(&mut self, id: &str) -> bool {
+        // Keymap presets: `key:ctrl+x` presses another key (see `app_vim::inject_keys`).
+        if let Some(spec) = id.strip_prefix("key:") {
+            self.inject_keys(spec);
+            self.request_redraw();
+            return false;
+        }
         // `"ctrl+alt+1": "macro:wrap"` runs the macro saved as "wrap" in macros.json.
         if let Some(name) = id.strip_prefix(crate::macros::BIND_PREFIX) {
             self.macro_run_saved(name);

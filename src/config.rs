@@ -174,6 +174,10 @@ pub struct Config {
     /// Soft memory budget in MB for the editor and its language servers (0 = off): above it a
     /// warning shows and the resource panel offers to stop idle servers (see `resmon`).
     pub mem_budget_mb: u32,
+    /// Vim modal editing (see `vim`); off by default.
+    pub vim_mode: bool,
+    /// Keymap preset on top of the built-in shortcuts: "vscode" (default), "emacs" or "vim".
+    pub keymap_preset: String,
 }
 
 /// `problems_scope` values; anything else is "open_files".
@@ -410,6 +414,8 @@ impl Default for Config {
             inline_completion: false,
             bidi_paragraph: "auto".into(),
             mem_budget_mb: 0,
+            vim_mode: false,
+            keymap_preset: "vscode".into(),
         }
     }
 }
@@ -728,6 +734,8 @@ impl Config {
             inline_completion: v["inline_completion"].as_bool().unwrap_or(false),
             bidi_paragraph: crate::bidi::normalize(v["bidi_paragraph"].as_str()),
             mem_budget_mb: crate::resmon::clamp_budget(v["mem_budget_mb"].as_f64()),
+            vim_mode: v["vim_mode"].as_bool().unwrap_or(false),
+            keymap_preset: crate::keymap::normalize_preset(v["keymap_preset"].as_str()).to_string(),
         }
     }
 
@@ -794,6 +802,8 @@ impl Config {
             _ => {}
         }
         v["bidi_paragraph"] = json!(self.bidi_paragraph);
+        v["vim_mode"] = json!(self.vim_mode);
+        v["keymap_preset"] = json!(self.keymap_preset);
         self.view.write_json(&mut v);
         v
     }
@@ -930,6 +940,8 @@ mod tests {
             inline_completion: true,
             bidi_paragraph: "ltr".into(),
             mem_budget_mb: 2048,
+            vim_mode: true,
+            keymap_preset: "emacs".into(),
         };
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);
