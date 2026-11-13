@@ -1,5 +1,5 @@
 {
-  "_comment": "Built-in debug adapters (DAP). An adapter only starts when its command is found (same search path as language servers). transport: 'stdio' = the adapter speaks DAP on stdin/stdout; 'tcp-listen' = the adapter prints 'listening at: host:port' and the editor connects. In 'launch' and 'prelaunch', ${file}, ${dir} (the file's directory, launch only) and ${root} (the project root) and ${debug_bin} (the ghp debug binary: .lumen/ghp-debug/app, app.exe on Windows) are replaced. 'prelaunch' is a build step that must succeed before the adapter starts. 'normalize_paths' maps the source paths the adapter reports (and the editor sends) back to the project. 'experimental' adapters are listed but never chosen automatically.",
+  "_comment": "Built-in debug adapters (DAP). An adapter only starts when its command is found (same search path as language servers). transport: 'stdio' = the adapter speaks DAP on stdin/stdout; 'tcp-listen' = the adapter prints 'listening at: host:port' and the editor connects. In 'launch' and 'prelaunch', ${file}, ${dir} (the file's directory, launch only) and ${root} (the project root) and ${debug_bin} (the ghp debug binary: .lumen/ghp-debug/app, app.exe on Windows) are replaced. 'prelaunch' is a build step that must succeed before the adapter starts. 'normalize_paths' maps the source paths the adapter reports (and the editor sends) back to the project. 'experimental' adapters are listed but never chosen automatically. 'python': run the adapter with the project's detected virtualenv interpreter (pyenv). 'probe': arguments run with the resolved command first; a failure means the adapter's module is missing (shows 'install'). 'fallback': adapter ids tried when this one's command is not installed. 'attach': the request template used when launch.json says \"request\": \"attach\" (port/host fill 'connect', pid fills 'pid_key'). 'attach_direct': attaching to host:port connects to the debug server directly (debugpy --listen), no adapter process. 'check_program': the launch 'program' must exist. 'env_list': the adapter wants env as KEY=VALUE strings. prelaunch.kind 'cargo' builds with --message-format=json and debugs the binary cargo reports. ${fileStem} is the file name without extension.",
   "adapters": [
     {
       "id": "delve",
@@ -28,6 +28,95 @@
       "launch": {"request": "launch", "type": "go", "mode": "exec", "program": "${debug_bin}", "cwd": "${root}", "stopOnEntry": false},
       "normalize_paths": true,
       "install": "go install github.com/go-delve/delve/cmd/dlv@latest"
+    },
+    {
+      "id": "debugpy",
+      "name": "debugpy (Python)",
+      "command": "python3",
+      "python": true,
+      "args": ["-m", "debugpy.adapter"],
+      "probe": ["-c", "import debugpy"],
+      "transport": "stdio",
+      "languages": ["python"],
+      "adapter_id": "python",
+      "launch": {"request": "launch", "type": "python", "program": "${file}", "cwd": "${root}", "console": "internalConsole", "justMyCode": false, "stopOnEntry": false},
+      "attach": {"request": "attach", "type": "python", "connect": {"host": "127.0.0.1", "port": 5678}, "pathMappings": [{"localRoot": "${root}", "remoteRoot": "."}], "justMyCode": false},
+      "pid_key": "processId",
+      "attach_direct": true,
+      "check_program": true,
+      "install": "python -m pip install debugpy (in the project's virtualenv)"
+    },
+    {
+      "id": "lldb-rust",
+      "name": "LLDB (Rust: cargo build + lldb-dap)",
+      "command": "lldb-dap",
+      "transport": "stdio",
+      "languages": ["rust"],
+      "adapter_id": "lldb-dap",
+      "fallback": ["codelldb-rust"],
+      "prelaunch": {
+        "kind": "cargo",
+        "command": "cargo",
+        "args": ["build", "--message-format=json"],
+        "install": "install Rust from https://rustup.rs"
+      },
+      "launch": {"request": "launch", "type": "lldb-dap", "cwd": "${root}", "args": [], "stopOnEntry": false},
+      "attach": {"request": "attach", "type": "lldb-dap", "cwd": "${root}", "stopOnEntry": false},
+      "pid_key": "pid",
+      "env_list": true,
+      "check_program": true,
+      "install": "install lldb-dap (LLVM 18+: apt install lldb, brew install llvm) or CodeLLDB's codelldb (https://github.com/vadimcn/codelldb/releases)"
+    },
+    {
+      "id": "codelldb-rust",
+      "name": "CodeLLDB (Rust: cargo build + codelldb)",
+      "command": "codelldb",
+      "args": ["--port", "0"],
+      "transport": "tcp-listen",
+      "languages": ["rust"],
+      "adapter_id": "lldb",
+      "experimental": true,
+      "prelaunch": {
+        "kind": "cargo",
+        "command": "cargo",
+        "args": ["build", "--message-format=json"],
+        "install": "install Rust from https://rustup.rs"
+      },
+      "launch": {"request": "launch", "type": "lldb", "cwd": "${root}", "args": [], "stopOnEntry": false},
+      "attach": {"request": "attach", "type": "lldb", "stopOnEntry": false},
+      "pid_key": "pid",
+      "check_program": true,
+      "install": "download codelldb from https://github.com/vadimcn/codelldb/releases (or install lldb-dap)"
+    },
+    {
+      "id": "lldb-dap",
+      "name": "LLDB (C/C++ via lldb-dap)",
+      "command": "lldb-dap",
+      "transport": "stdio",
+      "languages": ["c", "cpp"],
+      "adapter_id": "lldb-dap",
+      "fallback": ["codelldb"],
+      "launch": {"request": "launch", "type": "lldb-dap", "program": "${dir}/${fileStem}", "cwd": "${root}", "args": [], "stopOnEntry": false},
+      "attach": {"request": "attach", "type": "lldb-dap", "cwd": "${root}", "stopOnEntry": false},
+      "pid_key": "pid",
+      "env_list": true,
+      "check_program": true,
+      "install": "install lldb-dap (LLVM 18+: apt install lldb, brew install llvm) or CodeLLDB's codelldb (https://github.com/vadimcn/codelldb/releases)"
+    },
+    {
+      "id": "codelldb",
+      "name": "CodeLLDB (C/C++)",
+      "command": "codelldb",
+      "args": ["--port", "0"],
+      "transport": "tcp-listen",
+      "languages": ["c", "cpp"],
+      "adapter_id": "lldb",
+      "experimental": true,
+      "launch": {"request": "launch", "type": "lldb", "program": "${dir}/${fileStem}", "cwd": "${root}", "args": [], "stopOnEntry": false},
+      "attach": {"request": "attach", "type": "lldb", "stopOnEntry": false},
+      "pid_key": "pid",
+      "check_program": true,
+      "install": "download codelldb from https://github.com/vadimcn/codelldb/releases (or install lldb-dap)"
     }
   ]
 }

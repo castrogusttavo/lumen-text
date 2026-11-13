@@ -532,10 +532,30 @@ pub fn detect(file: Option<&Path>, go_main: bool, ghp_file: Option<&Path>) -> Ve
                 kind: LaunchKind::Node,
                 file: f.to_path_buf(),
             }),
-            "rs" => out.push(LaunchConfig {
-                id: "rust",
-                label: "Rust: cargo build + gdb".into(),
-                kind: LaunchKind::Rust,
+            "rs" => {
+                out.push(LaunchConfig {
+                    id: "rust",
+                    label: "Rust: cargo build + gdb".into(),
+                    kind: LaunchKind::Rust,
+                    file: f.to_path_buf(),
+                });
+                out.push(LaunchConfig {
+                    id: "lldb-rust",
+                    label: "Rust: cargo build + LLDB".into(),
+                    kind: LaunchKind::Adapter("lldb-rust"),
+                    file: f.to_path_buf(),
+                });
+            }
+            "py" | "pyw" => out.push(LaunchConfig {
+                id: "debugpy",
+                label: format!("Python: {name} (debugpy)"),
+                kind: LaunchKind::Adapter("debugpy"),
+                file: f.to_path_buf(),
+            }),
+            "c" | "cc" | "cpp" | "cxx" | "c++" => out.push(LaunchConfig {
+                id: "lldb-dap",
+                label: format!("C/C++: {name} (LLDB)"),
+                kind: LaunchKind::Adapter("lldb-dap"),
                 file: f.to_path_buf(),
             }),
             "go" if go_main => out.push(LaunchConfig {
@@ -559,6 +579,17 @@ pub fn detect(file: Option<&Path>, go_main: bool, ghp_file: Option<&Path>) -> Ve
         });
     }
     out
+}
+
+/// Rust offers gdb and LLDB: with only LLDB installed it goes first (the default), else gdb stays first.
+pub fn prefer_installed_rust(cfgs: &mut [LaunchConfig], gdb: bool, lldb: bool) {
+    if gdb || !lldb {
+        return;
+    }
+    if let Some(i) = cfgs.iter().position(|c| c.id == "lldb-rust") {
+        let first_rust = cfgs.iter().position(|c| c.id == "rust").unwrap_or(0);
+        cfgs.swap(first_rust, i);
+    }
 }
 
 /// The remembered choice when it still applies, else the first.
@@ -669,6 +700,13 @@ pub struct LaunchOverride {
     pub args: Option<Vec<String>>,
     pub env: BTreeMap<String, String>,
     pub cwd: Option<String>,
+    /// `"attach"` to attach to a running process / debug server instead of launching (`launch` is the default).
+    pub request: Option<String>,
+    /// Attach: the process id (`"pid"` or `"processId"`).
+    pub pid: Option<i64>,
+    /// Attach: the debug server's host and port (debugpy listens with `python -m debugpy --listen 5678`).
+    pub host: Option<String>,
+    pub port: Option<u16>,
 }
 
 pub const LAUNCH_FILE: &str = "launch.json";
@@ -704,7 +742,20 @@ pub fn parse_launch(text: &str) -> Result<Vec<LaunchOverride>, String> {
                     .collect()
             })
             .unwrap_or_default();
-        out.push(LaunchOverride { config, adapter, program: text_of(c, "program"), args, env, cwd: text_of(c, "cwd") });
+        let num =
+            |k: &str| c.get(k).and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())));
+        out.push(LaunchOverride {
+            config,
+            adapter,
+            program: text_of(c, "program"),
+            args,
+            env,
+            cwd: text_of(c, "cwd"),
+            request: text_of(c, "request"),
+            pid: num("pid").or_else(|| num("processId")),
+            host: text_of(c, "host"),
+            port: num("port").and_then(|p| u16::try_from(p).ok()),
+        });
     }
     Ok(out)
 }
@@ -906,6 +957,35 @@ mod tests {
     }
 
     #[test]
+    fn lldb_goes_first_for_rust_only_when_gdb_is_missing() {
+        let mk = || detect(Some(Path::new("/p/a.rs")), false, None);
+        let ids = |v: &[LaunchConfig]| v.iter().map(|c| c.id).collect::<Vec<_>>();
+        let mut c = mk();
+        prefer_installed_rust(&mut c, true, true);
+        assert_eq!(ids(&c), ["rust", "lldb-rust"], "gdb stays the default when present");
+        prefer_installed_rust(&mut c, false, false);
+        assert_eq!(ids(&c), ["rust", "lldb-rust"], "nothing installed: unchanged");
+        prefer_installed_rust(&mut c, false, true);
+        assert_eq!(ids(&c), ["lldb-rust", "rust"]);
+    }
+
+    #[test]
+    fn launch_json_reads_attach_fields() {
+        let l = parse_launch(
+            r#"{"configurations":[
+              {"config":"debugpy","request":"attach","host":"10.0.0.2","port":5679},
+              {"config":"lldb-dap","request":"attach","pid":"4242"},
+              {"config":"x","processId":7,"port":99999}]}"#,
+        )
+        .unwrap();
+        assert_eq!(l[0].request.as_deref(), Some("attach"));
+        assert_eq!((l[0].host.as_deref(), l[0].port), (Some("10.0.0.2"), Some(5679)));
+        assert_eq!(l[1].pid, Some(4242), "a numeric string is a pid");
+        assert_eq!(l[2].pid, Some(7), "processId is an alias");
+        assert_eq!(l[2].port, None, "out of range");
+    }
+
+    #[test]
     fn launch_detection_and_choice() {
         let go = Path::new("/p/cmd/app/main.go");
         let ghp = Path::new("/p/site/index.ghp");
@@ -916,6 +996,14 @@ mod tests {
         assert!(detect(Some(go), false, None).is_empty(), "a Go file that is not package main has no config");
         assert_eq!(detect(Some(Path::new("/p/a.ts")), false, None)[0].kind, LaunchKind::Node);
         assert_eq!(detect(Some(Path::new("/p/a.rs")), false, None)[0].kind, LaunchKind::Rust);
+        let rs = detect(Some(Path::new("/p/a.rs")), false, None);
+        assert_eq!(rs.iter().map(|c| c.id).collect::<Vec<_>>(), ["rust", "lldb-rust"]);
+        let py = detect(Some(Path::new("/p/app.py")), false, None);
+        assert_eq!(py[0].kind, LaunchKind::Adapter("debugpy"));
+        assert_eq!(py[0].label, "Python: app.py (debugpy)");
+        for f in ["/p/m.c", "/p/m.cpp", "/p/m.cc"] {
+            assert_eq!(detect(Some(Path::new(f)), false, None)[0].kind, LaunchKind::Adapter("lldb-dap"), "{f}");
+        }
         assert_eq!(choose(&c, None).unwrap().id, "delve");
         assert_eq!(choose(&c, Some("ghp")).unwrap().id, "ghp");
         assert_eq!(choose(&c, Some("node")).unwrap().id, "delve", "a stale choice falls back");

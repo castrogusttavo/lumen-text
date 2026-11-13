@@ -98,7 +98,13 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/ghp" --version
           "$HOME/.local/bin/ghp" help | grep -q -- '--debug' || { echo "this ghp release has no 'build --debug'" >&2; exit 1; }
-      - name: DAP against real dlv (breakpoint hit + variable read, Go and GHP pages)
+      # debugpy is a pip package: a venv (found by Lumen through VIRTUAL_ENV) keeps it off the system Python.
+      - name: Install debugpy
+        run: |
+          python3 -m venv "$RUNNER_TEMP/debugpy-venv"
+          "$RUNNER_TEMP/debugpy-venv/bin/python" -m pip install debugpy
+          echo "VIRTUAL_ENV=$RUNNER_TEMP/debugpy-venv" >> "$GITHUB_ENV"
+      - name: DAP against real dlv and debugpy (breakpoint hit + variable read, Go, GHP pages, Python launch and attach)
         run: cargo test --release --locked dap_tests -- --ignored --nocapture --test-threads=1
 
   perf:

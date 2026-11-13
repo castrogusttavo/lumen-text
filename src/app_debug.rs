@@ -278,7 +278,7 @@ pub struct DebugUi {
 
 /// A prelaunch build in flight: when it succeeds the session starts from `adapter`/`path`/`root`.
 pub struct PendingBuild {
-    rx: std::sync::mpsc::Receiver<Result<(), String>>,
+    rx: std::sync::mpsc::Receiver<Result<Option<PathBuf>, String>>,
     adapter: String,
     path: PathBuf,
     root: PathBuf,
@@ -574,7 +574,14 @@ impl App {
             Some(f) if f.extension().is_some_and(|e| e == "ghp") => Some(f.clone()),
             _ => dm::find_ghp(&self.root),
         };
-        dm::detect(file.as_deref(), go_main, ghp.as_deref())
+        let mut cfgs = dm::detect(file.as_deref(), go_main, ghp.as_deref());
+        if cfgs.iter().any(|c| c.id == "lldb-rust") {
+            let gdb = crate::lspreg::resolve_command("gdb", &self.root).is_some();
+            let reg = crate::dap_adapters::Registry::builtin();
+            let lldb = reg.installed("lldb-rust", &self.root).is_some_and(|a| a.resolve(&self.root).is_some());
+            dm::prefer_installed_rust(&mut cfgs, gdb, lldb);
+        }
+        cfgs
     }
 
     pub fn debug_select_config(&mut self) {
@@ -635,7 +642,7 @@ impl App {
         let cfgs = self.debug_detect();
         let Some(cfg) = dm::choose(&cfgs, self.dbgui.config.as_deref()).cloned() else {
             return self.say(
-                "no debugger for this file (Go package main via delve, TS/JS via js-debug, Rust via gdb, .ghp pages via the ghp adapter)",
+                "no debugger for this file (Go package main via delve, TS/JS via js-debug, Python via debugpy, Rust via gdb or LLDB, C/C++ via LLDB, .ghp pages via the ghp adapter)",
             );
         };
         self.start_after_teardown(cfg);
@@ -723,9 +730,11 @@ impl App {
         let ov = dm::launch_override(&ovs, id).cloned();
         let adapter_id = ov.as_ref().and_then(|o| o.adapter.clone()).unwrap_or_else(|| id.to_string());
         let reg = crate::dap_adapters::Registry::builtin();
-        let Some(adapter) = reg.get(&adapter_id) else {
+        // lldb-dap or codelldb: whichever is installed.
+        let Some(adapter) = reg.installed(&adapter_id, &self.root) else {
             return self.say(format!("no debug adapter registered: {adapter_id}"));
         };
+        let adapter_id = adapter.id.clone();
         // dlv builds the package itself, from the module root; other adapters run from the project.
         let root = if adapter.languages.iter().any(|l| l == "go") {
             path.ancestors()
@@ -735,7 +744,8 @@ impl App {
         } else {
             self.root.clone()
         };
-        if adapter.prelaunch.is_none() {
+        let attaching = ov.as_ref().is_some_and(|o| o.request.as_deref() == Some("attach"));
+        if adapter.prelaunch.is_none() || attaching {
             return self.launch_adapter(&adapter_id, path, &root, ov.as_ref());
         }
         // A build step first (`ghp build --debug` for pages): the program to debug is its output. It runs
@@ -744,7 +754,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let (a, p, r, o, wake) = (adapter.clone(), path.to_path_buf(), root.clone(), ov.clone(), self.wake());
         std::thread::spawn(move || {
-            let res = a.run_prelaunch_with(&p, &r, o.as_ref()).map_err(|e| e.to_string());
+            let res = a.run_prelaunch_program(&p, &r, o.as_ref()).map_err(|e| e.to_string());
             let _ = tx.send(res);
             wake();
         });
@@ -764,9 +774,16 @@ impl App {
         let Some(b) = self.dbgui.build.take() else { return };
         self.request_redraw();
         match res {
-            Ok(()) => {
+            Ok(built) => {
                 self.dbgui.build_log.push(dm::console_line(ConsoleKind::Result, "build finished"));
-                self.launch_adapter(&b.adapter, &b.path, &b.root, b.ov.as_ref());
+                let mut ov = b.ov;
+                // A cargo build reports the binary to debug, unless launch.json names the program.
+                if let Some(bin) = built {
+                    let o = ov
+                        .get_or_insert_with(|| dm::LaunchOverride { config: b.adapter.clone(), ..Default::default() });
+                    o.program.get_or_insert_with(|| bin.to_string_lossy().into_owned());
+                }
+                self.launch_adapter(&b.adapter, &b.path, &b.root, ov.as_ref());
             }
             Err(msg) => {
                 for l in msg.lines() {
@@ -782,7 +799,12 @@ impl App {
     fn launch_adapter(&mut self, id: &str, path: &Path, root: &Path, ov: Option<&dm::LaunchOverride>) {
         let reg = crate::dap_adapters::Registry::builtin();
         let Some(adapter) = reg.get(id) else { return self.say(format!("no debug adapter registered: {id}")) };
-        let mut dap = match adapter.start(root, self.wake()) {
+        if let Err(msg) = adapter.preflight(path, root, ov) {
+            self.dbgui.build_log.push(dm::console_line(ConsoleKind::Error, &msg));
+            self.open_debug_panel();
+            return self.say_for(msg, 8);
+        }
+        let mut dap = match adapter.start_with(root, self.wake(), ov) {
             Ok(d) => d,
             Err(e) => {
                 // Also in the Debug Console: the status line alone is gone in seconds.
