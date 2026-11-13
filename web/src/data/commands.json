@@ -1158,5 +1158,20 @@
   "label": "File: Close window",
   "shortcut": "",
   "id": "CloseWindow"
+ },
+ {
+  "label": "Snippets: Insert…",
+  "shortcut": "",
+  "id": "SnippetsInsert"
+ },
+ {
+  "label": "Snippets: Configure…",
+  "shortcut": "",
+  "id": "SnippetsConfigure"
+ },
+ {
+  "label": "Snippets: Import from VS Code",
+  "shortcut": "",
+  "id": "SnippetsImport"
  }
 ]
