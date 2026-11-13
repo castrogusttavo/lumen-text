@@ -146,7 +146,6 @@ pub enum Pending {
     Organize,
     /// `workspace/symbol` for the Go to picker's `#` mode; `serial` tells a stale answer (see `app_goto`).
     WorkspaceSymbols {
-        query: String,
         serial: u64,
     },
     ExecuteCommand,

@@ -282,7 +282,7 @@ impl App {
             let id = self.lsps[li].request(
                 "workspace/symbol",
                 json!({"query": query}),
-                Pending::WorkspaceSymbols { query: query.clone(), serial },
+                Pending::WorkspaceSymbols { serial },
             );
             reqs.push((li, id));
         }

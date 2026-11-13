@@ -1107,7 +1107,7 @@ impl App {
                     }
                 }
             }
-            Pending::WorkspaceSymbols { serial, .. } => self.goto_ws_answer(li, serial, &v),
+            Pending::WorkspaceSymbols { serial } => self.goto_ws_answer(li, serial, &v),
             Pending::Organize => {
                 let first = v.as_array().and_then(|a| a.first()).cloned();
                 match first {
