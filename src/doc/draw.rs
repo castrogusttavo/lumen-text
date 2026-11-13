@@ -625,7 +625,8 @@ impl Doc {
             let lz = &self.lenses[idx];
             let Some(title) = &lz.title else { continue };
             let is_impl = title.to_lowercase().contains("implementation");
-            if (is_impl && !self.lens_impls) || (!is_impl && !self.lens_refs) {
+            let http = lz.raw.get(crate::app_http::LENS_KEY).is_some();
+            if !http && ((is_impl && !self.lens_impls) || (!is_impl && !self.lens_refs)) {
                 continue;
             }
             let Some((r, vend)) = at_end(lz.line) else { continue };
@@ -643,7 +644,15 @@ impl Doc {
                 tx.draw_ui(cv, sx, ry(r) + (lh - 18) / 2, sep, c.tab_inactive_fg, body, false);
             }
             let rr = Rect::new(x, ry(r), w, lh);
-            tx.draw_ui(cv, x, ry(r) + (lh - 18) / 2, title, c.tab_inactive_fg, body, false);
+            tx.draw_ui(
+                cv,
+                x,
+                ry(r) + (lh - 18) / 2,
+                title,
+                if http { c.accent_text } else { c.tab_inactive_fg },
+                body,
+                false,
+            );
             self.lens_hits.push((rr, idx));
             cursor = Some((lz.line, x + w));
         }

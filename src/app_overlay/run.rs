@@ -73,6 +73,12 @@ impl App {
             Cmd::ToggleAutoImport => self.toggle_auto_import(),
             Cmd::RunTask => self.open_task_picker(),
             Cmd::RepeatTask => self.repeat_task(),
+            Cmd::HttpSend => self.http_send(),
+            Cmd::HttpCancel => self.http_cancel(),
+            Cmd::HttpNextEnv => self.http_next_env(),
+            Cmd::HttpCopyResponse => self.http_copy(),
+            Cmd::HttpOpenResponse => self.http_open_response(),
+            Cmd::HttpSaveResponse => self.http_save_response(),
             Cmd::StopTask => {
                 self.stop_task();
                 self.tests_stop();

@@ -578,7 +578,7 @@ pub fn comment_prefix(path: &str) -> &'static str {
         Some(
             "python" | "shellscript" | "fish" | "toml" | "yaml" | "ruby" | "perl" | "r" | "julia" | "elixir" | "nim"
             | "docker" | "make" | "cmake" | "powershell" | "terraform" | "hcl" | "dotenv" | "ini" | "nginx" | "graphql"
-            | "crystal" | "tcl" | "gdscript" | "coffee" | "nix" | "just" | "nushell" | "awk",
+            | "crystal" | "tcl" | "gdscript" | "coffee" | "nix" | "just" | "nushell" | "awk" | "http",
         ) => "#",
         Some("lua" | "sql" | "haskell" | "elm" | "purescript" | "ada" | "vhdl" | "plsql") => "--",
         Some("erlang" | "latex" | "tex" | "matlab" | "prolog") => "%",
@@ -690,6 +690,7 @@ pub fn language_for(path: &str) -> Option<&'static str> {
         "svelte" => "svelte",
         "astro" => "astro",
         "ghp" => "ghp",
+        "http" | "rest" => "http",
         "sol" => "solidity",
         "wgsl" => "wgsl",
         "glsl" | "vert" | "frag" => "glsl",

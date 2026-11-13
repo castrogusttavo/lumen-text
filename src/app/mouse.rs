@@ -191,6 +191,10 @@ impl App {
         // Code lens text: jump to the symbol and list its references / implementations.
         if let Some(idx) = self.docs[self.active].lens_hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, i)| *i) {
             let lens = self.docs[self.active].lenses[idx].clone();
+            if lens.raw.get(crate::app_http::LENS_KEY).is_some() {
+                self.http_lens_click(lens.line);
+                return self.request_redraw();
+            }
             let d = &mut self.docs[self.active];
             let p = d.pos_from_lsp(lens.line, lens.col);
             d.ed.click(&mut d.buf, p, false);

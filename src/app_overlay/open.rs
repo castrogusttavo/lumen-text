@@ -320,6 +320,7 @@ impl App {
     pub fn pump_background(&mut self) {
         self.pump_lsp();
         self.pump_task();
+        self.pump_http();
         self.pump_tests();
         self.pump_build();
         self.pump_term();

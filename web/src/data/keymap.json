@@ -124,6 +124,10 @@
   "id": "ToggleOutput"
  },
  {
+  "combo": "ctrl+alt+enter",
+  "id": "HttpSend"
+ },
+ {
   "combo": "ctrl+shift+v",
   "id": "MarkdownPreview"
  },
