@@ -82,6 +82,7 @@ impl App {
             Cmd::TestAtCursor => self.run_tests(true),
             Cmd::TestAll => self.tests_run_all(),
             Cmd::TestFailed => self.tests_run_failed(),
+            Cmd::TestLast => self.tests_run_last(),
             Cmd::TestsPanel => self.tests_open_panel(),
             Cmd::TestDebug => self.tests_debug_cursor(),
             Cmd::TestWatch => self.tests_toggle_watch(),

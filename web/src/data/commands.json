@@ -215,6 +215,11 @@
   "id": "TestFailed"
  },
  {
+  "label": "Tests: Run last",
+  "shortcut": "",
+  "id": "TestLast"
+ },
+ {
   "label": "Tests: Open panel",
   "shortcut": "",
   "id": "TestsPanel"

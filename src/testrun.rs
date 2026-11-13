@@ -2208,6 +2208,97 @@ pub fn test_name_at_cursor(ext: &str, lines: &[String], line: usize) -> Option<S
     }
 }
 
+// ───────────── detected tests (gutter run marks) ─────────────
+
+/// Every test declared in a file, as `(0-based line, name)`: Rust `#[test]` functions, pytest
+/// `def test_*`, Go `func TestX` and the `it` / `test` calls of Vitest / Jest. The same structural
+/// rules as [`test_name_at_cursor`], applied to the whole file.
+pub fn detect_tests(ext: &str, lines: &[String]) -> Vec<(usize, String)> {
+    const CAP: usize = 800;
+    let mut out: Vec<(usize, String)> = Vec::new();
+    match ext {
+        "rs" => {
+            let Ok(re) = Regex::new(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)") else { return out };
+            for (i, l) in lines.iter().enumerate() {
+                if let Some(c) = re.captures(l)
+                    && (i.saturating_sub(3)..i)
+                        .any(|k| ["#[test]", "::test]", "#[rstest", "#[test_case"].iter().any(|m| lines[k].contains(m)))
+                {
+                    out.push((i, c[1].to_string()));
+                }
+            }
+        }
+        "py" => {
+            let Ok(re) = Regex::new(r"^\s*(?:async\s+)?def\s+(test\w*)\s*\(") else { return out };
+            out.extend(lines.iter().enumerate().filter_map(|(i, l)| re.captures(l).map(|c| (i, c[1].to_string()))));
+        }
+        "go" => {
+            let Ok(re) = Regex::new(r"^func\s+(Test\w+)\s*\(") else { return out };
+            out.extend(lines.iter().enumerate().filter_map(|(i, l)| re.captures(l).map(|c| (i, c[1].to_string()))));
+        }
+        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts" => {
+            let Ok(re) = Regex::new(
+                r#"^\s*(?:it|test)(?:\.(?:only|skip|concurrent|todo))?\s*\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`)"#,
+            ) else {
+                return out;
+            };
+            for (i, l) in lines.iter().enumerate() {
+                if let Some(c) = re.captures(l)
+                    && let Some(m) = (1..=3).find_map(|k| c.get(k))
+                {
+                    out.push((i, m.as_str().to_string()));
+                }
+            }
+        }
+        _ => {}
+    }
+    out.truncate(CAP);
+    out
+}
+
+/// The command that re-runs only what a saved file can affect ("run tests on save"):
+/// `vitest related --run <f>`, `jest --findRelatedTests <f>`, `cargo test <module>`, the Go package
+/// of the file, the pytest file that belongs to it. `None` when the runner has no narrower scope
+/// for that file (the caller repeats its last run).
+pub fn plan_related(runner: Runner, root: &Path, file: &str, report: &Path, custom: (&str, &str)) -> Option<Plan> {
+    let ext = Path::new(file).extension().and_then(|e| e.to_str()).unwrap_or("");
+    if !runner.exts().contains(&ext) {
+        return None;
+    }
+    let all = plan(runner, root, &Scope::All, report, custom);
+    match runner {
+        Runner::Vitest | Runner::Jest => {
+            let vitest = runner == Runner::Vitest;
+            let prefix = if vitest { format!("{} run", js_exec(root, "vitest")) } else { js_exec(root, "jest") };
+            let rest = all.cmd.strip_prefix(&prefix)?;
+            let f = shell_quote(file);
+            let mut p = all.clone();
+            p.cmd = if vitest {
+                format!("{} related --run {f}{rest}", js_exec(root, "vitest"))
+            } else {
+                format!("{prefix} --findRelatedTests {f}{rest} --passWithNoTests")
+            };
+            Some(p)
+        }
+        Runner::Cargo | Runner::Nextest | Runner::Go => Some(plan(runner, root, &Scope::File(file), report, custom)),
+        Runner::Pytest => {
+            let p = Path::new(file);
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let is_test = stem.starts_with("test_") || stem.ends_with("_test");
+            let target = if is_test {
+                file.to_string()
+            } else {
+                let dir = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                [format!("tests/test_{stem}.py"), format!("test/test_{stem}.py"), format!("{dir}/test_{stem}.py")]
+                    .into_iter()
+                    .find(|c| root.join(c).is_file())?
+            };
+            Some(plan(runner, root, &Scope::File(&target), report, custom))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2761,5 +2852,69 @@ mod coverage_tests {
         assert!(coverage_supported_with(Runner::Pytest, true).unwrap_err().contains("pytest"));
         assert!(coverage_supported_with(Runner::Go, true).is_err());
         assert!(coverage_supported_with(Runner::Jest, false).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod related_tests {
+    use super::*;
+
+    fn lines(s: &str) -> Vec<String> {
+        s.lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn detects_tests_per_language() {
+        let rs = lines(
+            "fn helper() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() {}\n    fn not_a_test() {}\n    #[tokio::test]\n    async fn later() {}\n}",
+        );
+        assert_eq!(detect_tests("rs", &rs), vec![(5, "adds".to_string()), (8, "later".to_string())]);
+        let py = lines("def helper(): pass\nclass T:\n    def test_a(self): pass\nasync def test_b(): pass");
+        assert_eq!(detect_tests("py", &py), vec![(2, "test_a".to_string()), (3, "test_b".to_string())]);
+        let go = lines("func helper() {}\nfunc TestSum(t *testing.T) {\n}\nfunc BenchmarkX(b *testing.B) {}");
+        assert_eq!(detect_tests("go", &go), vec![(1, "TestSum".to_string())]);
+        let js = lines(
+            "describe('math', () => {\n  it('adds', () => {});\n  test.skip(\"skips\", () => {});\n  const it2 = 1;\n});",
+        );
+        assert_eq!(detect_tests("ts", &js), vec![(1, "adds".to_string()), (2, "skips".to_string())]);
+        assert!(detect_tests("md", &js).is_empty());
+    }
+
+    #[test]
+    fn related_plans_per_runner() {
+        let root = Path::new("/p");
+        let rep = Path::new("/r/rep.dat");
+        let v = plan_related(Runner::Vitest, root, "src/a.ts", rep, ("", "")).unwrap();
+        assert!(
+            v.cmd.contains("vitest related --run 'src/a.ts'") || v.cmd.contains("vitest related --run src/a.ts"),
+            "{}",
+            v.cmd
+        );
+        assert!(v.cmd.contains("--reporter=json"), "{}", v.cmd);
+        let j = plan_related(Runner::Jest, root, "src/a.ts", rep, ("", "")).unwrap();
+        assert!(j.cmd.contains("jest --findRelatedTests"), "{}", j.cmd);
+        assert!(j.cmd.contains("--json"), "{}", j.cmd);
+        let c = plan_related(Runner::Cargo, root, "src/tasks.rs", rep, ("", "")).unwrap();
+        assert!(c.cmd.starts_with("cargo test") && c.cmd.contains("tasks"), "{}", c.cmd);
+        let g = plan_related(Runner::Go, root, "pkg/a.go", rep, ("", "")).unwrap();
+        assert!(g.cmd.contains("./pkg"), "{}", g.cmd);
+        // wrong extension for the runner: no narrower scope
+        assert!(plan_related(Runner::Cargo, root, "README.md", rep, ("", "")).is_none());
+        assert!(plan_related(Runner::Custom, root, "a.rs", rep, ("x", "")).is_none());
+    }
+
+    #[test]
+    fn pytest_related_maps_a_module_to_its_test_file() {
+        let d = std::env::temp_dir().join(format!("lumen-related-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("tests")).unwrap();
+        std::fs::write(d.join("tests/test_calc.py"), "").unwrap();
+        let rep = Path::new("/r/rep.dat");
+        let p = plan_related(Runner::Pytest, &d, "calc.py", rep, ("", "")).unwrap();
+        assert!(p.cmd.contains("tests/test_calc.py"), "{}", p.cmd);
+        let own = plan_related(Runner::Pytest, &d, "tests/test_calc.py", rep, ("", "")).unwrap();
+        assert!(own.cmd.contains("tests/test_calc.py"), "{}", own.cmd);
+        assert!(plan_related(Runner::Pytest, &d, "other.py", rep, ("", "")).is_none());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
