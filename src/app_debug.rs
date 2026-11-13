@@ -804,7 +804,7 @@ impl App {
             self.open_debug_panel();
             return self.say_for(msg, 8);
         }
-        let mut dap = match adapter.start(root, self.wake()) {
+        let mut dap = match adapter.start_with(root, self.wake(), ov) {
             Ok(d) => d,
             Err(e) => {
                 // Also in the Debug Console: the status line alone is gone in seconds.

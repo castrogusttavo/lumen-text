@@ -71,6 +71,10 @@ pub struct Adapter {
     /// The adapter wants `env` as `KEY=VALUE` strings (lldb-dap).
     #[serde(default)]
     pub env_list: bool,
+    /// Attaching to a host:port connects to the debug server there directly, with no adapter process:
+    /// the port of `python -m debugpy --listen` already speaks DAP.
+    #[serde(default)]
+    pub attach_direct: bool,
 }
 
 /// A build step run in the project root before the debuggee is launched. `${file}`, `${dir}` and
@@ -214,6 +218,9 @@ impl Adapter {
                 o.insert("cwd".into(), Value::String(project_path(c, file, root)));
             }
             if attach {
+                if ov.pid.is_some() {
+                    o.remove("connect"); // a process, not a server
+                }
                 if let Some(Value::Object(c)) = o.get_mut("connect") {
                     if let Some(h) = &ov.host {
                         c.insert("host".into(), Value::String(h.clone()));
@@ -273,6 +280,12 @@ impl Adapter {
             && let Some(o) = args.as_object_mut()
         {
             o.insert("args".into(), serde_json::json!(program_args));
+        }
+        if self.attach_direct
+            && request == "attach"
+            && let Some(o) = args.as_object_mut()
+        {
+            o.remove("connect"); // used to find the server, not an argument of the server
         }
         let mut s = Session::with_request(&request, args);
         s.exception_bps = false;
@@ -368,8 +381,34 @@ impl Adapter {
         if self.install.is_empty() { String::new() } else { format!(" (install: {})", self.install) }
     }
 
+    /// Where an `attach_direct` adapter connects: the override's host and port, else the template's.
+    pub fn direct_target(&self, ov: Option<&LaunchOverride>) -> Option<(String, u16)> {
+        // A process id goes through the adapter (it injects debugpy into the process).
+        let ov = ov.filter(|o| self.attach_direct && o.request.as_deref() == Some("attach") && o.pid.is_none())?;
+        let c = self.attach.as_ref().and_then(|a| a.get("connect"));
+        let host = ov.host.clone().or_else(|| c.and_then(|c| c["host"].as_str()).map(str::to_string));
+        let port = ov.port.or_else(|| c.and_then(|c| c["port"].as_u64()).and_then(|p| u16::try_from(p).ok()))?;
+        Some((host.unwrap_or_else(|| "127.0.0.1".into()), port))
+    }
+
     /// Start the adapter process and connect to it.
     pub fn start(&self, root: &Path, wake: Wake) -> io::Result<Dap> {
+        self.start_with(root, wake, None)
+    }
+
+    /// `start`, honouring the project's `launch.json` entry: an `attach_direct` attach connects to the
+    /// debug server without starting an adapter.
+    pub fn start_with(&self, root: &Path, wake: Wake, ov: Option<&LaunchOverride>) -> io::Result<Dap> {
+        if let Some((host, port)) = self.direct_target(ov) {
+            let mut dap = Dap::connect_tcp(&host, port, wake).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("nothing accepted a connection on {host}:{port} ({e}); start the program with its debug server listening first"),
+                )
+            })?;
+            dap.adapter_id = if self.adapter_id.is_empty() { self.id.clone() } else { self.adapter_id.clone() };
+            return Ok(dap);
+        }
         let exe = self.resolve(root).ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, format!("{} not found{}", self.command, self.install_hint()))
         })?;
@@ -593,7 +632,7 @@ mod tests {
         let pid = LaunchOverride { request: Some("attach".into()), pid: Some(77), ..Default::default() };
         let (_, args) = a.launch_request_with(Path::new("/p/main.py"), Path::new("/p"), Some(&pid));
         assert_eq!(args["processId"], 77);
-        assert_eq!(args["connect"]["port"], 5678, "default debugpy port");
+        assert!(args.get("connect").is_none(), "a pid is not a server");
     }
 
     #[test]
@@ -764,6 +803,22 @@ not json
         a.command = "lumen-no-such-python".into();
         let e = a.start(Path::new("/"), std::sync::Arc::new(|| {})).err().expect("missing").to_string();
         assert!(e.contains("not found (install: python -m pip install debugpy"), "{e}");
+    }
+
+    #[test]
+    fn direct_attach_targets_the_listening_server() {
+        let a = Registry::builtin().get("debugpy").unwrap().clone();
+        assert!(a.attach_direct);
+        assert_eq!(a.direct_target(None), None, "launching starts the adapter");
+        let ov = |host: Option<&str>, port: Option<u16>| LaunchOverride {
+            request: Some("attach".into()),
+            host: host.map(str::to_string),
+            port,
+            ..Default::default()
+        };
+        assert_eq!(a.direct_target(Some(&ov(None, None))), Some(("127.0.0.1".into(), 5678)));
+        assert_eq!(a.direct_target(Some(&ov(Some("db"), Some(9)))), Some(("db".into(), 9)));
+        assert_eq!(Registry::builtin().get("lldb-dap").unwrap().direct_target(Some(&ov(None, Some(1)))), None);
     }
 
     #[test]

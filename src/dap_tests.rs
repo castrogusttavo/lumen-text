@@ -844,7 +844,8 @@ fn attach_requests_go_out_as_attach() {
     let s = reg.get("debugpy").unwrap().session_with(Path::new("/w/a.py"), Path::new("/w"), &[], Some(&ov));
     let (cmd, args) = s.start_request.unwrap();
     assert_eq!(cmd, "attach");
-    assert_eq!((args["connect"]["host"].as_str(), args["connect"]["port"].as_u64()), (Some("127.0.0.1"), Some(5679)));
+    assert!(args.get("connect").is_none(), "debugpy's server is connected to directly, not told about itself");
+    assert_eq!(args["justMyCode"], false);
     let ov = crate::debug_model::LaunchOverride { request: Some("attach".into()), pid: Some(31), ..Default::default() };
     let s = reg.get("lldb-dap").unwrap().session_with(Path::new("/w/a.c"), Path::new("/w"), &[], Some(&ov));
     let (cmd, args) = s.start_request.unwrap();
@@ -931,7 +932,7 @@ fn debugpy_attach_to_a_listening_script() {
         port: Some(port),
         ..Default::default()
     };
-    let mut dap = adapter.start(&dir, Arc::new(|| {})).expect("start debugpy adapter");
+    let mut dap = adapter.start_with(&dir, Arc::new(|| {}), Some(&ov)).expect("connect to the debugpy server");
     let mut s = adapter.session_with(&src, &dir, &[], Some(&ov));
     s.set_breakpoints(&src.to_string_lossy(), &[2], &mut dap);
     s.start(&mut dap);
