@@ -735,6 +735,14 @@
   "default": 0
  },
  {
+  "key": "vim_mode",
+  "section": "Editor",
+  "label": "Vim modal editing",
+  "help": "Normal, Insert and Visual modes with counts, registers, operators and motions, text objects, `.` repeat, `q` / `@` macros and the ex commands :w :q :wq :e :s :d. Off by default and free when off. The Vim keymap preset turns it on too.",
+  "kind": "bool",
+  "default": false
+ },
+ {
   "key": "keymap_preset",
   "section": "Editor",
   "label": "Keymap preset",
