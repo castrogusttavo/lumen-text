@@ -161,18 +161,23 @@ impl App {
 
         match next {
             Next::Close => {
-                self.overlay = Overlay::None;
-                self.restore_theme_preview();
+                self.dismiss_picker();
             }
             Next::Accept => self.overlay_accept(),
             Next::Changed => {
                 let mut schedule = false;
+                let mut goto = false;
                 if let Overlay::Picker(p) = &mut self.overlay {
-                    if p.kind == PickKind::ProjectSearch || p.kind == PickKind::WorkspaceSymbols {
+                    if p.kind == PickKind::ProjectSearch {
                         schedule = true;
+                    } else if p.kind == PickKind::QuickOpen {
+                        goto = true;
                     } else {
                         p.refilter();
                     }
+                }
+                if goto {
+                    schedule = self.goto_changed();
                 }
                 if schedule {
                     self.search_due = Some(std::time::Instant::now() + std::time::Duration::from_millis(180));
@@ -186,6 +191,7 @@ impl App {
             Next::Nothing => {}
         }
         self.preview_theme_selection();
+        self.goto_preview();
         self.request_redraw();
         false
     }
@@ -210,8 +216,9 @@ impl App {
         let overlay = std::mem::replace(&mut self.overlay, Overlay::None);
         match overlay {
             Overlay::Settings(_) | Overlay::TopMenu(_) | Overlay::Ctx(_) | Overlay::Font(_) => {}
-            Overlay::Picker(p) => {
+            Overlay::Picker(mut p) => {
                 if let Some(item) = p.selected() {
+                    self.goto_commit(&mut p);
                     self.run_action(item.action);
                 } else {
                     self.overlay = Overlay::Picker(p);
@@ -363,8 +370,7 @@ impl App {
             || y < r.y as f64
             || y > (r.y + INPUT_H + extra + PICKER_ROWS as i32 * ROW + 12) as f64
         {
-            self.overlay = Overlay::None;
-            self.restore_theme_preview();
+            self.dismiss_picker();
         }
         true
     }

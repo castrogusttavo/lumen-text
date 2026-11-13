@@ -8,16 +8,7 @@ impl App {
     }
 
     pub fn open_quick_open(&mut self) {
-        if self.file_index.is_none() {
-            self.file_index = Some(search::list_files(&self.root, 50_000));
-        }
-        let files = self.file_index.clone().unwrap_or_default();
-        let open: Vec<PathBuf> = self.docs.iter().filter_map(|d| d.path().map(PathBuf::from)).collect();
-        let mut items: Vec<Item> = Vec::new();
-        for p in open.iter().rev().chain(files.iter().filter(|f| !open.contains(f))) {
-            items.push(Item { label: self.rel(p), detail: String::new(), action: Action::Open(p.clone(), None) });
-        }
-        self.overlay = Overlay::Picker(Picker::new(PickKind::QuickOpen, "Open file", items));
+        self.open_goto("");
     }
 
     pub fn open_commands(&mut self) {
@@ -244,12 +235,9 @@ impl App {
         }
     }
 
+    /// Ctrl+T: the Go to picker with `#` typed (project symbols).
     pub fn open_workspace_symbols(&mut self) {
-        if self.with_server_pub().is_none() {
-            return self.say("project symbols need the language server (open a TS/JS file)");
-        }
-        self.overlay =
-            Overlay::Picker(Picker::new(PickKind::WorkspaceSymbols, "Symbol in project (type to search)", Vec::new()));
+        self.open_goto("#");
     }
 
     pub fn open_goto_line(&mut self) {
@@ -273,9 +261,14 @@ impl App {
 
     pub fn start_search(&mut self) {
         let Overlay::Picker(p) = &mut self.overlay else { return };
-        if p.kind == PickKind::WorkspaceSymbols {
-            let q = p.field.text.trim().to_string();
-            return self.request_workspace_symbols(q);
+        if p.kind == PickKind::QuickOpen {
+            // Go to picker: only `#` has a debounced search to run (project symbols).
+            let (mode, rest) = crate::gotopick::parse(&p.field.text);
+            let q = rest.trim().to_string();
+            if mode == crate::gotopick::Mode::WorkspaceSymbols {
+                return self.goto_ws_request(q);
+            }
+            return;
         }
         if p.kind != PickKind::ProjectSearch {
             return;
