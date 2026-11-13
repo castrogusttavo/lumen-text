@@ -720,6 +720,31 @@
   "id": "PrevTerminal"
  },
  {
+  "label": "Terminal: Find in scrollback",
+  "shortcut": "",
+  "id": "TermFind"
+ },
+ {
+  "label": "Terminal: Previous command",
+  "shortcut": "",
+  "id": "TermPrevCommand"
+ },
+ {
+  "label": "Terminal: Next command",
+  "shortcut": "",
+  "id": "TermNextCommand"
+ },
+ {
+  "label": "Terminal: Select last command output",
+  "shortcut": "",
+  "id": "TermSelectOutput"
+ },
+ {
+  "label": "Terminal: Copy last command output",
+  "shortcut": "",
+  "id": "TermCopyOutput"
+ },
+ {
   "label": "Appearance: Follow system light/dark theme",
   "shortcut": "",
   "id": "FollowSystemTheme"
