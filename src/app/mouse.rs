@@ -213,6 +213,13 @@ impl App {
         if clicks == 1 && !alt && d.click_fold(x, y) {
             return self.request_redraw();
         }
+        if clicks == 1
+            && !alt
+            && let Some(line) = self.tests_mark_line_at(x, y)
+        {
+            self.tests_gutter_click(line, ctrl);
+            return self.request_redraw();
+        }
         if clicks == 1 && !alt && self.gutter_breakpoint_click(x, y) {
             return self.request_redraw();
         }

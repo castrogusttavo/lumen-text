@@ -66,8 +66,14 @@ impl Filter {
 pub enum Last {
     All,
     File(String),
-    Test { file: Option<String>, name: String, id: Option<String> },
+    Test {
+        file: Option<String>,
+        name: String,
+        id: Option<String>,
+    },
     Failed,
+    /// Watch mode: the tests a saved file can affect (project-relative path).
+    Related(String),
 }
 
 /// Things of the toolbar that explain themselves on hover (disabled ones included).
@@ -137,6 +143,8 @@ pub struct TestsState {
     pub hits: Vec<(Rect, Hit)>,
     seq: u32,
     pub watch_due: Option<Instant>,
+    /// The file whose save armed `watch_due`.
+    pub watch_file: Option<String>,
     dbg_json: Vec<String>,
     last_click: Option<(String, Instant)>,
     /// The list has the keyboard (set by a click in the panel, dropped by any other click or
@@ -184,6 +192,7 @@ impl Default for TestsState {
             hits: Vec::new(),
             seq: 0,
             watch_due: None,
+            watch_file: None,
             dbg_json: Vec::new(),
             last_click: None,
             focused: false,
@@ -725,12 +734,71 @@ impl App {
 
     /// Run the file in the active tab, or only the test at its cursor.
     pub fn tests_run_file(&mut self, at_cursor: bool) {
+        self.tests_run_at(at_cursor, None);
+    }
+
+    /// "Run last": repeat whatever the previous run covered.
+    pub fn tests_run_last(&mut self) {
+        match self.tests.last.clone() {
+            Some(l) => self.tests_start(l),
+            None => self.say("tests: nothing has run yet"),
+        }
+    }
+
+    /// A gutter mark was clicked: run (or debug) the test declared on `line` of the active file.
+    pub fn tests_gutter_click(&mut self, line: usize, debug: bool) {
+        if debug {
+            self.tests_debug_at(Some(line));
+        } else {
+            self.tests_run_at(true, Some(line));
+        }
+    }
+
+    /// The line (0-based) of a gutter run mark under (x, y) in the active document.
+    pub fn tests_mark_line_at(&self, x: f64, y: f64) -> Option<usize> {
+        let d = self.docs.get(self.active)?;
+        if d.test_runs.is_empty() || d.path().is_none() {
+            return None;
+        }
+        let x0 = (d.rect.x + crate::display::BP_CLICK_W + 1) as f64;
+        if x < x0 || x >= x0 + 12.0 || y < d.rect.y as f64 || y >= d.rect.bottom() as f64 {
+            return None;
+        }
+        let (p, _) = d.hit_at((d.rect.x + d.gutter_w() + 1) as f64, y);
+        let line = d.buf.line_col(p).0;
+        d.test_runs.iter().any(|(l, _)| *l == line).then_some(line)
+    }
+
+    /// Keep each active document's detected tests (the gutter run marks) current.
+    fn tests_refresh_runs(&mut self) {
+        let Some(d) = self.docs.get(self.active) else { return };
+        let ver = d.buf.version();
+        if d.test_runs_ver == Some(ver) || d.buf.line_count() > 20_000 {
+            return;
+        }
+        let Some(path) = d.path().map(PathBuf::from) else { return };
+        let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+        let lines: Vec<String> = (0..d.buf.line_count()).map(|l| d.buf.line(l)).collect();
+        let found = testrun::detect_tests(&ext, &lines);
+        if !found.is_empty() {
+            self.tests_ensure_detect();
+        }
+        let ok = !found.is_empty()
+            && (self.tests.target().is_some_and(|t| t.runner().is_some_and(|r| r.exts().contains(&ext.as_str())))
+                || testrun::runner_for_ext(&self.tests.detected, &ext).is_some());
+        let d = &mut self.docs[self.active];
+        d.test_runs_ver = Some(ver);
+        d.test_runs = if ok { found } else { Vec::new() };
+    }
+
+    fn tests_run_at(&mut self, at_cursor: bool, line: Option<usize>) {
         self.tests_ensure_detect();
         let Some(d) = self.docs.get(self.active) else { return };
         let Some(path) = d.path().map(PathBuf::from) else { return };
         let rel = self.rel(&path);
         let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
         let (cur, _) = d.buf.line_col(d.ed.head());
+        let cur = line.unwrap_or(cur);
         let lines: Vec<String> = (0..d.buf.line_count()).map(|l| d.buf.line(l)).collect();
         let name = if at_cursor { testrun::test_name_at_cursor(&ext, &lines, cur) } else { None };
         let runner = match self.tests.target() {
@@ -843,21 +911,25 @@ impl App {
             Last::Test { file, name, id } => {
                 Last::Test { file: file.as_deref().map(in_dir), name: name.clone(), id: id.clone() }
             }
+            Last::Related(f) => Last::Related(in_dir(f)),
             other => other.clone(),
         };
         let scope = match &scoped {
-            Last::All => Scope::All,
+            Last::All | Last::Related(_) => Scope::All,
             Last::File(f) => Scope::File(f),
             Last::Test { file, name, .. } => Scope::Test { file: file.as_deref(), name, case: one.as_ref() },
             Last::Failed => Scope::Failed(&failed),
         };
         self.tests.seq += 1;
         let report = std::env::temp_dir().join(format!("lumen-tests-{}-{}.dat", std::process::id(), self.tests.seq));
+        let custom = (self.config.test_command.as_str(), self.config.test_report.as_str());
         let mut plan = match (&target, runner) {
             (Some(t), _) => testrun::plan_script(t, &scope, &report),
-            (None, Some(r)) => {
-                testrun::plan(r, &self.root, &scope, &report, (&self.config.test_command, &self.config.test_report))
-            }
+            (None, Some(r)) => match &scoped {
+                Last::Related(f) => testrun::plan_related(r, &self.root, f, &report, custom)
+                    .unwrap_or_else(|| testrun::plan(r, &self.root, &Scope::All, &report, custom)),
+                _ => testrun::plan(r, &self.root, &scope, &report, custom),
+            },
             (None, None) => return,
         };
         if plan.cmd.trim().is_empty() {
@@ -875,7 +947,7 @@ impl App {
         }
         // The rows this run will report on go back to "running"; a full run starts from scratch.
         match &last {
-            Last::All => {
+            Last::All | Last::Related(_) => {
                 self.tests.clear_cases();
                 self.tests.sel = None;
                 self.tests.collapsed.clear();
@@ -954,6 +1026,7 @@ impl App {
 
     /// Drain the runner's output; called whenever the event loop is woken.
     pub fn pump_tests(&mut self) {
+        self.tests_refresh_runs();
         if self.tests.proc.is_none() {
             return;
         }
@@ -1085,8 +1158,12 @@ impl App {
         }
     }
 
+    /// Watch mode: a save re-runs the tests related to the saved file when the runner can scope
+    /// them (`vitest related`, `jest --findRelatedTests`, `cargo test <module>`...), else the last run.
     pub fn tests_on_save(&mut self) {
         if self.config.test_watch && self.tests.last.is_some() && self.tests.proc.is_none() {
+            self.tests.watch_file =
+                self.docs.get(self.active).and_then(|d| d.path().map(PathBuf::from)).map(|p| self.rel(&p));
             self.tests.watch_due = Some(Instant::now() + Duration::from_millis(350));
         }
     }
@@ -1104,7 +1181,8 @@ impl App {
                 if self.tests.proc.is_none()
                     && let Some(last) = self.tests.last.clone()
                 {
-                    self.tests_start(last);
+                    let related = self.tests.watch_file.take().filter(|f| self.tests_related_ok(f));
+                    self.tests_start(related.map_or(last, Last::Related));
                 }
             } else {
                 want(due);
@@ -1112,14 +1190,29 @@ impl App {
         }
     }
 
+    /// Does the runner in use have a narrower scope for the saved file?
+    fn tests_related_ok(&self, file: &str) -> bool {
+        if self.tests.target().is_some() {
+            return false;
+        }
+        let Some(r) = self.tests.runner else { return false };
+        let probe = Path::new("/dev/null");
+        testrun::plan_related(r, &self.root, file, probe, ("", "")).is_some()
+    }
+
     // ───────────── debugging one test ─────────────
 
     pub fn tests_debug_cursor(&mut self) {
+        self.tests_debug_at(None);
+    }
+
+    fn tests_debug_at(&mut self, line: Option<usize>) {
         self.tests_ensure_detect();
         let Some(d) = self.docs.get(self.active) else { return };
         let Some(path) = d.path().map(PathBuf::from) else { return };
         let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
         let (cur, _) = d.buf.line_col(d.ed.head());
+        let cur = line.unwrap_or(cur);
         let lines: Vec<String> = (0..d.buf.line_count()).map(|l| d.buf.line(l)).collect();
         let Some(name) = testrun::test_name_at_cursor(&ext, &lines, cur) else {
             return self.say("no test at the cursor");

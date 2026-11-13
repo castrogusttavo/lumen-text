@@ -115,6 +115,10 @@ pub struct Doc {
     pub eslint_due: Option<Instant>,
     /// Test outcomes from the last run: (0-based line, passed). Drawn in the gutter.
     pub test_marks: Vec<(usize, Option<bool>)>,
+    /// Tests declared in this file `(line, name)`: where the gutter shows a clickable run mark.
+    pub test_runs: Vec<(usize, String)>,
+    /// Buffer version `test_runs` was computed for.
+    pub test_runs_ver: Option<u64>,
     /// Coverage marks of the loaded report (sorted by line; they follow edits, see `coverage`).
     pub cov: Vec<crate::coverage::Mark>,
     /// Report generation `cov` was made from (see `app_coverage`).
@@ -265,6 +269,8 @@ impl Doc {
             diag_data: Vec::new(),
             eslint_due: None,
             test_marks: Vec::new(),
+            test_runs: Vec::new(),
+            test_runs_ver: None,
             cov: Vec::new(),
             cov_gen: 0,
             sel_stack: Vec::new(),

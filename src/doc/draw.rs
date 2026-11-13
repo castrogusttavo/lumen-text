@@ -823,6 +823,23 @@ impl Doc {
                 tx.icon(cv, icon, rect.x + 12, y + (lh - 12) / 2, 12, color, gclip);
             }
         }
+        // A detected test with no result yet: a run mark (click runs it, Ctrl+click debugs it).
+        for (l, _) in &self.test_runs {
+            if self.test_marks.iter().any(|(m, _)| m == l) {
+                continue;
+            }
+            if let Some(y) = line_y(*l) {
+                tx.icon(
+                    cv,
+                    "ui/play_outlined",
+                    rect.x + crate::display::BP_CLICK_W + 1,
+                    y + (lh - 11) / 2,
+                    11,
+                    theme.line_number.with_alpha(0xa0),
+                    gclip,
+                );
+            }
+        }
         // Coverage: a thin bar at the inner edge of the gutter, on every row of a marked line.
         if !self.cov.is_empty() {
             for (r, row) in rows.iter().enumerate() {
