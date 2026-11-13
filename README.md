@@ -107,6 +107,13 @@ is in the [changelog](https://castrogusttavo.github.io/lumen-text/changelog), an
   existing branch (default `<repo>/../<repo>-worktrees/<branch>`, see `git_worktree_dir`) in the background; open it in
   this window (each project keeps its own session) or in a new window; remove (asks, and asks again before forcing a
   dirty one) and prune. The branch chip shows a worktree icon when the project is a linked worktree
+- Multi-root workspaces (`Workspace: Add folder…`, or `Add as workspace folder` in the worktree menu): several folders in one
+  window, each a top-level node of the explorer. Quick open, find / replace in files, tasks, the file watcher and the
+  language servers (`workspaceFolders`) cover every folder; git badges come from each folder's repository and the Git panel
+  follows one folder (`Workspace: Git folder…`); each folder's `.lumen/config.json` is merged under the project's. The
+  folder set is saved with the session, and as a `.lumen-workspace` file (`{"folders": [{"path": "../web"}]}`, paths
+  relative to the file; VS Code's `.code-workspace` folder list is read too) that `lumen-text file.lumen-workspace` or
+  `Workspace: Open workspace file…` opens
 - Stashes in the panel: stash everything or the selected files (Ctrl / Shift + click; untracked files on request), apply, pop, drop, view a stash's files and diff; a stash that conflicts opens the conflicting file. Palette: `Git: Stash…`, `Git: Stash Pop`, `Git: Stashes…`
 - Commit graph in the History tab: coloured lanes of every branch with merge and fork curves, branch / tag / HEAD labels, streamed a page at a time (smooth on 100k-commit repositories); right click a commit to check it out, branch or tag from it, cherry-pick, revert or copy its hash
 - Stage, unstage or revert single lines: select rows in the diff (drag, or `Shift+↓`/`Shift+↑`) and press `s` (or the "Stage lines" button) / `r`; CRLF files and missing final newlines are kept exact
@@ -529,6 +536,7 @@ src/
   dap.rs, tasks.rs, terminal.rs  debug adapters, processes and ANSI output, PTY + VT emulator
   kittykeys.rs, app_terms.rs  kitty keyboard protocol (flag stack, key encoder); the panel's terminal tabs and split
   git.rs, gitx.rs, gitsync.rs  status, blame, hunks, diff, history, conflicts, fetch/pull/push
+  workspace.rs, app_workspace.rs  multi-root workspaces: `.lumen-workspace` / `.code-workspace` files, add / remove folders
   worktree.rs, app_worktree.rs  git worktrees: list, add/remove/prune (on the git worker), open here / in a new window
   gitpatch.rs, gitcmp.rs   line-level staging patches; compare with any ref (refs, merge base, changed files)
   merge3.rs, app_merge.rs  diff3 regions, result assembly and locating, git stages; the 3-way merge editor

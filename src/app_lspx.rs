@@ -720,7 +720,7 @@ impl App {
             }
             "workspace/workspaceFolders" => {
                 let root = self.lsps[li].root.clone();
-                json!([{"uri": crate::doc::path_to_uri(&root), "name": root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()}])
+                crate::workspace::folders_json(&crate::workspace::lsp_folders(&root))
             }
             "workspace/codeLens/refresh" | "workspace/inlayHint/refresh" | "workspace/semanticTokens/refresh" => {
                 self.lspx_rearm(li);

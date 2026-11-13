@@ -149,6 +149,10 @@ impl App {
                 }
             };
             watch(self.root.as_path());
+            for e in &self.ws.extra {
+                watch(e.as_path());
+                watch(e.join(crate::projcfg::DIR).as_path());
+            }
             // Settings files (live reload): `.lumen/` of the project and the user's config folder.
             watch(self.root.join(crate::projcfg::DIR).as_path());
             if let Some(d) = crate::config::default_path().as_deref().and_then(Path::parent) {
@@ -310,6 +314,7 @@ impl App {
         if let Some(sp) = self.split_session(&file_ix) {
             v["split"] = sp;
         }
+        self.ws_session_save(&mut v);
         self.win_session_save(&mut v);
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -322,6 +327,7 @@ impl App {
         let Ok(text) = std::fs::read_to_string(path) else { return };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return };
         self.win_session_restore(&v);
+        self.ws_session_restore(&v);
         let mut opened: Vec<Option<usize>> = Vec::new();
         for f in v["files"].as_array().into_iter().flatten() {
             opened.push(None);

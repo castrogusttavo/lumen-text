@@ -644,7 +644,14 @@ impl App {
                     }
                     self.tree.select_only(i);
                     let r = &self.tree.rows[i];
-                    if r.is_dir { Target::Folder(r.path.clone()) } else { Target::File(r.path.clone()) }
+                    // A workspace folder's own node cannot be cut, renamed or deleted.
+                    if self.tree.is_root(&r.path) {
+                        Target::Root(r.path.clone())
+                    } else if r.is_dir {
+                        Target::Folder(r.path.clone())
+                    } else {
+                        Target::File(r.path.clone())
+                    }
                 }
                 None => Target::Root(self.root.clone()),
             });

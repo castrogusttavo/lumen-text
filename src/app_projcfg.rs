@@ -87,13 +87,20 @@ impl App {
         let root = self.root.clone();
         let (project, e1) = projcfg::read_layer(&projcfg::project_file(&root));
         let (local, e2) = projcfg::read_layer(&projcfg::local_file(&root));
-        let mut cmds = projcfg::commands(&project);
+        // Multi-root workspace: the other folders' `.lumen/config.json` sit under the primary
+        // root's own files (which win), so each folder can set what the others leave alone.
+        let extras: Vec<Value> =
+            self.ws.extra.iter().map(|r| projcfg::read_layer(&projcfg::project_file(r)).0).collect();
+        let mut cmds: Vec<String> = extras.iter().flat_map(projcfg::commands).collect();
+        cmds.extend(projcfg::commands(&project));
         cmds.extend(projcfg::commands(&local));
         let fp = projcfg::fingerprint(&cmds);
         let decision =
             if cmds.is_empty() { Some(true) } else { self.trust_store().and_then(|t| t.decision(&root, &fp)) };
         let allowed = decision == Some(true);
-        let merged = projcfg::merge(&user, &[&project, &local], allowed);
+        let mut layers: Vec<&Value> = extras.iter().collect();
+        layers.extend([&project, &local]);
+        let merged = projcfg::merge(&user, &layers, allowed);
         let new = Config::from_value(&merged);
         let mut problems: Vec<String> = e1.into_iter().chain(e2).collect();
         problems.extend(new.languages_errors());

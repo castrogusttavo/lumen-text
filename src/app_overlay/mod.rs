@@ -65,6 +65,8 @@ pub enum Action {
     Project(crate::app_projcfg::ProjPick),
     /// Resource panel rows and their Stop / Restart menus (see `resmon`).
     Res(crate::resmon::ResPick),
+    /// Workspace folder pickers (see `app_workspace`).
+    Workspace(crate::app_workspace::WsPick),
 }
 
 #[derive(Clone)]
@@ -166,6 +168,10 @@ pub enum PromptKind {
     },
     /// "Remote: Open folder over SSH…": the address (see `app_remote`).
     RemoteOpen,
+    /// "Workspace: Add folder…", "Open workspace file…" and "Save as…" (see `app_workspace`).
+    WorkspaceAdd,
+    WorkspaceOpen,
+    WorkspaceSave,
 }
 
 pub struct Prompt {

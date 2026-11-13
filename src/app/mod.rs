@@ -128,6 +128,8 @@ pub struct App {
     pub tokenizers: HashMap<String, SharedTokenizer>,
 
     pub root: PathBuf,
+    /// Extra folders of a multi-root workspace (empty = single root), see `app_workspace`.
+    pub ws: crate::app_workspace::Ws,
     pub tree: Tree,
     pub sidebar_open: bool,
     pub sidebar_mode: SidebarMode,
@@ -314,6 +316,7 @@ impl App {
             branch: git::branch(&root),
             git_status: HashMap::new(),
             root,
+            ws: Default::default(),
             tree,
             sidebar_open: true,
             sidebar_mode: SidebarMode::Files,

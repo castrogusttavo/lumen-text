@@ -53,7 +53,7 @@ const MAX_DIFF_BYTES: u64 = 3_000_000;
 
 impl App {
     fn cmp_top(&mut self) -> Option<PathBuf> {
-        let top = git::toplevel(&self.root);
+        let top = git::toplevel(&self.git_root());
         if top.is_none() {
             self.say("This folder is not a git repository");
         }

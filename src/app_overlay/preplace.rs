@@ -430,7 +430,7 @@ impl App {
         let Some((_, _, more)) = p.rep.as_mut().and_then(|r| r.confirm.take()) else { return };
         let Some((m, rep)) = self.replace_ctx() else { return };
         let paths: Vec<PathBuf> = if more {
-            search::list_files(&self.root, usize::MAX)
+            search::list_files_in(&self.roots(), usize::MAX)
         } else {
             let Overlay::Picker(p) = &self.overlay else { return };
             let mut v: Vec<PathBuf> = Vec::new();

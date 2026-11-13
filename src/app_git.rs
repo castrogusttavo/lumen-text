@@ -42,13 +42,21 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 impl App {
     pub fn refresh_git_status(&mut self) {
-        self.branch = git::branch(&self.root);
-        let top = git::toplevel(&self.root).unwrap_or_else(|| self.root.clone());
+        let gr = self.git_root();
+        self.branch = git::branch(&gr);
+        let top = git::toplevel(&gr).unwrap_or_else(|| gr.clone());
         self.gitbg.worktree_main = crate::worktree::linked_main(&top);
         let mut map: HashMap<PathBuf, char> = HashMap::new();
-        for (xy, rel) in git::status(&self.root) {
-            let rel = rel.rsplit(" -> ").next().unwrap_or(&rel).trim_matches('"').to_string();
-            map.insert(top.join(rel), badge(&xy));
+        let primary_top =
+            if gr == self.root { top } else { git::toplevel(&self.root).unwrap_or_else(|| self.root.clone()) };
+        collect_status(&self.root, &primary_top, &mut map);
+        // Multi-root workspace: every other folder has its own repository, status and branch.
+        if !self.ws.extra.is_empty() {
+            for e in &self.ws.extra {
+                let t = git::toplevel(e).unwrap_or_else(|| e.clone());
+                collect_status(e, &t, &mut map);
+            }
+            self.ws.branches = self.roots().iter().map(|r| git::branch(r)).collect();
         }
         self.git_status = map;
     }
@@ -87,7 +95,7 @@ impl App {
         let Some(f) = self.current_file() else { return };
         let arg = f.to_string_lossy().into_owned();
         let args: Vec<&str> = if stage { vec!["add", "--", &arg] } else { vec!["restore", "--staged", "--", &arg] };
-        match run_git(&self.root, &args) {
+        match run_git(&self.git_root(), &args) {
             Ok(_) => {
                 self.refresh_git_status();
                 self.say(if stage { "added to stage" } else { "removed from stage" });
@@ -108,7 +116,7 @@ impl App {
 
     pub fn git_discard(&mut self, path: &Path) {
         let arg = path.to_string_lossy().into_owned();
-        match run_git(&self.root, &["checkout", "--", &arg]) {
+        match run_git(&self.git_root(), &["checkout", "--", &arg]) {
             Ok(_) => {
                 if let Some(i) = self.docs.iter().position(|d| d.path() == Some(path)) {
                     self.hist_snapshot(i, crate::localhist::Source::Reload);
@@ -133,7 +141,7 @@ impl App {
         if msg.trim().is_empty() {
             return;
         }
-        match run_git(&self.root, &["commit", "-m", msg.trim()]) {
+        match run_git(&self.git_root(), &["commit", "-m", msg.trim()]) {
             Ok(out) => {
                 self.refresh_git_status();
                 for d in &mut self.docs {
@@ -149,13 +157,21 @@ impl App {
     }
 
     pub fn git_stage_all(&mut self) {
-        match run_git(&self.root, &["add", "-A"]) {
+        match run_git(&self.git_root(), &["add", "-A"]) {
             Ok(_) => {
                 self.refresh_git_status();
                 self.say("everything added to stage");
             }
             Err(e) => self.say(format!("git: {e}")),
         }
+    }
+}
+
+/// Add the `git status` of the project at `root` (repository top `top`) to `map`.
+fn collect_status(root: &Path, top: &Path, map: &mut HashMap<PathBuf, char>) {
+    for (xy, rel) in git::status(root) {
+        let rel = rel.rsplit(" -> ").next().unwrap_or(&rel).trim_matches('"').to_string();
+        map.insert(top.join(rel), badge(&xy));
     }
 }
 

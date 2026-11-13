@@ -52,6 +52,8 @@ pub enum WtPick {
     Stay,
     /// Start an AI agent session in it (see [`App::ai_session_in_worktree`]).
     AiSession(PathBuf),
+    /// Add it to this window's workspace as an extra folder (multi-root, see `app_workspace`).
+    AddRoot(PathBuf),
 }
 
 /// Text prompts of the worktree features (`GitAsk::Worktree`).
@@ -264,6 +266,7 @@ impl App {
                 self.switch_project(path);
             }
             WtPick::OpenWindow(path) => self.open_in_new_window(&path),
+            WtPick::AddRoot(path) => self.ws_add_folder(path),
             WtPick::CopyPath(path) => {
                 let s = path.to_string_lossy().into_owned();
                 self.clip.set(&s);
@@ -304,6 +307,11 @@ impl App {
                 WtPick::Open(p.clone()),
             ));
             items.push(item("Open in new window", "", WtPick::OpenWindow(p.clone())));
+            items.push(item(
+                "Add as workspace folder",
+                "next to this project, in the explorer",
+                WtPick::AddRoot(p.clone()),
+            ));
         }
         if !w.main && !current && !w.prunable {
             items.push(item("Remove…", "git worktree remove (asks first)", WtPick::Remove(p.clone())));
@@ -411,6 +419,7 @@ impl App {
                     let items = vec![
                         item("Open here", "switch this window to it", WtPick::Open(path.clone())),
                         item("Open in new window", "", WtPick::OpenWindow(path.clone())),
+                        item("Add as workspace folder", "", WtPick::AddRoot(path.clone())),
                         item("Stay here", "", WtPick::Stay),
                     ];
                     let title = format!("Worktree “{branch}” is ready at {}", tilde(path));
@@ -515,7 +524,7 @@ mod tests {
         assert!(app.gitbg.detached.is_some(), "runs on the git worker");
         finish_job(&mut app);
         assert!(expected.join("a.txt").is_file(), "worktree checked out");
-        assert_eq!(picker_labels(&app), ["Open here", "Open in new window", "Stay here"]);
+        assert_eq!(picker_labels(&app), ["Open here", "Open in new window", "Add as workspace folder", "Stay here"]);
 
         // The list shows both, the current one first selected.
         app.overlay = Overlay::None;

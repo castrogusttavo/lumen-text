@@ -74,7 +74,7 @@ impl App {
         // The Git and AI panels share the right-hand slot (the agent keeps running).
         self.ai_hide();
         self.refresh_git_status();
-        let mut gp = Box::new(GitPanel::new(&self.root));
+        let mut gp = Box::new(GitPanel::new(&self.git_root()));
         gp.wake = Some(self.wake());
         // A command that kept running while the panel was closed is shown again.
         gp.job = self.gitbg.detached.take();
@@ -107,16 +107,17 @@ impl App {
             acc ^= e.finish();
         }
         acc.hash(&mut h);
-        self.root.hash(&mut h);
-        let gitdir = gp.top.clone().unwrap_or_else(|| self.root.clone()).join(".git");
+        let groot = self.git_root();
+        groot.hash(&mut h);
+        let gitdir = gp.top.clone().unwrap_or_else(|| groot.clone()).join(".git");
         mtime(&gitdir.join("index")).hash(&mut h);
         // Stashes pushed or dropped elsewhere (a terminal) show up too.
         mtime(&gitdir.join("logs").join("refs").join("stash")).hash(&mut h);
         let sig = h.finish();
         let hist =
             mtime(&gitdir.join("logs").join("HEAD")) as u64 ^ (mtime(&gitdir.join("HEAD")) as u64).rotate_left(7);
-        if gp.root != self.root {
-            gp.root = self.root.clone();
+        if gp.root != groot {
+            gp.root = groot;
             gp.reset_history();
         }
         if sig != gp.sig {

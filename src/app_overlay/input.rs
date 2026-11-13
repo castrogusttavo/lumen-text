@@ -281,6 +281,9 @@ impl App {
                 PromptKind::BpCondition { path, line } => self.bp_set_condition(&path, line, &p.field.text),
                 PromptKind::BpLog { path, line } => self.bp_set_log(&path, line, &p.field.text),
                 PromptKind::RemoteOpen => self.remote_open_answer(&p.field.text),
+                PromptKind::WorkspaceAdd => self.ws_add_answer(&p.field.text),
+                PromptKind::WorkspaceOpen => self.ws_open_answer(&p.field.text),
+                PromptKind::WorkspaceSave => self.ws_save_answer(&p.field.text),
             },
             Overlay::None => {}
         }
@@ -333,6 +336,7 @@ impl App {
             Action::Compare(p) => self.cmp_pick(p),
             Action::Project(p) => self.projcfg_pick(p),
             Action::Res(p) => self.res_pick(p),
+            Action::Workspace(p) => self.ws_pick(p),
             Action::UndoBranch(n) => {
                 if let Some(d) = self.docs.get_mut(self.active)
                     && let Some(sel) = d.buf.redo_branch(n)

@@ -565,6 +565,31 @@
   "id": "GitWorktreePrune"
  },
  {
+  "label": "Workspace: Add folder…",
+  "shortcut": "",
+  "id": "WorkspaceAddFolder"
+ },
+ {
+  "label": "Workspace: Remove folder…",
+  "shortcut": "",
+  "id": "WorkspaceRemoveFolder"
+ },
+ {
+  "label": "Workspace: Git folder…",
+  "shortcut": "",
+  "id": "WorkspaceGitFolder"
+ },
+ {
+  "label": "Workspace: Open workspace file…",
+  "shortcut": "",
+  "id": "WorkspaceOpenFile"
+ },
+ {
+  "label": "Workspace: Save as…",
+  "shortcut": "",
+  "id": "WorkspaceSave"
+ },
+ {
   "label": "Git: Stash…",
   "shortcut": "",
   "id": "GitStash"

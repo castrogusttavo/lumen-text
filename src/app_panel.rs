@@ -233,10 +233,12 @@ impl App {
     }
 
     pub fn open_task_picker(&mut self) {
-        let items: Vec<Item> = tasks::project_tasks(&self.root)
+        let mut items: Vec<Item> = tasks::project_tasks(&self.root)
             .into_iter()
             .map(|(name, cmd)| Item { label: name, detail: cmd.clone(), action: Action::Run(cmd) })
             .collect();
+        // Multi-root workspace: the other folders' tasks run inside their own folder.
+        items.extend(self.ws_task_items());
         if items.is_empty() {
             return self.say("no package.json/Cargo.toml with tasks in this project");
         }

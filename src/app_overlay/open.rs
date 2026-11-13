@@ -4,6 +4,9 @@ impl App {
     // ───────────── opening ─────────────
 
     pub fn rel(&self, p: &std::path::Path) -> String {
+        if !self.ws.extra.is_empty() {
+            return self.ws_label(p);
+        }
         p.strip_prefix(&self.root).unwrap_or(p).to_string_lossy().into_owned()
     }
 
@@ -322,8 +325,9 @@ impl App {
             });
             return;
         }
+        let roots = self.roots();
         thread::spawn(move || {
-            search::search(&root, &q, &overrides, generation, my_gen, tx, || wake());
+            search::search_in(&roots, &q, &overrides, generation, my_gen, tx, || wake());
             done.store(true, Ordering::SeqCst);
             wake();
         });

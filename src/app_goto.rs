@@ -65,7 +65,7 @@ impl App {
     /// Open the Go to picker with `prefix` typed ("" = files, "@", "#", ":").
     pub fn open_goto(&mut self, prefix: &str) {
         if self.file_index.is_none() {
-            self.file_index = Some(crate::search::list_files(&self.root, 50_000));
+            self.file_index = Some(crate::search::list_files_in(&self.roots(), 50_000));
         }
         let files = self.file_index.clone().unwrap_or_default();
         let open: Vec<PathBuf> = self.docs.iter().filter_map(|d| d.path().map(PathBuf::from)).collect();

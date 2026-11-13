@@ -562,7 +562,7 @@ fn initialize_params(root: &Path, generic: Option<&Value>) -> Value {
         "processId": std::process::id(),
         "clientInfo": {"name": "lumen-text", "version": env!("CARGO_PKG_VERSION")},
         "rootUri": root_uri,
-        "workspaceFolders": [{"uri": root_uri, "name": root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()}],
+        "workspaceFolders": crate::workspace::folders_json(&crate::workspace::lsp_folders(root)),
         "capabilities": {
             "general": {"positionEncodings": ["utf-16"]},
             "workspace": {

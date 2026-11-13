@@ -58,6 +58,7 @@ mod app_unsaved;
 mod app_update;
 mod app_view;
 mod app_window;
+mod app_workspace;
 mod app_worktree;
 mod assist;
 mod backup;
@@ -163,6 +164,7 @@ mod update;
 mod watcher;
 mod whitespace;
 mod winconsole;
+mod workspace;
 mod worktree;
 mod zedtheme;
 
@@ -255,9 +257,20 @@ fn main() -> ExitCode {
     startup::mark("theme loaded");
     let mut files = Vec::new();
     let mut root: Option<PathBuf> = None;
+    // A `.lumen-workspace` / `.code-workspace` file: its first folder is the project, the rest
+    // are extra folders of the window (see `workspace`).
+    let mut ws_file: Option<(PathBuf, Vec<PathBuf>)> = None;
     for a in &args {
         let (p, at) = parse_target(a);
-        if p.is_dir() {
+        if workspace::is_workspace_file(&p) && p.is_file() {
+            match workspace::load(&p) {
+                Ok(f) => {
+                    root = Some(f[0].clone());
+                    ws_file = Some((p, f.into_iter().skip(1).collect()));
+                }
+                Err(e) => eprintln!("workspace {}: {e}", p.display()),
+            }
+        } else if p.is_dir() {
             root = Some(paths::canonical(&p).unwrap_or(p));
         } else {
             files.push((p, at));
@@ -282,6 +295,9 @@ fn main() -> ExitCode {
         // Headless: same input/render code as the GUI, no window.
         let wake: lsp::Wake = std::sync::Arc::new(|| {});
         let mut app = app::App::new(files, root, theme, wake, cfg.clone());
+        if let Some((f, extra)) = ws_file.take() {
+            app.ws_attach(extra, Some(f));
+        }
         // `--size` is the logical window size; the snapshots are `size * scale` device pixels.
         if scale_arg.is_some() {
             app.dpi.forced = scale_arg;
@@ -297,7 +313,7 @@ fn main() -> ExitCode {
     });
     // Files of a project that is open go to its window; an open folder raises its window (see
     // `instance`). Otherwise this process becomes a new window.
-    let (inbox, inst) = match instance::claim(&args, cli.win.forces_new(), wake.clone()) {
+    let (inbox, inst) = match instance::claim(&args, cli.win.forces_new() || ws_file.is_some(), wake.clone()) {
         instance::Role::Secondary => return ExitCode::SUCCESS,
         instance::Role::Primary(rx, inst) => (rx, inst),
     };
@@ -325,6 +341,9 @@ fn main() -> ExitCode {
     });
     startup::mark("instance claimed");
     let mut app = app::App::new(files, root, theme, wake, cfg.clone());
+    if let Some((f, extra)) = ws_file.take() {
+        app.ws_attach(extra, Some(f));
+    }
     if scale_arg.is_some() {
         app.dpi.forced = scale_arg;
     }

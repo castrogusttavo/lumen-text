@@ -34,7 +34,7 @@ impl App {
     /// The path rename/delete act on: explorer selection if focused, else the active file.
     fn target_path(&self) -> Option<PathBuf> {
         if self.focus == Focus::Sidebar {
-            return self.tree.rows.get(self.tree.sel).map(|r| r.path.clone());
+            return self.tree.rows.get(self.tree.sel).map(|r| r.path.clone()).filter(|p| !self.tree.is_root(p));
         }
         self.docs.get(self.active).and_then(|d| d.path().map(Path::to_path_buf))
     }
