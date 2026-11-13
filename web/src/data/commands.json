@@ -1158,5 +1158,35 @@
   "label": "File: Close window",
   "shortcut": "",
   "id": "CloseWindow"
+ },
+ {
+  "label": "HTTP: Send request at cursor",
+  "shortcut": "Ctrl+Alt+Enter",
+  "id": "HttpSend"
+ },
+ {
+  "label": "HTTP: Cancel request",
+  "shortcut": "",
+  "id": "HttpCancel"
+ },
+ {
+  "label": "HTTP: Next environment",
+  "shortcut": "",
+  "id": "HttpNextEnv"
+ },
+ {
+  "label": "HTTP: Copy response body",
+  "shortcut": "",
+  "id": "HttpCopyResponse"
+ },
+ {
+  "label": "HTTP: Open response in editor",
+  "shortcut": "",
+  "id": "HttpOpenResponse"
+ },
+ {
+  "label": "HTTP: Save response to file",
+  "shortcut": "",
+  "id": "HttpSaveResponse"
  }
 ]

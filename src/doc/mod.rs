@@ -166,6 +166,8 @@ pub struct Doc {
     pub lenses: Vec<Lens>,
     pub lens_due: Option<Instant>,
     pub lens_hits: Vec<(Rect, usize)>,
+    /// REST client lenses are in sync with (buffer version, running request line, has requests).
+    pub http_sig: Option<(u64, Option<usize>, bool)>,
     pub lens_refs: bool,
     pub lens_impls: bool,
     pub symbols_due: Option<Instant>,
@@ -300,6 +302,7 @@ impl Doc {
             lenses: Vec::new(),
             lens_due: Some(Instant::now()),
             lens_hits: Vec::new(),
+            http_sig: None,
             lens_refs: true,
             lens_impls: true,
             symbols_due: Some(Instant::now()),

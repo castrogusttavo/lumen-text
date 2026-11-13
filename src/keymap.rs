@@ -53,6 +53,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+z", "Undo"),
     ("ctrl+shift+z", "Redo"),
     ("ctrl+j", "ToggleOutput"),
+    ("ctrl+alt+enter", "HttpSend"),
     ("ctrl+shift+v", "MarkdownPreview"),
     ("ctrl+=", "ZoomIn"),
     ("ctrl+-", "ZoomOut"),

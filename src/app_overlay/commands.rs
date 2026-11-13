@@ -232,6 +232,12 @@ pub enum Cmd {
     OpenFolderNewWindow,
     MoveTabToNewWindow,
     CloseWindow,
+    HttpSend,
+    HttpCancel,
+    HttpNextEnv,
+    HttpCopyResponse,
+    HttpOpenResponse,
+    HttpSaveResponse,
 }
 
 impl Cmd {
@@ -474,4 +480,10 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("File: Open folder in new window…", "", Cmd::OpenFolderNewWindow),
     ("File: Move tab to new window", "", Cmd::MoveTabToNewWindow),
     ("File: Close window", "", Cmd::CloseWindow),
+    ("HTTP: Send request at cursor", "Ctrl+Alt+Enter", Cmd::HttpSend),
+    ("HTTP: Cancel request", "", Cmd::HttpCancel),
+    ("HTTP: Next environment", "", Cmd::HttpNextEnv),
+    ("HTTP: Copy response body", "", Cmd::HttpCopyResponse),
+    ("HTTP: Open response in editor", "", Cmd::HttpOpenResponse),
+    ("HTTP: Save response to file", "", Cmd::HttpSaveResponse),
 ];

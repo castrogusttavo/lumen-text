@@ -205,6 +205,8 @@ pub struct App {
     pub eslint_busy: std::collections::HashSet<PathBuf>,
     pub tests: crate::app_tests::TestsState,
     pub build: crate::app_build::BuildState,
+    /// REST client state (`.http` files): environment, named responses, request in flight.
+    pub http: crate::app_http::HttpState,
     pub dbg: Option<crate::app_debug::Debugger>,
     pub diff: Option<crate::app_gitx::DiffView>,
     /// Local history folder (`localhist`); None in unit tests unless a test sets a temp folder.
@@ -363,6 +365,7 @@ impl App {
             eslint_busy: Default::default(),
             tests: crate::app_tests::TestsState::default(),
             build: crate::app_build::BuildState::default(),
+            http: Default::default(),
             dbg: None,
             diff: None,
             hist_root: if cfg!(test) { None } else { crate::localhist::default_root() },
