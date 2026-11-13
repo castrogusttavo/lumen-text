@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(s.area, Area::Editor);
         assert_eq!(s.tabs.len(), 2);
         assert!(s.tabs.iter().filter(|t| t.active).count() == 1);
-        let e = s.editor.expect("editor");
+        let e = s.editor.clone().expect("editor");
         assert_eq!(e.name, "two.txt");
         assert_eq!(e.lines[e.caret.0 - e.first], "beta gamma");
         assert_eq!(e.caret, (1, 2));
