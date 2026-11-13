@@ -735,6 +735,19 @@
   "default": 0
  },
  {
+  "key": "keymap_preset",
+  "section": "Editor",
+  "label": "Keymap preset",
+  "help": "Shortcut set on top of the built-in ones: vscode (the default), emacs (Ctrl+F/B/N/P, Ctrl+K, Ctrl+X chords, Alt+X commands) or vim (turns on Vim modal editing). keybindings.json still wins over a preset.",
+  "kind": "choice",
+  "options": [
+   "vscode",
+   "emacs",
+   "vim"
+  ],
+  "default": "vscode"
+ },
+ {
   "key": "build_command",
   "section": "Build",
   "label": "Build command",

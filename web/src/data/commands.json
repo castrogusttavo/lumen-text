@@ -1373,5 +1373,35 @@
   "label": "HTTP: Save response to file",
   "shortcut": "",
   "id": "HttpSaveResponse"
+ },
+ {
+  "label": "Remote: Open folder over SSH…",
+  "shortcut": "",
+  "id": "RemoteOpen"
+ },
+ {
+  "label": "Remote: Reconnect",
+  "shortcut": "",
+  "id": "RemoteReconnect"
+ },
+ {
+  "label": "Remote: Save and overwrite the remote file",
+  "shortcut": "",
+  "id": "RemoteSaveOverwrite"
+ },
+ {
+  "label": "Snippets: Insert…",
+  "shortcut": "",
+  "id": "SnippetsInsert"
+ },
+ {
+  "label": "Snippets: Configure…",
+  "shortcut": "",
+  "id": "SnippetsConfigure"
+ },
+ {
+  "label": "Snippets: Import from VS Code",
+  "shortcut": "",
+  "id": "SnippetsImport"
  }
 ]
