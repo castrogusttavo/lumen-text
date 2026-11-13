@@ -198,7 +198,7 @@ impl App {
         let sup = self.mods.super_key();
         // The search bar, when open, takes every key.
         if self.term_ref(w).is_some_and(|t| t.find.is_some()) {
-            return self.find_key(w, ev);
+            return self.term_find_key(w, ev);
         }
         if let Key::Character(c) = &ev.key
             && ctrl
@@ -290,7 +290,7 @@ impl App {
 
     /// A key while the search bar of terminal `w` is open: typing edits the query, Enter / Shift+Enter
     /// (or F3, Down / Up) step through the matches, Alt+C / Alt+R toggle case and regex, Esc closes.
-    fn find_key(&mut self, w: Which, ev: &KeyIn) -> bool {
+    fn term_find_key(&mut self, w: Which, ev: &KeyIn) -> bool {
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
         let named = match &ev.key {
             Key::Named(n) => Some(format!("{n:?}")),
