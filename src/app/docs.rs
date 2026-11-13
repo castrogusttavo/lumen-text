@@ -35,6 +35,11 @@ impl App {
         let idx = if let Some(i) = self.docs.iter().position(|d| d.path() == Some(path.as_path())) {
             i
         } else {
+            // A file of a remote folder is downloaded into its mirror first (see `remote`).
+            if let Err(e) = crate::remote::hydrate(&path) {
+                self.say(format!("Could not open {}: {e}", path.display()));
+                return None;
+            }
             // Images open as a picture: a raster file is never read as text (see `imgview`).
             let img = crate::imgview::kind_for(&path);
             let buf = match img {
@@ -253,6 +258,9 @@ impl App {
                 d.git_stale = true;
                 d.disk_mtime = d.stat_mtime();
                 d.conflict = false;
+                if let Err(msg) = self.remote_push(self.active) {
+                    return self.say_for(msg, 8);
+                }
                 let idx = self.active;
                 self.lsp_did_save(idx);
                 self.hist_snapshot(idx, crate::localhist::Source::Save);

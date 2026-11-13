@@ -365,6 +365,7 @@ impl App {
     /// (it may have been created or moved), git status, the gutter base, and every open file.
     pub fn refresh_explorer(&mut self) {
         self.tree.invalidate_ignore();
+        crate::remote::invalidate(&self.root);
         self.fswatch.git_for = None; // find the repository again, `statfs` again
         self.fswatch_rebuild_tree();
         self.sync_docs_with_head();

@@ -232,6 +232,9 @@ pub enum Cmd {
     OpenFolderNewWindow,
     MoveTabToNewWindow,
     CloseWindow,
+    RemoteOpen,
+    RemoteReconnect,
+    RemoteSaveOverwrite,
 }
 
 impl Cmd {
@@ -474,4 +477,7 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("File: Open folder in new window…", "", Cmd::OpenFolderNewWindow),
     ("File: Move tab to new window", "", Cmd::MoveTabToNewWindow),
     ("File: Close window", "", Cmd::CloseWindow),
+    ("Remote: Open folder over SSH…", "", Cmd::RemoteOpen),
+    ("Remote: Reconnect", "", Cmd::RemoteReconnect),
+    ("Remote: Save and overwrite the remote file", "", Cmd::RemoteSaveOverwrite),
 ];

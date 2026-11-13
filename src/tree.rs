@@ -239,6 +239,7 @@ impl Tree {
     /// The entries to list in `dir`, in the explorer order: `.git` never, ignored ones only when
     /// they are shown.
     fn entries(&self, dir: &Path, parent_ignored: bool) -> Vec<Listed> {
+        crate::remote::before_list(dir);
         let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
         let by_time = self.sort == SortMode::Modified;
         let mut v: Vec<Listed> = rd

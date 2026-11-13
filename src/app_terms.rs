@@ -166,7 +166,16 @@ impl App {
     fn spawn_term(&mut self) -> Option<Term> {
         let (rows, cols) =
             ((self.panel.height - PANEL_HEADER) / line_h() as i32, (self.size.0 as i32 - 40) / self.tx.cell_w as i32);
-        match Term::spawn(&self.root, rows.max(4) as usize, cols.max(20) as usize, self.wake()) {
+        let (rows, cols) = (rows.max(4) as usize, cols.max(20) as usize);
+        // A remote folder gets `ssh -t` into the same folder (the connection is shared, see `remote`).
+        let spawned = match crate::remote::terminal_args(&self.root) {
+            Some(args) => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                Term::spawn_cmd(&self.root, "ssh", &args, &[], rows, cols, self.wake())
+            }
+            None => Term::spawn(&self.root, rows, cols, self.wake()),
+        };
+        match spawned {
             Ok(t) => Some(t),
             Err(e) => {
                 self.say(format!("could not open the terminal: {e}"));

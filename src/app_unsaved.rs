@@ -232,6 +232,7 @@ impl App {
                 d.git_stale = true;
                 d.disk_mtime = d.stat_mtime();
                 d.conflict = false;
+                self.remote_push(i)?;
                 self.lsp_did_save(i);
                 self.hist_snapshot(i, crate::localhist::Source::Save);
                 if let Some(w) = warn {

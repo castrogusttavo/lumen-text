@@ -1027,7 +1027,13 @@ impl App {
                 _ => {}
             }
         }
-        if !self.lsp_enabled() {
+        if let Some((text, link)) = crate::remote::badge(&self.root) {
+            // Remote folder: link state, and what is not available there.
+            let tint = if link == crate::remote::Link::Online { dim } else { c.warning };
+            let w = self.tx.ui_width(&text, false);
+            self.tx.draw_ui(cv, x + 2, y, &text, tint, Rect::new(x, r.y, w + 8, r.h), false);
+            x += w + 14;
+        } else if !self.lsp_enabled() {
             let w = self.tx.ui_width("LSP off", false);
             self.tx.draw_ui(cv, x + 2, y, "LSP off", dim, Rect::new(x, r.y, w + 8, r.h), false);
             x += w + 14;
