@@ -1266,7 +1266,7 @@ impl App {
             StatusBtn::Ai => self.ai_badge_click(),
             StatusBtn::Project => self.open_project_settings(),
             StatusBtn::Inline => self.inline_status_click(),
-            StatusBtn::Ram => {}
+            StatusBtn::Ram => self.open_resources(),
         }
         true
     }

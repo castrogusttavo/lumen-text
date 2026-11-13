@@ -38,6 +38,7 @@ pub const GLOBAL_ONLY: &[&str] = &[
     "status_order",
     "status_left_order",
     "ram_display",
+    "mem_budget_mb",
     "ui_font_family",
     "ui_font_size",
     "ui_font_weight",

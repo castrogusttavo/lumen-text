@@ -195,6 +195,8 @@ pub struct App {
     pub close_armed: Option<usize>,
     pub last_title: String,
     pub mem_cache: (Instant, String),
+    /// Resource panel and memory budget state (see `resmon`).
+    pub res: crate::resmon::State,
     pub last_disk_check: Instant,
     pub nav_back: Vec<(PathBuf, usize)>,
     pub nav_fwd: Vec<(PathBuf, usize)>,
@@ -353,6 +355,7 @@ impl App {
             close_armed: None,
             last_title: String::new(),
             mem_cache: (Instant::now() - Duration::from_secs(10), String::new()),
+            res: crate::resmon::State::new(),
             last_disk_check: Instant::now(),
             nav_back: Vec::new(),
             nav_fwd: Vec::new(),

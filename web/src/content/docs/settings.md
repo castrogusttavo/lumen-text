@@ -32,7 +32,7 @@ A project can override your settings: `.lumen/config.json` at its root (commit i
 ```
 
 - The settings window has a **User | Project** switch (`Alt+U` / `Alt+P`) that picks the file it writes. On the project side the rows the project sets are marked, user-only rows are hidden, and the reset icon returns to your own value. *Preferences: Project settings* opens it there; a gear in the status bar shows when project settings are in effect.
-- User-only keys (ignored in a project file): `ui_scale`, `scroll_speed`, `updates`, `sidebar_width`, `git_panel_width`, `md_split`, `status_items`, `status_order`, `status_left_order`, `ram_display`, the `ui_font_*` keys, `theme_chrome`, `test_watch`.
+- User-only keys (ignored in a project file): `ui_scale`, `scroll_speed`, `updates`, `sidebar_width`, `git_panel_width`, `md_split`, `status_items`, `status_order`, `status_left_order`, `ram_display`, `mem_budget_mb`, the `ui_font_*` keys, `theme_chrome`, `test_watch`.
 - Commands from a project file (`build_command`, `run_command`, `test_command`, `language_servers` entries with `command`, `args` or `env`) only apply after a one-time trust prompt, remembered per project until the commands change.
 
 ## Per-language settings

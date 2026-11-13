@@ -143,7 +143,7 @@ A server runs **once per (server, workspace root)**, started on the first matchi
 
 If a server dies it is restarted after 0.5 s, then 1 s, 2 s, 4 s and 8 s. After the fifth failure in a row it is left off and the status bar says `<server> crashed`; *Restart language servers* tries again. A server that ran for a minute is forgiven its earlier crashes.
 
-The bottom bar shows `RAM <editor> + <server> <MB>`. With one or two servers each is listed; with three or more it reads `+ 3 servers 210 MB` and the tooltip lists them one by one. While a server reports work (indexing, loading a workspace) its `$/progress` title shows in the status line.
+The bottom bar shows `RAM <editor> + <server> <MB>`. With one or two servers each is listed; with three or more it reads `+ 3 servers 210 MB` and the tooltip lists them one by one. Clicking the memory item opens the **Resources** panel: the editor, every server, terminal, AI agent, debug adapter, task and Build & Run job with PSS, RSS and uptime, and a Stop (servers also Restart) action per row; servers stop immediately and start again on next use, terminals with a running job and agents ask first. It measures only while open. Set `mem_budget_mb` (Settings, *Memory budget*; 0 = off) for a soft limit: over it the item reads `over budget`, a toast shows once, and the panel offers to stop idle servers. While a server reports work (indexing, loading a workspace) its `$/progress` title shows in the status line.
 
 ## Several servers on one file
 
