@@ -221,6 +221,9 @@ pub struct App {
     pub pending_native: Option<PathBuf>,
     pub inbox: Option<std::sync::mpsc::Receiver<crate::instance::Msg>>,
     pub watcher: Option<crate::watcher::Watcher>,
+    /// Watcher, recents and IDE bridge still to start (they wait for the first frame).
+    pub post_frame_pending: bool,
+    pub first_frame_done: bool,
     /// When set, re-pull diagnostics of every open TS document (a dependency changed on disk).
     pub lsp_refresh_at: Option<Instant>,
     /// Project roots whose whole directory tree is watched for the language server.
@@ -281,12 +284,14 @@ impl App {
         wake_fn: crate::lsp::Wake,
         config: crate::config::Config,
     ) -> Self {
+        crate::startup::mark("App::new begin");
         let mut tx = TextCtx::new(None);
         crate::minimap::set_style(crate::minimap::Style::from_name(&config.minimap_style));
         crate::editor::set_default_tab_w(config.tab_width);
         crate::scroller::set_speed(config.scroll_speed);
         let missing_fonts = crate::app_display::startup_fonts(&mut tx, &config);
         mem::report("fonts ready");
+        crate::startup::mark("fonts ready");
         let assets = crate::config::assets_dir();
         let (stx, srx) = mpsc::channel();
         let tree = Tree::for_config(root.clone(), &config);
@@ -375,6 +380,8 @@ impl App {
             pending_native: None,
             inbox: None,
             watcher: None,
+            post_frame_pending: false,
+            first_frame_done: false,
             lsp_refresh_at: None,
             lsp_watched: Vec::new(),
             dragging_minimap: false,
@@ -414,8 +421,13 @@ impl App {
         // Breakpoints and watches remembered for this project (before the files open: they get their dots).
         app.debug_load();
         app.refresh_git_status();
-        app.watcher = crate::watcher::Watcher::new(app.wake()).ok();
-        app.watch_dirs();
+        crate::startup::mark("project state loaded");
+        if crate::startup::deferred() {
+            app.post_frame_pending = true;
+        } else {
+            app.watcher = crate::watcher::Watcher::new(app.wake()).ok();
+            app.watch_dirs();
+        }
         let (etx, erx) = mpsc::channel();
         app.eslint_tx = etx;
         app.eslint_rx = erx;
@@ -426,12 +438,12 @@ impl App {
         if !had_args && app.win.restore {
             app.restore_session();
         }
+        crate::startup::mark("session restored");
         app.restore_backups();
-        if std::env::var_os("LUMEN_HEADLESS").is_none() {
-            crate::app_topbar::remember_project(&app.root);
-            // The IDE bridge listens from the start, so any `claude` can attach with /ide.
-            app.ide_start();
+        if !app.post_frame_pending {
+            app.post_frame_init();
         }
+        crate::startup::mark("App::new done");
         if app.docs.is_empty() {
             app.say("Ctrl+P opens a file · Ctrl+Shift+P commands");
         }
@@ -463,6 +475,22 @@ impl App {
         let want = self.config.resolve_theme(crate::config::detect_dark());
         if self.config.theme.as_deref() != Some(want.as_str()) {
             self.set_theme_inner(&want, false);
+        }
+    }
+
+    /// Everything that is not needed to draw the first frame: the file watcher, the recent-projects
+    /// list and the IDE bridge. Runs right after the first frame (or inside `App::new` when not deferred).
+    pub fn post_frame_init(&mut self) {
+        if std::mem::take(&mut self.post_frame_pending) {
+            self.watcher = crate::watcher::Watcher::new(self.wake()).ok();
+            self.watch_dirs();
+            crate::startup::mark("watcher started");
+        }
+        if std::env::var_os("LUMEN_HEADLESS").is_none() {
+            crate::app_topbar::remember_project(&self.root);
+            // The IDE bridge listens from the start, so any `claude` can attach with /ide.
+            self.ide_start();
+            crate::startup::mark("ide bridge started");
         }
     }
 

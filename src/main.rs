@@ -137,6 +137,7 @@ mod search;
 mod settings_ext;
 mod settingsui;
 mod snippets;
+mod startup;
 mod tasks;
 mod terminal;
 mod termview;
@@ -188,6 +189,7 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    startup::begin();
     winconsole::init(env::args().skip(1).any(|a| a.starts_with('-')));
     // Few malloc arenas: with background threads (tokenizer, LSP readers) glibc otherwise keeps
     // hundreds of MB of freed memory per thread arena.
@@ -196,7 +198,18 @@ fn main() -> ExitCode {
         libc::mallopt(libc::M_ARENA_MAX, 2);
         libc::mallopt(libc::M_TRIM_THRESHOLD, 4 * 1024 * 1024);
     }
-    let cli = cli::parse(env::args().skip(1));
+    let mut cli = cli::parse(env::args().skip(1));
+    if cli.profile_startup {
+        startup::set_profile(true);
+        startup::set_deferred(true);
+        // No window needed to measure: run the headless path (first frame, then exit).
+        if cli.keys.is_none() {
+            cli.keys = Some("wait:0".into());
+        }
+    } else {
+        startup::set_deferred(true);
+    }
+    startup::mark("cli parsed");
     match cli.early {
         Some(cli::Early::Version) => {
             println!("lumen-text {}", version());
@@ -219,6 +232,7 @@ fn main() -> ExitCode {
         }
     });
     mem::report("startup");
+    startup::mark("config loaded");
     let theme = match theme::Theme::load(&theme_path) {
         Ok(t) => t,
         Err(e) => {
@@ -227,6 +241,7 @@ fn main() -> ExitCode {
         }
     };
 
+    startup::mark("theme loaded");
     let mut files = Vec::new();
     let mut root: Option<PathBuf> = None;
     for a in &args {
@@ -297,6 +312,7 @@ fn main() -> ExitCode {
     std::thread::spawn(|| {
         tasks::login_path();
     });
+    startup::mark("instance claimed");
     let mut app = app::App::new(files, root, theme, wake, cfg.clone());
     if scale_arg.is_some() {
         app.dpi.forced = scale_arg;
@@ -310,6 +326,7 @@ fn main() -> ExitCode {
         None => app.take_orphans(),
     }
     mem::report("app ready");
+    startup::mark("app ready");
     app::run(app, el);
     ExitCode::SUCCESS
 }

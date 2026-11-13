@@ -271,6 +271,7 @@ impl Lsp {
         }
         cmd.envs(extra.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         let mut child = cmd.spawn()?;
+        crate::startup::mark("lsp spawned");
         let mut stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         if let (Some(log), Some(err)) = (log.clone(), child.stderr.take()) {

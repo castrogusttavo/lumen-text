@@ -43,6 +43,8 @@ pub struct Cli {
     pub size: (u32, u32),
     pub scale: Option<f32>,
     pub early: Option<Early>,
+    /// `--profile-startup`: print the startup timeline after the first frame.
+    pub profile_startup: bool,
     pub win: WinArgs,
 }
 
@@ -54,6 +56,7 @@ pub fn parse(argv: impl IntoIterator<Item = String>) -> Cli {
         size: (1000, 700),
         scale: None,
         early: None,
+        profile_startup: false,
         win: WinArgs::default(),
     };
     let mut it = argv.into_iter();
@@ -63,6 +66,7 @@ pub fn parse(argv: impl IntoIterator<Item = String>) -> Cli {
             "--install-user" => return Cli { early: Some(Early::InstallUser), ..cli },
             "--check-update" => return Cli { early: Some(Early::CheckUpdate), ..cli },
             "--update" => return Cli { early: Some(Early::Update), ..cli },
+            "--profile-startup" => cli.profile_startup = true,
             "--keys" => cli.keys = it.next(),
             "--scale" => cli.scale = it.next().as_deref().and_then(crate::ui::parse_scale),
             "--snap" => cli.snap = PathBuf::from(it.next().unwrap_or_default()),
@@ -126,5 +130,7 @@ mod tests {
         assert_eq!(c.args, ["f.txt"]);
         assert_eq!(p(&["a", "--version", "b"]).early, Some(Early::Version));
         assert_eq!(p(&["--update"]).early, Some(Early::Update));
+        assert!(p(&["--profile-startup", "x"]).profile_startup);
+        assert!(!p(&["x"]).profile_startup);
     }
 }

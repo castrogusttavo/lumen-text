@@ -72,6 +72,14 @@ impl App {
         let ms = t0.elapsed().as_secs_f32() * 1000.0;
         self.update_title(&g.window, ms);
         self.gfx = Some(g);
+        if !self.first_frame_done {
+            self.first_frame_done = true;
+            crate::startup::first_frame();
+            self.post_frame_init();
+            if crate::startup::profiling() {
+                self.exit_requested = true;
+            }
+        }
         if busy {
             self.request_redraw();
         }

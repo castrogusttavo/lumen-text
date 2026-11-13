@@ -673,4 +673,60 @@ mod tests {
         eprintln!("[perf] launch into a 100k-line file: {:.0} ms wall", t * 1e3);
         assert!(t < LAUNCH_BIG_BUDGET, "launch into a 100k-line file too slow: {t:.2}s wall");
     }
+
+    /// `--profile-startup` prints the timeline; the services that wait for the first frame start after it,
+    /// and the first frame arrives well inside a generous bound. Best of 3 (noisy shared runners), and the
+    /// ordering checks are relative so they hold on any machine.
+    #[test]
+    fn startup_profile_timeline() {
+        let Some(bin) = built_binary() else {
+            eprintln!("[perf] startup_profile_timeline skipped: run `cargo build --release` first");
+            return;
+        };
+        let dir = tempdir::Dir::new("launch-profile");
+        std::fs::write(dir.path.join("a.ts"), gen_text(200)).unwrap();
+        let state = tempdir::Dir::new("profile-state");
+        let mut best: Option<Vec<(String, f64)>> = None;
+        for _ in 0..3 {
+            let out = std::process::Command::new(&bin)
+                .arg("--profile-startup")
+                .arg(&dir.path)
+                .arg(dir.path.join("a.ts"))
+                .env("LUMEN_HEADLESS", "1")
+                .env("LUMEN_ASSETS", assets())
+                .env("XDG_CONFIG_HOME", state.path.join("cfg"))
+                .env("XDG_STATE_HOME", state.path.join("state"))
+                .env("XDG_DATA_HOME", state.path.join("data"))
+                .output()
+                .expect("run lumen-text --profile-startup");
+            let err = String::from_utf8_lossy(&out.stderr).to_string();
+            let marks: Vec<(String, f64)> = err
+                .lines()
+                .filter_map(|l| l.strip_prefix("[startup] "))
+                .filter_map(|l| {
+                    let mut it = l.split_whitespace();
+                    let t: f64 = it.next()?.parse().ok()?;
+                    let _delta = it.next()?;
+                    Some((it.collect::<Vec<_>>().join(" "), t))
+                })
+                .collect();
+            assert!(!marks.is_empty(), "no timeline printed:\n{err}");
+            let ff = |m: &[(String, f64)]| m.iter().find(|(n, _)| n == "first frame").map(|x| x.1);
+            if best.as_deref().is_none_or(|b| ff(&marks) < ff(b)) {
+                best = Some(marks);
+            }
+        }
+        let marks = best.unwrap();
+        for (n, t) in &marks {
+            eprintln!("[perf] startup mark {t:>8.1} ms  {n}");
+        }
+        let at = |n: &str| marks.iter().find(|(m, _)| m == n).map(|x| x.1);
+        let first = at("first frame").expect("first frame mark");
+        let new_done = at("App::new done").expect("App::new done mark");
+        assert!(marks.windows(2).all(|w| w[0].1 <= w[1].1), "marks are in time order: {marks:?}");
+        assert!(new_done <= first, "App::new finishes before the first frame");
+        let watcher = at("watcher started").expect("watcher mark");
+        assert!(watcher >= first, "the file watcher starts after the first frame ({watcher} < {first})");
+        assert!(first < 1500.0, "first frame at {first:.0} ms since main");
+    }
 }
