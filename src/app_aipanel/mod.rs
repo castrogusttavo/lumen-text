@@ -41,12 +41,14 @@ pub mod bridge;
 #[cfg(test)]
 mod bridge_tests;
 mod draw;
+mod explain;
 mod input;
 mod state;
 #[cfg(test)]
 mod tests;
 
 pub use agents::*;
+pub use explain::Mode as AskMode;
 pub use state::*;
 
 /// Height of the "Git | AI" switch on top of the right-hand slot.
@@ -609,6 +611,7 @@ impl App {
 
     /// Per-event hook: the status changes with time too (output going quiet).
     pub fn ai_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        self.ai_flush_prompt(now, want);
         let ms = |n: u64| Duration::from_millis(n);
         let mut redraw = false;
         for i in 0..self.ai.sessions.len() {

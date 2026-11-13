@@ -327,6 +327,7 @@ impl HoverTip {
         let mut v = Vec::new();
         if !self.extra.diags.is_empty() {
             v.push(Act::QuickFix);
+            v.extend([Act::ExplainAi, Act::FixAi]);
         }
         if self.has_lsp {
             v.push(Act::Definition);

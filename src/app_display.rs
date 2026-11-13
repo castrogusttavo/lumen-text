@@ -183,6 +183,15 @@ impl App {
             "insert_final_newline" => self.config.insert_final_newline = b.unwrap_or(false),
             // Read when a session next finishes or asks.
             "ai_notifications" => self.config.ai_notifications = b.unwrap_or(true),
+            // Read when a prompt is built.
+            "ai_prompt_explain" => self.config.ai_prompt_explain = v.as_str().unwrap_or("").trim().to_string(),
+            "ai_prompt_fix" => self.config.ai_prompt_fix = v.as_str().unwrap_or("").trim().to_string(),
+            "ai_prompt_context" => {
+                self.config.ai_prompt_context = v
+                    .as_f64()
+                    .or_else(|| v.as_str().and_then(|t| t.trim().parse().ok()))
+                    .map_or(5, |n| n.clamp(0.0, 30.0) as u32)
+            }
             // An open diff follows on its next draw (`diff_sync_ws`).
             "diff_ignore_whitespace" => self.config.diff_ignore_whitespace = b.unwrap_or(false),
             "debug_hover_evaluate" => self.config.debug_hover_evaluate = b.unwrap_or(true),

@@ -445,3 +445,143 @@ fn a_session_can_run_in_another_folder() {
     drop(app);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn asking_without_an_installed_agent_shows_the_install_hint() {
+    use crate::app_unsaved::testkit::{lock, test_app, tmp};
+    let _g = lock();
+    let dir = tmp("ai-ask-none");
+    let empty = dir.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let mut app = test_app(&dir);
+    app.ai.search = Some(vec![empty]);
+    app.ai_ask("why?");
+    assert!(app.ai.sessions.is_empty(), "nothing is started");
+    assert!(app.ai.pending_prompt.is_none());
+    let said = app.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+    assert!(said.contains("not installed") && said.contains("npm i -g"), "{said}");
+    app.ai_problem_at_cursor(AskMode::Explain);
+    assert!(app.status.as_ref().is_some_and(|s| s.0.contains("No problem at the cursor")));
+    app.ai_test(AskMode::Fix);
+    assert!(app.status.as_ref().is_some_and(|s| s.0.contains("No failed test")));
+    app.ai_build(AskMode::Fix);
+    assert!(app.status.as_ref().is_some_and(|s| s.0.contains("No build problems")));
+    app.ai_send_terminal(AskMode::Explain);
+    assert!(app.status.as_ref().is_some_and(|s| s.0.contains("Select some terminal output")));
+    drop(app);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_problem_prompt_reaches_a_starting_agent_once_it_is_ready() {
+    use crate::app_unsaved::testkit::{lock, test_app, tmp};
+    let _g = lock();
+    let dir = tmp("ai-ask-e2e");
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    stub(&bin, "claude", STUB_AGENT, true);
+    let f = dir.join("a.txt");
+    std::fs::write(&f, "one\nbad line\nthree\n").unwrap();
+    let mut app = test_app(&dir);
+    app.size = (1200, 800);
+    app.ai.search = Some(vec![bin.clone()]);
+    let i = app.open_path(&f, None).unwrap();
+    app.active = i;
+    app.docs[i].set_source_diags(
+        false,
+        vec![crate::doc::Diag {
+            sl: 1,
+            sc: 0,
+            el: 1,
+            ec: 3,
+            severity: 1,
+            message: "no good".into(),
+            code: "E9".into(),
+            source: "demo".into(),
+        }],
+    );
+    let p = app.docs[i].buf.pos(1, 1);
+    let d = &mut app.docs[i];
+    d.ed.click(&mut d.buf, p, false);
+    assert!(app.ai_has_diag_at_cursor());
+    assert!(app.ai.sessions.is_empty(), "no agent runs before the first ask (zero cost)");
+    app.ai_problem_at_cursor(AskMode::Fix);
+    assert_eq!(app.ai.sessions.len(), 1, "a session was started for it");
+    assert!(app.ai.open && app.ai.focused);
+    let (_, text) = app.ai.pending_prompt.clone().expect("held while the agent starts");
+    assert!(text.starts_with("Fix this error"), "{text}");
+    assert!(text.contains("a.txt:2 (demo E9)") && text.contains("no good"), "{text}");
+    assert!(text.contains("> 2 | bad line") && text.contains("  1 | one"), "{text}");
+    // Ticks deliver it once the agent has painted its first screen: the stub echoes the bytes.
+    let end = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < end && app.ai.pending_prompt.is_some() {
+        app.ai_tick(Instant::now(), &mut |_| {});
+        app.pump_ai();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(app.ai.pending_prompt.is_none(), "the prompt was delivered");
+    // "Fix" = 46 69 78 in hex.
+    let screen = wait_screen(&mut app, "[46][69][78]");
+    assert!(screen.contains("[46][69][78]"), "the agent received the prompt: {screen:?}");
+    drop(app);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn problem_rows_of_the_list_and_failed_tests_become_prompts() {
+    use crate::app_unsaved::testkit::{lock, test_app, tmp};
+    let _g = lock();
+    let dir = tmp("ai-ask-rows");
+    let f = dir.join("m.rs");
+    std::fs::write(&f, "fn a() {}\nfn b() { oops }\n").unwrap();
+    let mut app = test_app(&dir);
+    let i = app.open_path(&f, None).unwrap();
+    app.active = i;
+    app.docs[i].set_source_diags(
+        false,
+        vec![crate::doc::Diag {
+            sl: 1,
+            sc: 9,
+            el: 1,
+            ec: 13,
+            severity: 2,
+            message: "unused".into(),
+            code: String::new(),
+            source: String::new(),
+        }],
+    );
+    // The Problems list: the file header is refused, the problem row gives a prompt.
+    app.open_problems();
+    if let crate::app_overlay::Overlay::Picker(p) = &mut app.overlay {
+        p.sel = 0;
+    }
+    assert!(app.ai_problem_row_prompt(AskMode::Explain).is_err(), "the first row is the file header");
+    if let crate::app_overlay::Overlay::Picker(p) = &mut app.overlay {
+        p.sel = 1;
+    }
+    let t = app.ai_problem_row_prompt(AskMode::Explain).unwrap();
+    assert!(t.starts_with("Explain this warning"), "{t}");
+    assert!(t.contains("m.rs:2") && t.contains("unused") && t.contains("> 2 | fn b() { oops }"), "{t}");
+    // A failed test builds a prompt with its message and the code at its location.
+    assert_eq!(app.ai_test_prompt(AskMode::Fix), Err("No failed test — run the tests first"));
+    app.tests.cases.push(crate::testrun::Case {
+        name: "adds".into(),
+        id: "adds".into(),
+        status: crate::testrun::Status::Failed,
+        file: Some("m.rs".into()),
+        line: Some(1),
+        message: "left 1, right 2".into(),
+        ..Default::default()
+    });
+    let t = app.ai_test_prompt(AskMode::Fix).unwrap();
+    assert!(t.starts_with("Fix this test failure"), "{t}");
+    assert!(t.contains("`adds` failed:\nleft 1, right 2"), "{t}");
+    // The user's own template and context size apply.
+    app.config.ai_prompt_fix = "Please fix {file}:{line} -> {message}".into();
+    app.config.ai_prompt_context = 0;
+    let t = app.ai_test_prompt(AskMode::Fix).unwrap();
+    assert!(t.starts_with("Please fix"), "{t}");
+    drop(app);
+    let _ = std::fs::remove_dir_all(&dir);
+}

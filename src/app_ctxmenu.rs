@@ -366,6 +366,8 @@ pub struct Flags {
     pub reopen: bool,
     /// Gutter menu: `None` = no breakpoint on the line, `Some(enabled)` otherwise.
     pub bp: Option<bool>,
+    /// A problem is under the caret: the editor menu offers "Explain" / "Fix with AI".
+    pub diag: bool,
 }
 
 fn item(act: Act, label: &'static str, icon: &'static str, key: &'static str) -> Entry {
@@ -501,6 +503,12 @@ pub fn entries_for(t: &Target, f: &Flags) -> Vec<Entry> {
         },
         Target::Editor => vec![
             item(Act::Run("AiSendSelection"), "Send Selection to Agent", "ui/at_sign", "Ctrl+Alt+K"),
+            if f.diag {
+                item(Act::Run("AiExplainProblem"), "Explain Problem with AI", "ui/at_sign", "")
+            } else {
+                sep()
+            },
+            if f.diag { item(Act::Run("AiFixProblem"), "Fix Problem with AI", "ui/at_sign", "") } else { sep() },
             sep(),
             item(Act::Run("GotoDefinition"), "Go to Definition", "ui/arrow_up_right", "F12"),
             item(Act::Run("FindReferences"), "Find References", "ui/magnifying_glass", "Shift+F12"),
@@ -679,6 +687,9 @@ impl App {
         }
         if let Target::Breakpoint(line) = &target {
             f.bp = self.breakpoint_enabled_at(*line);
+        }
+        if target == Target::Editor {
+            f.diag = self.ai_has_diag_at_cursor();
         }
         let entries = entries_for(&target, &f);
         self.overlay = Overlay::Ctx(Box::new(CtxMenu {
@@ -1487,8 +1498,14 @@ mod tests {
                 "Format Document"
             ]
         );
+        // A problem under the caret adds the AI entries after "Send Selection".
+        let with_diag = entries_for(&Target::Editor, &Flags { diag: true, ..f });
+        assert_eq!(
+            labels(&with_diag)[..4],
+            ["Send Selection to Agent", "Explain Problem with AI", "Fix Problem with AI", "-"]
+        );
         // Every editor entry runs a command that exists.
-        for e in &ed {
+        for e in ed.iter().chain(&with_diag) {
             if let Entry::Item { act: Act::Run(id), .. } = e {
                 assert!(crate::app_overlay::Cmd::from_id(id).is_some(), "{id}");
             }

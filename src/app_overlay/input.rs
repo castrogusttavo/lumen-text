@@ -71,6 +71,7 @@ impl App {
                 p.move_sel(d)
             }
         };
+        let mut ask = None;
         let next = match &key {
             Key::Named(NamedKey::Escape) => Next::Close,
             Key::Named(NamedKey::Enter) => Next::Accept,
@@ -121,6 +122,20 @@ impl App {
                 field.end();
                 Next::Nothing
             }
+            // Problems list row actions: Alt+E asks the agent to explain the problem, Alt+X to fix it.
+            Key::Character(c)
+                if alt
+                    && matches!(c.to_lowercase().as_str(), "e" | "x")
+                    && matches!(&self.overlay, Overlay::Picker(p) if p.kind == PickKind::Problems) =>
+            {
+                let mode = if c.to_lowercase() == "e" {
+                    crate::app_aipanel::AskMode::Explain
+                } else {
+                    crate::app_aipanel::AskMode::Fix
+                };
+                ask = Some(mode);
+                Next::Nothing
+            }
             Key::Character(c)
                 if alt
                     && c.to_lowercase() == "w"
@@ -159,6 +174,9 @@ impl App {
             Overlay::None | Overlay::Settings(_) | Overlay::TopMenu(_) | Overlay::Ctx(_) | Overlay::Font(_) => {}
         }
 
+        if let Some(mode) = ask {
+            self.ai_problem_row(mode);
+        }
         match next {
             Next::Close => {
                 self.overlay = Overlay::None;

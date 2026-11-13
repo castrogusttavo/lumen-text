@@ -949,6 +949,20 @@ impl App {
             self.build.focused = false;
             return false;
         }
+        // E asks the agent to explain the selected failure, X to fix it (AI panel).
+        if let Key::Character(c) = &ev.key
+            && !self.mods.control_key()
+            && !self.mods.alt_key()
+            && (c.eq_ignore_ascii_case("e") || c.eq_ignore_ascii_case("x"))
+        {
+            let mode = if c.eq_ignore_ascii_case("e") {
+                crate::app_aipanel::AskMode::Explain
+            } else {
+                crate::app_aipanel::AskMode::Fix
+            };
+            self.ai_build(mode);
+            return true;
+        }
         let Key::Named(k) = &ev.key else {
             self.build.focused = false;
             return false;

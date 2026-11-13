@@ -32,3 +32,15 @@ The bottom panel's Terminal tab now holds several terminals, each with its own s
 ## Kitty keyboard protocol
 
 The terminal emulator (also used by the AI panel) implements the kitty keyboard protocol's progressive enhancement flags 1, 4, 8 and 16 with a stack per screen, so TUIs such as Claude Code, Codex, Neovim and Helix get unambiguous `Esc`, `Ctrl+…` and modified `Enter`, `Tab` and `Backspace`. Programs that do not ask keep the classic encoding. Key release events (flag 2) are not supported.
+
+## Explain and Fix with AI
+
+Send a problem to the agent without copying anything. The prompt holds the message, the source and code, `file:line` and a few lines of code around it, and is pasted into the session shown (a new one starts when none runs, and the prompt waits until it is ready). Lumen never submits it: read it, edit it, press Enter. With no agent CLI installed the install command is copied and shown instead.
+
+- **Editor**: put the caret on an underlined problem and use *AI: Explain Problem at Cursor* / *Fix Problem at Cursor*, the same entries in the editor's right-click menu, in the quick actions menu (`Ctrl+.`) and in the hover card's footer.
+- **Problems list**: `Alt+E` explains and `Alt+X` fixes the selected row.
+- **Tests panel / Build panel**: `E` explains and `X` fixes the selected failure (or the first one); also *AI: Explain Failed Test*, *AI: Fix Build Error*...
+- **Terminal**: select output and run *AI: Send Terminal Selection to Agent*.
+- *AI: Send File to Agent* mentions the active file and *AI: Send Problems Summary to Agent* lists the problems of the open files and the last build.
+
+Settings `ai_prompt_explain` and `ai_prompt_fix` replace the built-in templates (placeholders `{message} {severity} {location} {file} {line} {source} {code} {lang} {frame} {related}`); `ai_prompt_context` sets how many lines of code go above and below the problem (default 5).

@@ -160,7 +160,7 @@ fn diagnostics_come_first_with_quick_fix() {
         (0, 0),
     );
     assert!(matches!(&t.blocks[0], Blk::Diag { code, .. } if code == "2322"));
-    assert_eq!(t.actions(), [Act::QuickFix]);
+    assert_eq!(t.actions(), [Act::QuickFix, Act::ExplainAi, Act::FixAi]);
     t.extra.diags.clear();
     t.compose();
     assert!(t.is_empty());

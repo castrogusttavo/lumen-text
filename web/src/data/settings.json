@@ -763,6 +763,34 @@
   "default": true
  },
  {
+  "key": "ai_prompt_explain",
+  "section": "AI",
+  "label": "Explain prompt",
+  "help": "Template of \"Explain with AI\" (empty: built in). Placeholders: {message} {severity} {location} {file} {line} {source} {code} {lang} {frame} {related}.",
+  "kind": "text",
+  "default": ""
+ },
+ {
+  "key": "ai_prompt_fix",
+  "section": "AI",
+  "label": "Fix prompt",
+  "help": "Template of \"Fix with AI\" (empty: built in). Same placeholders as the explain prompt.",
+  "kind": "text",
+  "default": ""
+ },
+ {
+  "key": "ai_prompt_context",
+  "section": "AI",
+  "label": "Prompt code context",
+  "help": "Lines of code above and below a problem that go into the prompts sent to the agent (0 to 30).",
+  "kind": "number",
+  "range": [
+   0,
+   30
+  ],
+  "default": 5
+ },
+ {
   "key": "diff_ignore_whitespace",
   "section": "Git",
   "label": "Diff: ignore whitespace",
