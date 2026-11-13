@@ -305,6 +305,12 @@ impl App {
             }
             Cmd::ExpandSelection => self.expand_selection(),
             Cmd::ShrinkSelection => self.shrink_selection(),
+            Cmd::NextFunction => self.structural_jump(crate::structural::TextObject::Function, true),
+            Cmd::PrevFunction => self.structural_jump(crate::structural::TextObject::Function, false),
+            Cmd::NextClass => self.structural_jump(crate::structural::TextObject::Class, true),
+            Cmd::PrevClass => self.structural_jump(crate::structural::TextObject::Class, false),
+            Cmd::SelectFunction => self.structural_select(crate::structural::TextObject::Function),
+            Cmd::SelectClass => self.structural_select(crate::structural::TextObject::Class),
             Cmd::IncomingCalls => self.call_hierarchy(true),
             Cmd::OutgoingCalls => self.call_hierarchy(false),
             Cmd::FollowSystemTheme => {

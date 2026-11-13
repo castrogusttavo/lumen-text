@@ -945,6 +945,36 @@
   "id": "ShrinkSelection"
  },
  {
+  "label": "Go to: Next function",
+  "shortcut": "Ctrl+Alt+↓",
+  "id": "NextFunction"
+ },
+ {
+  "label": "Go to: Previous function",
+  "shortcut": "Ctrl+Alt+↑",
+  "id": "PrevFunction"
+ },
+ {
+  "label": "Go to: Next class",
+  "shortcut": "Ctrl+Alt+→",
+  "id": "NextClass"
+ },
+ {
+  "label": "Go to: Previous class",
+  "shortcut": "Ctrl+Alt+←",
+  "id": "PrevClass"
+ },
+ {
+  "label": "Edit: Select enclosing function",
+  "shortcut": "Ctrl+Alt+F",
+  "id": "SelectFunction"
+ },
+ {
+  "label": "Edit: Select enclosing class",
+  "shortcut": "Ctrl+Alt+C",
+  "id": "SelectClass"
+ },
+ {
   "label": "Go to: Callers (call hierarchy)",
   "shortcut": "",
   "id": "IncomingCalls"
