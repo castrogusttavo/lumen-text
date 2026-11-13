@@ -59,6 +59,8 @@ pub enum TipKey {
     Tests(crate::app_tests::Tip),
     /// A tab or button of the terminal strip in the bottom panel.
     Term(crate::app_terms::TermHit),
+    /// A URL or `path:line:col` link in terminal text (the key tells links apart).
+    TermLink(u32),
     /// The explorer's refresh button and the "Polling (NFS)" hint.
     Fs(crate::app_fswatch::FsTip),
     /// A toolbar button of the Debug panel.
@@ -365,6 +367,9 @@ impl App {
         if let Some((r, h)) = self.terms_hit_at(x, y) {
             return Some((TipKey::Term(h), r, false));
         }
+        if let Some((r, k)) = self.term_link_tip().filter(|(r, _)| r.contains(x, y)) {
+            return Some((TipKey::TermLink(k), r, false));
+        }
         if let Some((r, h)) = self.aipanel_tip_target(x, y) {
             return Some((TipKey::Ai(h), r, true));
         }
@@ -434,6 +439,7 @@ impl App {
             TipKey::Ai(h) => self.aipanel_tip(h),
             TipKey::Tests(k) => self.tests_tip(k),
             TipKey::Term(h) => self.terms_tip(h),
+            TipKey::TermLink(_) => self.term_link_tip_text(),
             TipKey::Fs(k) => self.fswatch_tip(k),
             TipKey::Debug(k) => self.debug_tip(k),
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {

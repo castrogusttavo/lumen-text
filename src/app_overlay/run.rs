@@ -192,6 +192,11 @@ impl App {
             Cmd::RenameTerminal => self.prompt_rename_terminal(self.terms.active),
             Cmd::NextTerminal => self.cycle_terminal(1),
             Cmd::PrevTerminal => self.cycle_terminal(-1),
+            Cmd::TermFind => self.term_cmd_find(),
+            Cmd::TermPrevCommand => self.term_cmd_jump(true),
+            Cmd::TermNextCommand => self.term_cmd_jump(false),
+            Cmd::TermSelectOutput => self.term_cmd_select(),
+            Cmd::TermCopyOutput => self.term_cmd_copy(),
             Cmd::DebugStart
             | Cmd::DebugStop
             | Cmd::ToggleBreakpoint

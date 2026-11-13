@@ -5,6 +5,7 @@
 //! clipboard / notifications and the kitty keyboard protocol's flag stack (`kittykeys`). Sequences
 //! it does not implement (modifyOtherKeys...) are ignored instead of being misread as other commands.
 
+use crate::termnav::{CmdMark, Find, MAX_CMDS};
 use crate::{
     lsp::Wake,
     pty::{EnvEdit, Pty},
@@ -225,6 +226,10 @@ pub struct Grid {
     pub colors: (Rgba, Rgba),
     /// Kitty keyboard protocol flags pushed by the program (one stack per screen).
     pub keys: crate::kittykeys::KeyStack,
+    /// Shell commands seen through OSC 133 (prompt / output / exit code), oldest first.
+    pub cmds: VecDeque<CmdMark>,
+    /// The shell's working folder from OSC 7.
+    pub cwd: Option<String>,
 }
 
 impl Grid {
@@ -265,6 +270,67 @@ impl Grid {
             line_drawing: false,
             colors: (Rgba(0xd4, 0xd4, 0xd4, 255), Rgba(0x1e, 0x1e, 0x1e, 255)),
             keys: Default::default(),
+            cmds: VecDeque::new(),
+            cwd: None,
+        }
+    }
+
+    /// The oldest absolute line still kept (scrollback start).
+    pub fn first_line(&self) -> usize {
+        self.pushed - self.history_len()
+    }
+
+    /// One past the last absolute line (the screen's bottom row).
+    pub fn end_line(&self) -> usize {
+        self.pushed + self.rows
+    }
+
+    /// An OSC 133 mark (`A` prompt start, `C` command output starts, `D` command finished).
+    fn shell_mark(&mut self, kind: u8, arg: Option<&[u8]>) {
+        if self.alt.is_some() {
+            return;
+        }
+        let line = self.pushed + self.cy;
+        match kind {
+            b'A' => {
+                // A prompt redrawn before any command ran replaces the unused mark.
+                if self.cmds.back().is_some_and(|c| c.output.is_none() && c.end.is_none()) {
+                    self.cmds.pop_back();
+                }
+                let oldest = self.first_line();
+                while self.cmds.front().is_some_and(|c| c.prompt < oldest) || self.cmds.len() >= MAX_CMDS {
+                    self.cmds.pop_front();
+                }
+                self.cmds.push_back(CmdMark { prompt: line, output: None, end: None, exit: None });
+            }
+            b'C' => {
+                if let Some(c) = self.cmds.back_mut().filter(|c| c.output.is_none()) {
+                    c.output = Some(line + (self.cx > 0) as usize);
+                }
+            }
+            b'D' => {
+                let exit = arg.and_then(|a| std::str::from_utf8(a).ok()).and_then(|a| a.trim().parse::<i32>().ok());
+                if let Some(c) = self.cmds.back_mut().filter(|c| c.output.is_some() && c.end.is_none()) {
+                    c.end = Some(line + (self.cx > 0) as usize);
+                    c.exit = exit;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The top `shift` screen rows were dropped by a resize: marks on the screen move up with the text.
+    fn shift_marks(&mut self, shift: usize) {
+        let pushed = self.pushed;
+        let up = |l: &mut usize| {
+            if *l >= pushed {
+                *l = (*l - shift).max(pushed);
+            }
+        };
+        for c in &mut self.cmds {
+            up(&mut c.prompt);
+            c.output.iter_mut().for_each(up);
+            c.end.iter_mut().for_each(up);
         }
     }
 
@@ -303,6 +369,9 @@ impl Grid {
         self.cells = cells;
         self.cy = (self.cy - shift).min(rows - 1);
         self.cx = self.cx.min(cols - 1);
+        if shift > 0 {
+            self.shift_marks(shift);
+        }
         self.rows = rows;
         self.cols = cols;
         self.top = 0;
@@ -1006,6 +1075,17 @@ impl vte::Perform for Grid {
             b"0" | b"2" => {
                 self.title = text(1).chars().filter(|c| !c.is_control()).take(256).collect();
             }
+            // Shell integration: `OSC 133 ; A|B|C|D[;exit]` and the cwd, `OSC 7 ; file://host/path`.
+            b"133" => {
+                if let Some(k) = params.get(1).and_then(|p| p.first()) {
+                    self.shell_mark(*k, params.get(2).copied());
+                }
+            }
+            b"7" => {
+                if let Some(p) = crate::termnav::osc7_path(&text(1)) {
+                    self.cwd = Some(p);
+                }
+            }
             // Hyperlink: `OSC 8 ; params ; uri`; an empty uri ends it (the uri may contain ';').
             b"8" => {
                 let uri = text(2);
@@ -1085,6 +1165,10 @@ pub struct Term {
     pub sel: Option<Sel>,
     /// Last focus state reported with `?1004`.
     focus_sent: Option<bool>,
+    /// Scrollback search (Ctrl+Shift+F), when its bar is open.
+    pub find: Option<Box<Find>>,
+    /// Prompt line of the command the last "previous / next command" jump landed on.
+    pub nav_line: Option<usize>,
 }
 
 impl Term {
@@ -1141,6 +1225,8 @@ impl Term {
             exit_code: None,
             sel: None,
             focus_sent: None,
+            find: None,
+            nav_line: None,
         }
     }
 
@@ -1154,6 +1240,7 @@ impl Term {
             } else {
                 self.ingest(&bytes);
                 self.last_output = Some(Instant::now());
+                self.find_note_output();
             }
             changed = true;
         }
@@ -1207,6 +1294,7 @@ impl Term {
     /// Bytes typed or pasted by the user: the view snaps back to the live screen.
     pub fn write(&mut self, bytes: &[u8]) {
         self.scroll_offset = 0;
+        self.nav_line = None;
         self.last_input = Some(Instant::now());
         self.pty.write(bytes);
     }

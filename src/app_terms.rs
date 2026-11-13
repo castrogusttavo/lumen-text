@@ -161,12 +161,30 @@ impl Terms {
     }
 }
 
+/// The user's shell in `cwd`; bash, zsh and fish get the prompt / exit code / cwd reporting
+/// (`shellint`) through their own start-up switches.
+fn spawn_shell(cwd: &std::path::Path, rows: usize, cols: usize, wake: crate::lsp::Wake) -> std::io::Result<Term> {
+    #[cfg(unix)]
+    {
+        let fallback = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" };
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| fallback.into());
+        if let Some(l) = crate::shellint::launch(&shell) {
+            let args: Vec<&str> = l.args.iter().map(String::as_str).collect();
+            let env: Vec<crate::pty::EnvEdit> = l.env.iter().map(|(k, v)| (k.as_str(), Some(v.as_str()))).collect();
+            return Term::spawn_cmd(cwd, &shell, &args, &env, rows, cols, wake);
+        }
+    }
+    Term::spawn(cwd, rows, cols, wake)
+}
+
 impl App {
     /// A new shell in the project folder, sized roughly for the panel (the first draw fits it).
     fn spawn_term(&mut self) -> Option<Term> {
         let (rows, cols) =
             ((self.panel.height - PANEL_HEADER) / line_h() as i32, (self.size.0 as i32 - 40) / self.tx.cell_w as i32);
-        match Term::spawn(&self.root, rows.max(4) as usize, cols.max(20) as usize, self.wake()) {
+        // A new terminal starts where the focused one is (its shell's folder), else in the project.
+        let cwd = self.terms.get(self.terms.active).and_then(|t| t.term.cwd()).unwrap_or_else(|| self.root.clone());
+        match spawn_shell(&cwd, rows.max(4) as usize, cols.max(20) as usize, self.wake()) {
             Ok(t) => Some(t),
             Err(e) => {
                 self.say(format!("could not open the terminal: {e}"));
