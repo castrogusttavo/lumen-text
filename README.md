@@ -101,7 +101,9 @@ is in the [changelog](https://castrogusttavo.github.io/lumen-text/changelog), an
 - Test coverage in the gutter (Vitest, Jest, `cargo llvm-cov`, or any `lcov.info` / Cobertura XML): covered / partial / uncovered bars, per-file percentage in the explorer and status bar
 
 **Git**
-- Gutter marks, branch switcher, status dots in the explorer, inline blame
+- Gutter marks, branch switcher, status dots in the explorer, inline blame (click it for the commit card: message, changed files with their diff, copy hash, open on GitHub, history of the line)
+- Interactive rebase without a terminal editor (`Git: Interactive rebase…`, or *Interactive Rebase from Here…* on a History row): pick, reword, squash, fixup, drop and reorder the last N commits or the ones to replay onto a branch; a stop on conflicts offers Continue / Abort and opens the merge editor
+- GitHub pull requests through the optional `gh` CLI (silent without it): status chip of the branch's PR in the bottom bar, gutter markers on lines with review comments, *GitHub: Create pull request…*
 - Git panel (`Ctrl+Shift+G`): stage/unstage files and single hunks, commit, amend, fetch/pull (merge, rebase or ff-only)/push (force with lease behind a confirmation), history
 - Side-by-side diff with intraline highlight, file history, merge-conflict resolution (accept current / incoming / both)
 - Worktrees (`Git: Worktrees…`, or the branch menu): list with branch, folder and dirty state; create one on a new or

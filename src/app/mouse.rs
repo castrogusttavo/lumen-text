@@ -188,6 +188,14 @@ impl App {
             self.docs[self.active].minimap_scroll_to(y);
             return self.request_redraw();
         }
+        // Inline blame text: the commit card. Gutter marker of a review comment: the comments.
+        if self.docs[self.active].blame_hit.as_ref().is_some_and(|r| r.contains(x, y)) {
+            self.blame_card_open();
+            return self.request_redraw();
+        }
+        if self.pr_marker_click(x, y) {
+            return self.request_redraw();
+        }
         // Code lens text: jump to the symbol and list its references / implementations.
         if let Some(idx) = self.docs[self.active].lens_hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, i)| *i) {
             let lens = self.docs[self.active].lenses[idx].clone();

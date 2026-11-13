@@ -907,6 +907,8 @@ pub enum StatusBtn {
     Project,
     /// Inline completions (left group, while the setting is on): on / off / signed out / loading.
     Inline,
+    /// The checked-out branch's pull request (left group, only when `gh` knows one).
+    Pr,
 }
 
 /// Is it drawn as an icon button (as opposed to a text read-out)?
@@ -1063,6 +1065,7 @@ impl App {
         x = self.draw_img_status(cv, x);
         x = self.draw_inline_status(cv, x);
         x = self.draw_cov_status(cv, x);
+        x = self.draw_pr_status(cv, x);
 
         // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
         // (cursor position, indentation, language: clickable) and the memory figure, in any order.
@@ -1195,6 +1198,7 @@ impl App {
                     | StatusBtn::Build
                     | StatusBtn::Ai
                     | StatusBtn::Project
+                    | StatusBtn::Pr
                     | StatusBtn::Inline => {}
                 }
                 ix += w + kinds.get(k + 1).map_or(0, |&n| status_gap(kind, n));
@@ -1274,6 +1278,8 @@ impl App {
             StatusBtn::Project => self.open_project_settings(),
             StatusBtn::Inline => self.inline_status_click(),
             StatusBtn::Ram => self.open_resources(),
+            StatusBtn::Pr => self.pr_open(),
+            StatusBtn::Ram => {}
         }
         true
     }

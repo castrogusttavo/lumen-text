@@ -353,9 +353,22 @@ impl App {
                     );
                 }
             }
+            // A rebase that stopped on conflicts: the card offers Continue / Abort and the merge
+            // editor opens on the first conflicted file (see `rebase_job_done`).
+            Err(_)
+                if matches!(op, Op::Rebase(_) | Op::RebaseContinue)
+                    && gp.top.as_deref().is_some_and(|t| repo_state(t) == RepoState::Rebase) =>
+            {
+                self.gp_note(
+                    gp,
+                    "Rebase stopped on conflicts: resolve the files in the merge editor, stage them and Continue (or Abort)".into(),
+                    false,
+                );
+            }
             Err(f) => self.gp_note(gp, format!("{}: {}", op.label(), f.text), false),
         }
         self.worktree_job_done(&op, &res_copy, Some(&mut *gp));
+        self.rebase_job_done(&op, &res_copy);
         // A pull moves HEAD and files; everything the panel shows may have changed.
         self.sync_docs_with_head();
         self.refresh_tree();

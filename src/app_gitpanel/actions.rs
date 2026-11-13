@@ -101,6 +101,8 @@ pub enum GitAct {
     RevertContinue,
     RevertAbortAsk,
     RevertAbort,
+    /// Continue / abort a rebase in progress (see `rebase`).
+    Rebase(RebaseAct),
 }
 
 /// Text prompts of the git features (`PromptKind::Git`).
@@ -137,6 +139,12 @@ pub enum GitAsk {
         paths: Vec<String>,
         untracked: Option<bool>,
     },
+    /// New subject of commit `i` of the rebase plan.
+    RebaseReword(usize),
+    /// Title of the pull request to create (see `app_gitext`).
+    PrTitle {
+        draft: bool,
+    },
 }
 
 /// Picker choices of the git features (`Action::Git`).
@@ -155,6 +163,8 @@ pub enum GitPick {
     Stash(String),
     /// Switch to this local branch.
     Checkout(String),
+    /// Interactive rebase pickers (see `rebase`).
+    Rebase(RebasePick),
 }
 
 /// A commit row of the History tab, as the context menu sees it.
@@ -287,6 +297,7 @@ impl GitPanel {
             _ if self.job.is_some() => None,
             RepoState::CherryPick => Some(cherry_card()),
             RepoState::Revert => Some(revert_card()),
+            RepoState::Rebase => Some(rebase_card()),
             _ => None,
         })
     }
@@ -296,6 +307,8 @@ impl App {
     /// Repository of the project, or a message saying there is none.
     pub(super) fn git_top(&mut self) -> Option<PathBuf> {
         let top = git::toplevel(&self.git_root());
+    pub(crate) fn git_top(&mut self) -> Option<PathBuf> {
+        let top = git::toplevel(&self.root);
         if top.is_none() {
             self.say("This folder is not a git repository");
         }
@@ -346,7 +359,7 @@ impl App {
     }
 
     /// Run a remote command on the panel's worker (opening the panel to show its progress).
-    fn git_start_job(&mut self, op: Op) {
+    pub(crate) fn git_start_job(&mut self, op: Op) {
         if self.gitpanel.is_none() {
             self.open_git_panel();
         }
@@ -358,7 +371,7 @@ impl App {
         self.request_redraw();
     }
 
-    pub(super) fn git_prompt(&mut self, ask: GitAsk, title: impl Into<String>, text: &str) {
+    pub(crate) fn git_prompt(&mut self, ask: GitAsk, title: impl Into<String>, text: &str) {
         self.overlay = Overlay::Prompt(Prompt::new(PromptKind::Git(ask), title.into(), TextField::with(text)));
         self.request_redraw();
     }
@@ -596,6 +609,8 @@ impl App {
             }
             GitAsk::Worktree(w) => self.worktree_answer(&top, w, text),
             GitAsk::StashMessage { paths, untracked } => self.git_stash_message(&top, paths, untracked, text),
+            GitAsk::RebaseReword(i) => self.rebase_reworded(i, text),
+            GitAsk::PrTitle { draft } => self.pr_create(text, draft),
         }
     }
 
@@ -623,6 +638,7 @@ impl App {
             GitPick::Worktree(w) => self.worktree_pick(&top, w),
             GitPick::Stash(sha) => self.git_stash_show(&sha),
             GitPick::Checkout(branch) => self.git_act(GitAct::Checkout { target: branch, detach: false }),
+            GitPick::Rebase(p) => self.rebase_pick(p),
         }
     }
 
@@ -712,6 +728,7 @@ impl App {
             Act::UndoCommit => self.git_undo_commit(),
             Act::Checkout => self.git_checkout_commit(&c),
             Act::Revert => self.git_revert(&c.hash),
+            Act::RebaseFrom => self.rebase_from(c.hash.clone()),
             _ => {}
         }
     }
@@ -857,6 +874,7 @@ impl App {
                 }
                 Err(e) => self.git_report(format!("Revert --abort: {e}"), false),
             },
+            GitAct::Rebase(a) => self.rebase_act(a),
         }
     }
 }

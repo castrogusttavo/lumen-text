@@ -298,6 +298,17 @@ impl App {
                 self.say(if on { "inlay hints: on" } else { "inlay hints: off" });
             }
             Cmd::ToggleGitBlame => self.toggle_git_blame(),
+            Cmd::GitBlameCard => self.blame_card_open(),
+            Cmd::GitRebase => self.rebase_menu(),
+            Cmd::GitRebaseContinue => {
+                self.git_act(crate::app_gitpanel::GitAct::Rebase(crate::app_gitpanel::RebaseAct::Continue))
+            }
+            Cmd::GitRebaseAbort => {
+                self.git_act(crate::app_gitpanel::GitAct::Rebase(crate::app_gitpanel::RebaseAct::AbortAsk))
+            }
+            Cmd::GhCreatePr => self.pr_create_prompt(false),
+            Cmd::GhCreateDraftPr => self.pr_create_prompt(true),
+            Cmd::GhOpenPr => self.pr_open(),
             Cmd::CycleInlineDiagnostics => self.cycle_inline_diagnostics(),
             // Handled by `run_display_cmd` before this match.
             Cmd::ToggleBookmark

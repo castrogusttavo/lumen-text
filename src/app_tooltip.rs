@@ -230,6 +230,7 @@ pub fn act_hint(act: Act) -> Option<&'static str> {
         Act::CherryPick => "Applies this commit's changes on top of the current branch (git cherry-pick)",
         Act::Checkout => "Switches to the branch at this commit, or detaches HEAD there",
         Act::Revert => "Adds a commit that undoes this one (git revert)",
+        Act::RebaseFrom => "Edits this commit and the ones after it: reorder, reword, squash, fixup or drop",
         Act::StashFiles => "Sets these changes aside (git stash push -- files); apply them later from the Stashes list",
         Act::BranchHere => "Creates a branch at this commit and switches to it",
         Act::TagHere => "Tags this commit (annotated when you give a message)",
@@ -584,6 +585,7 @@ impl App {
                     self.docs.get(self.active).map(|d| format!("Current: {}", d.buf.encoding.label())),
                 ),
                 StatusBtn::Project => self.projcfg_tip(),
+                StatusBtn::Pr => t("Pull request", None, self.pr_tip()),
             },
         }
     }

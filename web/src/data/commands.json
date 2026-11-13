@@ -845,6 +845,41 @@
   "id": "ToggleGitBlame"
  },
  {
+  "label": "Git: Show blame card for this line",
+  "shortcut": "",
+  "id": "GitBlameCard"
+ },
+ {
+  "label": "Git: Interactive rebase…",
+  "shortcut": "",
+  "id": "GitRebase"
+ },
+ {
+  "label": "Git: Continue rebase",
+  "shortcut": "",
+  "id": "GitRebaseContinue"
+ },
+ {
+  "label": "Git: Abort rebase…",
+  "shortcut": "",
+  "id": "GitRebaseAbort"
+ },
+ {
+  "label": "GitHub: Create pull request…",
+  "shortcut": "",
+  "id": "GhCreatePr"
+ },
+ {
+  "label": "GitHub: Create draft pull request…",
+  "shortcut": "",
+  "id": "GhCreateDraftPr"
+ },
+ {
+  "label": "GitHub: Open pull request in browser",
+  "shortcut": "",
+  "id": "GhOpenPr"
+ },
+ {
   "label": "View: Toggle line numbers",
   "shortcut": "",
   "id": "ToggleLineNumbers"

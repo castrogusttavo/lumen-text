@@ -68,6 +68,14 @@ pub struct GitBg {
     /// The project is a linked git worktree of this main worktree (see `worktree::linked_main`);
     /// refreshed with the git status.
     pub worktree_main: Option<PathBuf>,
+    /// Answers of one-shot worker threads (blame cards, rebase plans, pull requests), see `app_gitext`.
+    pub bg: Vec<Receiver<crate::app_gitext::BgMsg>>,
+    /// The checked-out branch's pull request.
+    pub pr: crate::app_gitext::PrCache,
+    /// The interactive rebase plan being edited (see `app_gitpanel::rebase`).
+    pub rebase: Option<crate::gitrebase::RebasePlan>,
+    /// A rebase stopped on conflicts: open the merge editor on the first conflicted file.
+    pub rebase_merge: bool,
 }
 
 impl Default for GitBg {
@@ -82,6 +90,10 @@ impl Default for GitBg {
             toast: None,
             polls: 0,
             worktree_main: None,
+            bg: Vec::new(),
+            pr: Default::default(),
+            rebase: None,
+            rebase_merge: false,
         }
     }
 }
@@ -185,6 +197,8 @@ impl App {
                 want(end);
             }
         }
+        // 5. Blame cards, rebase plans, pull request.
+        self.git_ext_tick(now, want);
     }
 
     /// Start a refresh of the ahead / behind counts on a worker thread.
@@ -235,6 +249,7 @@ impl App {
         self.refresh_tree();
         self.gitbg.next_poll = Instant::now();
         self.worktree_job_done(&op, &res, None);
+        self.rebase_job_done(&op, &res);
     }
 
     /// Spinner and "Enviando… 4s" in the bottom bar, at (`x`, bar), while a command runs without its
