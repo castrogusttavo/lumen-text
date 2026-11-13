@@ -731,39 +731,6 @@ impl App {
         }
     }
 
-    pub fn request_workspace_symbols(&mut self, query: String) {
-        let Some((_, li)) = self.with_server() else { return };
-        if query.is_empty() {
-            return;
-        }
-        self.lsps[li].request("workspace/symbol", json!({"query": query.clone()}), Pending::WorkspaceSymbols { query });
-    }
-
-    fn on_workspace_symbols(&mut self, query: &str, v: &Value) {
-        let mut items: Vec<Item> = Vec::new();
-        for s in v.as_array().into_iter().flatten().take(300) {
-            let name = s["name"].as_str().unwrap_or("?");
-            let Some((uri, l, c)) = lsp::locations(&json!([s["location"].clone()])).into_iter().next() else {
-                continue;
-            };
-            let Some(path) = uri_to_path(&uri) else { continue };
-            let container = s["containerName"].as_str().unwrap_or("");
-            let detail = if container.is_empty() {
-                format!("{}:{}", self.rel(&path), l + 1)
-            } else {
-                format!("{container} · {}:{}", self.rel(&path), l + 1)
-            };
-            items.push(Item { label: name.to_string(), detail, action: Action::Open(path, Some((l, c))) });
-        }
-        if let crate::app_overlay::Overlay::Picker(p) = &mut self.overlay {
-            // Drop answers for a query the user has already changed.
-            if p.kind == crate::app_overlay::PickKind::WorkspaceSymbols && p.field.text.trim() == query {
-                p.items = items;
-                p.refilter();
-            }
-        }
-    }
-
     pub fn lsp_did_close(&mut self, i: usize) {
         self.problems_keep_closing(i);
         self.biome_close(i);
@@ -1072,6 +1039,7 @@ impl App {
                         | Pending::Completion { .. }
                         | Pending::Signature { .. }
                         | Pending::SymbolsCache { .. }
+                        | Pending::WorkspaceSymbols { .. }
                         | Pending::Folding { .. }
                         | Pending::SemTokens { .. }
                         | Pending::SemRange { .. }
@@ -1139,7 +1107,7 @@ impl App {
                     }
                 }
             }
-            Pending::WorkspaceSymbols { query } => self.on_workspace_symbols(&query, &v),
+            Pending::WorkspaceSymbols { serial } => self.goto_ws_answer(li, serial, &v),
             Pending::Organize => {
                 let first = v.as_array().and_then(|a| a.first()).cloned();
                 match first {
@@ -1415,6 +1383,7 @@ impl App {
                         eprintln!("[lsp] outline: {} symbols", syms.len());
                     }
                     self.docs[i].symbols = syms;
+                    self.goto_symbols_arrived();
                     self.request_redraw();
                 }
             }

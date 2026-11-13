@@ -144,8 +144,9 @@ pub enum Pending {
         incoming: bool,
     },
     Organize,
+    /// `workspace/symbol` for the Go to picker's `#` mode; `serial` tells a stale answer (see `app_goto`).
     WorkspaceSymbols {
-        query: String,
+        serial: u64,
     },
     ExecuteCommand,
     /// `workspace/diagnostic` for the Problems panel's whole-project scope (see `app_problems`).

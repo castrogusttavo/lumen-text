@@ -82,7 +82,6 @@ pub enum PickKind {
     Locations,
     Symbols,
     CodeActions,
-    WorkspaceSymbols,
     Themes,
     /// Short list of choices opened from the bottom bar (indentation, language).
     Choice,
@@ -108,6 +107,8 @@ pub struct Picker {
     /// [`typed_picker`]); `real` is the number of items that are not that one.
     pub typed: Option<std::rc::Rc<dyn Fn(&str) -> Action>>,
     pub real: usize,
+    /// Go to picker (quick open kind): mode, preview and search state, see `app_goto`.
+    pub goto: Option<Box<crate::app_goto::GotoState>>,
 }
 
 pub enum PromptKind {
@@ -273,6 +274,7 @@ impl Picker {
             rep: None,
             typed: None,
             real: 0,
+            goto: None,
         };
         p.real = p.items.len();
         p.refilter();
@@ -280,7 +282,14 @@ impl Picker {
     }
 
     pub fn refilter(&mut self) {
-        let q = self.field.text.trim().to_string();
+        let text = self.field.text.trim().to_string();
+        // Quick open is the Go to picker: a prefix (`@`, `#`, `:`) picks the mode, the rest filters.
+        let (gmode, q) = if self.kind == PickKind::QuickOpen {
+            let (m, rest) = crate::gotopick::parse(&text);
+            (Some(m), rest.trim().to_string())
+        } else {
+            (None, text)
+        };
         if let Some(make) = self.typed.clone() {
             self.items.truncate(self.real);
             if !q.is_empty() {
@@ -288,17 +297,30 @@ impl Picker {
                 self.items.push(Item { label: format!("Use “{q}”"), detail: "as typed".into(), action });
             }
         }
-        let filter = matches!(
-            self.kind,
-            PickKind::QuickOpen
-                | PickKind::Commands
-                | PickKind::Symbols
-                | PickKind::CodeActions
-                | PickKind::Themes
-                | PickKind::Choice
-                | PickKind::Problems
-        );
-        if !filter || q.is_empty() {
+        let filter = match self.kind {
+            // Project symbols arrive ranked by the merge; a line row is not a text match.
+            PickKind::QuickOpen => {
+                !matches!(gmode, Some(crate::gotopick::Mode::WorkspaceSymbols | crate::gotopick::Mode::Line))
+            }
+            PickKind::Commands
+            | PickKind::Symbols
+            | PickKind::CodeActions
+            | PickKind::Themes
+            | PickKind::Choice
+            | PickKind::Problems => true,
+            _ => false,
+        };
+        if gmode == Some(crate::gotopick::Mode::WorkspaceSymbols) {
+            self.filtered = self
+                .items
+                .iter()
+                .enumerate()
+                .take(search::MAX_REPLACE_HITS)
+                .map(|(i, it)| {
+                    (i, if q.is_empty() { Vec::new() } else { fuzzy(&q, &it.label).map(|x| x.1).unwrap_or_default() })
+                })
+                .collect();
+        } else if !filter || q.is_empty() {
             self.filtered = (0..self.items.len().min(search::MAX_REPLACE_HITS)).map(|i| (i, Vec::new())).collect();
         } else {
             // Several words narrow the list: every term must match somewhere in the label.
@@ -356,7 +378,7 @@ impl Picker {
         }
     }
 
-    fn selected(&self) -> Option<Item> {
+    pub(crate) fn selected(&self) -> Option<Item> {
         self.filtered.get(self.sel).map(|(i, _)| self.items[*i].clone())
     }
 }

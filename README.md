@@ -315,7 +315,7 @@ Source of truth: `DEFAULTS` in `src/keymap.rs` (also shown in the palette, "Atal
 | Find in project | `Ctrl+Shift+F` (`Alt+C` case, `Alt+W` whole word, `Alt+R` regex) |
 | Replace in project | `Ctrl+Shift+H` (or `Ctrl+H` in the search; `Tab` switches fields, `Enter` replaces the selected match, `Ctrl+Enter` its file, `Ctrl+Alt+Enter` everything) |
 | Macro: record / stop, replay | `Ctrl+Shift+R`, `Ctrl+Alt+R` ("Macro: Replay…" in the palette asks how many times) |
-| Symbol in file / in project | `Ctrl+Shift+O` / `Ctrl+T` |
+| Symbol in file / in project | `Ctrl+Shift+O` / `Ctrl+T` (project symbols ask every running language server, ranked fuzzily, with a live preview; in `Ctrl+P` type `@` for symbols in the file, `#` for project symbols, `:` for a line) |
 | Go to line | `Ctrl+G` |
 | Definition / references / rename | `F12` (or `Ctrl+click`) / `Shift+F12` / `F2` |
 | Completion / signature help | `Ctrl+Space` / `Ctrl+Shift+Space` |
