@@ -127,8 +127,7 @@ impl App {
         }
         // Keys the editor keeps even while the terminal has focus (as bound in the keymap);
         // Ctrl+Shift+C / Ctrl+Shift+V copy and paste.
-        let clip_key =
-            matches!(&ev.key, Key::Character(c) if ctrl && shift && matches!(c.to_lowercase().as_str(), "c" | "v"));
+        let clip_key = matches!(&ev.key, Key::Character(c) if ctrl && shift && matches!(c.to_lowercase().as_str(), "c" | "v" | "f"));
         if !clip_key && term_global(&self.keymap, ctrl, shift, alt, &ev.key) {
             return false;
         }

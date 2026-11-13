@@ -161,19 +161,37 @@ impl Terms {
     }
 }
 
+/// The user's shell in `cwd`; bash, zsh and fish get the prompt / exit code / cwd reporting
+/// (`shellint`) through their own start-up switches.
+fn spawn_shell(cwd: &std::path::Path, rows: usize, cols: usize, wake: crate::lsp::Wake) -> std::io::Result<Term> {
+    #[cfg(unix)]
+    {
+        let fallback = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" };
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| fallback.into());
+        if let Some(l) = crate::shellint::launch(&shell) {
+            let args: Vec<&str> = l.args.iter().map(String::as_str).collect();
+            let env: Vec<crate::pty::EnvEdit> = l.env.iter().map(|(k, v)| (k.as_str(), Some(v.as_str()))).collect();
+            return Term::spawn_cmd(cwd, &shell, &args, &env, rows, cols, wake);
+        }
+    }
+    Term::spawn(cwd, rows, cols, wake)
+}
+
 impl App {
     /// A new shell in the project folder, sized roughly for the panel (the first draw fits it).
     fn spawn_term(&mut self) -> Option<Term> {
         let (rows, cols) =
             ((self.panel.height - PANEL_HEADER) / line_h() as i32, (self.size.0 as i32 - 40) / self.tx.cell_w as i32);
         let (rows, cols) = (rows.max(4) as usize, cols.max(20) as usize);
+        // A new terminal starts where the focused one is (its shell's folder), else in the project.
+        let cwd = self.terms.get(self.terms.active).and_then(|t| t.term.cwd()).unwrap_or_else(|| self.root.clone());
         // A remote folder gets `ssh -t` into the same folder (the connection is shared, see `remote`).
         let spawned = match crate::remote::terminal_args(&self.root) {
             Some(args) => {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 Term::spawn_cmd(&self.root, "ssh", &args, &[], rows, cols, self.wake())
             }
-            None => Term::spawn(&self.root, rows, cols, self.wake()),
+            None => spawn_shell(&cwd, rows, cols, self.wake()),
         };
         match spawned {
             Ok(t) => Some(t),

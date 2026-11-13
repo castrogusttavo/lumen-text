@@ -21,6 +21,9 @@ pub struct Look {
     pub focused: bool,
     /// OSC 8 link id under the pointer (underlined), 0 = none.
     pub hover_link: u16,
+    /// A detected link (file path or URL) under the pointer, underlined: (absolute line, first
+    /// column, end column).
+    pub hover_span: Option<(usize, usize, usize)>,
 }
 
 /// Rows and columns of `cell_w` x `line_h` cells that fit in `w` x `h` px (at least 2 x 10).
@@ -66,6 +69,8 @@ struct Key {
     flags: u8,
     selected: bool,
     hot: bool,
+    /// 0 no search hit, 1 a hit, 2 the current hit.
+    found: u8,
 }
 
 /// (text color, background fill) of a run.
@@ -78,6 +83,10 @@ fn resolve(k: &Key, look: &Look) -> (Rgba, Option<Rgba>) {
     }
     if k.selected {
         bg = Some(look.selection.over(bg.unwrap_or(look.bg)));
+    }
+    if k.found != 0 {
+        let hit = if k.found == 2 { Rgba(0xf0, 0x8a, 0x24, 0xe0) } else { Rgba(0xe2, 0xb3, 0x40, 0x90) };
+        bg = Some(hit.over(bg.unwrap_or(look.bg)));
     }
     let base = bg.unwrap_or(look.bg);
     let mut fg = tasks::legible(fg, base);
@@ -103,6 +112,7 @@ pub fn draw(tx: &mut TextCtx, cv: &mut Canvas, term: &Term, ox: i32, oy: i32, cl
             continue;
         }
         let abs = g.abs_row(r, off);
+        let hits = term.find.as_deref().map(|f| (f.on_line(abs), f.cur.and_then(|i| f.matches.get(i)).copied()));
         row.clear();
         row.extend((0..g.cols).map(|c| g.view_cell(r, c, off)));
         let key = |c: usize, cell: &Cell| Key {
@@ -110,7 +120,13 @@ pub fn draw(tx: &mut TextCtx, cv: &mut Canvas, term: &Term, ox: i32, oy: i32, cl
             bg: cell.bg,
             flags: cell.flags & !terminal::WIDE,
             selected: term.sel.is_some_and(|s| s.contains(abs, c)),
-            hot: look.hover_link != 0 && cell.link == look.hover_link,
+            hot: (look.hover_link != 0 && cell.link == look.hover_link)
+                || look.hover_span.is_some_and(|(l, a, b)| l == abs && c >= a && c < b),
+            found: hits.map_or(0, |(on, cur)| match on.iter().find(|m| c >= m.c0 && c < m.c1) {
+                Some(m) if Some(*m) == cur => 2,
+                Some(_) => 1,
+                None => 0,
+            }),
         };
         // Runs of cells that look the same: one color resolution, one background rect each.
         let mut runs: Vec<(usize, usize, Key)> = Vec::new();
@@ -126,6 +142,14 @@ pub fn draw(tx: &mut TextCtx, cv: &mut Canvas, term: &Term, ox: i32, oy: i32, cl
             if let Some(bg) = bg {
                 cv.fill_clip(Rect::new(xs(*c0), y, xs(*c1) - xs(*c0), lh), *bg, clip);
             }
+        }
+        // Shell integration: a bar left of the grid for each finished command, green or red.
+        if let Some(m) = crate::termnav::mark_at(g, abs).filter(|m| m.exit.is_some()) {
+            let ok = m.exit == Some(0);
+            let col = if ok { Rgba(0x3f, 0xb9, 0x50, 0xb0) } else { Rgba(0xf8, 0x51, 0x49, 0xd0) };
+            let (top, bot) = (abs == m.prompt, m.end.is_some_and(|e| abs + 1 == e));
+            let (y0, y1) = (y + top as i32, y + lh - bot as i32);
+            cv.fill_clip(Rect::new(ox - 8, y0, 3, y1 - y0), col, clip);
         }
         // Block cursor under the text, so the character stays readable on it.
         let cursor_here = off == 0 && g.cursor_visible && g.cy == r && g.cx < g.cols;
@@ -204,6 +228,42 @@ pub fn draw(tx: &mut TextCtx, cv: &mut Canvas, term: &Term, ox: i32, oy: i32, cl
             }
         }
     }
+    if let Some(f) = term.find.as_deref() {
+        draw_find_bar(tx, cv, f, clip, look);
+    }
+}
+
+/// The search bar at the top right of the pane: query, hit count and the toggles' state.
+fn draw_find_bar(tx: &mut TextCtx, cv: &mut Canvas, f: &crate::termnav::Find, clip: Rect, look: &Look) {
+    let lh = ui::line_h() as i32;
+    let (w, h) = ((tx.cell_w * 46.0) as i32, lh + 8);
+    let r = Rect::new((clip.right() - w - 16).max(clip.x + 4), clip.y + 4, w.min(clip.w - 8), h);
+    let panel = look.bg.mix(look.fg, 0.10);
+    cv.fill_round_clip(r, 5, look.fg.with_alpha(0x50), clip);
+    cv.fill_round_clip(Rect::new(r.x + 1, r.y + 1, r.w - 2, r.h - 2), 4, panel, clip);
+    let cw = tx.cell_w;
+    let ty = r.y + 4;
+    let max_q = ((r.w as f32 / cw) as usize).saturating_sub(24).max(4);
+    let q: Vec<char> = f.query.chars().collect();
+    let shown: String = if q.len() > max_q { q[q.len() - max_q..].iter().collect() } else { f.query.clone() };
+    let dim = look.fg.mix(look.bg, 0.45);
+    if f.query.is_empty() {
+        tx.draw_styled(cv, r.x + 8, ty, &[("Find in scrollback".to_string(), dim, 0)], clip);
+    } else {
+        tx.draw_styled(cv, r.x + 8, ty, &[(shown.clone(), look.fg, 0)], clip);
+    }
+    let caret_x = r.x + 8 + (shown.chars().count() as f32 * cw) as i32;
+    cv.fill_clip(Rect::new(caret_x, ty + 1, 1, lh - 2), look.cursor, clip);
+    let status = f.status();
+    let bad = f.bad_regex || (!f.query.is_empty() && f.matches.is_empty());
+    let scol = if bad { Rgba(0xf8, 0x51, 0x49, 0xff) } else { dim };
+    let mut x = r.right() - 8 - (2.0 * cw) as i32; // regex toggle
+    let on = |b: bool| if b { look.fg } else { dim };
+    tx.draw_styled(cv, x, ty, &[(".*".to_string(), on(f.regex), ui::BOLD)], clip);
+    x -= (4.0 * cw) as i32;
+    tx.draw_styled(cv, x, ty, &[("Aa".to_string(), on(f.case), ui::BOLD)], clip);
+    let sw = (status.chars().count() as f32 * cw) as i32;
+    tx.draw_styled(cv, x - sw - (2.0 * cw) as i32, ty, &[(status, scol, 0)], clip);
 }
 
 /// Arms of a box-drawing character: (up, right, down, left), 0 none, 1 light, 2 heavy, 3 double;
@@ -440,8 +500,9 @@ mod tests {
             selection: Rgba(40, 80, 160, 255),
             focused: true,
             hover_link: 0,
+            hover_span: None,
         };
-        let k = Key { fg: None, bg: None, flags: 0, selected: false, hot: false };
+        let k = Key { fg: None, bg: None, flags: 0, selected: false, hot: false, found: 0 };
         assert_eq!(resolve(&k, &look), (look.fg, None));
         let inv = Key { flags: terminal::INVERSE, ..k };
         assert_eq!(resolve(&inv, &look).1, Some(look.fg), "inverse paints the text color behind");

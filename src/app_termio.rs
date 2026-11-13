@@ -7,9 +7,13 @@
 use crate::{
     app::{App, KeyIn},
     terminal::{MouseEv, Sel, Term},
+    termlink::{self, Target, TermLink},
     termview::{self, Look},
 };
 use winit::{event::MouseScrollDelta, keyboard::Key};
+
+/// Said when a command needs the shell's OSC 133 marks and has none yet.
+const NO_MARKS: &str = "no finished command to use yet (bash, zsh and fish report them automatically)";
 
 /// Which terminal an action is for: one of the bottom panel's (by id, see `app_terms`) or the AI panel's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -35,6 +39,9 @@ pub struct TermIo {
     drag: Option<(Which, Drag)>,
     /// OSC 8 link under the pointer and its terminal (underlined while hovered).
     hover_link: Option<(Which, u16)>,
+    /// A detected link (URL, `path:line:col`) under the pointer, and the cell it was computed for.
+    hover: Option<(Which, TermLink)>,
+    hover_key: Option<(Which, usize, usize)>,
 }
 
 impl TermIo {
@@ -51,32 +58,22 @@ impl TermIo {
         if self.hover_link.is_some_and(|(x, _)| x == w) {
             self.hover_link = None;
         }
+        if self.hover.as_ref().is_some_and(|(x, _)| *x == w) {
+            self.hover = None;
+        }
+        self.hover_key = None;
+    }
+
+    /// The detected link under the pointer.
+    pub fn hover_link(&self) -> Option<&TermLink> {
+        self.hover.as_ref().map(|(_, l)| l)
     }
 }
 
 /// The `http(s)://` URL in `line` that covers column `col` (plain text, for Ctrl+click).
+#[cfg(test)]
 pub fn url_at(line: &str, col: usize) -> Option<String> {
-    let chars: Vec<char> = line.chars().collect();
-    let text: String = chars.iter().collect();
-    for start in text.match_indices("http").map(|(i, _)| text[..i].chars().count()) {
-        let rest: String = chars[start..].iter().collect();
-        if !rest.starts_with("http://") && !rest.starts_with("https://") {
-            continue;
-        }
-        let len = chars[start..]
-            .iter()
-            .position(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`' | '│'))
-            .unwrap_or(chars.len() - start);
-        // Trailing punctuation belongs to the sentence, not the URL.
-        let mut end = start + len;
-        while end > start && matches!(chars[end - 1], '.' | ',' | ';' | ':' | ')' | ']' | '}' | '!' | '?') {
-            end -= 1;
-        }
-        if col >= start && col < end {
-            return Some(chars[start..end].iter().collect());
-        }
-    }
-    None
+    crate::termlink::url_span(line, col).map(|(_, _, u)| u)
 }
 
 impl App {
@@ -107,6 +104,7 @@ impl App {
             selection: self.theme.selection,
             focused,
             hover_link: self.termio.hover_link.filter(|(x, _)| *x == w).map_or(0, |(_, l)| l),
+            hover_span: self.termio.hover.as_ref().filter(|(x, _)| *x == w).map(|(_, l)| (l.abs, l.c0, l.c1)),
         }
     }
 
@@ -114,6 +112,56 @@ impl App {
     fn term_cell(&self, w: Which, x: f64, y: f64) -> Option<(usize, usize)> {
         let (ox, oy) = self.termio.origin(w)?;
         termview::cell_at(self.term_ref(w)?, self.tx.cell_w, ox, oy, x, y)
+    }
+
+    /// Folders a relative `path:line` in terminal `w` can mean: the shell's own, then the project.
+    fn link_bases(&self, w: Which) -> Vec<std::path::PathBuf> {
+        let mut v: Vec<std::path::PathBuf> = self.term_ref(w).and_then(Term::cwd).into_iter().collect();
+        v.push(self.root.clone());
+        v
+    }
+
+    /// The URL or existing `path:line:col` at screen cell (row, col) of terminal `w`.
+    fn link_in(&self, w: Which, row: usize, col: usize) -> Option<TermLink> {
+        let t = self.term_ref(w)?;
+        termlink::at(&t.grid, t.grid.abs_row(row, t.scroll_offset), col, &self.link_bases(w))
+    }
+
+    /// Open what a link points to: a URL with the system's opener, a file in the editor.
+    fn follow_link(&mut self, target: &Target) {
+        match target {
+            Target::Url(u) => crate::paths::open_url(u),
+            Target::File { path, line, col } => {
+                if self.open_path(path, Some((*line, *col))).is_some() {
+                    self.focus = crate::app::Focus::Editor;
+                }
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// Tooltip target for the link under the pointer: its rect on screen and a key that changes
+    /// with the link.
+    pub fn term_link_tip(&self) -> Option<(crate::ui::Rect, u32)> {
+        let (w, l) = self.termio.hover.as_ref()?;
+        let (ox, oy) = self.termio.origin(*w)?;
+        let t = self.term_ref(*w)?;
+        let row = l.abs.checked_sub(t.grid.abs_row(0, t.scroll_offset))?;
+        let (cw, lh) = (self.tx.cell_w, crate::ui::line_h() as i32);
+        let x = ox + (l.c0 as f32 * cw) as i32;
+        let r = crate::ui::Rect::new(x, oy + row as i32 * lh, ((l.c1 - l.c0) as f32 * cw) as i32, lh);
+        Some((r, (l.abs as u32).wrapping_mul(1024).wrapping_add(l.c0 as u32)))
+    }
+
+    /// Text of the link tooltip.
+    pub fn term_link_tip_text(&self) -> crate::app_tooltip::TipText {
+        let Some(l) = self.termio.hover_link() else { return Default::default() };
+        let what = if matches!(l.target, Target::Url(_)) { "open in the browser" } else { "open in the editor" };
+        crate::app_tooltip::TipText {
+            title: termlink::describe(&l.target, &self.root),
+            detail: Some(format!("Ctrl+click to {what}")),
+            ..Default::default()
+        }
     }
 
     /// Terminals on screen now: the bottom panel's visible panes and the AI panel's agent.
@@ -148,6 +196,10 @@ impl App {
     pub fn term_type(&mut self, w: Which, ev: &KeyIn) -> bool {
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
         let sup = self.mods.super_key();
+        // The search bar, when open, takes every key.
+        if self.term_ref(w).is_some_and(|t| t.find.is_some()) {
+            return self.term_find_key(w, ev);
+        }
         if let Key::Character(c) = &ev.key
             && ctrl
             && shift
@@ -160,6 +212,11 @@ impl App {
                     if !text.is_empty() {
                         self.clip.set(&text);
                     }
+                    return true;
+                }
+                // Ctrl+Shift+F searches the scrollback.
+                "f" => {
+                    self.term_find_open(w);
                     return true;
                 }
                 "v" => {
@@ -183,6 +240,17 @@ impl App {
             _ => ev.text.clone(),
         };
         let Some(t) = self.term_mut(w) else { return true };
+        // Ctrl+Up / Ctrl+Down jump between the shell's commands (when it reports them).
+        if ctrl
+            && !shift
+            && !alt
+            && matches!(named.as_deref(), Some("ArrowUp" | "ArrowDown"))
+            && !t.alt_screen()
+            && !t.grid.cmds.is_empty()
+        {
+            t.jump_command(named.as_deref() == Some("ArrowUp"));
+            return true;
+        }
         // Shift+PageUp/PageDown scroll the terminal's own history instead of going to the program.
         if shift && !ctrl && matches!(named.as_deref(), Some("PageUp" | "PageDown")) && !t.alt_screen() {
             let rows = t.grid.rows as isize;
@@ -205,25 +273,142 @@ impl App {
         true
     }
 
+    /// Open the scrollback search of terminal `w`, starting from the selected text if it is one line.
+    pub fn term_find_open(&mut self, w: Which) {
+        let Some(t) = self.term_mut(w) else { return };
+        let sel = t.selected_text();
+        t.find_open();
+        if !sel.is_empty()
+            && !sel.contains('\n')
+            && let Some(f) = t.find.as_mut()
+        {
+            f.query = sel;
+        }
+        t.find_changed();
+        self.request_redraw();
+    }
+
+    /// A key while the search bar of terminal `w` is open: typing edits the query, Enter / Shift+Enter
+    /// (or F3, Down / Up) step through the matches, Alt+C / Alt+R toggle case and regex, Esc closes.
+    fn term_find_key(&mut self, w: Which, ev: &KeyIn) -> bool {
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        let named = match &ev.key {
+            Key::Named(n) => Some(format!("{n:?}")),
+            _ => None,
+        };
+        let letter = match &ev.key {
+            Key::Character(c) => Some(c.to_lowercase()),
+            _ => None,
+        };
+        let pasted = (ctrl && letter.as_deref() == Some("v")).then(|| {
+            let t = self.clip.get();
+            t.lines().next().unwrap_or_default().to_string()
+        });
+        let typed = match &ev.key {
+            Key::Character(c) => Some(c.to_string()),
+            _ => ev.text.clone(),
+        }
+        .filter(|t| !ctrl && !alt && !t.is_empty() && !t.chars().any(char::is_control));
+        let Some(t) = self.term_mut(w) else { return true };
+        let mut changed = false;
+        match named.as_deref() {
+            Some("Escape") => t.find_close(),
+            Some("Enter" | "F3") => t.find_step(!shift),
+            Some("ArrowDown") => t.find_step(true),
+            Some("ArrowUp") => t.find_step(false),
+            Some("Backspace") => {
+                if let Some(f) = t.find.as_mut() {
+                    if ctrl {
+                        f.query.clear();
+                    } else {
+                        f.query.pop();
+                    }
+                }
+                changed = true;
+            }
+            _ if alt && letter.as_deref() == Some("c") => {
+                if let Some(f) = t.find.as_mut() {
+                    f.case = !f.case;
+                }
+                changed = true;
+            }
+            _ if alt && letter.as_deref() == Some("r") => {
+                if let Some(f) = t.find.as_mut() {
+                    f.regex = !f.regex;
+                }
+                changed = true;
+            }
+            _ => {
+                if let Some(text) = pasted.or(typed) {
+                    if let Some(f) = t.find.as_mut() {
+                        f.query.push_str(&text);
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            t.find_changed();
+        }
+        self.request_redraw();
+        true
+    }
+
+    /// The bottom terminal the palette's terminal commands act on (opening one if needed).
+    fn cmd_term(&mut self) -> Which {
+        self.open_terminal();
+        Which::Bottom(self.terms.active)
+    }
+
+    /// Palette: search the scrollback.
+    pub fn term_cmd_find(&mut self) {
+        let w = self.cmd_term();
+        self.term_find_open(w);
+    }
+
+    /// Palette / Ctrl+Up / Ctrl+Down: previous or next command.
+    pub fn term_cmd_jump(&mut self, up: bool) {
+        let w = self.cmd_term();
+        if !self.term_mut(w).is_some_and(|t| t.jump_command(up)) {
+            self.say(NO_MARKS);
+        }
+        self.request_redraw();
+    }
+
+    /// Palette: select the output of the last (or the navigated-to) command.
+    pub fn term_cmd_select(&mut self) {
+        let w = self.cmd_term();
+        if !self.term_mut(w).is_some_and(|t| t.select_output()) {
+            self.say(NO_MARKS);
+        }
+        self.request_redraw();
+    }
+
+    /// Palette: copy the output of the last (or the navigated-to) command.
+    pub fn term_cmd_copy(&mut self) {
+        let w = self.cmd_term();
+        match self.term_ref(w).and_then(Term::output_text) {
+            Some(text) if !text.is_empty() => {
+                self.clip.set(&text);
+                self.toast("Copied the last command's output", true);
+            }
+            _ => self.say(NO_MARKS),
+        }
+    }
+
     /// Mouse press in terminal `w`: Ctrl+click opens a link, a program that asked for the mouse
     /// gets a report (Shift forces a selection instead), otherwise a selection starts.
     pub fn term_press(&mut self, w: Which, x: f64, y: f64, button: u8) {
         let Some((row, col)) = self.term_cell(w, x, y) else { return };
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
         if ctrl && button == 0 {
-            let link = self.term_ref(w).and_then(|t| {
-                t.link_at(row, col).map(str::to_string).or_else(|| {
-                    // Plain-text URL: wide characters take two cells but are one char of the line.
-                    let cells: Vec<char> =
-                        (0..t.grid.cols).map(|c| t.grid.view_cell(row, c, t.scroll_offset).ch).collect();
-                    let tail = crate::terminal::WIDE_TAIL;
-                    let idx = cells[..col.min(cells.len())].iter().filter(|c| **c != tail).count();
-                    let line: String = cells.iter().filter(|c| **c != tail).collect();
-                    url_at(&line, idx)
-                })
-            });
-            if let Some(url) = link {
+            let osc8 = self.term_ref(w).and_then(|t| t.link_at(row, col).map(str::to_string));
+            if let Some(url) = osc8 {
                 crate::paths::open_url(&url);
+                return;
+            }
+            if let Some(link) = self.link_in(w, row, col) {
+                self.follow_link(&link.target);
                 return;
             }
         }
@@ -262,6 +447,26 @@ impl App {
         if self.termio.hover_link != link {
             self.termio.hover_link = link;
             changed = true;
+        }
+        // URLs and `path:line:col` found in the text (checked on disk once per cell).
+        let cell = self.terms_on_screen().into_iter().find_map(|w| {
+            let (r, c) = self.term_cell(w, x, y)?;
+            let t = self.term_ref(w)?;
+            Some((w, r, c, t.grid.abs_row(r, t.scroll_offset)))
+        });
+        let key = cell.map(|(w, _, c, abs)| (w, abs, c));
+        if key != self.termio.hover_key || self.termio.drag.is_some() {
+            self.termio.hover_key = key;
+            let found = match cell {
+                Some((w, r, c, _)) if link.is_none() && self.termio.drag.is_none() => {
+                    self.link_in(w, r, c).map(|l| (w, l))
+                }
+                _ => None,
+            };
+            if self.termio.hover != found {
+                self.termio.hover = found;
+                changed = true;
+            }
         }
         let Some((w, drag)) = self.termio.drag else { return changed };
         let Some((ox, oy)) = self.termio.origin(w) else { return changed };
