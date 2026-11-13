@@ -1158,5 +1158,20 @@
   "label": "File: Close window",
   "shortcut": "",
   "id": "CloseWindow"
+ },
+ {
+  "label": "Remote: Open folder over SSH…",
+  "shortcut": "",
+  "id": "RemoteOpen"
+ },
+ {
+  "label": "Remote: Reconnect",
+  "shortcut": "",
+  "id": "RemoteReconnect"
+ },
+ {
+  "label": "Remote: Save and overwrite the remote file",
+  "shortcut": "",
+  "id": "RemoteSaveOverwrite"
  }
 ]
