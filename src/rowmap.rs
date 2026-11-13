@@ -291,8 +291,8 @@ impl RowMap {
         let hidden = folds.hidden_ranges();
         let mut h = 0;
         let mut acc: u32 = 0;
-        for i in 0..n {
-            self.rows_before[i] = acc;
+        for (i, before) in self.rows_before.iter_mut().enumerate().take(n) {
+            *before = acc;
             while h < hidden.len() && hidden[h].1 < i {
                 h += 1;
             }

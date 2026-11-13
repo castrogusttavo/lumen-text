@@ -568,11 +568,9 @@ impl App {
         if let Some(t) = self.lsp_refresh_at {
             if t <= now {
                 self.lsp_refresh_at = None;
-                for li in 0..self.lsps.len() {
-                    if self.lsps[li].name == "tsgo" || self.lsps[li].is_generic() {
-                        pull.push(li);
-                    }
-                }
+                pull.extend(
+                    self.lsps.iter().enumerate().filter(|(_, l)| l.name == "tsgo" || l.is_generic()).map(|(li, _)| li),
+                );
             } else {
                 want(t);
             }
