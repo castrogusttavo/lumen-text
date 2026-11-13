@@ -959,6 +959,7 @@ mod tests {
                 has_path: true,
                 reopen: true,
                 bp: None,
+                diag: true,
             };
             for e in crate::app_ctxmenu::entries_for(&t, &f) {
                 if let crate::app_ctxmenu::Entry::Item { act, label, .. } = e {
