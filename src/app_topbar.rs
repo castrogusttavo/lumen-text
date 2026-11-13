@@ -810,6 +810,7 @@ impl App {
         self.blame_for = None;
         self.eslint_busy.clear();
         self.git_status.clear();
+        self.ws_reset();
         self.root = path;
         self.ai.root = self.root.clone();
         self.win_root_changed();

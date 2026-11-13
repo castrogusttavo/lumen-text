@@ -942,7 +942,7 @@ impl App {
             }
             "workspace/workspaceFolders" => {
                 let root = self.lsps[li].root.clone();
-                json!([{"uri": path_to_uri(&root), "name": root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()}])
+                crate::workspace::folders_json(&crate::workspace::lsp_folders(&root))
             }
             "workspace/diagnostic/refresh" => {
                 self.ws_refresh_requested();

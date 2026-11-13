@@ -82,8 +82,16 @@ fn walker(root: &Path) -> ignore::Walk {
         .build()
 }
 
+#[cfg(test)]
 pub fn list_files(root: &Path, limit: usize) -> Vec<PathBuf> {
-    walker(root)
+    list_files_in(std::slice::from_ref(&root.to_path_buf()), limit)
+}
+
+/// Files of every workspace root, in root order (`limit` counts all of them).
+pub fn list_files_in(roots: &[PathBuf], limit: usize) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .flat_map(|r| walker(r))
         .flatten()
         .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
         .map(|e| e.into_path())
@@ -93,8 +101,22 @@ pub fn list_files(root: &Path, limit: usize) -> Vec<PathBuf> {
 
 /// Streams hits through `tx` in batches; stops early when `generation` no longer equals `my_gen`.
 /// `overrides` holds the text of files open with unsaved changes (searched instead of the disk).
+#[cfg(test)]
 pub fn search(
     root: &Path,
+    q: &Query,
+    overrides: &HashMap<PathBuf, String>,
+    generation: Arc<AtomicUsize>,
+    my_gen: usize,
+    tx: Sender<(usize, Vec<Hit>)>,
+    wake: impl Fn(),
+) {
+    search_in(std::slice::from_ref(&root.to_path_buf()), q, overrides, generation, my_gen, tx, wake)
+}
+
+/// [`search`] over every root of a multi-root workspace, one after the other.
+pub fn search_in(
+    roots: &[PathBuf],
     q: &Query,
     overrides: &HashMap<PathBuf, String>,
     generation: Arc<AtomicUsize>,
@@ -106,7 +128,7 @@ pub fn search(
     let cap = if q.replace.is_some() { MAX_REPLACE_HITS } else { MAX_HITS };
     let mut batch = Vec::new();
     let mut total = 0;
-    for entry in walker(root).flatten() {
+    for entry in roots.iter().flat_map(|r| walker(r)).flatten() {
         if generation.load(Ordering::Relaxed) != my_gen || total >= cap {
             break;
         }
@@ -253,6 +275,25 @@ mod tests {
         let (t, (a, b)) = snippet(&long, 100, 105);
         assert!(t.starts_with('…'), "{t}");
         assert_eq!(t.chars().skip(a).take(b - a).collect::<String>(), "MATCH");
+    }
+
+    #[test]
+    fn search_and_file_index_cover_every_root() {
+        let a = project();
+        let b = std::env::temp_dir().join(format!("lumen-search-b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&b);
+        std::fs::create_dir_all(b.join("src")).unwrap();
+        std::fs::write(b.join("src/a.ts"), "a needle here\n").unwrap();
+        let roots = vec![a.clone(), b.clone()];
+        let files = list_files_in(&roots, 1000);
+        assert!(files.contains(&a.join("src/a.ts")) && files.contains(&b.join("src/a.ts")), "{files:?}");
+        let (tx, rx) = channel();
+        search_in(&roots, &q("needle"), &HashMap::new(), Arc::new(AtomicUsize::new(1)), 1, tx, || {});
+        let hits: Vec<Hit> = rx.try_iter().flat_map(|(_, h)| h).collect();
+        assert_eq!(hits.len(), 3, "{hits:?}");
+        assert!(hits.iter().any(|h| h.path.starts_with(&a)) && hits.iter().any(|h| h.path.starts_with(&b)));
+        std::fs::remove_dir_all(&a).ok();
+        std::fs::remove_dir_all(&b).ok();
     }
 
     #[test]

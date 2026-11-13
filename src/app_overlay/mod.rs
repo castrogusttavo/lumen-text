@@ -63,6 +63,8 @@ pub enum Action {
     Compare(crate::app_gitcmp::CmpPick),
     /// Trust prompt of the project settings and the Python interpreter picker (see `app_projcfg`).
     Project(crate::app_projcfg::ProjPick),
+    /// Workspace folder pickers (see `app_workspace`).
+    Workspace(crate::app_workspace::WsPick),
 }
 
 #[derive(Clone)]
@@ -161,6 +163,10 @@ pub enum PromptKind {
         path: PathBuf,
         line: usize,
     },
+    /// "Workspace: Add folder…", "Open workspace file…" and "Save as…" (see `app_workspace`).
+    WorkspaceAdd,
+    WorkspaceOpen,
+    WorkspaceSave,
 }
 
 pub struct Prompt {

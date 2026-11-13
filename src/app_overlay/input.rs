@@ -255,6 +255,9 @@ impl App {
                 PromptKind::AiRename { id } => self.ai_rename(id, &p.field.text),
                 PromptKind::BpCondition { path, line } => self.bp_set_condition(&path, line, &p.field.text),
                 PromptKind::BpLog { path, line } => self.bp_set_log(&path, line, &p.field.text),
+                PromptKind::WorkspaceAdd => self.ws_add_answer(&p.field.text),
+                PromptKind::WorkspaceOpen => self.ws_open_answer(&p.field.text),
+                PromptKind::WorkspaceSave => self.ws_save_answer(&p.field.text),
             },
             Overlay::None => {}
         }
@@ -306,6 +309,7 @@ impl App {
             Action::DebugConfig(id) => self.debug_pick_config(&id),
             Action::Compare(p) => self.cmp_pick(p),
             Action::Project(p) => self.projcfg_pick(p),
+            Action::Workspace(p) => self.ws_pick(p),
             Action::UndoBranch(n) => {
                 if let Some(d) = self.docs.get_mut(self.active)
                     && let Some(sel) = d.buf.redo_branch(n)

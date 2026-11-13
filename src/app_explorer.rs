@@ -76,6 +76,10 @@ impl App {
         if row.is_dir {
             // A folder toggles on press (put back if the press turns into a drag).
             self.activate_row(i);
+            // A workspace folder's node is not draggable.
+            if self.tree.is_root(&row.path) {
+                return;
+            }
             self.tree.drag = Some(mk(vec![row.path.clone()], None, Some(row.path.clone())));
         } else {
             // A file opens on release, and only if the pointer never dragged it.

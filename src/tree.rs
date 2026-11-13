@@ -65,6 +65,9 @@ pub struct Tree {
     /// Order of the entries of each folder.
     sort: SortMode,
     folders_first: bool,
+    /// Extra workspace folders after `root` (multi-root workspaces, see `workspace`). Empty = the
+    /// usual single-root tree, rows start right under `root` with no header.
+    extra: Vec<(PathBuf, crate::ignore_filter::IgnoreFilter)>,
 }
 
 /// How the explorer orders the entries of a folder (`explorer_sort`).
@@ -193,6 +196,7 @@ impl Tree {
             drag: None,
             sort: SortMode::Name,
             folders_first: true,
+            extra: Vec::new(),
         };
         t.expanded.insert(root);
         t.rebuild();
@@ -234,6 +238,9 @@ impl Tree {
     /// An ignore file changed: re-read the rules on the next rebuild.
     pub fn invalidate_ignore(&mut self) {
         self.filter.invalidate();
+        for (_, f) in &mut self.extra {
+            f.invalidate();
+        }
     }
 
     /// The entries to list in `dir`, in the explorer order: `.git` never, ignored ones only when
@@ -253,7 +260,7 @@ impl Tree {
                 let path = e.path();
                 let ignored = parent_ignored
                     || (is_dir && HIDDEN_DIRS.contains(&name.as_str()))
-                    || self.filter.is_ignored(&path, is_dir);
+                    || self.is_ignored(&path, is_dir);
                 if ignored && self.hide_ignored {
                     return None;
                 }
@@ -265,9 +272,64 @@ impl Tree {
         v
     }
 
+    /// Does git ignore `path`? The matcher of the workspace folder that holds it decides.
+    fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        match self.extra.iter().find(|(r, _)| path.starts_with(r)) {
+            Some((_, f)) => f.is_ignored(path, is_dir),
+            None => self.filter.is_ignored(path, is_dir),
+        }
+    }
+
+    /// Make `roots` the extra workspace folders (the explorer then shows every folder, `root`
+    /// included, as a top-level node). New folders start expanded.
+    pub fn set_extra_roots(&mut self, roots: &[PathBuf]) {
+        let mut old = std::mem::take(&mut self.extra);
+        for r in roots {
+            if *r == self.root || self.extra.iter().any(|(e, _)| e == r) {
+                continue;
+            }
+            let f = match old.iter().position(|(e, _)| e == r) {
+                Some(i) => old.swap_remove(i).1,
+                None => {
+                    self.expanded.insert(r.clone());
+                    crate::ignore_filter::IgnoreFilter::new(r)
+                }
+            };
+            self.extra.push((r.clone(), f));
+        }
+        for (r, _) in &old {
+            self.expanded.remove(r);
+        }
+        self.expanded.insert(self.root.clone());
+        self.rebuild();
+    }
+
+    /// The workspace folders: `root` first, then the extra ones.
+    pub fn roots(&self) -> Vec<PathBuf> {
+        std::iter::once(self.root.clone()).chain(self.extra.iter().map(|(r, _)| r.clone())).collect()
+    }
+
+    /// Is `p` a top-level workspace folder of a multi-root tree? (Never in a single-root tree: no
+    /// row stands for the root there.)
+    pub fn is_root(&self, p: &Path) -> bool {
+        !self.extra.is_empty() && (p == self.root || self.extra.iter().any(|(r, _)| r == p))
+    }
+
     pub fn rebuild(&mut self) {
         let mut rows = Vec::new();
-        self.walk(&self.root.clone(), 0, false, &mut rows);
+        if self.extra.is_empty() {
+            self.walk(&self.root.clone(), 0, false, &mut rows);
+        } else {
+            let roots = self.roots();
+            let names = crate::workspace::names(&roots);
+            for (r, name) in roots.into_iter().zip(names) {
+                let expanded = self.expanded.contains(&r);
+                rows.push(Row { path: r.clone(), name, depth: 0, is_dir: true, expanded, ignored: false });
+                if expanded {
+                    self.walk(&r, 1, false, &mut rows);
+                }
+            }
+        }
         self.rows = rows;
         self.sel = self.sel.min(self.rows.len().saturating_sub(1));
     }
@@ -298,10 +360,10 @@ impl Tree {
     pub fn reveal(&mut self, path: &Path) {
         let mut cur = path.parent();
         while let Some(d) = cur {
-            if d.starts_with(&self.root) {
+            if d.starts_with(&self.root) || self.extra.iter().any(|(r, _)| d.starts_with(r)) {
                 self.expanded.insert(d.to_path_buf());
             }
-            if d == self.root {
+            if d == self.root || self.extra.iter().any(|(r, _)| d == r) {
                 break;
             }
             cur = d.parent();
@@ -341,6 +403,11 @@ impl Tree {
         } else {
             self.rows.iter().filter(|r| self.selected.contains(&r.path)).map(|r| r.path.clone()).collect()
         };
+        let mut all = all;
+        if !self.extra.is_empty() {
+            // A workspace folder's own node is not something to move, copy or delete.
+            all.retain(|p| !self.is_root(p));
+        }
         prune_nested(all)
     }
 

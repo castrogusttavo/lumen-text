@@ -4,12 +4,15 @@ impl App {
     // ───────────── opening ─────────────
 
     pub fn rel(&self, p: &std::path::Path) -> String {
+        if !self.ws.extra.is_empty() {
+            return self.ws_label(p);
+        }
         p.strip_prefix(&self.root).unwrap_or(p).to_string_lossy().into_owned()
     }
 
     pub fn open_quick_open(&mut self) {
         if self.file_index.is_none() {
-            self.file_index = Some(search::list_files(&self.root, 50_000));
+            self.file_index = Some(search::list_files_in(&self.roots(), 50_000));
         }
         let files = self.file_index.clone().unwrap_or_default();
         let open: Vec<PathBuf> = self.docs.iter().filter_map(|d| d.path().map(PathBuf::from)).collect();
@@ -308,10 +311,10 @@ impl App {
             done.store(true, Ordering::SeqCst);
             return;
         }
-        let (root, generation, tx, wake) =
-            (self.root.clone(), self.search_gen.clone(), self.search_tx.clone(), self.wake());
+        let (roots, generation, tx, wake) =
+            (self.roots(), self.search_gen.clone(), self.search_tx.clone(), self.wake());
         thread::spawn(move || {
-            search::search(&root, &q, &overrides, generation, my_gen, tx, || wake());
+            search::search_in(&roots, &q, &overrides, generation, my_gen, tx, || wake());
             done.store(true, Ordering::SeqCst);
             wake();
         });

@@ -162,7 +162,7 @@ impl App {
         if let Some(a) = answer {
             self.gitbg.pending = None;
             if let Some((root, info)) = a
-                && root == self.root
+                && root == self.git_root()
             {
                 self.git_apply_info(info);
             }
@@ -190,7 +190,7 @@ impl App {
     /// Start a refresh of the ahead / behind counts on a worker thread.
     pub fn git_poll_now(&mut self) {
         let (tx, rx) = channel();
-        let (root, wake) = (self.root.clone(), self.wake());
+        let (root, wake) = (self.git_root(), self.wake());
         self.gitbg.pending = Some(rx);
         self.gitbg.next_poll = Instant::now() + poll_every();
         self.gitbg.polls += 1;
@@ -210,7 +210,7 @@ impl App {
                 self.request_redraw();
             }
         }
-        self.gitbg.info_root = Some(self.root.clone());
+        self.gitbg.info_root = Some(self.git_root());
         self.gitbg.info = Some(info);
         if changed {
             self.request_redraw();
@@ -221,7 +221,7 @@ impl App {
     pub fn git_counts(&self) -> Option<SyncInfo> {
         match &self.gitpanel {
             Some(g) if g.top.is_some() => Some(g.sync.clone()),
-            _ => self.gitbg.info.clone().filter(|_| self.gitbg.info_root.as_ref() == Some(&self.root)),
+            _ => self.gitbg.info.clone().filter(|_| self.gitbg.info_root.as_ref() == Some(&self.git_root())),
         }
     }
 
