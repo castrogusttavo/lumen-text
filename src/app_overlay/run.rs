@@ -7,7 +7,7 @@ impl App {
         if self.run_display_cmd(c) || self.run_view_cmd(c) {
             return;
         }
-        if self.run_inline_cmd(c) {
+        if self.run_inline_cmd(c) || self.run_snippet_cmd(c) {
             return;
         }
         match c {

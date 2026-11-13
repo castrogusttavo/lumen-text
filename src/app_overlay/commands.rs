@@ -232,6 +232,9 @@ pub enum Cmd {
     OpenFolderNewWindow,
     MoveTabToNewWindow,
     CloseWindow,
+    SnippetsInsert,
+    SnippetsConfigure,
+    SnippetsImport,
 }
 
 impl Cmd {
@@ -474,4 +477,7 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("File: Open folder in new window…", "", Cmd::OpenFolderNewWindow),
     ("File: Move tab to new window", "", Cmd::MoveTabToNewWindow),
     ("File: Close window", "", Cmd::CloseWindow),
+    ("Snippets: Insert…", "", Cmd::SnippetsInsert),
+    ("Snippets: Configure…", "", Cmd::SnippetsConfigure),
+    ("Snippets: Import from VS Code", "", Cmd::SnippetsImport),
 ];

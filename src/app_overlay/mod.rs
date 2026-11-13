@@ -63,6 +63,8 @@ pub enum Action {
     Compare(crate::app_gitcmp::CmpPick),
     /// Trust prompt of the project settings and the Python interpreter picker (see `app_projcfg`).
     Project(crate::app_projcfg::ProjPick),
+    /// Snippet pickers (see `app_snippets`).
+    Snippet(crate::app_snippets::SnipPick),
 }
 
 #[derive(Clone)]

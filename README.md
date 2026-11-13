@@ -49,6 +49,7 @@ is in the [changelog](https://castrogusttavo.github.io/lumen-text/changelog), an
 - [EditorConfig](https://editorconfig.org): `indent_style`, `indent_size`, `tab_width`, `end_of_line` (files without a line break yet), `charset`, `trim_trailing_whitespace`, `insert_final_newline` and `max_line_length` (read, not used yet), with the usual section globs, applied when a file opens
 - Render whitespace (none / boundary / trailing / all, palette "Toggle render whitespace"); trim trailing whitespace and insert a final newline on save (one undo step; Markdown is not trimmed unless `.editorconfig` asks)
 - Multi-cursor, auto-indent, bracket pairs and matching, JSX/HTML tag closing, Emmet, snippets with tab stops
+- VS Code compatible snippets: `~/.config/lumen-text/snippets/*.code-snippets` and `<language>.json`, plus `.vscode/*.code-snippets` and `.lumen/snippets` in a project. Tab stops, placeholders, choices, nested placeholders, mirrors, variables (`$TM_FILENAME`, `$CLIPBOARD`, `$CURRENT_YEAR`, `$UUID`, `$LINE_COMMENT`, `$SELECTION`...) and regex transforms; they also show in the completion list. Palette: "Snippets: Insert…", "Snippets: Configure…" (opens or creates the file), "Snippets: Import from VS Code"
 - Column (box) selection: `Shift+Alt+drag`, middle-button drag or `Ctrl+Shift+Alt+arrows`; one cursor per line in visual columns (tabs expanded), carets at the end of shorter lines, folded lines skipped, buffer lines (not wrapped rows) with word wrap
 - Jump to character (`Alt+J`, flash / easymotion style): type 1–2 characters, then the label shown over the match (`Shift` extends the selection)
 - Word wrap, folding, sticky scroll, indent guides, minimap, breadcrumbs, color swatches
@@ -536,7 +537,7 @@ src/
   fstype.rs, poller.rs, app_fswatch.rs  untrusted file systems (statfs), polling fallback, .git watching and refresh on focus
   search.rs, replace.rs     project search (gitignore-aware walk) and the replace engine (captures, line endings, atomic writes)
   macros.rs                keyboard macros (record, replay as one undo step, macros.json)
-  fuzzy.rs, snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs
+  fuzzy.rs, snippets.rs, snippet_syntax.rs, snippet_store.rs, app_snippets.rs, emmet.rs, watcher.rs (inotify), mem.rs, perf.rs
   app_aipanel/, ide/, notify.rs  AI panel sessions (agent CLIs in PTYs), Claude Code IDE bridge, desktop notifications
   script.rs                headless mode for tests and screenshots
   cli.rs, instance.rs, app_window.rs  command line; one process per window, routing of a second invocation
