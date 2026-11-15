@@ -34,7 +34,7 @@ pub const NUMLESS_MARKS_W: i32 = 28;
 pub const BP_CLICK_W: i32 = 14;
 
 // Bits of the word; all zero = everything shown, scrollbars always on. (The `scrollbar` setting
-// defaults to "never"; `apply` writes it at startup, so the zero state is only what tests start from.)
+// defaults to "show"; `apply` writes it at startup, so the zero state is only what tests start from.)
 const NO_NUMBERS: u32 = 1;
 const NO_BOOKMARKS: u32 = 2;
 const NO_BREAKPOINTS: u32 = 4;

@@ -299,7 +299,7 @@ pub fn defaults() -> Value {
         "ui_font_family": "", "ui_font_size": 13, "ui_font_weight": 400,
         "ui_line_height": fontcfg::DEFAULT_UI_LH, "ui_font_ligatures": true,
         "show_line_numbers": true, "show_bookmarks": true, "show_breakpoints": true,
-        "scrollbar": "never", "enable_lsp": true, "build_command": "", "run_command": "",
+        "scrollbar": "show", "enable_lsp": true, "build_command": "", "run_command": "",
         "markdown_remote_images": true, "hot_exit": true, "persistent_undo": true, "spell_check": false,
         "render_whitespace": "none", "trim_trailing_whitespace": false, "insert_final_newline": false,
         "ai_notifications": true, "ai_prompt_explain": "", "ai_prompt_fix": "", "ai_prompt_context": 5,

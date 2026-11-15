@@ -40,6 +40,8 @@ pub enum MenuKind {
     Branch,
     /// Folder browser behind "Open folder…".
     Browse,
+    /// Gear at the right end of the bar: a shortcut to the Settings page.
+    Settings,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -373,6 +375,12 @@ impl App {
             self.tx.icon(cv, "ui/chevron_down", r.right() - 22, bar.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, bar);
             self.layout.top_btns.push((r, MenuKind::Branch));
         }
+
+        // Settings gear, pinned to the right end; the same page as Ctrl+, / "Preferences: Settings".
+        let side = bar.h - 9;
+        let r = Rect::new(bar.right() - 10 - side, bar.y + 4, side, side);
+        self.tx.icon(cv, "ui/settings", r.x + (side - 16) / 2, iy, 16, c.tab_inactive_fg, bar);
+        self.layout.top_btns.push((r, MenuKind::Settings));
     }
 
     /// Mouse press on the bar. Returns true when it was inside the bar.
@@ -381,7 +389,11 @@ impl App {
             return false;
         }
         if let Some((r, kind)) = self.layout.top_btns.iter().find(|(r, _)| r.contains(x, y)).copied() {
-            self.open_topmenu(kind, r);
+            if kind == MenuKind::Settings {
+                self.open_settings(crate::settingsui::Page::Settings);
+            } else {
+                self.open_topmenu(kind, r);
+            }
         }
         true
     }
@@ -397,8 +409,32 @@ impl App {
         self.open_topmenu(kind, r);
     }
 
+    /// Windows and macOS: the system folder dialog instead of the in-app browser (Linux keeps ours).
+    /// Returns false where there is no native dialog, so the caller falls back to the browser.
+    #[cfg(any(windows, target_os = "macos"))]
+    fn native_open_folder(&mut self, new_window: bool) -> bool {
+        let start = self.root.parent().map_or_else(|| self.root.clone(), Path::to_path_buf);
+        let picked = rfd::FileDialog::new().set_title("Open folder").set_directory(start).pick_folder();
+        if let Some(dir) = picked {
+            if new_window || self.mods.control_key() {
+                self.open_folder_in_new_window(dir);
+            } else {
+                self.switch_project(dir);
+            }
+        }
+        true
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    fn native_open_folder(&mut self, _new_window: bool) -> bool {
+        false
+    }
+
     /// "File: Open folder in new window…": the folder browser, opening its pick in a new window.
     pub fn open_topmenu_cmd_new_window(&mut self) {
+        if self.native_open_folder(true) {
+            return;
+        }
         self.open_topmenu_cmd(MenuKind::Browse);
         if let Overlay::TopMenu(m) = &mut self.overlay {
             m.new_window = true;
@@ -409,6 +445,7 @@ impl App {
 
     pub fn open_topmenu(&mut self, kind: MenuKind, anchor: Rect) {
         match kind {
+            MenuKind::Settings => self.open_settings(crate::settingsui::Page::Settings),
             MenuKind::Project => {
                 let recents: Vec<PathBuf> = load_recents().into_iter().filter(|p| *p != self.root).collect();
                 let mut entries: Vec<Entry> = recents.iter().cloned().map(|p| Entry::Project(p, true)).collect();
@@ -478,7 +515,7 @@ impl App {
         let hint = match m.kind {
             MenuKind::Project => "Search projects…",
             MenuKind::Branch => "Search branches…",
-            MenuKind::Browse => "Search folders…",
+            MenuKind::Browse | MenuKind::Settings => "Search folders…",
         };
         let (txt, col) = if m.field.text.is_empty() { (hint, dim) } else { (m.field.text.as_str(), fg) };
         if m.field.sel_all {
@@ -709,6 +746,7 @@ impl App {
         match entry {
             Entry::Project(p, _) | Entry::UseDir(p) if new_window => self.open_folder_in_new_window(p),
             Entry::Project(p, _) | Entry::UseDir(p) => self.switch_project(p),
+            Entry::OpenProject if self.native_open_folder(m.new_window) => {}
             Entry::OpenProject => {
                 self.open_topmenu(MenuKind::Browse, m.anchor);
                 if let Overlay::TopMenu(b) = &mut self.overlay {

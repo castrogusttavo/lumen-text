@@ -120,7 +120,7 @@ pub struct Config {
     pub show_line_numbers: bool,
     pub show_bookmarks: bool,
     pub show_breakpoints: bool,
-    /// Scrollbars: "show" (always, thin), "auto" (fade in on scroll / hover) or "never" (the default).
+    /// Scrollbars: "show" (always, thin), "auto" (fade in on scroll / hover) or "never"; the default is "show".
     pub scrollbar: String,
     /// Master switch for every language server (see `App::lsp_enabled`).
     pub enable_lsp: bool,
@@ -228,11 +228,14 @@ fn parse_code_actions(v: &Value) -> BTreeMap<String, Vec<String>> {
     }
 }
 
-/// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "never".
+/// Theme used until the user picks one (and the fallback of `resolve_theme`).
+pub const DEFAULT_THEME: &str = "dracula";
+
+/// `scrollbar` setting values; anything else (or a missing key) falls back to the default, "show" (always visible).
 pub fn normalize_scrollbar(v: Option<&str>) -> String {
     match v {
         Some(m @ ("show" | "auto" | "never")) => m.to_string(),
-        _ => "never".to_string(),
+        _ => "show".to_string(),
     }
 }
 
@@ -404,7 +407,7 @@ impl Default for Config {
             show_line_numbers: true,
             show_bookmarks: true,
             show_breakpoints: true,
-            scrollbar: "never".into(),
+            scrollbar: "show".into(),
             enable_lsp: true,
             local_history: true,
             local_history_max_entries: crate::localhist::DEFAULT_MAX_ENTRIES,
@@ -584,7 +587,7 @@ impl Config {
         if self.appearance == "system" {
             return if dark.unwrap_or(false) { self.theme_dark.clone() } else { self.theme_light.clone() };
         }
-        self.theme.clone().unwrap_or_else(|| self.theme_light.clone())
+        self.theme.clone().unwrap_or_else(|| DEFAULT_THEME.to_string())
     }
 }
 
@@ -716,10 +719,11 @@ impl Config {
             show_line_numbers: v["show_line_numbers"].as_bool().unwrap_or(true),
             show_bookmarks: v["show_bookmarks"].as_bool().unwrap_or(true),
             show_breakpoints: v["show_breakpoints"].as_bool().unwrap_or(true),
-            // "show" was the default before v2 and every save wrote it: an old stored "show" is not a choice.
+            // v3 stored an explicit choice. Older saves wrote the then-default "never" whatever the user
+            // picked, so that one value is migrated once to the new default, "show"; "auto" is a choice.
             scrollbar: match (v["scrollbar_v"].as_u64(), v["scrollbar"].as_str()) {
-                (Some(2), s) => normalize_scrollbar(s),
-                (_, Some("show")) => normalize_scrollbar(None),
+                (Some(n), s) if n >= 3 => normalize_scrollbar(s),
+                (_, Some("never")) => normalize_scrollbar(None),
                 (_, s) => normalize_scrollbar(s),
             },
             enable_lsp: v["enable_lsp"].as_bool().unwrap_or(true),
@@ -792,7 +796,7 @@ impl Config {
         v["mem_budget_mb"] = json!(self.mem_budget_mb);
         v["sidebar_width"] = json!(self.sidebar_width);
         v["git_worktree_dir"] = json!(self.git_worktree_dir);
-        v["scrollbar_v"] = json!(2);
+        v["scrollbar_v"] = json!(3);
         v["local_history"] = json!(self.local_history);
         v["local_history_max_entries"] = json!(self.local_history_max_entries);
         v["hot_exit"] = json!(self.hot_exit);
@@ -841,7 +845,7 @@ mod tests {
     #[test]
     fn theme_resolution_follows_appearance() {
         let mut c = Config::default();
-        assert_eq!(c.resolve_theme(Some(true)), "github-light-default", "fixed + no explicit theme -> light");
+        assert_eq!(c.resolve_theme(Some(true)), "dracula", "fixed + no explicit theme -> Dracula Dark");
         c.theme = Some("dracula".into());
         assert_eq!(c.resolve_theme(None), "dracula");
         c.appearance = "system".into();
@@ -1197,7 +1201,7 @@ mod tests {
         assert!(c.buffer_font_family.is_empty() && c.ui_font_family.is_empty());
         assert!(c.show_line_numbers && c.show_bookmarks && c.show_breakpoints && c.enable_lsp);
         assert!(!c.spell_check, "spell checking is opt-in");
-        assert_eq!(c.scrollbar, "never", "scrollbars are hidden by default");
+        assert_eq!(c.scrollbar, "show", "scrollbars are always visible by default");
         // The literals above are the fontcfg constants (the docs extractor reads the literals).
         assert_eq!(c.buffer_font_size, crate::fontcfg::DEFAULT_BUFFER_SIZE);
         assert_eq!(c.buffer_line_height, crate::fontcfg::DEFAULT_BUFFER_LH);
@@ -1245,20 +1249,21 @@ mod tests {
         assert_eq!(c.buffer_line_height, 9.0, "above 4 is pixels");
         assert_eq!(c.ui_line_height, 1.0);
         assert_eq!(c.buffer_font_family, "Fira Code");
-        assert_eq!(c.scrollbar, "never", "unknown mode falls back to the default");
+        assert_eq!(c.scrollbar, "show", "unknown mode falls back to the default");
         assert!(c.show_line_numbers, "a non-bool keeps the default");
         let c = load(
-            r#"{"buffer_line_height": "tall", "buffer_font_weight": "bold", "scrollbar": "show", "scrollbar_v": 2}"#,
+            r#"{"buffer_line_height": "tall", "buffer_font_weight": "bold", "scrollbar": "never", "scrollbar_v": 3}"#,
         );
         assert_eq!((c.buffer_line_height, c.buffer_font_weight), (1.57, 400));
-        assert_eq!(c.scrollbar, "show", "an explicit choice is kept");
-        // Before v2 every save wrote the old default "show": migrated once to the new default.
-        assert_eq!(load(r#"{"scrollbar": "show"}"#).scrollbar, "never");
+        assert_eq!(c.scrollbar, "never", "an explicit choice is kept");
+        // Before v3 every save wrote the old default "never": migrated once to the new default.
+        assert_eq!(load(r#"{"scrollbar": "never"}"#).scrollbar, "show");
+        assert_eq!(load(r#"{"scrollbar": "never", "scrollbar_v": 2}"#).scrollbar, "show");
         assert_eq!(load(r#"{"scrollbar": "auto"}"#).scrollbar, "auto", "a non-default old choice is kept");
-        let mut c = load(r#"{"scrollbar": "show"}"#);
-        c.scrollbar = "show".into();
+        let mut c = load(r#"{"scrollbar": "never"}"#);
+        c.scrollbar = "never".into();
         c.save_to(&p).unwrap();
-        assert_eq!(Config::load_from(&p).scrollbar, "show", "chosen again after the migration: kept");
+        assert_eq!(Config::load_from(&p).scrollbar, "never", "chosen again after the migration: kept");
         let c = load(r#"{"buffer_line_height": 1.9}"#);
         assert_eq!(c.buffer_line_height, 1.9);
         std::fs::remove_dir_all(&dir).ok();

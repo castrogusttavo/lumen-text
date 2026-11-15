@@ -473,6 +473,7 @@ impl App {
                 ),
                 None => t("Switch branch", None, self.branch.clone()),
             },
+            TipKey::Top(MenuKind::Settings) => t("Settings", Some("Ctrl+,".to_string()), None),
             TipKey::Top(_) => t("Switch project", None, Some(crate::app_topbar::tilde(&self.root))),
             TipKey::Tab(i) => match self.docs.get(i) {
                 Some(d) => {
