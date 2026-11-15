@@ -89,8 +89,56 @@ pub fn run(root: &Path, bin: &Path, file: &Path, text: &str) -> Result<Vec<Msg>,
     Ok(parse(&text))
 }
 
+/// The `output` of an `eslint --fix-dry-run -f json` run: `Some(fixed text)` when ESLint fixed something.
+pub fn parse_fix(json: &str) -> Option<String> {
+    let v = serde_json::from_str::<Value>(json).ok()?;
+    v.as_array()?.first()?["output"].as_str().map(str::to_string)
+}
+
+/// `eslint --fix` on `text` as if it were `file`, without touching the disk. `Ok(None)` when there
+/// was nothing to fix. Blocking, at most `wait`: call it only where a short wait is acceptable (save).
+pub fn fix(root: &Path, bin: &Path, file: &Path, text: &str, wait: std::time::Duration) -> Result<Option<String>, String> {
+    let (root, bin, file, text) = (root.to_path_buf(), bin.to_path_buf(), file.to_path_buf(), text.to_string());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let r = (|| {
+            let mut child = Command::new(&bin)
+                .args(["--stdin", "--stdin-filename"])
+                .arg(&file)
+                .args(["--fix-dry-run", "-f", "json"])
+                .current_dir(&root)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            let mut stdin = child.stdin.take().unwrap();
+            let w = std::thread::spawn(move || {
+                let _ = stdin.write_all(text.as_bytes());
+            });
+            let out = child.wait_with_output().map_err(|e| e.to_string())?;
+            let _ = w.join();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if stdout.trim().is_empty() {
+                let err = String::from_utf8_lossy(&out.stderr);
+                return Err(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("no output").to_string());
+            }
+            Ok(parse_fix(&stdout))
+        })();
+        let _ = tx.send(r);
+    });
+    rx.recv_timeout(wait).map_err(|_| "timed out".to_string())?
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_fix_reads_output_only_when_present() {
+        assert_eq!(super::parse_fix(r#"[{"messages":[],"output":"fixed\n"}]"#).as_deref(), Some("fixed\n"));
+        assert_eq!(super::parse_fix(r#"[{"messages":[]}]"#), None);
+        assert_eq!(super::parse_fix("garbage"), None);
+    }
+
     use super::*;
 
     #[test]

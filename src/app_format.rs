@@ -227,11 +227,34 @@ impl App {
     /// Save step for document `i`: code actions on save, then format-on-save. Returns what to tell
     /// the user *after* saving (problems must not be overwritten by the plain "Saved" message).
     pub fn format_for_save(&mut self, i: usize) -> Option<String> {
+        let lint = self.eslint_fix_for_save(i);
         let actions = self.code_actions_for_save(i);
         let fmt = self.format_step_for_save(i);
-        match (actions, fmt) {
-            (Some(a), Some(f)) => Some(format!("{a}; {f}")),
-            (a, f) => a.or(f),
+        let msgs: Vec<String> = [lint, actions, fmt].into_iter().flatten().collect();
+        (!msgs.is_empty()).then(|| msgs.join("; "))
+    }
+
+    /// `source.fixAll` on save also means `eslint --fix` for JS/TS files of a project that has ESLint
+    /// (config + local binary), run before the language servers' actions and the formatter.
+    fn eslint_fix_for_save(&mut self, i: usize) -> Option<String> {
+        let d = self.docs.get(i)?;
+        let kinds = self.config.code_actions_for(d.lang);
+        if !kinds.iter().any(|k| k.starts_with("source.fixAll")) || d.buf.line_count() > crate::bigfile::BIG_LINES {
+            return None;
+        }
+        let path = d.path()?.to_path_buf();
+        let js = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            matches!(e, "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "vue" | "svelte")
+        });
+        let (root, bin) = crate::eslint::detect(&path).filter(|_| js)?;
+        let text = d.buf.to_string();
+        match crate::eslint::fix(&root, &bin, &path, &text, ACTION_WAIT * 4) {
+            Ok(Some(new)) if new != text => {
+                self.docs[i].replace_text(&new);
+                None
+            }
+            Ok(_) => None,
+            Err(e) => Some(format!("eslint --fix: {e}")),
         }
     }
 

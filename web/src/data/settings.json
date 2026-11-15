@@ -618,7 +618,7 @@
    "auto",
    "never"
   ],
-  "default": "never"
+  "default": "show"
  },
  {
   "key": "enable_lsp",

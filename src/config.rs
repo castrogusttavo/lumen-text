@@ -209,6 +209,14 @@ fn parse_formatter(v: &Value) -> BTreeMap<String, String> {
     }
 }
 
+/// Code actions run on save until the user sets `code_actions_on_save`: unused imports out, imports
+/// organized, then every auto-fixable lint problem (`source.fixAll`, and `eslint --fix` where the project has ESLint).
+/// A server that does not offer a kind is skipped.
+pub fn default_code_actions() -> BTreeMap<String, Vec<String>> {
+    let kinds = ["source.removeUnusedImports", "source.organizeImports", "source.fixAll"];
+    BTreeMap::from([("*".to_string(), kinds.iter().map(|k| k.to_string()).collect())])
+}
+
 /// `code_actions_on_save` from config.json: a list for every language or a map of language id to list.
 fn parse_code_actions(v: &Value) -> BTreeMap<String, Vec<String>> {
     let list = |a: &Value| -> Option<Vec<String>> {
@@ -220,9 +228,8 @@ fn parse_code_actions(v: &Value) -> BTreeMap<String, Vec<String>> {
         Some(kinds)
     };
     match v {
-        Value::Array(_) => {
-            list(v).filter(|l| !l.is_empty()).map(|l| BTreeMap::from([("*".to_string(), l)])).unwrap_or_default()
-        }
+        // An empty list is a choice: "no actions on save" (the key being absent means the defaults).
+        Value::Array(_) => list(v).map(|l| BTreeMap::from([("*".to_string(), l)])).unwrap_or_default(),
         Value::Object(o) => o.iter().filter_map(|(k, x)| Some((k.trim().to_string(), list(x)?))).collect(),
         _ => BTreeMap::new(),
     }
@@ -425,7 +432,7 @@ impl Default for Config {
             spell_check: false,
             problems_scope: "open_files".into(),
             formatter: BTreeMap::new(),
-            code_actions_on_save: BTreeMap::new(),
+            code_actions_on_save: default_code_actions(),
             inline_completion: false,
             bidi_paragraph: "auto".into(),
             mem_budget_mb: 0,
@@ -747,7 +754,11 @@ impl Config {
             spell_check: v["spell_check"].as_bool().unwrap_or(false),
             problems_scope: normalize_problems_scope(v["problems_scope"].as_str()),
             formatter: parse_formatter(&v["formatter"]),
-            code_actions_on_save: parse_code_actions(&v["code_actions_on_save"]),
+            code_actions_on_save: if v["code_actions_on_save"].is_null() {
+                default_code_actions()
+            } else {
+                parse_code_actions(&v["code_actions_on_save"])
+            },
             inline_completion: v["inline_completion"].as_bool().unwrap_or(false),
             bidi_paragraph: crate::bidi::normalize(v["bidi_paragraph"].as_str()),
             mem_budget_mb: crate::resmon::clamp_budget(v["mem_budget_mb"].as_f64()),
@@ -817,7 +828,8 @@ impl Config {
         match self.code_actions_on_save.get("*") {
             Some(all) if self.code_actions_on_save.len() == 1 => v["code_actions_on_save"] = json!(all),
             _ if !self.code_actions_on_save.is_empty() => v["code_actions_on_save"] = json!(self.code_actions_on_save),
-            _ => {}
+            // Emptied map (every language off) is written as an empty list, not as "absent = defaults".
+            _ => v["code_actions_on_save"] = json!([]),
         }
         v["bidi_paragraph"] = json!(self.bidi_paragraph);
         v["vim_mode"] = json!(self.vim_mode);
@@ -1300,7 +1312,12 @@ mod tests {
         let c = load("{}");
         assert_eq!(c.problems_scope, "open_files");
         assert_eq!(c.formatter_for(Some("python")), "auto");
-        assert!(c.code_actions_for(Some("python")).is_empty());
+        assert_eq!(
+            c.code_actions_for(Some("python")),
+            ["source.removeUnusedImports", "source.organizeImports", "source.fixAll"],
+            "unused imports, import order and lint fixes run on save until configured otherwise"
+        );
+        assert!(load(r#"{"code_actions_on_save": []}"#).code_actions_for(Some("python")).is_empty(), "[] switches them off");
         let c = load(
             r#"{"problems_scope": "project",
                 "formatter": {"python": "lsp:ruff", "typescript": "biome", "go": "gofmt?", "*": "prettier", "rust": " lsp: "},
