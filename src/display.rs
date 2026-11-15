@@ -252,10 +252,10 @@ mod tests {
     }
 
     #[test]
-    fn the_default_config_hides_scrollbars() {
+    fn the_default_config_shows_scrollbars() {
         apply(&crate::config::Config::default());
-        assert_eq!(scrollbar(), Scrollbar::Never);
-        assert!(crate::ui::VBar::new(crate::ui::Rect::new(0, 0, 14, 200), 1000.0, 100.0, 0.0).is_none());
+        assert_eq!(scrollbar(), Scrollbar::Show);
+        assert!(crate::ui::VBar::new(crate::ui::Rect::new(0, 0, 14, 200), 1000.0, 100.0, 0.0).is_some());
     }
 
     #[test]
