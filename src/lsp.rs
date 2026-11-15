@@ -271,6 +271,11 @@ impl Lsp {
             cmd.env("GOMEMLIMIT", format!("{mem_limit_mib}MiB")).env("GOGC", "50");
         }
         cmd.envs(extra.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        // A server started by an editor launched from the desktop session (no shell profile, so no
+        // nvm/fnm) must still find `node`, `sh` helpers and its siblings: Biome's npm shim `exec node`s.
+        if !extra.env.iter().any(|(k, _)| k == "PATH") {
+            cmd.env("PATH", crate::lspreg::child_path(bin));
+        }
         let mut child = cmd.spawn()?;
         crate::startup::mark("lsp spawned");
         let mut stdin = child.stdin.take().unwrap();
@@ -671,12 +676,25 @@ fn tsgo_platform() -> String {
 /// The tsgo a project installed itself (`node_modules/@typescript/native-preview-*`).
 fn project_tsgo(root: &Path) -> Option<PathBuf> {
     root.ancestors().find_map(|d| {
-        std::fs::read_dir(d.join("node_modules/@typescript"))
-            .ok()?
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with("native-preview-"))
-            .map(|e| e.path().join(format!("lib/tsgo{}", std::env::consts::EXE_SUFFIX)))
-            .find(|p| p.exists())
+        let nm = d.join("node_modules");
+        let exe = |dir: PathBuf, bin: &str| {
+            Some(dir.join(format!("lib/{bin}{}", std::env::consts::EXE_SUFFIX))).filter(|p| p.exists())
+        };
+        let preview = std::fs::read_dir(nm.join("@typescript")).ok().and_then(|rd| {
+            rd.flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("native-preview-"))
+                .find_map(|e| exe(e.path(), "tsgo"))
+        });
+        // TypeScript 7 ships the native compiler as `typescript` + `@typescript/typescript-<platform>`
+        // (binary `tsc`, which also speaks `--lsp --stdio`); pnpm keeps the platform package beside the
+        // real `typescript` directory rather than under the project's `node_modules/@typescript`.
+        preview.or_else(|| {
+            let plat = format!("@typescript/typescript-{}", tsgo_platform());
+            exe(nm.join(&plat), "tsc").or_else(|| {
+                let real = std::fs::canonicalize(nm.join("typescript")).ok()?;
+                exe(real.parent()?.join(&plat), "tsc")
+            })
+        })
     })
 }
 

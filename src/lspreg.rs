@@ -585,7 +585,34 @@ fn user_tool_dirs() -> Vec<PathBuf> {
         v.sort();
         dirs.extend(v.into_iter().rev());
     }
+    // Node servers (and the `node` their npm shims `exec`) live under a version manager, whose
+    // shell hook never runs for an editor started from the desktop session: newest version first.
+    dirs.extend(
+        [".local/share/pnpm", ".local/share/pnpm/bin", ".volta/bin", ".local/share/mise/shims", ".asdf/shims"]
+            .iter()
+            .map(|r| h.join(r)),
+    );
+    for base in [".nvm/versions/node", ".local/share/fnm/node-versions", ".fnm/node-versions", ".local/share/nvm"] {
+        let sub = if base.contains("fnm") { "installation/bin" } else { "bin" };
+        let mut v: Vec<PathBuf> = std::fs::read_dir(h.join(base))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path().join(sub))
+            .filter(|p| p.is_dir())
+            .collect();
+        v.sort_by_key(|p| node_version_key(p));
+        dirs.extend(v.into_iter().rev());
+    }
     dirs
+}
+
+/// `…/v22.11.0/bin` → `[22, 11, 0]`, so versions sort numerically (v9 before v22).
+fn node_version_key(bin: &Path) -> Vec<u64> {
+    let dir = bin.ancestors().find(|a| a.file_name().is_some_and(|n| n.to_string_lossy().starts_with('v')));
+    dir.and_then(|a| a.file_name())
+        .map(|n| n.to_string_lossy().trim_start_matches('v').split('.').map(|p| p.parse().unwrap_or(0)).collect())
+        .unwrap_or_default()
 }
 
 /// `PATH` for a server process: the folder of its executable (and of the symlink target, so a
@@ -635,6 +662,15 @@ pub fn installed_anywhere(command: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn node_versions_sort_numerically() {
+        let mut v =
+            vec![PathBuf::from("/n/v9.1.0/bin"), PathBuf::from("/n/v22.11.0/bin"), PathBuf::from("/n/v22.2.0/bin")];
+        v.sort_by_key(|p| node_version_key(p));
+        assert_eq!(v.last().unwrap(), &PathBuf::from("/n/v22.11.0/bin"));
+        assert_eq!(v[0], PathBuf::from("/n/v9.1.0/bin"));
+    }
 
     #[test]
     fn builtin_table_parses_and_has_the_popular_servers() {
