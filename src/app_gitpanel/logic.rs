@@ -142,7 +142,12 @@ pub fn parse_name_status(out: &str) -> Vec<CommitFile> {
 /// Run git in `dir`. Err = the most useful line of its output (stderr first, then stdout: "nothing
 /// to commit" goes to stdout).
 pub fn git_run(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().map_err(|e| e.to_string())?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("PATH", crate::lspreg::git_hook_path(dir))
+        .output().map_err(|e| e.to_string())?;
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }

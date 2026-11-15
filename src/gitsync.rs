@@ -530,7 +530,7 @@ fn finish(tx: &Sender<Msg>, wake: &(dyn Fn() + Send + Sync), r: Result<String, F
 fn step_command(program: &str, top: &Path, args: &[String], env: &[(String, String)]) -> Command {
     let mut cmd = Command::new(program);
     if program == "git" {
-        cmd.arg("-C").arg(top);
+        cmd.arg("-C").arg(top).env("PATH", crate::lspreg::git_hook_path(top));
     } else {
         cmd.current_dir(top);
     }

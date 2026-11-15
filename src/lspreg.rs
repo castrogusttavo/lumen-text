@@ -641,6 +641,18 @@ pub fn child_path(exe: &Path) -> std::ffi::OsString {
     std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
 }
 
+/// `PATH` for git (hooks run inside it): the project's `node_modules/.bin` (husky, lint-staged),
+/// then the version-manager and per-user tool folders a desktop launch lacks, then the editor's `PATH`.
+pub fn git_hook_path(dir: &Path) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = dir.ancestors().map(|a| a.join("node_modules/.bin")).filter(|d| d.is_dir()).collect();
+    for d in std::env::split_paths(&child_path(Path::new("git"))) {
+        if !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
 /// Absolute path of the server's executable, or `None` when it is not installed.
 pub fn resolve_command(command: &str, root: &Path) -> Option<PathBuf> {
     let is_path =
