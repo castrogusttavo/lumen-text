@@ -1317,7 +1317,10 @@ mod tests {
             ["source.removeUnusedImports", "source.organizeImports", "source.fixAll"],
             "unused imports, import order and lint fixes run on save until configured otherwise"
         );
-        assert!(load(r#"{"code_actions_on_save": []}"#).code_actions_for(Some("python")).is_empty(), "[] switches them off");
+        assert!(
+            load(r#"{"code_actions_on_save": []}"#).code_actions_for(Some("python")).is_empty(),
+            "[] switches them off"
+        );
         let c = load(
             r#"{"problems_scope": "project",
                 "formatter": {"python": "lsp:ruff", "typescript": "biome", "go": "gofmt?", "*": "prettier", "rust": " lsp: "},

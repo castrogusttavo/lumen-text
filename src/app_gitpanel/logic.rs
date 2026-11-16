@@ -147,7 +147,8 @@ pub fn git_run(dir: &Path, args: &[&str]) -> Result<String, String> {
         .arg(dir)
         .args(args)
         .env("PATH", crate::lspreg::git_hook_path(dir))
-        .output().map_err(|e| e.to_string())?;
+        .output()
+        .map_err(|e| e.to_string())?;
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }

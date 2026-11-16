@@ -97,7 +97,13 @@ pub fn parse_fix(json: &str) -> Option<String> {
 
 /// `eslint --fix` on `text` as if it were `file`, without touching the disk. `Ok(None)` when there
 /// was nothing to fix. Blocking, at most `wait`: call it only where a short wait is acceptable (save).
-pub fn fix(root: &Path, bin: &Path, file: &Path, text: &str, wait: std::time::Duration) -> Result<Option<String>, String> {
+pub fn fix(
+    root: &Path,
+    bin: &Path,
+    file: &Path,
+    text: &str,
+    wait: std::time::Duration,
+) -> Result<Option<String>, String> {
     let (root, bin, file, text) = (root.to_path_buf(), bin.to_path_buf(), file.to_path_buf(), text.to_string());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
