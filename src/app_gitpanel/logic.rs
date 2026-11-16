@@ -215,7 +215,8 @@ pub fn commit(top: &Path, msg: &str) -> Result<String, String> {
     if msg.trim().is_empty() {
         return Err("write a commit message".into());
     }
-    git_run(top, &["commit", "-m", msg.trim()]).map(|o| o.lines().next().unwrap_or("commit created").to_string())
+    git_run(top, &["commit", "-m", &crate::commitmsg::prepare(top, msg)])
+        .map(|o| o.lines().next().unwrap_or("commit created").to_string())
 }
 
 /// One page of the log, newest first.

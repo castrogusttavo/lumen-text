@@ -74,6 +74,7 @@ mod buffer;
 mod buildrun;
 mod cli;
 mod clipboard;
+mod commitmsg;
 mod config;
 mod coverage;
 mod dap;

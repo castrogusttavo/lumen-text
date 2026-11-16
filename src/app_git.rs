@@ -147,7 +147,7 @@ impl App {
         if msg.trim().is_empty() {
             return;
         }
-        match run_git(&self.git_root(), &["commit", "-m", msg.trim()]) {
+        match run_git(&self.git_root(), &["commit", "-m", &crate::commitmsg::prepare(&self.git_root(), msg)]) {
             Ok(out) => {
                 self.refresh_git_status();
                 for d in &mut self.docs {

@@ -95,7 +95,7 @@ pub fn commit_amend(top: &Path, msg: &str) -> Result<String, String> {
     if msg.trim().is_empty() {
         return Err("write a commit message".into());
     }
-    git_run(top, &["commit", "--amend", "-m", msg.trim()])
+    git_run(top, &["commit", "--amend", "-m", &crate::commitmsg::prepare(top, msg)])
         .map(|o| o.lines().next().unwrap_or("commit amended").to_string())
 }
 
