@@ -152,17 +152,25 @@ pub fn git_run(dir: &Path, args: &[&str]) -> Result<String, String> {
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
-    let pick = |b: &[u8]| {
-        let s = String::from_utf8_lossy(b).into_owned();
-        let lines: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-        // Hooks print a lot: the first line says what ran, the last one why it failed.
-        lines
-            .iter()
-            .find(|l| l.starts_with("error:") || l.starts_with("fatal:"))
-            .or(lines.last())
-            .map(|l| l.to_string())
-    };
+    let pick = |b: &[u8]| pick_error_line(&String::from_utf8_lossy(b));
     Err(pick(&out.stderr).or_else(|| pick(&out.stdout)).unwrap_or_else(|| "git failed".into()))
+}
+
+/// The most useful line of a failed git run's output. Hooks print a lot: the first line says what ran,
+/// the last one why git failed. A husky hook ends with its own "husky - <hook> script failed" line,
+/// which hides the tool's reason (a commitlint "✖ …" line, say), so that reason leads and husky's follows.
+pub fn pick_error_line(out: &str) -> Option<String> {
+    let lines: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if let Some(l) = lines.iter().find(|l| l.starts_with("error:") || l.starts_with("fatal:")) {
+        return Some(l.to_string());
+    }
+    let last = *lines.last()?;
+    if last.starts_with("husky - ")
+        && let Some(why) = lines.iter().find(|l| l.starts_with('✖') || l.starts_with('×') || l.starts_with("error"))
+    {
+        return Some(format!("{why} ({last})"));
+    }
+    Some(last.to_string())
 }
 
 pub(super) fn with_paths(head: &[&str], paths: &[String]) -> Vec<String> {
@@ -256,4 +264,21 @@ pub fn commit_pair(top: &Path, hash: &str, f: &CommitFile) -> (String, String) {
     let new = if f.code == 'D' { String::new() } else { show(top, &format!("{hash}:{}", f.path)) };
     // Root commit: no parent, `show` fails and gives "" which is the right "before".
     (old, new)
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::pick_error_line;
+
+    #[test]
+    fn a_husky_failure_names_the_tool_s_reason() {
+        let out = "input: long line\n✖   body's lines must not be longer than 100 characters [body-max-line-length]\n\n✖   found 1 problems\nhusky - commit-msg script failed (code 1)\n";
+        assert_eq!(
+            pick_error_line(out).unwrap(),
+            "✖   body's lines must not be longer than 100 characters [body-max-line-length] (husky - commit-msg script failed (code 1))"
+        );
+        assert_eq!(pick_error_line("nothing to commit\n").unwrap(), "nothing to commit");
+        assert_eq!(pick_error_line("a\nfatal: bad\nb\n").unwrap(), "fatal: bad");
+        assert_eq!(pick_error_line(""), None);
+    }
 }
