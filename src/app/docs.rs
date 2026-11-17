@@ -254,18 +254,24 @@ impl App {
             return self.ask_save_as(self.active, Vec::new(), None, String::new());
         }
         let warn = self.format_for_save(self.active);
-        self.whitespace_on_save(self.active);
-        let Some(d) = self.docs.get_mut(self.active) else { return };
+        self.write_saved(self.active, warn);
+    }
+
+    /// The write half of a save, after format-on-save ran (now, or on a worker: see
+    /// `App::save_active_bg`): whitespace rules, the atomic write, the follow-ups and the "Saved"
+    /// message. `warn` is what the formatting step has to report.
+    pub(crate) fn write_saved(&mut self, idx: usize, warn: Option<String>) {
+        self.whitespace_on_save(idx);
+        let Some(d) = self.docs.get_mut(idx) else { return };
         let name = d.name.clone();
         match d.buf.save() {
             Ok(()) => {
                 d.git_stale = true;
                 d.disk_mtime = d.stat_mtime();
                 d.conflict = false;
-                if let Err(msg) = self.remote_push(self.active) {
+                if let Err(msg) = self.remote_push(idx) {
                     return self.say_for(msg, 8);
                 }
-                let idx = self.active;
                 self.lsp_did_save(idx);
                 self.hist_snapshot(idx, crate::localhist::Source::Save);
                 self.refresh_git_status_bg();
@@ -276,7 +282,7 @@ impl App {
                 }
                 self.tests_on_save();
             }
-            Err(e) if crate::app_elevated::is_permission_denied(&e) => self.offer_elevated_save(self.active),
+            Err(e) if crate::app_elevated::is_permission_denied(&e) => self.offer_elevated_save(idx),
             Err(e) => self.say(format!("Error saving {name}: {e}")),
         }
     }

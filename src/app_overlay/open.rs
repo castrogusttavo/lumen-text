@@ -344,6 +344,7 @@ impl App {
         self.pump_ide();
         self.pump_inbox();
         self.pump_eslint();
+        self.pump_format_save();
         self.pump_debug();
         self.pump_watcher();
         self.pump_update();
