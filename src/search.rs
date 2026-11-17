@@ -69,17 +69,19 @@ pub fn snippet(line: &str, start: usize, end: usize) -> (String, (usize, usize))
     (text, (a, (a + len).min(n)))
 }
 
+fn builder(root: &Path) -> ignore::WalkBuilder {
+    let mut b = ignore::WalkBuilder::new(root);
+    b.hidden(true).git_ignore(true).git_global(true).require_git(false);
+    b
+}
+
+/// A directory no walk enters.
+fn skipped(e: &ignore::DirEntry) -> bool {
+    e.file_type().is_some_and(|t| t.is_dir()) && SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref())
+}
+
 fn walker(root: &Path) -> ignore::Walk {
-    ignore::WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .git_global(true)
-        .require_git(false)
-        .filter_entry(|e| {
-            !(e.file_type().is_some_and(|t| t.is_dir())
-                && SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref()))
-        })
-        .build()
+    builder(root).filter_entry(|e| !skipped(e)).build()
 }
 
 #[cfg(test)]
@@ -87,15 +89,136 @@ pub fn list_files(root: &Path, limit: usize) -> Vec<PathBuf> {
     list_files_in(std::slice::from_ref(&root.to_path_buf()), limit)
 }
 
-/// Files of every workspace root, in root order (`limit` counts all of them).
+/// At most `limit` files below `root`, sorted by path. The walk runs on several threads, so the
+/// order it finds them in is not stable: sorting is what makes the result deterministic.
+fn list_root(root: &Path, limit: usize) -> Vec<PathBuf> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let count = AtomicUsize::new(0);
+    builder(root).filter_entry(|e| !skipped(e)).build_parallel().run(|| {
+        let (tx, count) = (tx.clone(), &count);
+        Box::new(move |entry: Result<ignore::DirEntry, ignore::Error>| {
+            let Ok(entry) = entry else { return ignore::WalkState::Continue };
+            if entry.file_type().is_some_and(|t| t.is_file()) {
+                if count.fetch_add(1, Ordering::Relaxed) >= limit {
+                    return ignore::WalkState::Quit;
+                }
+                let _ = tx.send(entry.into_path());
+            }
+            ignore::WalkState::Continue
+        })
+    });
+    drop(tx);
+    let mut files: Vec<PathBuf> = rx.into_iter().collect();
+    files.sort_unstable();
+    files
+}
+
+/// Files of every workspace root, in root order and sorted inside each (`limit` counts all of them).
 pub fn list_files_in(roots: &[PathBuf], limit: usize) -> Vec<PathBuf> {
-    roots
-        .iter()
-        .flat_map(|r| walker(r))
+    let mut out = Vec::new();
+    for root in roots {
+        if out.len() >= limit {
+            break;
+        }
+        out.extend(list_root(root, limit - out.len()));
+    }
+    out
+}
+
+/// Files Quick Open lists at most.
+pub const INDEX_LIMIT: usize = 50_000;
+
+/// What Quick Open lists: the files of the workspace roots, each with the label it is shown by
+/// (computed once, here), sorted by path. Built and patched on a worker thread (see `app_goto`).
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct FileIndex {
+    pub roots: Vec<PathBuf>,
+    files: Vec<(PathBuf, String)>,
+}
+
+impl FileIndex {
+    /// Walk the roots (blocking: call it from a worker thread).
+    pub fn build(roots: &[PathBuf]) -> FileIndex {
+        let mut paths = list_files_in(roots, INDEX_LIMIT);
+        paths.sort_unstable();
+        paths.dedup();
+        let files = paths
+            .into_iter()
+            .map(|p| {
+                let label = crate::workspace::label(roots, &p);
+                (p, label)
+            })
+            .collect();
+        FileIndex { roots: roots.to_vec(), files }
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    pub fn path(&self, i: usize) -> &Path {
+        &self.files[i].0
+    }
+
+    pub fn label(&self, i: usize) -> &str {
+        &self.files[i].1
+    }
+
+    /// Where `path` is in the list.
+    pub fn position(&self, path: &Path) -> Option<usize> {
+        self.files.binary_search_by(|f| f.0.as_path().cmp(path)).ok()
+    }
+
+    /// Forget `path` and everything below it (paths sharing a prefix are neighbours in the order).
+    fn remove_under(&mut self, path: &Path) {
+        let lo = self.files.partition_point(|f| f.0.as_path() < path);
+        let n = self.files[lo..].iter().take_while(|f| f.0.starts_with(path)).count();
+        self.files.drain(lo..lo + n);
+    }
+
+    /// Bring the list up to date for paths that were created, removed or moved (files or whole
+    /// folders): what was listed at or below each one goes, what is there now and would be found
+    /// by a full walk comes back. Blocking (a few `readdir`s per path).
+    pub fn patch(&mut self, changed: &[PathBuf]) {
+        let mut found: Vec<PathBuf> = Vec::new();
+        for path in changed {
+            self.remove_under(path);
+            if path.symlink_metadata().is_ok() {
+                found.extend(files_at(&self.roots, path));
+            }
+        }
+        if found.is_empty() {
+            return;
+        }
+        let roots = &self.roots;
+        self.files.extend(found.into_iter().map(|p| {
+            let label = crate::workspace::label(roots, &p);
+            (p, label)
+        }));
+        self.files.sort_by(|a, b| a.0.cmp(&b.0));
+        self.files.dedup_by(|a, b| a.0 == b.0);
+        self.files.truncate(INDEX_LIMIT);
+    }
+}
+
+/// The files at or below `target` that a full walk would list: a walk from the root that only
+/// descends towards `target`, so every ignore rule on the way applies exactly as in the full walk.
+fn files_at(roots: &[PathBuf], target: &Path) -> Vec<PathBuf> {
+    let Some(root) = roots.iter().filter(|r| target.starts_with(r)).max_by_key(|r| r.as_os_str().len()) else {
+        return Vec::new();
+    };
+    let towards = target.to_path_buf();
+    builder(root)
+        .filter_entry(move |e| !skipped(e) && (towards.starts_with(e.path()) || e.path().starts_with(&towards)))
+        .build()
         .flatten()
-        .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+        .filter(|e| e.file_type().is_some_and(|t| t.is_file()) && e.path().starts_with(target))
         .map(|e| e.into_path())
-        .take(limit)
         .collect()
 }
 
@@ -218,6 +341,59 @@ mod tests {
             files.iter().map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/")).collect();
         assert!(names.contains(&"src/a.ts".to_string()), "{names:?}");
         assert!(!names.iter().any(|n| n.contains("node_modules") || n.starts_with("ignored")), "{names:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn file_index_is_sorted_labelled_and_patched_like_a_fresh_walk() {
+        let root = project();
+        let roots = vec![root.clone()];
+        let mut idx = FileIndex::build(&roots);
+        let labels = |i: &FileIndex| (0..i.len()).map(|k| i.label(k).replace('\\', "/")).collect::<Vec<_>>();
+        assert_eq!(labels(&idx), vec!["bin.dat", "src/a.ts"]);
+        assert_eq!(idx.position(&root.join("src/a.ts")), Some(1));
+        assert_eq!(idx.path(1), root.join("src/a.ts"));
+        assert_eq!(idx.position(&root.join("src/nope.ts")), None);
+
+        // Created: a file, a folder with files, and files no walk lists.
+        std::fs::create_dir_all(root.join("sub/deep")).unwrap();
+        std::fs::write(root.join("src/new.ts"), "x").unwrap();
+        std::fs::write(root.join("sub/one.ts"), "x").unwrap();
+        std::fs::write(root.join("sub/deep/two.ts"), "x").unwrap();
+        std::fs::write(root.join("ignored/more.ts"), "x").unwrap();
+        std::fs::write(root.join("node_modules/x/more.ts"), "x").unwrap();
+        std::fs::write(root.join("src/.hidden"), "x").unwrap();
+        idx.patch(&[
+            root.join("src/new.ts"),
+            root.join("sub"),
+            root.join("ignored/more.ts"),
+            root.join("node_modules/x/more.ts"),
+            root.join("src/.hidden"),
+            root.join("src/new.ts"),
+        ]);
+        assert_eq!(labels(&idx), vec!["bin.dat", "src/a.ts", "src/new.ts", "sub/deep/two.ts", "sub/one.ts"]);
+        assert_eq!(idx, FileIndex::build(&roots), "a patched index is what a fresh walk finds");
+
+        // Removed: a file and a whole folder; a path that was never listed changes nothing.
+        std::fs::remove_file(root.join("src/a.ts")).unwrap();
+        std::fs::remove_dir_all(root.join("sub")).unwrap();
+        idx.patch(&[root.join("src/a.ts"), root.join("sub"), root.join("never/was.ts")]);
+        assert_eq!(labels(&idx), vec!["bin.dat", "src/new.ts"]);
+        assert_eq!(idx, FileIndex::build(&roots));
+        assert!(!idx.is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn file_list_is_sorted_and_stops_at_the_limit() {
+        let root = project();
+        for i in 0..40 {
+            std::fs::write(root.join(format!("src/f{i:02}.ts")), "x").unwrap();
+        }
+        let all = list_files(&root, usize::MAX);
+        assert_eq!(all.len(), 42);
+        assert!(all.windows(2).all(|w| w[0] < w[1]), "{all:?}");
+        assert_eq!(list_files(&root, 7).len(), 7);
         std::fs::remove_dir_all(&root).ok();
     }
 

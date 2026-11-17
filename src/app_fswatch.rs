@@ -275,7 +275,7 @@ impl App {
         self.fswatch.tree_due = None;
         self.last_tree_refresh = Instant::now();
         self.tree.rebuild();
-        self.file_index = None;
+        self.file_index_refresh();
         self.refresh_git_status_bg();
         self.import_idx_dirty();
         self.watch_dirs();

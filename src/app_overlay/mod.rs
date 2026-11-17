@@ -113,6 +113,8 @@ pub struct Picker {
     pub real: usize,
     /// Go to picker (quick open kind): mode, preview and search state, see `app_goto`.
     pub goto: Option<Box<crate::app_goto::GotoState>>,
+    /// Go to picker: where the file rows come from (`items` then holds only the rows shown).
+    pub files: Option<Box<crate::app_goto::FileSource>>,
 }
 
 pub enum PromptKind {
@@ -283,6 +285,7 @@ impl Picker {
             typed: None,
             real: 0,
             goto: None,
+            files: None,
         };
         p.real = p.items.len();
         p.refilter();
@@ -318,7 +321,14 @@ impl Picker {
             | PickKind::Problems => true,
             _ => false,
         };
-        if gmode == Some(crate::gotopick::Mode::WorkspaceSymbols) {
+        if gmode == Some(crate::gotopick::Mode::Files)
+            && let Some(src) = &self.files
+        {
+            // The file index is ranked where it is; rows exist only for what is shown.
+            let (items, filtered) = src.rows(&q);
+            (self.items, self.filtered) = (items, filtered);
+            self.real = self.items.len();
+        } else if gmode == Some(crate::gotopick::Mode::WorkspaceSymbols) {
             let prepared = fuzzy::Query::new(&q);
             self.filtered = self
                 .items
@@ -341,7 +351,7 @@ impl Picker {
         } else {
             // Several words narrow the list: every term must match somewhere in the label.
             let items = &self.items;
-            self.filtered = fuzzy::rank(&q, items.len(), |i| items[i].label.as_str(), 300);
+            self.filtered = fuzzy::rank(&q, items.len(), |i| Some(items[i].label.as_str()), 300);
         }
         if self.typed.is_some() && !q.is_empty() {
             // The typed item: first, unless an item starts with what was typed (then last).
