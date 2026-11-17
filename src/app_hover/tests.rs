@@ -269,3 +269,84 @@ fn inline_code_and_styled_runs_keep_their_text() {
     t.sel = Some(((0, 4), (0, 10)));
     assert_eq!(sel_text(&mut t, &mut tx).as_deref(), Some("add or"));
 }
+
+/// The fake server built from `examples/fake_lsp.rs` (cargo builds examples for `cargo test`).
+fn fake_exe() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let p = exe.parent()?.parent()?.join("examples").join(format!("fake_lsp{}", std::env::consts::EXE_SUFFIX));
+    p.exists().then_some(p)
+}
+
+fn pump(app: &mut App, ms: u64, mut cond: impl FnMut(&mut App) -> bool) -> bool {
+    let end = Instant::now() + Duration::from_millis(ms);
+    while Instant::now() < end {
+        app.lsp_tick(Instant::now(), &mut |_| {});
+        app.pump_lsp();
+        if cond(app) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(8));
+    }
+    false
+}
+
+fn in_flight(app: &App, hover: bool) -> usize {
+    app.lsps[0]
+        .pending
+        .values()
+        .filter(|p| if hover { matches!(p, Pending::Hover { .. }) } else { matches!(p, Pending::HoverExtra { .. }) })
+        .count()
+}
+
+#[test]
+fn hover_requests_nobody_waits_for_are_cancelled() {
+    use crate::app_unsaved::testkit::{lock, scratch_base, test_app};
+    let _g = lock();
+    let Some(exe) = fake_exe() else { return eprintln!("fake_lsp example not built, skipping") };
+    let dir = scratch_base().join(format!("hover-cancel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::paths::canonical(&dir).unwrap();
+    let mut app = test_app(&dir);
+    app.config.language_servers =
+        json!({"fake-a": {"command": exe, "languages": ["fk"], "role": "primary", "env": {"FAKE_NAME": "a"}}});
+    let f = dir.join("x.fk");
+    std::fs::write(&f, "let alpha = beta;\n").unwrap();
+    let i = app.open_path(&f, None).expect("open");
+    app.active = i;
+    assert!(pump(&mut app, 8000, |a| a.lsps.len() == 1 && a.lsps[0].ready && a.docs[i].lsp_open), "no server");
+    assert!(PROBE_DELAY <= Duration::from_millis(300));
+
+    // The probe asked about `alpha`; the pointer moves to `beta` before the answer is read.
+    app.hover_probe = Some((Instant::now(), 5, true));
+    app.request_hover(5);
+    assert_eq!(in_flight(&app, true), 1);
+    app.hover_pointer(Some(13));
+    assert_eq!(in_flight(&app, true), 0, "the hover for the old position is still awaited");
+    assert!(app.lsps[0].log_text().contains("$/cancelRequest"));
+    assert!(matches!(app.hover_probe, Some((_, 13, false))));
+    assert!(!pump(&mut app, 300, |a| a.hover.is_some()), "a cancelled hover showed a tip");
+
+    // A new hover replaces the one in flight instead of adding to it.
+    app.request_hover(5);
+    app.request_hover(13);
+    assert_eq!(in_flight(&app, true), 1);
+    assert!(pump(&mut app, 4000, |a| a.hover.is_some()), "no hover");
+
+    // Follow-ups of the tip (definition, type definition) die with it, wherever it was closed.
+    let serial = app.hover.as_ref().unwrap().serial;
+    let params = app.hover_pos_params(i, 13);
+    let uri = app.docs[i].uri().unwrap();
+    let what = Pending::HoverExtra { uri, at: 13, serial, what: HoverWhat::Def };
+    let id = app.lsps[0].request("textDocument/definition", params, what);
+    app.hover_extra_asked(0, id);
+    app.hover_tick(Instant::now(), &mut |_| {});
+    assert!(in_flight(&app, false) >= 1, "the tip is up: its follow-up stays");
+    app.hover = None;
+    app.hover_tick(Instant::now(), &mut |_| {});
+    assert_eq!(in_flight(&app, false), 0);
+    for l in &mut app.lsps {
+        l.shutdown();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
