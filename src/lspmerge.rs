@@ -7,6 +7,9 @@
 //!   answers are skipped; with a single non-empty answer it is returned untouched.
 //! * completion: lists are concatenated, primary first; an item that repeats a label+text already
 //!   offered is dropped; companion items remember their server (`__server`) so they resolve there.
+//! * hover and completion never wait for the slowest server: the primary's answer is shown as soon
+//!   as it is in (companions get `COMPANION_WAIT` to join the first paint), and a companion that
+//!   answers later with something is merged into what is on screen (see [`Agg::due`]).
 //! * code actions: all servers' actions are listed, duplicates by title dropped (see `app_lspx`).
 //! * document highlights: asked of every server that offers them; the first non-empty answer in
 //!   server order wins (the primary's whenever it has one). Linked editing asks the first server
@@ -16,11 +19,25 @@
 
 use crate::doc::Diag;
 use serde_json::{Value, json};
+use std::time::Duration;
+
+/// How long the primary's answer is held back for the companions before it is shown without them.
+pub const COMPANION_WAIT: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MultiKind {
     Hover,
     Completion,
+}
+
+impl MultiKind {
+    /// Each kind has its own aggregate: a hover asked while typing must not replace the completion's.
+    pub fn slot(self) -> usize {
+        match self {
+            MultiKind::Hover => 0,
+            MultiKind::Completion => 1,
+        }
+    }
 }
 
 /// Collects the answers of a request sent to several servers; `order` 0 is the primary.
@@ -32,21 +49,54 @@ pub struct Agg {
     pub at: usize,
     pub expected: usize,
     parts: Vec<(usize, String, Value)>,
+    /// The primary (order 0) answered.
+    primary: bool,
+    /// `merged` was taken at least once: something is (or was) on screen.
+    painted: bool,
+    /// An answer with content arrived since the last `merged`.
+    dirty: bool,
 }
 
 impl Agg {
     pub fn new(kind: MultiKind, serial: u64, uri: String, at: usize, expected: usize) -> Agg {
-        Agg { kind, serial, uri, at, expected, parts: Vec::new() }
+        Agg { kind, serial, uri, at, expected, parts: Vec::new(), primary: false, painted: false, dirty: false }
     }
 
     /// Record one answer (a failed request counts too: pass `Value::Null`). True when all are in.
     pub fn push(&mut self, order: usize, name: &str, v: Value) -> bool {
+        self.primary |= order == 0;
+        self.dirty |= match self.kind {
+            MultiKind::Hover => !contents_text(&v["contents"]).trim().is_empty(),
+            MultiKind::Completion => !items_of(&v).is_empty(),
+        };
         self.parts.push((order, name.to_string(), v));
         self.expected = self.expected.saturating_sub(1);
         self.expected == 0
     }
 
+    /// Whether `merged` was already taken (the next one updates what is on screen).
+    pub fn painted(&self) -> bool {
+        self.painted
+    }
+
+    /// The primary answered and nothing was shown yet: `due` turns true at `COMPANION_WAIT`.
+    pub fn holding(&self) -> bool {
+        self.primary && !self.painted
+    }
+
+    /// Is there something to show, `waited` after the requests were sent? The first paint needs the
+    /// primary's answer and then either everyone's or `COMPANION_WAIT` gone by (an empty answer is
+    /// shown too: the caller has its own fallbacks). After it, only an answer with content counts.
+    pub fn due(&self, waited: Duration) -> bool {
+        if self.painted {
+            return self.dirty;
+        }
+        self.expected == 0 || (self.primary && waited >= COMPANION_WAIT)
+    }
+
     pub fn merged(&mut self) -> Value {
+        self.painted = true;
+        self.dirty = false;
         self.parts.sort_by_key(|p| p.0);
         match self.kind {
             MultiKind::Hover => merge_hover(&self.parts),
@@ -190,6 +240,43 @@ mod tests {
         // a lone answer is untouched
         let only = json!([{"label": "a"}]);
         assert_eq!(merge_completion(&[part(0, "x", only.clone()), part(1, "y", Value::Null)]), only);
+    }
+
+    #[test]
+    fn the_primary_is_shown_without_waiting_for_slow_companions() {
+        let ms = Duration::from_millis;
+        let items = |l: &str| json!([{"label": l}]);
+        let labels = |m: &Value| -> Vec<String> {
+            items_of(m).iter().map(|i| i["label"].as_str().unwrap().to_string()).collect()
+        };
+        // A companion alone never paints; the primary does once the companions had their 150 ms.
+        let mut agg = Agg::new(MultiKind::Completion, 1, "u".into(), 0, 3);
+        agg.push(2, "tailwind", items("p-4"));
+        assert!(!agg.due(ms(2000)) && !agg.holding());
+        agg.push(0, "ts", items("push"));
+        assert!(agg.holding());
+        assert!(!agg.due(ms(20)), "companions get a moment to join the first paint");
+        assert!(agg.due(COMPANION_WAIT));
+        assert_eq!(labels(&agg.merged()), vec!["push", "p-4"]);
+        assert!(agg.painted() && !agg.holding());
+        // Nothing new: nothing to repaint. A late answer with content is merged in, an empty one is not.
+        assert!(!agg.due(ms(400)));
+        assert!(agg.push(1, "eslint", items("rule")));
+        assert!(agg.due(ms(900)));
+        assert_eq!(labels(&agg.merged()), vec!["push", "rule", "p-4"]);
+        let mut agg = Agg::new(MultiKind::Hover, 2, "u".into(), 0, 2);
+        agg.push(0, "ts", json!({"contents": "const a: number"}));
+        assert!(agg.due(ms(200)));
+        agg.merged();
+        agg.push(1, "tailwind", Value::Null);
+        assert!(!agg.due(ms(300)), "an empty late answer changes nothing");
+        // Everyone in before the 150 ms: shown at once, even when all are empty.
+        let mut agg = Agg::new(MultiKind::Hover, 3, "u".into(), 0, 2);
+        agg.push(1, "tailwind", Value::Null);
+        assert!(agg.push(0, "ts", Value::Null));
+        assert!(agg.due(ms(3)));
+        assert!(agg.merged().is_null());
+        assert_ne!(MultiKind::Hover.slot(), MultiKind::Completion.slot());
     }
 
     #[test]
