@@ -115,9 +115,11 @@ impl Guard {
 }
 
 /// Whether the periodic check runs at all (and asks for its wake-up): only with the guard
-/// enabled, a tsgo running (nothing else is guarded) and the window in the foreground.
-pub fn runs(auto_lean: bool, focused: bool, has_tsgo: bool) -> bool {
-    auto_lean && focused && has_tsgo
+/// enabled and a tsgo running (nothing else is guarded). It also runs with the window in the
+/// background: that is exactly when a tsgo grows unnoticed (the user is in the browser), and the
+/// check is one read of a number the sampler already publishes.
+pub fn runs(auto_lean: bool, has_tsgo: bool) -> bool {
+    auto_lean && has_tsgo
 }
 
 impl Default for Guard {
@@ -208,11 +210,10 @@ mod tests {
     }
 
     #[test]
-    fn the_check_runs_only_with_a_tsgo_in_a_focused_window() {
-        assert!(runs(true, true, true));
-        assert!(!runs(true, true, false), "no server: no timer");
-        assert!(!runs(true, false, true), "window in the background");
-        assert!(!runs(false, true, true), "guard switched off");
+    fn the_check_runs_with_a_tsgo_whether_or_not_the_window_is_focused() {
+        assert!(runs(true, true));
+        assert!(!runs(true, false), "no server: no timer");
+        assert!(!runs(false, true), "guard switched off");
     }
 
     #[test]
