@@ -13,7 +13,12 @@ use std::{
 /// plenty of RAM (see `budget_mb`).
 pub const BUDGET_MB: u64 = 1000;
 /// Machines with at least this much RAM never start lean on their own: a big project fits comfortably.
-const ROOMY_MB: u64 = 12 * 1024;
+/// (Used to be 12 GB; a 15 GB machine let a Next.js app grow tsgo to 12 GB, so only really big ones qualify.)
+const ROOMY_MB: u64 = 32 * 1024;
+/// No full-project tsgo may be allowed more than this, however much RAM the machine has.
+pub const HARD_BUDGET_MB: u64 = 3 * 1024;
+/// A lean tsgo is meant to stay near 220 MB; past this it is restarted (something is wrong).
+pub const LEAN_HARD_MB: u64 = 2 * 1024;
 /// Projects with more TS/JS source files than this start lean.
 pub const HEAVY_FILES: usize = 400;
 /// Projects declaring at least this many dependencies start lean (their type packages are huge).
@@ -31,9 +36,10 @@ pub fn total_ram_mb() -> u64 {
         .map_or(u64::MAX, |kb| kb / 1024)
 }
 
-/// Memory a full-project server may use: 1 GB on small machines, 20 % of the RAM on bigger ones.
+/// Memory a full-project server may use: 1 GB on small machines, 20 % of the RAM on bigger ones,
+/// never more than `HARD_BUDGET_MB`.
 pub fn budget_mb(total_mb: u64) -> u64 {
-    BUDGET_MB.max(total_mb / 5)
+    BUDGET_MB.max(total_mb / 5).min(HARD_BUDGET_MB)
 }
 
 pub struct Guard {
@@ -160,17 +166,19 @@ mod tests {
     }
 
     #[test]
-    fn roomy_machines_never_start_lean_and_get_a_bigger_budget() {
+    fn only_very_roomy_machines_skip_lean_and_budgets_are_capped() {
         let d = std::env::temp_dir().join(format!("lumen-guard-roomy-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         for i in 0..=HEAVY_FILES {
             std::fs::write(d.join(format!("f{i}.ts")), "").unwrap();
         }
         assert!(heavy_reason_on(&d, 7_600).is_some());
-        assert_eq!(heavy_reason_on(&d, 16_000), None);
+        assert!(heavy_reason_on(&d, 16_000).is_some());
+        assert_eq!(heavy_reason_on(&d, 64_000), None);
         assert_eq!(budget_mb(4_000), BUDGET_MB);
         assert_eq!(budget_mb(7_600), 1_520);
-        assert_eq!(budget_mb(16_000), 3_200);
+        assert_eq!(budget_mb(16_000), 3_072);
+        assert_eq!(budget_mb(64_000), HARD_BUDGET_MB);
         std::fs::remove_dir_all(&d).ok();
     }
 }
