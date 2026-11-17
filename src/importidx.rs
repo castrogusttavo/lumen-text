@@ -7,12 +7,20 @@
 //! ("exok" -> `expectOk`) and the "Add import" quick fix without the server.
 //!
 //! It is syntactic: exports are found by scanning top-level `export` statements, and re-exports are
-//! followed only through `export * from` / `/// <reference path>` inside a package. The `import`
-//! statement is written by the editor (see [`import_edit`]).
+//! followed only through `export * from` / `/// <reference path>` inside a package, and
+//! `export { default } from "./x"` to the name `x` gives its default export. The `import` statement
+//! is written by the editor (see [`import_edit`]).
+//!
+//! The index keeps what it was made from, piece by piece (one per project file, one per package,
+//! see [`Parts`]): after a save only the files that changed are read again ([`build_from`]). The
+//! package pieces are also kept on disk between sessions (see [`cache_file`]), so opening a project
+//! reads its own sources and the packages whose version changed.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
 };
 
 const MAX_PROJECT_FILES: usize = 30_000;
@@ -69,7 +77,11 @@ pub struct Index {
     usage: Vec<u32>,
     /// `compilerOptions.paths` of the root tsconfig as (alias prefix, absolute directory).
     aliases: Vec<(String, PathBuf)>,
+    /// Files and packages read to make this index (an update reads only what changed).
     pub files_scanned: usize,
+    pub packages_scanned: usize,
+    /// What the index was assembled from, kept so the next build can reuse what did not change.
+    parts: Parts,
 }
 
 impl Index {
@@ -118,13 +130,14 @@ impl Index {
     pub fn search(&self, typed: &str, limit: usize) -> Vec<Hit> {
         let Some(&first) = typed.as_bytes().first() else { return Vec::new() };
         let lower: Vec<u8> = typed.bytes().map(|b| b.to_ascii_lowercase()).collect();
+        let query = crate::fuzzy::Query::new(typed);
         let mut scored: Vec<(i32, &Entry)> = Vec::new();
         for e in self.bucket(first) {
             let name = self.name(e);
             if !subsequence(&lower, name.as_bytes()) {
                 continue;
             }
-            let Some((mut s, _)) = crate::fuzzy::fuzzy(typed, name) else { continue };
+            let Some(mut s) = query.score(name) else { continue };
             if name.len() >= lower.len() && name.as_bytes()[..lower.len()].eq_ignore_ascii_case(&lower) {
                 s += 40;
             }
@@ -190,6 +203,9 @@ struct Scan {
     refs: Vec<String>,
     /// `export = X;`: the members of `namespace X` are the module's exports (React's typings).
     export_eq: Option<String>,
+    /// `export { default } from "x"` specifiers: the default export is the one of `x`, and so is
+    /// its name.
+    default_from: Vec<String>,
 }
 
 fn is_ident(c: char) -> bool {
@@ -210,8 +226,14 @@ fn quoted(s: &str) -> Option<&str> {
     Some(&rest[..rest.find(q)?])
 }
 
-/// Names of an export list body (`a, b as c, type D`), without the braces.
-fn brace_names(body: &str, all_types: bool, ambient: &Option<String>, out: &mut Scan) {
+/// The module of `} from "x"`: what follows the closing brace of an export list.
+fn from_spec(after: &str) -> Option<&str> {
+    quoted(after.trim_start().strip_prefix("from")?)
+}
+
+/// Names of an export list body (`a, b as c, type D`), without the braces; `from` is the module
+/// the list re-exports from, if any.
+fn brace_names(body: &str, all_types: bool, ambient: &Option<String>, from: Option<&str>, out: &mut Scan) {
     for item in body.split(',') {
         let item = item.trim();
         let (item, is_type) = match item.strip_prefix("type ") {
@@ -227,6 +249,12 @@ fn brace_names(body: &str, all_types: bool, ambient: &Option<String>, out: &mut 
             // `export { Foo as default }`: a default export with a usable name.
             if let Some(id) = ident(local).filter(|id| *id != "default" && id.len() == local.len()) {
                 out.exports.push((id.to_string(), ty | DEFAULT, ambient.clone()));
+            } else if local == "default"
+                && ambient.is_none()
+                && let Some(spec) = from
+            {
+                // `export { default } from "./x"`: the name is in `x`.
+                out.default_from.push(spec.to_string());
             }
         } else if let Some(id) = ident(exported).filter(|id| id.len() == exported.len()) {
             out.exports.push((id.to_string(), ty, ambient.clone()));
@@ -283,7 +311,7 @@ fn scan_lines<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Scan {
                 Some(end) => {
                     body.push_str(&raw[..end]);
                     let (body, all_types) = (std::mem::take(body), *all_types);
-                    brace_names(&body, all_types, &ambient, &mut out);
+                    brace_names(&body, all_types, &ambient, from_spec(&raw[end + 1..]), &mut out);
                     open = None;
                 }
                 None => {
@@ -361,7 +389,7 @@ fn scan_lines<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Scan {
         if let Some(list) = list {
             let body = &list[1..];
             match body.find('}') {
-                Some(end) => brace_names(&body[..end], all_types, &ambient, &mut out),
+                Some(end) => brace_names(&body[..end], all_types, &ambient, from_spec(&body[end + 1..]), &mut out),
                 None => open = Some((format!("{} ", body.split("//").next().unwrap_or("")), all_types)),
             }
             continue;
@@ -395,7 +423,6 @@ struct Builder {
     sources: Vec<Source>,
     source_ids: std::collections::HashMap<Source, u32>,
     seen: HashSet<(u32, String, u8)>,
-    files: usize,
     /// Module specifier -> import statements of the project that name it.
     imported: std::collections::HashMap<String, u32>,
 }
@@ -438,13 +465,122 @@ impl Builder {
                 Source::File(_) => 0,
             })
             .collect();
-        Index { names, entries: self.entries, sources: self.sources, usage, aliases, files_scanned: self.files }
+        Index {
+            names,
+            entries: self.entries,
+            sources: self.sources,
+            usage,
+            aliases,
+            files_scanned: 0,
+            packages_scanned: 0,
+            parts: Parts::default(),
+        }
     }
 }
 
-fn read_small(p: &Path) -> Option<String> {
-    let meta = std::fs::metadata(p).ok()?;
-    (meta.is_file() && meta.len() <= MAX_FILE_BYTES).then(|| std::fs::read_to_string(p).ok()).flatten()
+/// What tells a changed file from an unchanged one: (modification time in ns, length).
+type Stamp = (u64, u64);
+
+fn stamp_of(meta: &std::fs::Metadata) -> Option<Stamp> {
+    let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some((mtime.as_nanos() as u64, meta.len()))
+}
+
+/// The stamp of a path, `None` when nothing is there.
+fn stamp(p: &Path) -> Option<Stamp> {
+    stamp_of(&std::fs::metadata(p).ok()?)
+}
+
+/// Export names back to back, each with its flags and a group (the module, in a package).
+#[derive(Clone, Default, Debug, PartialEq)]
+struct Packed {
+    text: String,
+    /// (offset in `text`, length, flags, group).
+    items: Vec<(u32, u16, u8, u16)>,
+}
+
+impl Packed {
+    fn push(&mut self, name: &str, flags: u8, group: u16) {
+        if name.len() > 200 || self.text.len() > u32::MAX as usize - 256 {
+            return;
+        }
+        self.items.push((self.text.len() as u32, name.len() as u16, flags, group));
+        self.text.push_str(name);
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&str, u8, u16)> {
+        self.items
+            .iter()
+            .map(|&(off, len, flags, group)| (&self.text[off as usize..off as usize + len as usize], flags, group))
+    }
+}
+
+/// What one project file gives the index.
+#[derive(Default)]
+struct FilePart {
+    stamp: Stamp,
+    exports: Packed,
+    /// The module specifiers its import statements name, one per line (relative ones left out:
+    /// they only rank packages).
+    imports: String,
+    /// `export { default } from "./x"` specifiers (see `Scan::default_from`).
+    default_from: Vec<String>,
+}
+
+/// What one package of `package.json` gives the index, through all its entry points.
+#[derive(Clone, Default, Debug, PartialEq)]
+struct PkgPart {
+    dep: String,
+    /// `version` of its `package.json` ("" without one).
+    version: String,
+    /// Files and folders that change without the version changing, as they were when it was
+    /// scanned (`None`: not there): declaration files outside the package's folder (the generated
+    /// `.prisma/client` that `@prisma/client` re-exports), the package another one re-exports
+    /// that was not found, and every file of a package that is not a real install (a linked
+    /// workspace package, one without a version).
+    stamps: Vec<(PathBuf, Option<Stamp>)>,
+    /// Module specifiers (`next`, `next/link`): the groups of `exports`.
+    modules: Vec<String>,
+    exports: Packed,
+    /// Declaration files read.
+    files: usize,
+}
+
+impl PkgPart {
+    fn stamps_current(&self) -> bool {
+        self.stamps.iter().all(|(p, s)| stamp(p) == *s)
+    }
+}
+
+/// Everything an [`Index`] is assembled from.
+#[derive(Default)]
+struct Parts {
+    root: PathBuf,
+    /// Every source file of the project, by path.
+    files: ProjectFiles,
+    pkgs: Vec<Arc<PkgPart>>,
+    /// Stamps of what decides the package list and their versions (see [`deps_stamps`]).
+    deps: Vec<Option<Stamp>>,
+}
+
+/// `package.json`, the lockfiles and `node_modules`: when none of them moved, the packages are the
+/// ones already indexed.
+fn deps_stamps(root: &Path) -> Vec<Option<Stamp>> {
+    [
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lock",
+        "bun.lockb",
+        "node_modules",
+        "node_modules/.package-lock.json",
+        "node_modules/.modules.yaml",
+        "node_modules/.yarn-integrity",
+    ]
+    .iter()
+    .map(|f| stamp(&root.join(f)))
+    .collect()
 }
 
 fn is_source(p: &Path) -> bool {
@@ -457,40 +593,313 @@ fn is_source(p: &Path) -> bool {
 }
 
 /// Build the index of the project at `root` (blocking: call it from a worker thread).
+#[cfg(test)]
 pub fn build(root: &Path) -> Index {
-    let mut b = Builder::default();
-    scan_project(root, &mut b);
-    scan_packages(root, &mut b);
-    b.finish(read_aliases(root))
+    build_from(root, None, None)
 }
 
-fn scan_project(root: &Path, b: &mut Builder) {
+/// Build the index of the project at `root` (blocking: call it from a worker thread), reading as
+/// little as possible.
+///
+/// With `old`, an earlier index of the same project: only project files with another modification
+/// time or size are read, and packages whose generated files moved. A change of `package.json`, a
+/// lockfile or `node_modules` goes through every package again.
+///
+/// With `cache`, the file the packages are kept in between sessions: going through a package
+/// reads it only when its version (or one of its stamped files) is not the cached one.
+pub fn build_from(root: &Path, old: Option<&Index>, cache: Option<&Path>) -> Index {
+    let old = old.map(|i| &i.parts).filter(|p| p.root == root);
+    let deps = deps_stamps(root);
+    let mut files_scanned = 0;
+    let files = scan_project(root, old.map(|p| &p.files), &mut files_scanned);
+    let mut packages_scanned = 0;
+    let mut fresh = |dep: &str| {
+        let part = scan_package(root, dep);
+        packages_scanned += 1;
+        files_scanned += part.files;
+        Arc::new(part)
+    };
+    let pkgs: Vec<Arc<PkgPart>> = match old.filter(|p| p.deps == deps) {
+        Some(p) => {
+            p.pkgs.iter().map(|pkg| if pkg.stamps_current() { pkg.clone() } else { fresh(pkg.dep.as_str()) }).collect()
+        }
+        None => {
+            let mut cached = cache.map(load_cache).unwrap_or_default();
+            let pkgs: Vec<Arc<PkgPart>> = dependency_names(root)
+                .iter()
+                .map(|dep| {
+                    let manifest = root.join("node_modules").join(dep).join("package.json");
+                    match cached.remove(dep.as_str()) {
+                        Some(part)
+                            if part.version == package_version(&manifest).unwrap_or_default()
+                                && part.stamps_current() =>
+                        {
+                            Arc::new(part)
+                        }
+                        _ => fresh(dep.as_str()),
+                    }
+                })
+                .collect();
+            // Written again when a package was read, or one that was cached is no longer listed.
+            if let Some(path) = cache
+                && (packages_scanned > 0 || !cached.is_empty())
+            {
+                save_cache(path, &pkgs);
+            }
+            pkgs
+        }
+    };
+    let mut idx = assemble(Parts { root: root.to_path_buf(), files, pkgs, deps }, read_aliases(root));
+    (idx.files_scanned, idx.packages_scanned) = (files_scanned, packages_scanned);
+    idx
+}
+
+// ───────────── disk cache ─────────────
+
+/// Bumped when a scan finds other things in the same files (the cache of an older format is
+/// ignored and written again).
+const CACHE_FORMAT: u32 = 1;
+
+/// The packages of one project as they are kept on disk.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CacheFile {
+    format: u32,
+    /// The editor that wrote it: another version may scan differently.
+    editor: String,
+    pkgs: Vec<CachedPkg>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedPkg {
+    dep: String,
+    version: String,
+    stamps: Vec<(PathBuf, Option<Stamp>)>,
+    modules: Vec<String>,
+    /// The export names, one per line; `flags` and `groups` (index into `modules`) go in step.
+    names: String,
+    flags: Vec<u8>,
+    groups: Vec<u16>,
+    files: usize,
+}
+
+impl CachedPkg {
+    fn of(p: &PkgPart) -> CachedPkg {
+        let mut names = String::with_capacity(p.exports.text.len() + p.exports.items.len());
+        let (mut flags, mut groups) = (Vec::new(), Vec::new());
+        for (name, f, g) in p.exports.iter() {
+            if !flags.is_empty() {
+                names.push('\n');
+            }
+            names.push_str(name);
+            flags.push(f);
+            groups.push(g);
+        }
+        CachedPkg {
+            dep: p.dep.clone(),
+            version: p.version.clone(),
+            stamps: p.stamps.clone(),
+            modules: p.modules.clone(),
+            names,
+            flags,
+            groups,
+            files: p.files,
+        }
+    }
+
+    /// `None` when the entry does not hold together (a damaged file).
+    fn into_part(self) -> Option<PkgPart> {
+        if self.flags.len() != self.groups.len() || (self.flags.is_empty() && !self.names.is_empty()) {
+            return None;
+        }
+        let mut exports = Packed::default();
+        if !self.flags.is_empty() {
+            let mut names = self.names.split('\n');
+            for (&flags, &group) in self.flags.iter().zip(&self.groups) {
+                let name = names.next().filter(|n| !n.is_empty() && n.len() <= 200)?;
+                if group as usize >= self.modules.len() {
+                    return None;
+                }
+                exports.push(name, flags, group);
+            }
+            if names.next().is_some() {
+                return None;
+            }
+        }
+        Some(PkgPart {
+            dep: self.dep,
+            version: self.version,
+            stamps: self.stamps,
+            modules: self.modules,
+            exports,
+            files: self.files,
+        })
+    }
+}
+
+/// Where the packages of the project at `root` are kept between sessions (next to the lean
+/// mirrors, see `lsp::mirror_dir`).
+pub fn cache_file(root: &Path) -> PathBuf {
+    let h =
+        root.to_string_lossy().bytes().fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
+    let base = crate::paths::cache_home().unwrap_or_else(std::env::temp_dir);
+    base.join("lumen-text/imports").join(format!("{h:016x}.json"))
+}
+
+/// The cached packages by name. A file that is missing, damaged, of another format or written by
+/// another version of the editor gives nothing (and is written again after the scan).
+fn load_cache(path: &Path) -> HashMap<String, PkgPart> {
+    let Some(file) = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<CacheFile>(&b).ok()) else {
+        return HashMap::new();
+    };
+    if file.format != CACHE_FORMAT || file.editor != env!("CARGO_PKG_VERSION") {
+        return HashMap::new();
+    }
+    file.pkgs.into_iter().filter_map(CachedPkg::into_part).map(|p| (p.dep.clone(), p)).collect()
+}
+
+/// Best effort: a cache that cannot be written is a slower start, nothing else.
+fn save_cache(path: &Path, pkgs: &[Arc<PkgPart>]) {
+    let file = CacheFile {
+        format: CACHE_FORMAT,
+        editor: env!("CARGO_PKG_VERSION").to_string(),
+        pkgs: pkgs.iter().map(|p| CachedPkg::of(p.as_ref())).collect(),
+    };
+    let Ok(data) = serde_json::to_vec(&file) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = crate::replace::write_atomic(path, &data);
+}
+
+/// The searchable index of `parts`.
+fn assemble(parts: Parts, aliases: Vec<(String, PathBuf)>) -> Index {
+    let mut b = Builder::default();
+    for (path, file) in &parts.files {
+        for spec in file.imports.lines() {
+            match b.imported.get_mut(spec) {
+                Some(n) => *n += 1,
+                None => {
+                    b.imported.insert(spec.to_string(), 1);
+                }
+            }
+        }
+        // `export { default } from "./Button"`: this file's default export is called `Button` too.
+        let default = file.default_from.iter().find_map(|spec| project_default(&parts.files, path, spec, 0));
+        if file.exports.items.is_empty() && default.is_none() {
+            continue;
+        }
+        let src = b.source(Source::File(path.clone()));
+        for (name, flags, _) in file.exports.iter() {
+            b.add(name, flags, src);
+        }
+        if let Some((name, flags)) = default {
+            b.add(name, flags | DEFAULT, src);
+        }
+    }
+    for pkg in &parts.pkgs {
+        let ids: Vec<u32> = pkg.modules.iter().map(|m| b.source(Source::Module(m.clone()))).collect();
+        for (name, flags, module) in pkg.exports.iter() {
+            if let Some(&src) = ids.get(module as usize) {
+                b.add(name, flags, src);
+            }
+        }
+    }
+    let mut idx = b.finish(aliases);
+    idx.parts = parts;
+    idx
+}
+
+/// What `text`, a project source file, exports and imports.
+fn file_part(text: &str, stamp: Stamp) -> FilePart {
+    let mut part = FilePart { stamp, ..Default::default() };
+    for line in text.lines().filter(|l| l.ends_with(['"', '\'', ';'])) {
+        if let Some(spec) = line.rfind(" from ").and_then(|i| quoted(&line[i..]))
+            && !spec.starts_with('.')
+        {
+            part.imports.push_str(spec);
+            part.imports.push('\n');
+        }
+    }
+    let found = scan(text);
+    for (name, flags, ambient) in &found.exports {
+        if ambient.is_none() {
+            part.exports.push(name, *flags, 0);
+        }
+    }
+    part.default_from = found.default_from;
+    part
+}
+
+/// `dir` and a relative specifier, `.` and `..` resolved by name.
+fn join_relative(dir: &Path, spec: &str) -> PathBuf {
+    let mut out = dir.to_path_buf();
+    for part in spec.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            name => out.push(name),
+        }
+    }
+    out
+}
+
+type ProjectFiles = BTreeMap<PathBuf, Arc<FilePart>>;
+
+/// The project file a relative specifier written in `from` names (`./x` is `x.ts`, `x.tsx`,
+/// `x/index.ts`...; `./x.js` is `x.ts` in ESM TypeScript).
+fn project_file<'a>(files: &'a ProjectFiles, from: &Path, spec: &str) -> Option<(&'a Path, &'a FilePart)> {
+    const EXTS: [&str; 8] = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
+    if !spec.starts_with('.') {
+        return None;
+    }
+    let base = join_relative(from.parent()?, spec);
+    let whole = base.to_string_lossy().into_owned();
+    let stem = [".js", ".jsx", ".mjs", ".cjs"].iter().find_map(|e| whole.strip_suffix(e)).unwrap_or(whole.as_str());
+    std::iter::once(base.clone())
+        .chain(EXTS.iter().map(|e| PathBuf::from(format!("{stem}{e}"))))
+        .chain(EXTS.iter().map(|e| base.join(format!("index{e}"))))
+        .find_map(|p| files.get_key_value(&p))
+        .map(|(p, f)| (p.as_path(), f.as_ref()))
+}
+
+/// Name and flags of the default export of the project file `spec` names from `from`, following
+/// `export { default } from` on the way.
+fn project_default<'a>(files: &'a ProjectFiles, from: &Path, spec: &str, depth: usize) -> Option<(&'a str, u8)> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let (path, file) = project_file(files, from, spec)?;
+    if let Some((name, flags, _)) = file.exports.iter().find(|(_, flags, _)| flags & DEFAULT != 0) {
+        return Some((name, flags));
+    }
+    file.default_from.iter().find_map(|next| project_default(files, path, next, depth + 1))
+}
+
+/// Every source file of the project. A file with the stamp it has in `old` is taken from there;
+/// the others are read (`scanned` counts them).
+fn scan_project(root: &Path, old: Option<&ProjectFiles>, scanned: &mut usize) -> ProjectFiles {
+    let mut files = BTreeMap::new();
     for e in ignore::WalkBuilder::new(root).build().flatten() {
-        if b.files >= MAX_PROJECT_FILES {
+        if files.len() >= MAX_PROJECT_FILES {
             break;
         }
         let p = e.path();
         if !is_source(p) {
             continue;
         }
-        let Some(text) = read_small(p) else { continue };
-        b.files += 1;
-        for line in text.lines().filter(|l| l.ends_with(['"', '\'', ';'])) {
-            if let Some(spec) = line.rfind(" from ").and_then(|i| quoted(&line[i..])) {
-                *b.imported.entry(spec.to_string()).or_default() += 1;
-            }
-        }
-        let found = scan(&text);
-        if found.exports.iter().all(|(_, _, ambient)| ambient.is_some()) {
+        let Ok(meta) = std::fs::metadata(p) else { continue };
+        let Some(stamp) = stamp_of(&meta).filter(|_| meta.is_file() && meta.len() <= MAX_FILE_BYTES) else { continue };
+        if let Some(part) = old.and_then(|o| o.get(p)).filter(|part| part.stamp == stamp) {
+            files.insert(p.to_path_buf(), part.clone());
             continue;
         }
-        let src = b.source(Source::File(p.to_path_buf()));
-        for (name, flags, ambient) in found.exports {
-            if ambient.is_none() {
-                b.add(&name, flags, src);
-            }
-        }
+        let Ok(text) = std::fs::read_to_string(p) else { continue };
+        *scanned += 1;
+        files.insert(p.to_path_buf(), Arc::new(file_part(&text, stamp)));
     }
+    files
 }
 
 fn dependency_names(root: &Path) -> Vec<String> {
@@ -621,14 +1030,19 @@ fn resolve_dts(dir: &Path, spec: &str) -> Option<PathBuf> {
     tries.into_iter().find(|p| p.is_file())
 }
 
+/// `@scope/pkg/sub/path` -> (`@scope/pkg`, `sub/path`).
+fn split_bare(spec: &str) -> Option<(String, Option<&str>)> {
+    let mut parts = spec.splitn(if spec.starts_with('@') { 3 } else { 2 }, '/');
+    let pkg =
+        if spec.starts_with('@') { format!("{}/{}", parts.next()?, parts.next()?) } else { parts.next()?.to_string() };
+    Some((pkg, parts.next()))
+}
+
 /// The declaration file of a bare specifier re-exported by a file in `dir` (`export * from
 /// ".prisma/client/default"` in `@prisma/client`): node resolution from the file's real location.
 fn resolve_bare(dir: &Path, spec: &str) -> Option<PathBuf> {
     let real = std::fs::canonicalize(dir).ok()?;
-    let mut parts = spec.splitn(if spec.starts_with('@') { 3 } else { 2 }, '/');
-    let pkg =
-        if spec.starts_with('@') { format!("{}/{}", parts.next()?, parts.next()?) } else { parts.next()?.to_string() };
-    let sub = parts.next();
+    let (pkg, sub) = split_bare(spec)?;
     for anc in real.ancestors() {
         let nm = anc.join("node_modules");
         let pkg_dir = nm.join(&pkg);
@@ -652,24 +1066,103 @@ fn resolve_bare(dir: &Path, spec: &str) -> Option<PathBuf> {
     None
 }
 
-fn scan_packages(root: &Path, b: &mut Builder) {
-    for dep in dependency_names(root) {
-        let mut budget = MAX_PKG_FILES;
-        // The main entry first (it gets the budget), and a fresh `visited` per entry: a file both
-        // `next` and `next/types` reach is importable from either.
-        let mut entries = package_entries(root, &dep);
-        entries.sort_by_key(|(module, _)| module.len());
-        // Each file is parsed once per package, however many entry points reach it.
-        let mut parsed: Parsed = Parsed::new();
-        for (module, file) in entries {
-            let mut visited: HashSet<PathBuf> = HashSet::new();
-            scan_declaration(&file, Some(&module), 0, &mut budget, &mut visited, &mut parsed, b);
+/// A package being scanned.
+struct PkgScan {
+    part: PkgPart,
+    module_ids: HashMap<String, u16>,
+    seen: HashSet<(u16, String, u8)>,
+    /// The package's folder and the project's `node_modules`.
+    dir: PathBuf,
+    node_modules: PathBuf,
+    /// Not a real install: every file read is stamped (see `PkgPart::stamps`).
+    volatile: bool,
+    /// Declaration files it may still read.
+    budget: usize,
+    /// Each file is parsed once per package, however many entry points reach it.
+    parsed: HashMap<PathBuf, Rc<Scan>>,
+}
+
+impl PkgScan {
+    fn add(&mut self, module: &str, name: &str, flags: u8) {
+        let id = match self.module_ids.get(module) {
+            Some(&id) => id,
+            None => {
+                let Ok(id) = u16::try_from(self.part.modules.len()) else { return };
+                self.part.modules.push(module.to_string());
+                self.module_ids.insert(module.to_string(), id);
+                id
+            }
+        };
+        if self.seen.insert((id, name.to_string(), flags & DEFAULT)) {
+            self.part.exports.push(name, flags, id);
         }
+    }
+
+    fn note(&mut self, path: PathBuf) {
+        if !self.part.stamps.iter().any(|(p, _)| *p == path) {
+            let stamp = stamp(&path);
+            self.part.stamps.push((path, stamp));
+        }
+    }
+
+    /// The scan of a declaration file, `None` when it cannot be read or the budget is spent.
+    fn parse(&mut self, file: &Path) -> Option<Rc<Scan>> {
+        if let Some(found) = self.parsed.get(file) {
+            return Some(found.clone());
+        }
+        if self.budget == 0 {
+            return None;
+        }
+        let found = Rc::new(parse_declaration(file)?);
+        self.budget -= 1;
+        self.part.files += 1;
+        if self.volatile || !file.starts_with(&self.dir) {
+            self.note(file.to_path_buf());
+        }
+        self.parsed.insert(file.to_path_buf(), found.clone());
+        Some(found)
     }
 }
 
-/// Declaration files already scanned in the package being indexed.
-type Parsed = std::collections::HashMap<PathBuf, std::rc::Rc<Scan>>;
+/// The `version` of a `package.json`.
+fn package_version(manifest: &Path) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(manifest).ok()?).ok()?;
+    v["version"].as_str().map(str::to_string)
+}
+
+/// Everything the dependency `dep` of the project at `root` exports, through all its entry points.
+fn scan_package(root: &Path, dep: &str) -> PkgPart {
+    let node_modules = root.join("node_modules");
+    let dir = node_modules.join(dep);
+    let manifest = dir.join("package.json");
+    let version = package_version(&manifest);
+    // A real install sits in a `node_modules` folder (through the links of pnpm too) and has a
+    // version; a linked workspace package is rebuilt in place under the same version.
+    let installed =
+        std::fs::canonicalize(&dir).is_ok_and(|real| real.components().any(|c| c.as_os_str() == "node_modules"));
+    let mut s = PkgScan {
+        part: PkgPart { dep: dep.to_string(), version: version.clone().unwrap_or_default(), ..Default::default() },
+        module_ids: HashMap::new(),
+        seen: HashSet::new(),
+        dir,
+        node_modules,
+        volatile: version.is_none() || !installed,
+        budget: MAX_PKG_FILES,
+        parsed: HashMap::new(),
+    };
+    if s.volatile {
+        s.note(manifest);
+    }
+    // The main entry first (it gets the budget), and a fresh `visited` per entry: a file both
+    // `next` and `next/types` reach is importable from either.
+    let mut entries = package_entries(root, dep);
+    entries.sort_by_key(|(module, _)| module.len());
+    for (module, file) in entries {
+        let mut visited: HashSet<PathBuf> = HashSet::new();
+        scan_declaration(&file, Some(&module), 0, &mut visited, &mut s);
+    }
+    s.part
+}
 
 fn parse_declaration(file: &Path) -> Option<Scan> {
     let meta = std::fs::metadata(file).ok()?;
@@ -686,32 +1179,11 @@ fn parse_declaration(file: &Path) -> Option<Scan> {
 
 /// `module` is `None` for a file reached through `/// <reference path>`: it is part of the
 /// compilation but not of the module, so only its `declare module "x"` blocks count.
-fn scan_declaration(
-    file: &Path,
-    module: Option<&str>,
-    depth: usize,
-    budget: &mut usize,
-    visited: &mut HashSet<PathBuf>,
-    parsed: &mut Parsed,
-    b: &mut Builder,
-) {
+fn scan_declaration(file: &Path, module: Option<&str>, depth: usize, visited: &mut HashSet<PathBuf>, s: &mut PkgScan) {
     if depth > MAX_DEPTH || !visited.insert(file.to_path_buf()) {
         return;
     }
-    let found = match parsed.get(file) {
-        Some(f) => f.clone(),
-        None => {
-            if *budget == 0 {
-                return;
-            }
-            let Some(f) = parse_declaration(file) else { return };
-            *budget -= 1;
-            b.files += 1;
-            let f = std::rc::Rc::new(f);
-            parsed.insert(file.to_path_buf(), f.clone());
-            f
-        }
-    };
+    let Some(found) = s.parse(file) else { return };
     for (name, flags, ambient) in &found.exports {
         let target = match ambient.as_deref() {
             None => module,
@@ -722,24 +1194,60 @@ fn scan_declaration(
             Some(named) => Some(named),
         };
         if let Some(target) = target {
-            let src = b.source(Source::Module(target.to_string()));
-            b.add(name, *flags, src);
+            s.add(target, name, *flags);
         }
     }
     let dir = file.parent().unwrap_or(Path::new("."));
+    // `export { default } from "./dist/link"` in an entry point: the default export of the module,
+    // named as the file it comes from names it (`export *` does not pass a default on, so only
+    // the entry point itself counts).
+    if let Some(module) = module.filter(|_| depth == 0) {
+        for spec in found.default_from.iter().filter(|spec| spec.starts_with('.')) {
+            if let Some((name, flags)) = resolve_dts(dir, spec).and_then(|next| default_name(&next, 0, s)) {
+                s.add(module, &name, flags | DEFAULT);
+            }
+        }
+    }
     for spec in &found.stars {
         // `./x` is a file next to this one; anything else is another package (`.prisma/client`).
         let relative = spec.starts_with("./") || spec.starts_with("../");
         let next = if relative { resolve_dts(dir, spec) } else { resolve_bare(dir, spec) };
-        if let Some(next) = next {
-            scan_declaration(&next, module, depth + 1, budget, visited, parsed, b);
+        match next {
+            Some(next) => scan_declaration(&next, module, depth + 1, visited, s),
+            // Not there (yet): when that package appears, this one is scanned again.
+            None if !relative => {
+                if let Some((pkg, _)) = split_bare(spec) {
+                    s.note(s.node_modules.join(pkg));
+                }
+            }
+            None => {}
         }
     }
     for spec in &found.refs {
         if let Some(next) = resolve_dts(dir, spec) {
-            scan_declaration(&next, None, depth + 1, budget, visited, parsed, b);
+            scan_declaration(&next, None, depth + 1, visited, s);
         }
     }
+}
+
+/// Name and flags of the default export of a declaration file (`export default function Link`,
+/// `export default Link`), following `export { default } from "./x"` on the way.
+fn default_name(file: &Path, depth: usize, s: &mut PkgScan) -> Option<(String, u8)> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let found = s.parse(file)?;
+    if let Some((name, flags, _)) =
+        found.exports.iter().find(|(_, flags, ambient)| flags & DEFAULT != 0 && ambient.is_none())
+    {
+        return Some((name.clone(), *flags));
+    }
+    let dir = file.parent().unwrap_or(Path::new("."));
+    found
+        .default_from
+        .iter()
+        .filter(|spec| spec.starts_with('.'))
+        .find_map(|spec| default_name(&resolve_dts(dir, spec)?, depth + 1, s))
 }
 
 // ───────────── module specifiers ─────────────
@@ -1078,6 +1586,9 @@ mod tests {
         let t = std::time::Instant::now();
         let idx = build(&root);
         let took = t.elapsed();
+        let t = std::time::Instant::now();
+        let again = build_from(&root, Some(&idx), None);
+        println!("update with nothing changed: {:?}, {} files read", t.elapsed(), again.files_scanned);
         let bytes = idx.names.len() + idx.entries.len() * std::mem::size_of::<Entry>();
         println!(
             "{}: {} names, {} sources, {} files, {took:?}, ~{} KB",
@@ -1102,6 +1613,271 @@ mod tests {
                 hits.iter().map(|h| format!("{} <{}>", h.name, idx.specifier(&h.source, &from))).collect();
             println!("  search {q:<8} in {took:?}: {shown:?}");
         }
+    }
+
+    /// Every entry of an index, in its order.
+    fn dump(idx: &Index) -> Vec<(String, Source, u8)> {
+        idx.entries.iter().map(|e| (idx.name(e).to_string(), idx.sources[e.source as usize].clone(), e.flags)).collect()
+    }
+
+    /// A project on disk: two source files, and a package that re-exports a generated one.
+    fn fixture(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("lumen-importidx-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let nm = d.join("node_modules");
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        std::fs::create_dir_all(nm.join("pkg")).unwrap();
+        std::fs::create_dir_all(nm.join(".gen/client")).unwrap();
+        std::fs::write(d.join("package.json"), r#"{"dependencies":{"pkg":"1"}}"#).unwrap();
+        std::fs::write(d.join("src/a.ts"), "import { pkgThing } from 'pkg'\nexport const alpha = 1;\n").unwrap();
+        std::fs::write(d.join("src/b.ts"), "export function beta() {}\n").unwrap();
+        std::fs::write(nm.join("pkg/package.json"), r#"{"version":"1.0.0","types":"index.d.ts"}"#).unwrap();
+        std::fs::write(
+            nm.join("pkg/index.d.ts"),
+            "export declare function pkgThing(): void;\nexport * from \".gen/client\";\nexport * from \"absent\";\n",
+        )
+        .unwrap();
+        std::fs::write(nm.join(".gen/client/index.d.ts"), "export class GenOne {}\n").unwrap();
+        d
+    }
+
+    #[test]
+    fn an_update_reads_only_what_changed() {
+        let d = fixture("update");
+        let nm = d.join("node_modules");
+        let idx = build(&d);
+        assert_eq!((idx.files_scanned, idx.packages_scanned), (4, 1), "two sources, two declaration files");
+        let found = |i: &Index, n: &str| !i.exact(n).is_empty();
+        assert!(found(&idx, "alpha") && found(&idx, "beta") && found(&idx, "pkgThing") && found(&idx, "GenOne"));
+
+        // Nothing changed: nothing is read again.
+        let same = build_from(&d, Some(&idx), None);
+        assert_eq!((same.files_scanned, same.packages_scanned), (0, 0));
+        assert_eq!(dump(&same), dump(&idx));
+
+        // One file edited, one created, one removed: two files are read, no package.
+        std::fs::write(d.join("src/a.ts"), "export const alphaRenamed = 1;\n").unwrap();
+        std::fs::write(d.join("src/c.ts"), "export type Gamma = 1;\n").unwrap();
+        std::fs::remove_file(d.join("src/b.ts")).unwrap();
+        let next = build_from(&d, Some(&same), None);
+        assert_eq!((next.files_scanned, next.packages_scanned), (2, 0));
+        assert!(!found(&next, "alpha") && !found(&next, "beta"));
+        assert!(found(&next, "alphaRenamed") && found(&next, "Gamma") && found(&next, "pkgThing"));
+        assert_eq!(dump(&next), dump(&build(&d)), "an updated index is what a fresh build makes");
+
+        // A generated file a package re-exports changes under the same version: that package again.
+        std::fs::write(nm.join(".gen/client/index.d.ts"), "export class GenOne {}\nexport class GenTwo {}\n").unwrap();
+        let regen = build_from(&d, Some(&next), None);
+        assert_eq!((regen.files_scanned, regen.packages_scanned), (2, 1));
+        assert!(found(&regen, "GenTwo"));
+
+        // A package that was re-exported but missing appears: again.
+        std::fs::create_dir_all(nm.join("absent")).unwrap();
+        std::fs::write(nm.join("absent/index.d.ts"), "export declare const wasAbsent: number;\n").unwrap();
+        // (`node_modules` itself changed here, so this is the full path.)
+        let appeared = build_from(&d, Some(&regen), None);
+        assert!(found(&appeared, "wasAbsent"));
+
+        // `package.json` lists another package: every package is scanned again, no project file.
+        std::fs::create_dir_all(nm.join("other")).unwrap();
+        std::fs::write(nm.join("other/package.json"), r#"{"version":"2.0.0","types":"index.d.ts"}"#).unwrap();
+        std::fs::write(nm.join("other/index.d.ts"), "export declare const otherThing: number;\n").unwrap();
+        std::fs::write(d.join("package.json"), r#"{"dependencies":{"pkg":"1","other":"2"}}"#).unwrap();
+        let full = build_from(&d, Some(&appeared), None);
+        assert_eq!((full.files_scanned, full.packages_scanned), (4, 2));
+        assert!(found(&full, "otherThing") && found(&full, "pkgThing") && found(&full, "alphaRenamed"));
+        assert_eq!(dump(&full), dump(&build(&d)));
+
+        // An index of another project is no base for this one.
+        let other_root = fixture("update-other");
+        assert_eq!(build_from(&other_root, Some(&full), None).packages_scanned, 1);
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::remove_dir_all(&other_root).ok();
+    }
+
+    #[test]
+    fn packages_come_back_from_the_disk_cache() {
+        let d = fixture("cache");
+        let nm = d.join("node_modules");
+        let cache = d.join("cache/imports/project.json");
+        let found = |i: &Index, n: &str| !i.exact(n).is_empty();
+        let first = build_from(&d, None, Some(&cache));
+        assert_eq!((first.files_scanned, first.packages_scanned), (4, 1));
+        assert!(cache.is_file());
+
+        // A new session: the project's own files are read, the package is not.
+        let second = build_from(&d, None, Some(&cache));
+        assert_eq!((second.files_scanned, second.packages_scanned), (2, 0));
+        assert_eq!(dump(&second), dump(&first));
+        assert_eq!(second.parts.pkgs, first.parts.pkgs, "a cached package is the scanned one, exactly");
+
+        // Another version of the package: read again.
+        std::fs::write(nm.join("pkg/package.json"), r#"{"version":"1.1.0","types":"index.d.ts"}"#).unwrap();
+        std::fs::write(
+            nm.join("pkg/index.d.ts"),
+            "export declare function pkgNewer(): void;\nexport * from \".gen/client\";\n",
+        )
+        .unwrap();
+        let third = build_from(&d, None, Some(&cache));
+        assert_eq!(third.packages_scanned, 1);
+        assert!(found(&third, "pkgNewer") && !found(&third, "pkgThing") && found(&third, "GenOne"));
+        assert_eq!(build_from(&d, None, Some(&cache)).packages_scanned, 0, "the new version is cached now");
+
+        // Same version, but the generated file it re-exports was written again: read again.
+        std::fs::write(nm.join(".gen/client/index.d.ts"), "export class GenOne {}\nexport class GenTwo {}\n").unwrap();
+        let regen = build_from(&d, None, Some(&cache));
+        assert_eq!(regen.packages_scanned, 1);
+        assert!(found(&regen, "GenTwo"));
+
+        // One more package: only the new one is read.
+        std::fs::create_dir_all(nm.join("other")).unwrap();
+        std::fs::write(nm.join("other/package.json"), r#"{"version":"2.0.0","types":"index.d.ts"}"#).unwrap();
+        std::fs::write(nm.join("other/index.d.ts"), "export declare const otherThing: number;\n").unwrap();
+        std::fs::write(d.join("package.json"), r#"{"dependencies":{"pkg":"1","other":"2"}}"#).unwrap();
+        let both = build_from(&d, None, Some(&cache));
+        assert_eq!(both.packages_scanned, 1);
+        assert!(found(&both, "otherThing") && found(&both, "pkgNewer") && found(&both, "GenTwo"));
+        let want = dump(&build(&d));
+        assert_eq!(dump(&both), want, "with or without the cache: the same index");
+
+        // A damaged file, another format, another editor: ignored, everything is read, never a crash.
+        let good = std::fs::read(&cache).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&good).unwrap();
+        let (mut old_format, mut old_editor) = (json.clone(), json.clone());
+        old_format["format"] = serde_json::json!(CACHE_FORMAT + 1);
+        old_editor["editor"] = serde_json::json!("0.0.1");
+        let bad: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            b"not json at all".to_vec(),
+            good[..good.len() / 2].to_vec(),
+            b"[1, 2, 3]".to_vec(),
+            br#"{"format":1,"editor":"x","pkgs":"nope"}"#.to_vec(),
+            vec![0xff, 0xfe, 0x00, 0x80],
+            serde_json::to_vec(&old_format).unwrap(),
+            serde_json::to_vec(&old_editor).unwrap(),
+        ];
+        for data in bad {
+            std::fs::write(&cache, &data).unwrap();
+            let idx = build_from(&d, None, Some(&cache));
+            assert_eq!(idx.packages_scanned, 2, "cache {:?}", String::from_utf8_lossy(&data));
+            assert_eq!(dump(&idx), want);
+            assert_eq!(build_from(&d, None, Some(&cache)).packages_scanned, 0, "written again, good again");
+        }
+        // One entry that does not hold together: that package is read, the other still comes back.
+        for (field, value) in [
+            ("groups", serde_json::json!([9999])),
+            ("flags", serde_json::json!([])),
+            ("names", serde_json::json!("")),
+            ("modules", serde_json::json!([])),
+        ] {
+            let mut broken = json.clone();
+            broken["pkgs"][0][field] = value;
+            std::fs::write(&cache, serde_json::to_vec(&broken).unwrap()).unwrap();
+            let idx = build_from(&d, None, Some(&cache));
+            assert_eq!(idx.packages_scanned, 1, "broken {field}");
+            assert_eq!(dump(&idx), want);
+        }
+        // A cache that cannot be written (its folder is a file) is not an error either.
+        std::fs::write(d.join("blocked"), "x").unwrap();
+        assert_eq!(dump(&build_from(&d, None, Some(&d.join("blocked/imports.json")))), want);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn cache_files_are_per_project() {
+        let (a, b) = (cache_file(Path::new("/p/one")), cache_file(Path::new("/p/two")));
+        assert_ne!(a, b);
+        assert_eq!(a, cache_file(Path::new("/p/one")));
+        assert!(
+            a.parent().is_some_and(|d| d.ends_with("lumen-text/imports")) && a.extension().is_some_and(|e| e == "json")
+        );
+    }
+
+    #[test]
+    fn scans_default_re_exports() {
+        let s = scan(
+            "export { default } from './x';\nexport { default as Named, other } from \"./y\";\nexport {\n  default,\n  \
+             type T,\n} from './z'\nexport { Foo as default } from './w';\nexport { default };\n\
+             declare module \"m\" {\n  export { default } from './inner';\n}\n",
+        );
+        assert_eq!(names(&s), vec![("Named", 0), ("other", 0), ("T", TYPE), ("Foo", DEFAULT)]);
+        assert_eq!(s.default_from, vec!["./x", "./z"]);
+        assert_eq!(from_spec(" from \"./a\";"), Some("./a"));
+        assert_eq!(from_spec(";"), None);
+        assert_eq!(join_relative(Path::new("/p/src/ui"), "../lib/./x.js"), PathBuf::from("/p/src/lib/x.js"));
+    }
+
+    #[test]
+    fn default_exports_keep_their_name_through_re_exports() {
+        let d = std::env::temp_dir().join(format!("lumen-importidx-default-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let ui = d.join("node_modules/ui");
+        std::fs::create_dir_all(ui.join("dist")).unwrap();
+        std::fs::create_dir_all(d.join("src/components")).unwrap();
+        std::fs::write(d.join("package.json"), r#"{"dependencies":{"ui":"1"}}"#).unwrap();
+        std::fs::write(ui.join("package.json"), r#"{"version":"1.0.0"}"#).unwrap();
+        // The package: `ui` and `ui/link` (a declaration file at its root), both re-exporting defaults.
+        std::fs::write(
+            ui.join("index.d.ts"),
+            "export { default } from './dist/button';\nexport { default as Card } from './dist/card';\n",
+        )
+        .unwrap();
+        std::fs::write(ui.join("link.d.ts"), "export { default } from './dist/link';\nexport * from './dist/link';\n")
+            .unwrap();
+        std::fs::write(
+            ui.join("dist/link.d.ts"),
+            "export { default } from './link-impl.js';\nexport type LinkProps = {};\n",
+        )
+        .unwrap();
+        std::fs::write(ui.join("dist/link-impl.d.ts"), "declare function Link(): void;\nexport default Link;\n")
+            .unwrap();
+        std::fs::write(ui.join("dist/button.d.ts"), "export default function Button(): void;\n").unwrap();
+        std::fs::write(ui.join("dist/card.d.ts"), "export default class CardImpl {}\n").unwrap();
+        // The project: an index file passing defaults on, and a file reaching it through `.js`.
+        std::fs::write(d.join("src/components/Button.tsx"), "export default function Button() {}\n").unwrap();
+        std::fs::write(d.join("src/components/Fancy.tsx"), "const Fancy = () => null;\nexport default Fancy;\n")
+            .unwrap();
+        std::fs::write(
+            d.join("src/components/index.ts"),
+            "export { default } from './Button';\nexport { default as Fancy } from './Fancy';\n",
+        )
+        .unwrap();
+        std::fs::write(d.join("src/reexport.ts"), "export { default } from './components/index.js';\n").unwrap();
+        std::fs::write(d.join("src/loop.ts"), "export { default } from './loop';\n").unwrap();
+
+        let idx = build(&d);
+        let hits = |n: &str| idx.exact(n).into_iter().map(|h| (h.source, h.is_default)).collect::<Vec<_>>();
+        let m = |s: &str| Source::Module(s.to_string());
+        assert_eq!(hits("Link"), vec![(m("ui/link"), true)], "`import Link from \"ui/link\"`");
+        assert_eq!(hits("LinkProps"), vec![(m("ui/link"), false)]);
+        assert_eq!(hits("Card"), vec![(m("ui"), false)], "`default as Card` is a named export");
+        assert!(hits("CardImpl").is_empty(), "the name inside the file is not exported");
+        assert_eq!(
+            hits("Button"),
+            vec![
+                (Source::File(d.join("src/components/Button.tsx")), true),
+                (Source::File(d.join("src/components/index.ts")), true),
+                (Source::File(d.join("src/reexport.ts")), true),
+                (m("ui"), true),
+            ]
+        );
+        assert_eq!(
+            hits("Fancy"),
+            vec![
+                (Source::File(d.join("src/components/Fancy.tsx")), true),
+                (Source::File(d.join("src/components/index.ts")), false),
+            ]
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn packed_names_keep_flags_and_groups() {
+        let mut p = Packed::default();
+        p.push("alpha", TYPE, 0);
+        p.push("b", DEFAULT, 3);
+        p.push(&"x".repeat(201), 0, 0);
+        assert_eq!(p.iter().collect::<Vec<_>>(), vec![("alpha", TYPE, 0), ("b", DEFAULT, 3)]);
     }
 
     #[test]
