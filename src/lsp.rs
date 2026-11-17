@@ -98,7 +98,10 @@ pub enum Pending {
     Rename,
     /// A request the caller waits for synchronously (`App::lsp_request_wait`); a late answer is dropped.
     Blocking,
-    CodeActions,
+    /// `textDocument/codeAction` for the quick-fix menu; `serial` tells a stale answer.
+    CodeActions {
+        serial: u64,
+    },
     Signature {
         uri: String,
     },

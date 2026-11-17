@@ -3,7 +3,7 @@
 
 use crate::{
     app::App,
-    app_overlay::{Action, Item},
+    app_overlay::{Action, Item, Overlay, PickKind},
     buffer::EditKind,
     doc::{Diag, Doc, LspEdit, path_to_uri, uri_to_path},
     fuzzy::fuzzy,
@@ -52,6 +52,18 @@ pub struct Completion {
     pub start: usize,
     /// Length of the prefix the list was fetched for; typing less than this needs a new request.
     pub seed_len: usize,
+}
+
+/// One `Ctrl+.` round. The menu opens with the first items there are and every later answer is
+/// merged into it; `serial` and `key` tell an answer nobody waits for any more.
+#[derive(Default)]
+pub(crate) struct ActionsRun {
+    pub serial: u64,
+    /// (document, its version, selection anchor and head) the actions were asked for; `None` when
+    /// no answer is awaited.
+    pub key: Option<(usize, i32, usize, usize)>,
+    /// The menu of this round is on screen: answers are merged into it.
+    pub opened: bool,
 }
 
 fn is_ident(c: char) -> bool {
@@ -1074,8 +1086,8 @@ impl App {
                     eprintln!("[lsp] error response for {what:?}: {e}");
                 }
                 let msg = e["message"].as_str().unwrap_or("error").to_string();
-                if matches!(what, Pending::CodeActions) {
-                    return self.actions_response(Vec::new());
+                if let Pending::CodeActions { serial } = what {
+                    return self.actions_response(serial, Vec::new());
                 }
                 self.sem_range_failed(&what);
                 if !matches!(
@@ -1142,7 +1154,7 @@ impl App {
             }
             Pending::Rename => self.apply_workspace_edit(&v),
             Pending::Blocking | Pending::Warm => {}
-            Pending::CodeActions => self.on_code_actions(li, &v),
+            Pending::CodeActions { serial } => self.on_code_actions(li, serial, &v),
             Pending::Signature { uri } => self.on_signature(&uri, &v),
             what @ (Pending::Symbols { .. } | Pending::SymbolsCache { .. }) => {
                 self.on_symbol_list(what, crate::doc::flatten_symbols(&v))
@@ -1510,20 +1522,21 @@ impl App {
         let ts_uri = d.uri().unwrap_or_default();
         let real_uri = d.real_uri().unwrap_or_default();
         let from_index = self.import_action_items(i);
-        self.actions_items.clear();
-        self.actions_items.extend(from_index);
+        let serial = self.actions_begin(i);
+        self.actions_items = from_index;
         self.actions_expected = 0;
         if let Some((_, li)) = self.with_server() {
-            self.lsps[li].request("textDocument/codeAction", mk(&ts_uri), Pending::CodeActions);
+            self.lsps[li].request("textDocument/codeAction", mk(&ts_uri), Pending::CodeActions { serial });
             self.actions_expected += 1;
         }
         if let Some(lb) = self.biome_index(i) {
-            self.lsps[lb].request("textDocument/codeAction", mk(&real_uri), Pending::CodeActions);
+            self.lsps[lb].request("textDocument/codeAction", mk(&real_uri), Pending::CodeActions { serial });
             self.actions_expected += 1;
         }
         let params = mk(&real_uri);
-        self.actions_expected += self.lspx_code_actions(i, &params);
+        self.actions_expected += self.lspx_code_actions(i, &params, serial);
         if self.actions_expected == 0 {
+            self.lspx.actions.key = None;
             if !self.actions_items.is_empty() {
                 let items = std::mem::take(&mut self.actions_items);
                 return self.open_code_actions_with(items);
@@ -1532,33 +1545,100 @@ impl App {
                 let items = self.ai_action_items();
                 return self.open_code_actions_with(items);
             }
-            self.say("actions need a language server (none is running for this file)");
+            return self.say("actions need a language server (none is running for this file)");
+        }
+        // The import index already has something: show it now, the servers' answers join the list.
+        if !self.actions_items.is_empty() {
+            self.actions_show();
         }
     }
 
-    fn on_code_actions(&mut self, li: usize, v: &Value) {
-        let server = self.lsps.get(li).filter(|l| l.is_generic()).map(|l| l.name.clone());
-        let items = v.as_array().into_iter().flatten().filter_map(|a| code_action_item(a, server.as_deref())).collect();
-        self.actions_response(items);
+    /// Start a `Ctrl+.` round for document `i`: answers of earlier rounds are stale from here on.
+    fn actions_begin(&mut self, i: usize) -> u64 {
+        let run = &mut self.lspx.actions;
+        run.serial += 1;
+        run.opened = false;
+        run.key = self.docs.get(i).map(|d| (i, d.version, d.ed.sel.anchor, d.ed.sel.head));
+        run.serial
     }
 
-    /// One server answered; when all have, show the combined list.
-    fn actions_response(&mut self, items: Vec<Item>) {
+    /// Is an answer of round `serial` still wanted? Not after a newer round, an edit, a caret move,
+    /// a tab switch, or once the user closed the menu this round had opened.
+    fn actions_live(&self, serial: u64) -> bool {
+        let run = &self.lspx.actions;
+        let Some((i, ver, anchor, head)) = run.key.filter(|_| run.serial == serial) else { return false };
+        let same = self.active == i
+            && self.docs.get(i).is_some_and(|d| d.version == ver && d.ed.sel.anchor == anchor && d.ed.sel.head == head);
+        same && (!run.opened || matches!(&self.overlay, Overlay::Picker(p) if p.kind == PickKind::CodeActions))
+    }
+
+    fn on_code_actions(&mut self, li: usize, serial: u64, v: &Value) {
+        let server = self.lsps.get(li).filter(|l| l.is_generic()).map(|l| l.name.clone());
+        let items = v.as_array().into_iter().flatten().filter_map(|a| code_action_item(a, server.as_deref())).collect();
+        self.actions_response(serial, items);
+    }
+
+    /// One server answered round `serial`: its items join the menu, which opens with the first
+    /// answer that has any. Only when every server answered empty there is nothing to show.
+    fn actions_response(&mut self, serial: u64, items: Vec<Item>) {
+        if !self.actions_live(serial) {
+            if self.lspx.actions.serial == serial {
+                self.lspx.actions.key = None;
+                self.actions_items.clear();
+            }
+            return;
+        }
         self.actions_items.extend(items);
         Self::lspx_dedupe_actions(&mut self.actions_items);
         self.actions_expected = self.actions_expected.saturating_sub(1);
-        if self.actions_expected > 0 {
-            return;
+        let done = self.actions_expected == 0;
+        if self.actions_items.is_empty() {
+            if !done {
+                return;
+            }
+            // A problem under the caret can still go to the agent (the items run the AI commands).
+            if !self.ai_has_diag_at_cursor() {
+                self.lspx.actions.key = None;
+                return self.say("no actions available here");
+            }
         }
-        let mut all = std::mem::take(&mut self.actions_items);
-        // A problem under the caret can also go to the agent (the item runs the AI commands).
+        self.actions_show();
+        if done {
+            self.lspx.actions.key = None;
+            self.actions_items.clear();
+        }
+    }
+
+    /// Put what was collected so far in the quick-fix menu. An open menu is rebuilt in place: the
+    /// typed filter, the selected item and its row on screen stay where they are.
+    fn actions_show(&mut self) {
+        let mut all = self.actions_items.clone();
         if self.ai_has_diag_at_cursor() {
             all.extend(self.ai_action_items());
         }
-        if all.is_empty() {
-            return self.say("no actions available here");
-        }
+        let old = match &mut self.overlay {
+            Overlay::Picker(p) if self.lspx.actions.opened && p.kind == PickKind::CodeActions => {
+                let chosen =
+                    p.filtered.get(p.sel).map(|(k, _)| (p.items[*k].label.clone(), p.items[*k].detail.clone()));
+                Some((std::mem::take(&mut p.field), chosen, p.sel, p.scroll))
+            }
+            _ => None,
+        };
         self.open_code_actions_with(all);
+        self.lspx.actions.opened = true;
+        if let (Some((field, chosen, sel, scroll)), Overlay::Picker(p)) = (old, &mut self.overlay) {
+            p.field = field;
+            p.refilter();
+            let at = chosen
+                .and_then(|c| {
+                    p.filtered.iter().position(|(k, _)| p.items[*k].label == c.0 && p.items[*k].detail == c.1)
+                })
+                .unwrap_or(sel)
+                .min(p.filtered.len().saturating_sub(1));
+            p.scroll = (scroll + at).saturating_sub(sel);
+            p.sel = at;
+        }
+        self.request_redraw();
     }
 
     /// Code actions that arrive without an edit are resolved (or executed) when chosen.
@@ -2312,6 +2392,102 @@ mod lang_tests {
         // Nothing to do, or no title: not listed.
         assert!(code_action_item(&json!({"title": "noop"}), None).is_none());
         assert!(code_action_item(&json!({"command": "X"}), None).is_none());
+    }
+
+    fn act(label: &str) -> Item {
+        Item { label: label.into(), detail: "quickfix".into(), action: Action::WorkspaceEdit(json!({"changes": {}})) }
+    }
+
+    fn menu(app: &App) -> Option<(Vec<String>, usize)> {
+        match &app.overlay {
+            Overlay::Picker(p) if p.kind == PickKind::CodeActions => {
+                Some((p.items.iter().map(|it| it.label.clone()).collect(), p.sel))
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn quick_fix_menu_opens_with_the_first_items_and_merges_later_answers() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        let _g = lock();
+        let dir = tmp("actions-progressive");
+        let mut app = test_app(&dir);
+        let i = app.active;
+
+        // Three servers asked: an empty answer shows nothing, the first items open the menu.
+        let s = app.actions_begin(i);
+        app.actions_expected = 3;
+        app.actions_response(s, Vec::new());
+        assert!(menu(&app).is_none());
+        app.actions_response(s, vec![act("Fix A"), act("Fix B")]);
+        assert_eq!(menu(&app), Some((vec!["Fix A".into(), "Fix B".into()], 0)));
+        // The user moved to the second row; the last answer joins without moving the selection.
+        if let Overlay::Picker(p) = &mut app.overlay {
+            p.sel = 1;
+        }
+        app.actions_response(s, vec![act("Fix B"), act("Fix C")]);
+        assert_eq!(menu(&app), Some((vec!["Fix A".into(), "Fix B".into(), "Fix C".into()], 1)));
+        assert!(app.lspx.actions.key.is_none() && app.actions_items.is_empty());
+
+        // Items known before any answer (the import index) open the menu at once.
+        app.overlay = Overlay::None;
+        let s = app.actions_begin(i);
+        app.actions_expected = 1;
+        app.actions_items = vec![act("Add import")];
+        app.actions_show();
+        assert_eq!(menu(&app), Some((vec!["Add import".into()], 0)));
+        app.actions_response(s, vec![act("Fix A")]);
+        assert_eq!(menu(&app), Some((vec!["Add import".into(), "Fix A".into()], 0)));
+
+        // Everyone answered empty: the message, no menu.
+        app.overlay = Overlay::None;
+        app.status = None;
+        let s = app.actions_begin(i);
+        app.actions_expected = 2;
+        app.actions_response(s, Vec::new());
+        assert!(app.status.is_none());
+        app.actions_response(s, Vec::new());
+        assert!(menu(&app).is_none());
+        assert_eq!(app.status.as_ref().map(|m| m.0.as_str()), Some("no actions available here"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_quick_fix_answers_are_dropped() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        let _g = lock();
+        let dir = tmp("actions-stale");
+        let mut app = test_app(&dir);
+        let i = app.active;
+
+        // Asked again: the answer of the first round is not shown.
+        let old = app.actions_begin(i);
+        let new = app.actions_begin(i);
+        app.actions_expected = 1;
+        app.actions_response(old, vec![act("Old")]);
+        assert!(menu(&app).is_none());
+        assert_eq!(app.actions_expected, 1, "a stale answer does not count for the new round");
+        app.actions_response(new, vec![act("New")]);
+        assert_eq!(menu(&app).map(|m| m.0), Some(vec!["New".to_string()]));
+
+        // The user closed the menu while a server was still working.
+        let s = app.actions_begin(i);
+        app.actions_expected = 2;
+        app.actions_response(s, vec![act("Fix A")]);
+        assert!(menu(&app).is_some());
+        app.overlay = Overlay::None;
+        app.actions_response(s, vec![act("Fix B")]);
+        assert!(menu(&app).is_none(), "a closed menu must not come back");
+
+        // The caret moved before the first answer.
+        let s = app.actions_begin(i);
+        app.actions_expected = 1;
+        let d = &mut app.docs[i];
+        d.ed.click(&mut d.buf, 2, false);
+        app.actions_response(s, vec![act("Fix A")]);
+        assert!(menu(&app).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

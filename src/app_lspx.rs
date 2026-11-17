@@ -57,6 +57,8 @@ pub struct LspX {
     plans: RefCell<HashMap<(PathBuf, Option<&'static str>), Rc<Plan>>>,
     agg: Option<(Agg, Instant)>,
     serial: u64,
+    /// The current `Ctrl+.` round (see `App::code_actions`).
+    pub(crate) actions: crate::app_lsp::ActionsRun,
     told: HashSet<String>,
     /// Resolved commands of idle servers for the status listing: id -> (when, path).
     which: HashMap<String, (Instant, Option<PathBuf>)>,
@@ -805,7 +807,7 @@ impl App {
     }
 
     /// Code-action requests for the companions of document `i`; returns how many were sent.
-    pub(crate) fn lspx_code_actions(&mut self, i: usize, params: &Value) -> usize {
+    pub(crate) fn lspx_code_actions(&mut self, i: usize, params: &Value, serial: u64) -> usize {
         let Some(real) = self.docs[i].real_uri() else { return 0 };
         let cs: Vec<usize> =
             self.lspx_open_companions(i).into_iter().filter(|&c| self.lsps[c].has_cap("codeActionProvider")).collect();
@@ -814,7 +816,7 @@ impl App {
             if let Some(id) = self.lsps[c].generic.as_ref().map(|g| g.id.clone()) {
                 self.docs[i].with_diag_data(&id, &mut p["context"]["diagnostics"]);
             }
-            self.lsps[c].request("textDocument/codeAction", p, Pending::CodeActions);
+            self.lsps[c].request("textDocument/codeAction", p, Pending::CodeActions { serial });
         }
         cs.len()
     }
