@@ -501,9 +501,7 @@ impl App {
             self.backup_discard_all();
         }
         mem::report("exit");
-        for i in 0..self.docs.len() {
-            self.undo_persist(i, hot);
-        }
+        self.undo_persist_all(hot);
         self.save_session();
         self.win_close();
         self.debug_shutdown();

@@ -135,6 +135,8 @@ impl App {
             results.push(r);
         }
         for (path, res) in results {
+            // The file may be linted again: when it changed while this run was going, its
+            // `eslint_due` is still set and the next tick starts the one run that covers it.
             self.eslint_busy.remove(&path);
             let Some(i) = self.docs.iter().position(|d| d.path() == Some(path.as_path())) else { continue };
             match res {
@@ -344,6 +346,7 @@ impl App {
         self.pump_ide();
         self.pump_inbox();
         self.pump_eslint();
+        self.pump_format_save();
         self.pump_debug();
         self.pump_watcher();
         self.pump_update();

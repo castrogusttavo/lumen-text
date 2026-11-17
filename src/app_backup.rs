@@ -284,6 +284,20 @@ impl App {
         }
         let _ = crate::undo_store::save(&dir, p, &d.buf);
     }
+
+    /// Quitting: persist every document's undo history, then prune the undo folder once (not
+    /// once per document).
+    pub fn undo_persist_all(&self, dirty_too: bool) {
+        if !self.config.persistent_undo {
+            return;
+        }
+        for i in 0..self.docs.len() {
+            self.undo_persist(i, dirty_too);
+        }
+        if let Some(dir) = crate::undo_store::dir() {
+            crate::undo_store::finish(&dir);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -428,6 +442,42 @@ mod tests {
         assert!(backup::read_all(&backup::project_dir(&dir).unwrap()).is_empty());
         app.config.hot_exit = true;
         assert!(!app.restart_needs_save(), "with hot exit the update restart needs no save");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_undo_folder_is_pruned_once_at_quit_not_on_every_tab_close() {
+        let _g = lock();
+        let dir = tmp("pundo-prune");
+        let mut app = test_app(&dir);
+        app.config.persistent_undo = true;
+        let undo = crate::undo_store::dir().unwrap();
+        fs::create_dir_all(&undo).unwrap();
+        // An entry nobody used for longer than the store keeps them.
+        let stale = undo.join("0000000000000000.undo");
+        fs::write(&stale, b"old").unwrap();
+        let age = Duration::from_secs((crate::undo_store::MAX_AGE_DAYS + 1) * 86_400);
+        fs::File::options()
+            .append(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - age)
+            .unwrap();
+        let other = dir.join("other.txt");
+        fs::write(&other, "other\n").unwrap();
+        let j = app.open_path(&other, None).unwrap();
+        app.docs[j].replace_text("other v2\n");
+        app.save_doc(j).unwrap();
+        app.close_tab(j, false);
+        let entries = || fs::read_dir(&undo).unwrap().count();
+        assert_eq!(entries(), 2, "the closed tab's history was stored");
+        assert!(stale.exists(), "closing a tab does not prune");
+        let i = seed_idx(&app);
+        app.docs[i].replace_text("v2\n");
+        app.save_doc(i).unwrap();
+        app.undo_persist_all(false);
+        assert!(!stale.exists(), "pruned at quit");
+        assert_eq!(entries(), 2, "both histories are kept");
         let _ = fs::remove_dir_all(&dir);
     }
 

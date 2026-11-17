@@ -14,7 +14,7 @@ impl App {
             return;
         }
         match c {
-            Cmd::Save => self.save_active(),
+            Cmd::Save => self.save_active_bg(),
             Cmd::CloseTab => {
                 let a = self.active;
                 self.close_tab(a, false)
