@@ -224,6 +224,51 @@ pub struct GitPanel {
     pub sel_anchor: Option<usize>,
     /// Action asked for while the panel was taken out of the App (run right after it is back).
     pub pending: Option<GitAct>,
+    /// Background refresh (see `refresh_bg`): answers tagged with a generation.
+    pub refresh_ch: (std::sync::mpsc::Sender<(u64, PanelData)>, std::sync::mpsc::Receiver<(u64, PanelData)>),
+    pub refresh_gen: u64,
+    pub refresh_busy: bool,
+    pub refresh_again: bool,
+}
+
+/// What one refresh of the panel reads from git (on any thread; applied on the UI thread).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelData {
+    /// The folder it was read for.
+    pub root: PathBuf,
+    pub top: Option<PathBuf>,
+    pub changes: Vec<Change>,
+    pub sync: SyncInfo,
+    pub state: RepoState,
+    pub can_undo: bool,
+    pub stashes: Vec<StashEntry>,
+}
+
+/// Run the panel's git commands for `root`: the repository top, one `git status` (changes,
+/// upstream, ahead / behind), the operation in progress, whether HEAD has a parent, the stashes.
+pub fn read_panel(root: &Path) -> PanelData {
+    let top = git::toplevel(root);
+    let Some(t) = top.as_deref() else {
+        return PanelData {
+            root: root.to_path_buf(),
+            top: None,
+            changes: Vec::new(),
+            sync: SyncInfo::default(),
+            state: RepoState::Clean,
+            can_undo: false,
+            stashes: Vec::new(),
+        };
+    };
+    let st = git_run(t, &STATUS_V2_ARGS).map(|o| parse_status_v2(&o)).unwrap_or_default();
+    PanelData {
+        root: root.to_path_buf(),
+        changes: st.changes,
+        sync: st.sync,
+        state: repo_state(t),
+        can_undo: git_run(t, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_ok(),
+        stashes: list_stashes(t),
+        top,
+    }
 }
 
 impl GitPanel {
@@ -282,30 +327,67 @@ impl GitPanel {
             selected: std::collections::BTreeSet::new(),
             sel_anchor: None,
             pending: None,
+            refresh_ch: std::sync::mpsc::channel(),
+            refresh_gen: 0,
+            refresh_busy: false,
+            refresh_again: false,
         };
         p.refresh();
         p
     }
 
+    /// Re-read everything now, on this thread (after an action of the user, and in tests).
     pub fn refresh(&mut self) {
-        self.top = git::toplevel(&self.root);
-        self.changes = match &self.top {
-            Some(t) => {
-                git_run(t, &["status", "--porcelain=v1", "-z", "-uall"]).map(|o| parse_status_z(&o)).unwrap_or_default()
+        // A background answer computed before this one must not overwrite it.
+        self.refresh_gen += 1;
+        let data = read_panel(&self.root);
+        self.apply(data);
+    }
+
+    /// `refresh` on a worker thread, for the automatic refreshes (the status, the index or the
+    /// stashes moved): the panel keeps showing what it has until the answer arrives (see
+    /// `pump_refresh`). Requests made while one is running are coalesced into a single follow-up.
+    pub fn refresh_bg(&mut self) {
+        let Some(wake) = self.wake.clone().filter(|_| !cfg!(test)) else { return self.refresh() };
+        if self.refresh_busy {
+            self.refresh_again = true;
+            return;
+        }
+        self.refresh_busy = true;
+        self.refresh_gen += 1;
+        let (generation, root, tx) = (self.refresh_gen, self.root.clone(), self.refresh_ch.0.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send((generation, read_panel(&root)));
+            wake();
+        });
+    }
+
+    /// Apply finished background refreshes; returns whether the panel changed. An answer older
+    /// than the last refresh asked for, or read for another folder, is dropped.
+    pub fn pump_refresh(&mut self) -> bool {
+        let (mut got, mut changed) = (false, false);
+        while let Ok((generation, data)) = self.refresh_ch.1.try_recv() {
+            got = true;
+            self.refresh_busy = false;
+            if generation == self.refresh_gen && data.root == self.root {
+                self.apply(data);
+                changed = true;
             }
-            None => Vec::new(),
-        };
-        self.sync = match &self.top {
-            Some(t) => gitsync::info(t),
-            None => SyncInfo::default(),
-        };
-        (self.state, self.can_undo) = match &self.top {
-            Some(t) => (repo_state(t), git_run(t, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_ok()),
-            None => (RepoState::Clean, false),
-        };
+        }
+        if got && std::mem::take(&mut self.refresh_again) {
+            self.refresh_bg();
+        }
+        changed
+    }
+
+    fn apply(&mut self, data: PanelData) {
         // Stashes: the expanded one stays expanded while it exists (its index may have moved).
         let open_sha = self.open_stash.and_then(|i| self.stashes.get(i)).map(|e| e.sha.clone());
-        self.stashes = self.top.as_deref().map(list_stashes).unwrap_or_default();
+        self.top = data.top;
+        self.changes = data.changes;
+        self.sync = data.sync;
+        (self.state, self.can_undo) = (data.state, data.can_undo);
+        self.stashes = data.stashes;
         let still = open_sha.and_then(|s| self.stashes.iter().position(|e| e.sha == s));
         if still.is_none() {
             self.stash_files.clear();

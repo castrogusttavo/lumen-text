@@ -75,14 +75,15 @@ impl App {
             // `.editorconfig` is per file and wins over every settings layer.
             crate::app_filefmt::apply_editorconfig(&mut doc);
             self.assist_setup(&mut doc);
-            if img != Some(crate::imgview::Kind::Raster) {
-                doc.git_base = git::head_text(&path);
-            }
             if let Some(k) = img {
                 doc.img = Some(Box::new(crate::imgview::ImgView::new(k, &path, self.wake())));
                 doc.buf.read_only = true; // an SVG opens on its picture
             }
             self.docs.push(doc);
+            if img != Some(crate::imgview::Kind::Raster) {
+                // The HEAD text (the gutter's base) is read on a worker: the gutter follows.
+                self.git_base_fetch(vec![path.clone()]);
+            }
             self.docs.len() - 1
         };
         self.activate(idx);

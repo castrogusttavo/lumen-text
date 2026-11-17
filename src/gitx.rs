@@ -251,6 +251,38 @@ fn marker_label(line: &str, ch: char) -> Option<String> {
     if rest.is_empty() { Some(String::new()) } else { rest.strip_prefix(' ').map(|r| r.trim().to_string()) }
 }
 
+/// Does the text made of `chunks` (consecutive pieces, as a rope hands them out) contain
+/// `needle`? Like `str::contains` on the joined text, matches across chunk boundaries included,
+/// without building that text.
+pub fn chunks_contain<'a>(chunks: impl Iterator<Item = &'a str>, needle: &str) -> bool {
+    let n = needle.as_bytes();
+    if n.is_empty() {
+        return true;
+    }
+    // The last `n.len() - 1` bytes seen so far: all a match that started earlier can still use.
+    let keep = n.len() - 1;
+    let mut tail: Vec<u8> = Vec::with_capacity(2 * keep);
+    for c in chunks {
+        let b = c.as_bytes();
+        if c.contains(needle) {
+            return true;
+        }
+        if !tail.is_empty() {
+            // A match that straddles the boundary lies within the tail plus the first bytes here.
+            let kept = tail.len();
+            tail.extend_from_slice(&b[..b.len().min(keep)]);
+            if tail.windows(n.len()).any(|w| w == n) {
+                return true;
+            }
+            tail.truncate(kept);
+        }
+        tail.extend_from_slice(&b[b.len().saturating_sub(keep)..]);
+        let extra = tail.len().saturating_sub(keep);
+        tail.drain(..extra);
+    }
+    false
+}
+
 /// Parse conflict blocks. Incomplete blocks are ignored; a new `<<<<<<<`
 /// before the previous block closed discards the earlier one.
 pub fn parse_conflicts(text: &str) -> Vec<Conflict> {
@@ -998,6 +1030,33 @@ mod tests {
         assert_eq!((c.start, c.base, c.mid, c.end), (1, None, 4, 6));
         assert_eq!(c.ours_label, "HEAD");
         assert_eq!(c.theirs_label, "feature");
+    }
+
+    #[test]
+    fn marker_search_over_chunks_matches_the_joined_text() {
+        let has = |parts: &[&str]| chunks_contain(parts.iter().copied(), "<<<<<<<");
+        assert!(has(&["a\n<<<<<<< HEAD\nb\n"]));
+        assert!(!has(&["a\n<<<<<< six\n", ">>>>>>>\n"]));
+        assert!(!has(&[]) && !has(&["", ""]));
+        // Split anywhere, in two or in many pieces (one byte each), the answer is the same.
+        for text in [SIMPLE, "x <<<<<<<", "<<<<<<<", "<<<<<< <", "é<<<<<<<é", "<<<<<<\n<", "ab"] {
+            let want = text.contains("<<<<<<<");
+            for cut in (0..=text.len()).filter(|&i| text.is_char_boundary(i)) {
+                assert_eq!(has(&[&text[..cut], &text[cut..]]), want, "{text:?} cut at {cut}");
+                assert_eq!(has(&[&text[..cut], "", &text[cut..]]), want, "{text:?} with an empty piece at {cut}");
+            }
+            let singles: Vec<String> = text.chars().map(String::from).collect();
+            assert_eq!(chunks_contain(singles.iter().map(String::as_str), "<<<<<<<"), want, "{text:?} by char");
+        }
+        // A real rope: the marker sits far enough in to land beyond the first chunk.
+        let mut big = "line of ordinary text\n".repeat(4000);
+        assert!(!chunks_contain(ropey::Rope::from_str(&big).chunks(), "<<<<<<<"));
+        big.push_str("<<<<<<< HEAD\n");
+        big.push_str(&"more text\n".repeat(4000));
+        let rope = ropey::Rope::from_str(&big);
+        assert!(rope.chunks().count() > 1);
+        assert!(chunks_contain(rope.chunks(), "<<<<<<<"));
+        assert!(chunks_contain(rope.chunks(), "") && chunks_contain(rope.chunks(), "\n<<<<<<< HEAD\nmore"));
     }
 
     #[test]

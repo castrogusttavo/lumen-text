@@ -11,6 +11,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Command,
+    time::{Duration, Instant},
 };
 
 /// What one status refresh produces (computed on any thread, applied on the UI thread).
@@ -39,6 +40,24 @@ fn compute_git_status(gr: &Path, root: &Path, extra: &[PathBuf]) -> GitStatusOut
         branches = Some(std::iter::once(root).chain(extra.iter().map(PathBuf::as_path)).map(git::branch).collect());
     }
     GitStatusOut { branch, worktree_main, map, branches }
+}
+
+/// Order-independent hash of a status map: changes whenever an entry is added, removed or gets
+/// another badge.
+pub fn status_sig(map: &HashMap<PathBuf, char>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    map.iter().fold(0u64, |acc, e| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        e.hash(&mut h);
+        acc ^ h.finish()
+    })
+}
+
+/// Does a gutter diff computed for buffer `asked` (`gen_id`, `version`) still describe a
+/// document whose buffer is now `now`? Not when the text moved on, and not when the document was
+/// marked stale again (a new HEAD base): the next diff is already due.
+pub fn marks_current(now: (u64, u64), asked: (u64, u64), stale: bool) -> bool {
+    now == asked && !stale
 }
 
 /// Single-letter status for the explorer from a porcelain `XY` pair.
@@ -88,6 +107,8 @@ impl App {
         if let Some(b) = out.branches {
             self.ws.branches = b;
         }
+        // The Git panel compares this on every frame instead of hashing the entries again.
+        self.gitbg.status_sig = status_sig(&out.map);
         self.git_status = out.map;
     }
 
@@ -129,6 +150,105 @@ impl App {
             if std::mem::take(&mut self.git_status_again) {
                 self.refresh_git_status_bg();
             }
+        }
+    }
+
+    /// Read the HEAD text (the gutter's base) of the open files at `paths` on a worker, one
+    /// request per file; the gutter is recomputed when each answer arrives (`pump_git_base`).
+    pub(crate) fn git_base_fetch(&mut self, paths: Vec<PathBuf>) {
+        for p in paths {
+            if cfg!(test) {
+                let text = git::head_text(&p);
+                self.git_base_apply(&p, text);
+            } else {
+                self.gitbg.base.ask(p, &self.wake_fn);
+            }
+        }
+    }
+
+    /// Apply the HEAD texts the worker read (called from the tick).
+    pub(crate) fn pump_git_base(&mut self) {
+        let mut got = false;
+        while let Some((path, answer)) = self.gitbg.base.take() {
+            match answer {
+                Some(text) => {
+                    self.git_base_apply(&path, text);
+                    got = true;
+                }
+                // Asked for again while it was being read: only the newer answer counts.
+                None => self.git_base_fetch(vec![path]),
+            }
+        }
+        if got {
+            self.request_redraw();
+        }
+    }
+
+    fn git_base_apply(&mut self, path: &Path, text: Option<String>) {
+        // A file is open in one document (`open_path` activates the existing one).
+        if let Some(d) = self.docs.iter_mut().find(|d| d.path() == Some(path)) {
+            d.git_base = text;
+            d.git_stale = true;
+        }
+    }
+
+    /// Git gutter: the marks of every document whose text or HEAD base changed, 350 ms after the
+    /// last edit of the active one. The diff (a copy of the whole text plus a line diff) runs on a
+    /// worker over a snapshot of the rope; its answer is applied only if the document is still
+    /// the text that was compared.
+    pub(crate) fn git_marks_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        let mut got = false;
+        while let Ok((path, key, marks)) = self.gitbg.marks_ch.1.try_recv() {
+            self.gitbg.marks_busy.remove(&path);
+            for d in self.docs.iter_mut().filter(|d| d.path() == Some(path.as_path())) {
+                if marks_current((d.buf.gen_id(), d.buf.version()), key, d.git_stale) {
+                    d.git = marks.clone();
+                    got = true;
+                }
+            }
+        }
+        if got {
+            self.request_redraw();
+        }
+        let active = self.active;
+        for (i, d) in self.docs.iter_mut().enumerate() {
+            if !d.git_stale {
+                continue;
+            }
+            let due = d.changed_at.map_or(now, |t| t + Duration::from_millis(350));
+            if due > now && i == active {
+                want(due);
+                continue;
+            }
+            let base = match &d.git_base {
+                Some(base) if d.buf.line_count() < 200_000 => base,
+                _ => {
+                    d.git_stale = false;
+                    d.git = Vec::new();
+                    continue;
+                }
+            };
+            // Tests (and a base without a file, which does not happen) compute it right here.
+            let path = d.path().filter(|_| !cfg!(test)).map(Path::to_path_buf);
+            let Some(path) = path else {
+                d.git_stale = false;
+                d.git = git::marks(base, &d.buf.to_string());
+                continue;
+            };
+            // One diff per file at a time: the document stays stale, and the answer of the
+            // running one wakes the loop up to start the next.
+            if !self.gitbg.marks_busy.insert(path.clone()) {
+                continue;
+            }
+            d.git_stale = false;
+            let key = (d.buf.gen_id(), d.buf.version());
+            let (base, text) = (base.clone(), d.buf.snapshot());
+            let (tx, wake) = (self.gitbg.marks_ch.0.clone(), self.wake_fn.clone());
+            std::thread::spawn(move || {
+                let marks = git::marks(&base, &String::from(&text));
+                let _ = tx.send((path, key, marks));
+                wake();
+            });
         }
     }
 
@@ -215,12 +335,7 @@ impl App {
         match run_git(&self.git_root(), &["commit", "-m", &crate::commitmsg::prepare(&self.git_root(), msg)]) {
             Ok(out) => {
                 self.refresh_git_status();
-                for d in &mut self.docs {
-                    if let Some(p) = d.path().map(Path::to_path_buf) {
-                        d.git_base = git::head_text(&p);
-                        d.git_stale = true;
-                    }
-                }
+                self.sync_docs_with_head();
                 self.say(format!("commit: {}", out.lines().next().unwrap_or("ok")));
             }
             Err(e) => self.say(format!("git commit: {e}")),
@@ -258,6 +373,60 @@ mod tests {
         assert_eq!(badge("A "), 'A');
         assert_eq!(badge(" D"), 'D');
         assert_eq!(badge("R "), 'R');
+    }
+
+    #[test]
+    fn status_signature_follows_the_entries_not_their_order() {
+        let entry = |p: &str, b: char| (PathBuf::from(p), b);
+        let a: HashMap<PathBuf, char> = [entry("/r/a.ts", 'M'), entry("/r/b.ts", '?')].into_iter().collect();
+        let same: HashMap<PathBuf, char> = [entry("/r/b.ts", '?'), entry("/r/a.ts", 'M')].into_iter().collect();
+        assert_eq!(status_sig(&a), status_sig(&same));
+        let badge_changed: HashMap<PathBuf, char> =
+            [entry("/r/a.ts", 'A'), entry("/r/b.ts", '?')].into_iter().collect();
+        assert_ne!(status_sig(&a), status_sig(&badge_changed));
+        let one_less: HashMap<PathBuf, char> = [entry("/r/a.ts", 'M')].into_iter().collect();
+        assert_ne!(status_sig(&a), status_sig(&one_less));
+        assert_eq!(status_sig(&HashMap::new()), 0);
+    }
+
+    #[test]
+    fn a_gutter_diff_is_applied_only_to_the_text_it_was_computed_for() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        use crate::doc::{GitKind, GitMark};
+        assert!(marks_current((7, 3), (7, 3), false));
+        assert!(!marks_current((7, 4), (7, 3), false), "edited since");
+        assert!(!marks_current((8, 3), (7, 3), false), "another buffer (reloaded)");
+        assert!(!marks_current((7, 3), (7, 3), true), "a new base is waiting for its own diff");
+        let _g = lock();
+        let dir = tmp("gitmarks");
+        let mut app = test_app(&dir);
+        let tick = |app: &mut App| app.git_marks_tick(Instant::now(), &mut |_| {});
+        app.docs[0].git_stale = false;
+        let path = app.docs[0].path().unwrap().to_path_buf();
+        let key = (app.docs[0].buf.gen_id(), app.docs[0].buf.version());
+        let mark = GitMark { line: 0, len: 1, kind: GitKind::Added };
+        // An answer for an older text is dropped (and the file may be diffed again).
+        app.gitbg.marks_busy.insert(path.clone());
+        app.gitbg.marks_ch.0.send((path.clone(), (key.0, key.1 + 1), vec![mark])).unwrap();
+        tick(&mut app);
+        assert!(app.docs[0].git.is_empty());
+        assert!(!app.gitbg.marks_busy.contains(&path));
+        // The answer for the current text is applied.
+        app.gitbg.marks_ch.0.send((path.clone(), key, vec![mark])).unwrap();
+        tick(&mut app);
+        assert_eq!(app.docs[0].git.len(), 1);
+        // A document without a HEAD base has no marks.
+        app.docs[0].git_stale = true;
+        app.docs[0].changed_at = None;
+        tick(&mut app);
+        assert!(app.docs[0].git.is_empty() && !app.docs[0].git_stale);
+        // With a base the marks follow the buffer (computed right here in tests).
+        app.docs[0].git_base = Some("other\n".to_string());
+        app.docs[0].git_stale = true;
+        tick(&mut app);
+        assert_eq!(app.docs[0].git.len(), 1, "{:?}", app.docs[0].git);
+        drop(app);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

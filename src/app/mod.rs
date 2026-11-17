@@ -336,7 +336,8 @@ impl App {
             docs: Vec::new(),
             active: 0,
             tokenizers: HashMap::new(),
-            branch: git::branch(&root),
+            // Read by the `refresh_git_status` below, with the status.
+            branch: None,
             git_status: HashMap::new(),
             root,
             ws: Default::default(),

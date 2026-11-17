@@ -31,26 +31,9 @@ impl App {
         self.ide_tick(now, &mut want);
         self.term_tick(&mut want);
 
-        // Git gutter against the buffer, debounced.
-        let active = self.active;
-        for (i, d) in self.docs.iter_mut().enumerate() {
-            if !d.git_stale {
-                continue;
-            }
-            let due = d.changed_at.map_or(now, |t| t + Duration::from_millis(350));
-            if due > now && i == active {
-                want(due);
-                continue;
-            }
-            if i != active && d.changed_at.is_some() {
-                // background tabs refresh when activated
-            }
-            d.git_stale = false;
-            d.git = match (&d.git_base, d.buf.line_count() < 200_000) {
-                (Some(base), true) => git::marks(base, &d.buf.to_string()),
-                _ => Vec::new(),
-            };
-        }
+        // Git gutter against the buffer, debounced; the diff itself runs on a worker.
+        self.pump_git_base();
+        self.git_marks_tick(now, &mut want);
 
         self.pump_git_status();
         self.import_idx_tick(now, &mut want);
@@ -122,8 +105,9 @@ impl App {
                 continue;
             }
             d.conflicts_due = None;
-            let text = d.buf.to_string();
-            d.conflicts = if text.contains("<<<<<<<") { crate::gitx::parse_conflicts(&text) } else { Vec::new() };
+            // The rope is searched piece by piece; the text is only copied when there is a marker.
+            let has_marker = crate::gitx::chunks_contain(d.buf.snapshot().chunks(), "<<<<<<<");
+            d.conflicts = if has_marker { crate::gitx::parse_conflicts(&d.buf.to_string()) } else { Vec::new() };
         }
 
         // ESLint on a worker thread, a moment after typing stops.

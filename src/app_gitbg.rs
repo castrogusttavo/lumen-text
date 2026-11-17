@@ -17,8 +17,9 @@ use crate::{
     ui::{Canvas, Rect},
 };
 use std::{
+    collections::HashSet,
     path::PathBuf,
-    sync::mpsc::{Receiver, channel},
+    sync::mpsc::{Receiver, Sender, channel},
     time::{Duration, Instant},
 };
 
@@ -76,7 +77,83 @@ pub struct GitBg {
     pub rebase: Option<crate::gitrebase::RebasePlan>,
     /// A rebase stopped on conflicts: open the merge editor on the first conflicted file.
     pub rebase_merge: bool,
+    /// Hash of `App::git_status` as last assigned (`app_git::status_sig`); the Git panel compares
+    /// it on every frame.
+    pub status_sig: u64,
+    /// Gutter diffs computed on a worker (see `App::git_marks_tick`).
+    pub marks_ch: (Sender<MarksMsg>, Receiver<MarksMsg>),
+    /// Files whose gutter diff is running: one at a time per file.
+    pub marks_busy: HashSet<PathBuf>,
+    /// HEAD texts (the gutter's base) read on a worker (see `App::git_base_fetch`).
+    pub base: BaseFetch,
 }
+
+/// The HEAD text of a file, or None when it is untracked / outside a repository.
+pub type BaseMsg = (PathBuf, Option<String>);
+
+/// Requests for the HEAD text of open files: one worker takes them one at a time (a session
+/// with thirty tabs does not start thirty `git` processes at once).
+pub struct BaseFetch {
+    /// Queue of the worker; it starts with the first request and ends with the App.
+    pub req: Option<Sender<PathBuf>>,
+    pub ans: (Sender<BaseMsg>, Receiver<BaseMsg>),
+    /// Files asked for and not answered yet.
+    pub busy: HashSet<PathBuf>,
+    /// Files asked for again while their request was running: HEAD may have moved after the
+    /// worker read it, so that answer is dropped and the file is read once more.
+    pub again: HashSet<PathBuf>,
+}
+
+impl Default for BaseFetch {
+    fn default() -> Self {
+        BaseFetch { req: None, ans: channel(), busy: HashSet::new(), again: HashSet::new() }
+    }
+}
+
+impl BaseFetch {
+    /// Queue `path`; returns false when it is already waiting for an answer (it is then read
+    /// again when that answer arrives).
+    pub fn ask(&mut self, path: PathBuf, wake: &crate::lsp::Wake) -> bool {
+        if !self.busy.insert(path.clone()) {
+            self.again.insert(path);
+            return false;
+        }
+        let tx = self.req.get_or_insert_with(|| {
+            let (tx, rx) = channel::<PathBuf>();
+            let (ans, wake) = (self.ans.0.clone(), wake.clone());
+            std::thread::spawn(move || {
+                while let Ok(p) = rx.recv() {
+                    let text = git::head_text(&p);
+                    if ans.send((p, text)).is_err() {
+                        break;
+                    }
+                    wake();
+                }
+            });
+            tx
+        });
+        if tx.send(path.clone()).is_err() {
+            // The worker is gone: forget it, the next request starts another.
+            self.busy.remove(&path);
+            self.req = None;
+            return false;
+        }
+        true
+    }
+
+    /// Take one answer off the channel: `Some((path, Some(text)))` to apply, `Some((path,
+    /// None))` when the file was asked for again meanwhile and must be read once more.
+    pub fn take(&mut self) -> Option<(PathBuf, Option<Option<String>>)> {
+        let (path, text) = self.ans.1.try_recv().ok()?;
+        self.busy.remove(&path);
+        let fresh = !self.again.remove(&path);
+        Some((path, fresh.then_some(text)))
+    }
+}
+
+/// A finished gutter diff: the file, the buffer it was computed for (`gen_id`, `version`) and
+/// its marks.
+pub type MarksMsg = (PathBuf, (u64, u64), Vec<crate::doc::GitMark>);
 
 impl Default for GitBg {
     fn default() -> Self {
@@ -94,6 +171,10 @@ impl Default for GitBg {
             pr: Default::default(),
             rebase: None,
             rebase_merge: false,
+            status_sig: 0,
+            marks_ch: channel(),
+            marks_busy: HashSet::new(),
+            base: BaseFetch::default(),
         }
     }
 }
@@ -310,6 +391,67 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn head_text_requests_are_one_per_file_and_a_repeat_reads_again() {
+        let dir = std::env::temp_dir().join(format!("lumen-basefetch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |a: &[&str]| {
+            std::process::Command::new("git").arg("-C").arg(&dir).args(a).output().unwrap();
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        let f = dir.join("f.ts");
+        std::fs::write(&f, "one\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "x"]);
+
+        // Answers put on the channel by hand: applied, or dropped when the file was asked again.
+        let mut b = BaseFetch::default();
+        assert!(b.take().is_none());
+        b.busy.insert(f.clone());
+        b.ans.0.send((f.clone(), Some("old\n".into()))).unwrap();
+        assert_eq!(b.take(), Some((f.clone(), Some(Some("old\n".to_string())))));
+        assert!(b.busy.is_empty());
+        b.busy.insert(f.clone());
+        b.again.insert(f.clone());
+        b.ans.0.send((f.clone(), Some("old\n".into()))).unwrap();
+        assert_eq!(b.take(), Some((f.clone(), None)), "asked again: read once more");
+        assert!(b.busy.is_empty() && b.again.is_empty());
+
+        // The real worker: the second request for a file in flight is folded into the first.
+        let woken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wake: crate::lsp::Wake = {
+            let w = woken.clone();
+            std::sync::Arc::new(move || {
+                w.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+        let wait = |b: &mut BaseFetch| {
+            let end = Instant::now() + Duration::from_secs(20);
+            loop {
+                if let Some(a) = b.take() {
+                    return a;
+                }
+                assert!(Instant::now() < end, "no answer from the worker");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        assert!(b.ask(f.clone(), &wake));
+        assert!(!b.ask(f.clone(), &wake), "already waiting");
+        assert_eq!(wait(&mut b), (f.clone(), None));
+        assert!(b.ask(f.clone(), &wake));
+        let missing = dir.join("missing.ts");
+        assert!(b.ask(missing.clone(), &wake), "another file queues behind it");
+        assert_eq!(wait(&mut b), (f.clone(), Some(Some("one\n".to_string()))));
+        assert_eq!(wait(&mut b), (missing, Some(None)), "untracked: no base");
+        assert!(b.busy.is_empty() && b.again.is_empty());
+        assert!(woken.load(std::sync::atomic::Ordering::SeqCst) >= 2, "the event loop is woken per answer");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn polling_waits_for_focus_idle_and_the_deadline() {

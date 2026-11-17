@@ -88,25 +88,19 @@ impl App {
         self.focus = crate::app::Focus::Editor;
     }
 
+    /// HEAD moved (commit, checkout, pull): every open file gets a new gutter base, read on a
+    /// worker (see `git_base_fetch`).
     pub(crate) fn sync_docs_with_head(&mut self) {
-        for d in &mut self.docs {
-            if let Some(p) = d.path().map(Path::to_path_buf) {
-                d.git_base = git::head_text(&p);
-                d.git_stale = true;
-            }
-        }
+        let paths: Vec<PathBuf> = self.docs.iter().filter_map(|d| d.path().map(Path::to_path_buf)).collect();
+        self.git_base_fetch(paths);
     }
 
     /// Re-read status / history when the index, HEAD or the working tree moved under us.
     pub(super) fn gp_sync(&mut self, gp: &mut GitPanel) {
         let mut h = DefaultHasher::new();
-        let mut acc = 0u64;
-        for (p, b) in &self.git_status {
-            let mut e = DefaultHasher::new();
-            (p, b).hash(&mut e);
-            acc ^= e.finish();
-        }
-        acc.hash(&mut h);
+        // The status entries are hashed once, where the status is assigned (`apply_git_status`),
+        // not on every frame; the length catches a status emptied by a project switch.
+        (self.gitbg.status_sig, self.git_status.len()).hash(&mut h);
         let groot = self.git_root();
         groot.hash(&mut h);
         let gitdir = gp.top.clone().unwrap_or_else(|| groot.clone()).join(".git");
@@ -122,7 +116,8 @@ impl App {
         }
         if sig != gp.sig {
             gp.sig = sig;
-            gp.refresh();
+            // On a worker: the frame is drawn with what the panel has, the answer redraws it.
+            gp.refresh_bg();
         }
         if hist != gp.hist_sig {
             gp.hist_sig = hist;
@@ -381,6 +376,10 @@ impl App {
         let Some(mut gp) = self.gitpanel.take() else { return };
         // A page of history arrived from the worker (it woke the event loop).
         if gp.poll_history() && gp.tab == Tab::History {
+            self.request_redraw();
+        }
+        // The status / upstream / stashes read on a worker arrived (see `GitPanel::refresh_bg`).
+        if gp.pump_refresh() {
             self.request_redraw();
         }
         if let Some(job) = gp.job.as_mut() {
