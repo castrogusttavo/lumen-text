@@ -482,10 +482,12 @@ impl App {
             let Some(li) = self.ensure_lsp(i) else { continue };
             if !self.docs[i].lsp_open {
                 if let Some(p) = Self::doc_text_params(&self.docs[i]) {
+                    let uri = p["textDocument"]["uri"].clone();
                     self.lsps[li].notify("textDocument/didOpen", p);
                     self.docs[i].lsp_open = true;
                     self.docs[i].changed_at = None;
                     pull.push(li);
+                    self.warm_auto_import(li, uri);
                 }
                 continue;
             }
@@ -1105,7 +1107,7 @@ impl App {
                 }
             }
             Pending::Rename => self.apply_workspace_edit(&v),
-            Pending::Blocking => {}
+            Pending::Blocking | Pending::Warm => {}
             Pending::CodeActions => self.on_code_actions(li, &v),
             Pending::Signature { uri } => self.on_signature(&uri, &v),
             what @ (Pending::Symbols { .. } | Pending::SymbolsCache { .. }) => {
@@ -1436,6 +1438,20 @@ impl App {
             return self.say("no symbols");
         }
         self.open_symbols_with(items);
+    }
+
+    /// tsgo builds its auto-import index on the first code action / completion (2-11 s on a big
+    /// project). Ask for a throwaway one right after the first file opens so the user's first
+    /// `Ctrl+.` finds it ready. Only when auto-import is on and only once per server.
+    fn warm_auto_import(&mut self, li: usize, uri: Value) {
+        if !self.auto_import_on() || self.lsps[li].name != "tsgo" || self.lsps[li].warmed {
+            return;
+        }
+        self.lsps[li].warmed = true;
+        let range = json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}});
+        let diag = json!({"range": range.clone(), "message": "Cannot find name 'lumenWarmUp'.", "code": 2304, "severity": 1, "source": "ts"});
+        let params = json!({"textDocument": {"uri": uri}, "range": range, "context": {"diagnostics": [diag]}});
+        self.lsps[li].request("textDocument/codeAction", params, Pending::Warm);
     }
 
     pub fn code_actions(&mut self) {
