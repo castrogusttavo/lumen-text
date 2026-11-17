@@ -144,6 +144,8 @@ pub enum Pending {
         incoming: bool,
     },
     Organize,
+    /// Throwaway request that makes tsgo build its auto-import index; the answer is ignored.
+    Warm,
     /// `workspace/symbol` for the Go to picker's `#` mode; `serial` tells a stale answer (see `app_goto`).
     WorkspaceSymbols {
         serial: u64,
@@ -202,6 +204,8 @@ pub struct Lsp {
     pub name: String,
     /// Narrow mirror this server runs in (None: the real project directory).
     pub mirror: Option<PathBuf>,
+    /// The auto-import index warm-up was already requested from this server.
+    pub warmed: bool,
     pub includes: Vec<PathBuf>,
     /// Set for servers from the registry (everything but tsgo and Biome): the registry id, and what they need at runtime.
     pub generic: Option<Generic>,
@@ -350,6 +354,7 @@ impl Lsp {
             caps: Value::Null,
             name: name.to_string(),
             mirror: None,
+            warmed: false,
             includes: Vec::new(),
             open_uris: HashSet::new(),
             idle_since: None,
