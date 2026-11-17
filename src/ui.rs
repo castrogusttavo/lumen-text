@@ -3,10 +3,13 @@
 
 use crate::theme::Rgba;
 use cosmic_text::{
-    Align, Attrs, Buffer as TextBuf, Color, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping, SwashCache,
-    UnderlineStyle, Wrap, fontdb,
+    Align, Attrs, AttrsList, Buffer as TextBuf, BufferLine, Color, Family, FeatureTag, FontFeatures, FontSystem,
+    LineEnding, Metrics, PhysicalGlyph, Renderer, Shaping, SwashCache, SwashContent, SwashImage, UnderlineStyle, Wrap,
+    fontdb,
 };
 use std::{
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -152,6 +155,111 @@ fn blend_px(dst: u32, c: Rgba) -> u32 {
     }
     let mix = |d: u32, s: u8| (d * (255 - a) + s as u32 * a) / 255;
     (mix((dst >> 16) & 0xff, c.0) << 16) | (mix((dst >> 8) & 0xff, c.1) << 8) | mix(dst & 0xff, c.2)
+}
+
+/// Blend `c` over every pixel of the device rect `r` that lies inside `clip` (itself inside a
+/// canvas `w` pixels wide): the same pixels as `blend_px` one at a time, a row slice at a time.
+fn blend_rect(px: &mut [u32], w: i32, clip: Rect, r: Rect, c: Rgba) {
+    let r = r.intersect(&clip);
+    // Blending alpha 0 leaves a canvas pixel (0x00RRGGBB) as it is.
+    if r.w <= 0 || r.h <= 0 || c.3 == 0 {
+        return;
+    }
+    for y in r.y..r.bottom() {
+        let at = (y * w + r.x) as usize;
+        for p in &mut px[at..at + r.w as usize] {
+            *p = blend_px(*p, c);
+        }
+    }
+}
+
+/// Blend a rasterized glyph whose origin is at the device position (x, y): its box is clipped
+/// once, then every row is blended as a slice, skipping the pixels the glyph does not cover.
+/// A mask is tinted with `base`; a colour bitmap (emoji) keeps its own colours. Same pixels as
+/// `blend_px` called for each pixel of the image.
+fn blend_image(px: &mut [u32], w: i32, clip: Rect, x: i32, y: i32, image: &SwashImage, base: Color) {
+    let (x0, y0) = (x + image.placement.left, y - image.placement.top);
+    let (iw, ih) = (image.placement.width as i32, image.placement.height as i32);
+    let vis = Rect::new(x0, y0, iw, ih).intersect(&clip);
+    if vis.w <= 0 || vis.h <= 0 {
+        return;
+    }
+    let n = vis.w as usize;
+    let (r, g, b) = (base.r(), base.g(), base.b());
+    for py in vis.y..vis.bottom() {
+        let src = ((py - y0) * iw + (vis.x - x0)) as usize;
+        let at = (py * w + vis.x) as usize;
+        let dst = &mut px[at..at + n];
+        match image.content {
+            SwashContent::Mask => {
+                let Some(mask) = image.data.get(src..src + n) else { return };
+                for (d, &a) in dst.iter_mut().zip(mask) {
+                    if a != 0 {
+                        *d = blend_px(*d, Rgba(r, g, b, a));
+                    }
+                }
+            }
+            SwashContent::Color => {
+                let Some(rgba) = image.data.get(src * 4..(src + n) * 4) else { return };
+                for (d, s) in dst.iter_mut().zip(rgba.as_chunks::<4>().0) {
+                    if s[3] != 0 {
+                        *d = blend_px(*d, Rgba(s[0], s[1], s[2], s[3]));
+                    }
+                }
+            }
+            SwashContent::SubpixelMask => return,
+        }
+    }
+}
+
+/// Paints what cosmic-text lays out (glyphs, underlines) into canvas pixels: positions are
+/// shifted by (`ox`, `oy`) and everything is clipped to `clip`, a device rect inside the canvas.
+struct Blit<'a> {
+    fonts: &'a mut FontSystem,
+    swash: &'a mut SwashCache,
+    px: &'a mut [u32],
+    /// Canvas width in device pixels.
+    w: i32,
+    clip: Rect,
+    ox: i32,
+    oy: i32,
+}
+
+impl Renderer for Blit<'_> {
+    fn rectangle(&mut self, x: i32, y: i32, w: u32, h: u32, color: Color) {
+        let r = Rect::new(x + self.ox, y + self.oy, w as i32, h as i32);
+        blend_rect(self.px, self.w, self.clip, r, Rgba(color.r(), color.g(), color.b(), color.a()));
+    }
+
+    fn glyph(&mut self, glyph: PhysicalGlyph, color: Color) {
+        if let Some(image) = self.swash.get_image(self.fonts, glyph.cache_key) {
+            blend_image(self.px, self.w, self.clip, glyph.x + self.ox, glyph.y + self.oy, image, color);
+        }
+    }
+}
+
+/// Draw a text buffer with its origin at the device position (x, y), clipped to the device rect
+/// `clip` (inside the canvas). What `Buffer::draw` does (glyphs in their own colour, white
+/// without one, then the decorations of each run), without a callback per pixel.
+fn blit_buffer(
+    buf: &mut TextBuf,
+    fonts: &mut FontSystem,
+    swash: &mut SwashCache,
+    cv: &mut Canvas,
+    x: i32,
+    y: i32,
+    clip: Rect,
+) {
+    buf.shape_until_scroll(fonts, false);
+    let white = Color::rgba(255, 255, 255, 255);
+    let mut blit = Blit { fonts, swash, px: &mut *cv.px, w: cv.w, clip, ox: x, oy: y };
+    for run in buf.layout_runs() {
+        for glyph in run.glyphs {
+            let physical = glyph.physical((0., run.line_y), 1.0);
+            blit.glyph(physical, glyph.color_opt.unwrap_or(white));
+        }
+        cosmic_text::render_decoration(&mut blit, &run, white);
+    }
 }
 
 pub struct Canvas<'a> {
@@ -528,16 +636,193 @@ mod hbar_tests {
     }
 }
 
+/// Rows of coloured code for [`TextCtx::draw_rows`]: all the text in one `String`, the pieces as
+/// ranges of it. Cleared and refilled every frame, so once it has grown to a screenful drawing
+/// allocates nothing for the text (a `Vec<(String, Rgba, u8)>` costs one `String` per token).
+#[derive(Default)]
+pub struct CodeRows {
+    text: String,
+    /// (start byte, end byte in `text`, colour, style flags) of every piece, row after row.
+    pieces: Vec<(usize, usize, Rgba, u8)>,
+    /// Index in `pieces` where each row ends.
+    rows: Vec<usize>,
+}
+
+impl CodeRows {
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.pieces.clear();
+        self.rows.clear();
+    }
+
+    /// Append a piece to the row being built (empty text adds nothing).
+    pub fn push(&mut self, text: &str, color: Rgba, flags: u8) {
+        let at = self.open();
+        self.text.push_str(text);
+        self.close(at, color, flags);
+    }
+
+    /// Append a formatted piece (`format_args!`) without building a `String` first.
+    pub fn push_fmt(&mut self, args: std::fmt::Arguments, color: Rgba, flags: u8) {
+        let at = self.open();
+        let _ = std::fmt::Write::write_fmt(&mut self.text, args);
+        self.close(at, color, flags);
+    }
+
+    /// Start a piece char by char: [`put`](Self::put) its chars, then [`close`](Self::close) it
+    /// with the value returned here.
+    pub fn open(&mut self) -> usize {
+        self.text.len()
+    }
+
+    pub fn put(&mut self, ch: char) {
+        self.text.push(ch);
+    }
+
+    /// End the piece started by [`open`](Self::open) (nothing is added when it got no chars).
+    pub fn close(&mut self, at: usize, color: Rgba, flags: u8) {
+        if self.text.len() > at {
+            self.pieces.push((at, self.text.len(), color, flags));
+        }
+    }
+
+    /// End the current row (a row without pieces is a blank line).
+    pub fn end_row(&mut self) {
+        self.rows.push(self.pieces.len());
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// The pieces of row `r` as (text, colour, flags).
+    pub fn row(&self, r: usize) -> impl Iterator<Item = (&str, Rgba, u8)> {
+        let from = if r == 0 { 0 } else { self.rows[r - 1] };
+        self.pieces[from..self.rows[r]].iter().map(|&(a, b, c, f)| (&self.text[a..b], c, f))
+    }
+
+    /// What the shaped form of row `r` depends on, besides the fonts: the text, colour and style
+    /// of its pieces, and `advanced` (the shaping mode of the frame).
+    fn row_key(&self, r: usize, advanced: bool) -> u64 {
+        let mut h = DefaultHasher::new();
+        advanced.hash(&mut h);
+        for (text, c, flags) in self.row(r) {
+            text.hash(&mut h);
+            (c.0, c.1, c.2, c.3, flags).hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// True when a rich text made of these rows joined by "\n" has exactly one paragraph per
+    /// row: no row holds a char that ends a paragraph (bidi class B: the control chars
+    /// U+000A, U+000D, U+001C..U+001E, then U+0085 and U+2029). Any control char says no.
+    fn one_paragraph_per_row(&self) -> bool {
+        !self.text.bytes().any(|b| b < 0x20) && (self.text.is_ascii() || !self.text.contains(['\u{85}', '\u{2029}']))
+    }
+}
+
+/// Shaped rows are dropped when more than this many are kept ...
+const ROW_CACHE_MAX: usize = 256;
+/// ... except those used by the last `ROW_CACHE_KEEP` calls of `draw_rows` (a frame makes two
+/// per editor pane: the text and the line numbers).
+const ROW_CACHE_KEEP: u64 = 16;
+
+/// Shaped and laid out rows of code, kept between frames. Shaping is most of what drawing code
+/// costs, and from one frame to the next nearly every row is the same: unchanged while the
+/// caret blinks or one line is typed in, moved up or down while the view scrolls.
+///
+/// A row is a cosmic-text `BufferLine`, which carries its own shaping and layout. It is found
+/// again by [`CodeRows::row_key`] (the row's text, colours and styles, and the shaping mode);
+/// everything else it depends on is in `sig`, and another `sig` empties the cache. To draw, the
+/// lines of the visible rows are moved into a text buffer (which places and paints them as it
+/// places the lines of a rich text) and moved back afterwards.
+#[derive(Default)]
+struct RowCache {
+    /// Lines by row key, with the `draw` that last used them. Several rows of one frame can
+    /// have the same key (blank lines, closing braces), hence a list.
+    lines: HashMap<u64, (Vec<BufferLine>, u64)>,
+    /// Lines held in `lines`.
+    count: usize,
+    /// Number of the current `draw_rows` call.
+    draw: u64,
+    /// Hash of what every kept line was shaped and laid out with: font family, weight, letter
+    /// spacing, features, size, UI scale, the font settings generation and the loaded faces.
+    sig: u64,
+    /// Keys of the rows of the call in progress (reused).
+    keys: Vec<u64>,
+    /// Rows shaped from scratch so far (tests check what the cache saves).
+    #[cfg(test)]
+    built: usize,
+}
+
+impl RowCache {
+    fn clear(&mut self) {
+        self.lines.clear();
+        self.count = 0;
+    }
+
+    /// Keep the cache bounded: past `ROW_CACHE_MAX` lines, drop those not used recently, and if
+    /// that is still too many (paging through a file), all but the ones just drawn.
+    fn sweep(&mut self) {
+        if self.count <= ROW_CACHE_MAX {
+            return;
+        }
+        let oldest = self.draw.saturating_sub(ROW_CACHE_KEEP);
+        self.lines.retain(|_, e| e.1 > oldest);
+        self.count = self.lines.values().map(|e| e.0.len()).sum();
+        if self.count > 2 * ROW_CACHE_MAX {
+            let now = self.draw;
+            self.lines.retain(|_, e| e.1 == now);
+            self.count = self.lines.values().map(|e| e.0.len()).sum();
+        }
+    }
+}
+
+/// Row `r` of `rows` as the line a rich text would hold for it: the text of its pieces, each
+/// piece's attributes over its bytes, left aligned.
+fn row_line(rows: &CodeRows, r: usize, attrs: &Attrs, shaping: Shaping) -> BufferLine {
+    let mut text = String::new();
+    let mut list = AttrsList::new(attrs);
+    for (piece, c, flags) in rows.row(r) {
+        let at = text.len();
+        text.push_str(piece);
+        let a = styled(attrs, c, flags);
+        if a != list.defaults() {
+            list.add_span(at..text.len(), &a);
+        }
+    }
+    let mut line = BufferLine::new(text, LineEnding::default(), list, shaping);
+    line.set_align(Some(Align::Left));
+    line
+}
+
+/// Buffers the editor's draw path refills every frame, kept here (one `TextCtx` serves every
+/// document) so their allocations are reused: taken with `std::mem::take` while a document
+/// draws and put back when it is done.
+#[derive(Default)]
+pub struct DrawScratch {
+    /// Text of the visible lines.
+    pub lines: Vec<String>,
+    /// Rows of the body text, then of the gutter.
+    pub rows: CodeRows,
+}
+
 pub struct TextCtx {
     pub fonts: FontSystem,
     pub swash: SwashCache,
     buf: TextBuf,
     ui_buf: TextBuf,
+    /// Buffer of [`draw_rows`](Self::draw_rows): empty between calls, its lines live in `rows`.
+    code_buf: TextBuf,
+    rows: RowCache,
     family: Option<String>,
     ui_family: Option<String>,
     pub cell_w: f32,
     pub icons: crate::icons::Icons,
-    widths: std::collections::HashMap<(String, bool), f32>,
+    /// Measured UI text widths, regular and bold (indexed by `bold as usize`): probed by `&str`.
+    widths: [std::collections::HashMap<String, f32>; 2],
+    /// Buffers the editor's draw path fills every frame (see [`DrawScratch`]).
+    pub scratch: DrawScratch,
     /// Every font file already in the database (main, variants, UI, fallbacks), canonicalized.
     loaded: Vec<PathBuf>,
     fallbacks_loaded: bool,
@@ -865,17 +1150,21 @@ impl TextCtx {
         let sys_all = family.is_none();
         let buf = TextBuf::new(&mut fonts, Metrics::new(font_size() * scale(), line_h() * scale()));
         let ui_buf = TextBuf::new(&mut fonts, Metrics::new(ui_size() * scale(), ui_line() * scale()));
+        let code_buf = TextBuf::new(&mut fonts, Metrics::new(font_size() * scale(), line_h() * scale()));
         Self {
             fonts,
             swash: SwashCache::new(),
             buf,
             ui_buf,
+            code_buf,
+            rows: RowCache::default(),
             default_family: family.clone(),
             default_ui_family: ui_family.clone(),
             family,
             ui_family,
             cell_w,
             widths: Default::default(),
+            scratch: DrawScratch::default(),
             icons: crate::icons::Icons::new(),
             loaded,
             fallbacks_loaded: false,
@@ -975,7 +1264,8 @@ impl TextCtx {
         let db = std::mem::take(self.fonts.db_mut());
         self.fonts = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
         self.swash = SwashCache::new();
-        self.widths.clear();
+        self.rows.clear();
+        self.clear_widths();
         self.italic_ok = None;
         crate::fontcfg::bump();
     }
@@ -1127,24 +1417,7 @@ impl TextCtx {
         b.set_text(text, a, Shaping::Advanced, Some(Align::Left));
         b.shape_until_scroll(&mut self.fonts, false);
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
-        let (x, y) = (sc(x), sc(y));
-        let (w, px) = (cv.w, &mut *cv.px);
-        b.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
-            for dy in 0..gh as i32 {
-                let py = gy + dy + y;
-                if py < clip.y || py >= clip.bottom() {
-                    continue;
-                }
-                for dx in 0..gw as i32 {
-                    let pxx = gx + dx + x;
-                    if pxx < clip.x || pxx >= clip.right() {
-                        continue;
-                    }
-                    let i = (py * w + pxx) as usize;
-                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
-                }
-            }
-        });
+        blit_buffer(&mut b, &mut self.fonts, &mut self.swash, cv, sc(x), sc(y), clip);
     }
 
     /// Width of `n` buffer cells for ligature tests: the shaped width of `text` in the buffer font.
@@ -1168,7 +1441,7 @@ impl TextCtx {
     /// which is in logical pixels but was measured at the old device size. Returns the scale in use.
     pub fn set_scale(&mut self, s: f32) -> f32 {
         let s = store_scale(s);
-        self.widths.clear();
+        self.clear_widths();
         self.remeasure();
         crate::fontcfg::bump();
         s
@@ -1198,6 +1471,117 @@ impl TextCtx {
 
     fn draw_spans(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(&str, Rgba, u8)], clip: Rect) {
         self.draw_spans_scaled(cv, x, y, pieces, clip, 1.0);
+    }
+
+    /// Draw rows of code, the first with its top-left at (x, y), clipped to `clip`. Same pixels
+    /// as [`draw_styled`](Self::draw_styled) with a "\n" piece after every row.
+    ///
+    /// Each row is shaped once and kept (see [`RowCache`]): a frame only shapes the rows it did
+    /// not draw before.
+    pub fn draw_rows(&mut self, cv: &mut Canvas, x: i32, y: i32, rows: &CodeRows, clip: Rect) {
+        if rows.row_count() == 0 || clip.w <= 0 || clip.h <= 0 {
+            return;
+        }
+        if !rows.one_paragraph_per_row() {
+            // A row would be split in two lines: only the rich text knows where.
+            return self.draw_rows_unshaped(cv, x, y, rows, clip);
+        }
+        // From here on, the steps of `draw_spans_scaled` for these rows.
+        if !self.fallbacks_loaded && needs_fallback(&rows.text) {
+            self.ensure_fallbacks();
+        }
+        let advanced = needs_fallback(&rows.text) || self.buffer_fancy();
+        let family = self.family.clone();
+        let mut attrs = self.buffer_attrs(&family);
+        let s = scale();
+        let sig = {
+            let mut h = DefaultHasher::new();
+            attrs.hash(&mut h);
+            (self.buf_ligs, &self.buf_feats, s.to_bits(), font_size().to_bits()).hash(&mut h);
+            (crate::fontcfg::generation(), self.fonts.db().len()).hash(&mut h);
+            h.finish()
+        };
+        if advanced {
+            attrs = attrs.font_features(buffer_features(self.buf_ligs, &self.buf_feats));
+        }
+        let shaping = if advanced { Shaping::Advanced } else { Shaping::Basic };
+        if self.rows.sig != sig {
+            self.rows.clear();
+            self.rows.sig = sig;
+        }
+        self.rows.draw += 1;
+        let now = self.rows.draw;
+        let (row_h, height) = (line_h() * s, (clip.h as f32 + 2.0 * line_h()) * s);
+        self.code_buf.set_metrics_and_size(Metrics::new(font_size() * s, row_h), Some(4000.0 * s), Some(height));
+        self.code_buf.set_wrap(Wrap::None);
+        // A rich text is shaped line by line until the lines above one are taller than the
+        // buffer, and drawn up to the last shaped line: the rows past it are left out here.
+        let mut visible = 0;
+        let mut above = 0.0f32;
+        while visible < rows.row_count() && above <= height {
+            above += row_h;
+            visible += 1;
+        }
+
+        // One line per row: the kept one when the row was drawn before, else a new one.
+        let mut lines = std::mem::take(&mut self.code_buf.lines);
+        lines.clear();
+        let mut keys = std::mem::take(&mut self.rows.keys);
+        keys.clear();
+        for r in 0..visible {
+            let key = rows.row_key(r, advanced);
+            let kept = self.rows.lines.get_mut(&key).and_then(|e| {
+                e.1 = now;
+                e.0.pop()
+            });
+            let line = match kept {
+                Some(line) => {
+                    self.rows.count -= 1;
+                    line
+                }
+                // The same row earlier in this frame: a copy of it (shaped or not yet).
+                None => match keys.iter().position(|k| *k == key) {
+                    Some(same) => lines[same].clone(),
+                    None => {
+                        #[cfg(test)]
+                        {
+                            self.rows.built += 1;
+                        }
+                        row_line(rows, r, &attrs, shaping)
+                    }
+                },
+            };
+            lines.push(line);
+            keys.push(key);
+        }
+        self.code_buf.lines = lines;
+        // Shape and lay out the new lines (the kept ones already are).
+        for i in 0..keys.len() {
+            self.code_buf.line_layout(&mut self.fonts, i);
+        }
+        let dev = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
+        blit_buffer(&mut self.code_buf, &mut self.fonts, &mut self.swash, cv, sc(x), sc(y), dev);
+
+        // Back into the cache, for the next frame.
+        self.rows.count += keys.len();
+        for (line, key) in self.code_buf.lines.drain(..).zip(keys.drain(..)) {
+            let e = self.rows.lines.entry(key).or_insert_with(|| (Vec::new(), now));
+            e.1 = now;
+            e.0.push(line);
+        }
+        self.rows.keys = keys;
+        self.rows.sweep();
+    }
+
+    /// [`draw_rows`](Self::draw_rows) through one rich text: every row is shaped again.
+    fn draw_rows_unshaped(&mut self, cv: &mut Canvas, x: i32, y: i32, rows: &CodeRows, clip: Rect) {
+        let mut spans: Vec<(&str, Rgba, u8)> = Vec::with_capacity(rows.pieces.len() + rows.rows.len());
+        for r in 0..rows.row_count() {
+            spans.extend(rows.row(r));
+            // The line break belongs to no line: its colour and style are never used.
+            spans.push(("\n", Rgba(0, 0, 0, 255), 0));
+        }
+        self.draw_spans(cv, x, y, &spans, clip);
     }
 
     fn draw_spans_scaled(
@@ -1237,26 +1621,9 @@ impl TextCtx {
             Some(Align::Left),
         );
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
-        let (x, y) = (sc(x), sc(y));
-        let (w, px) = (cv.w, &mut *cv.px);
-        // Glyph pixels arrive as final RGBA: tinted with the piece color for mask glyphs, real
-        // colors for color glyphs (emoji bitmaps); decoration rectangles come through here too.
-        self.buf.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
-            for dy in 0..gh as i32 {
-                let py = gy + dy + y;
-                if py < clip.y || py >= clip.bottom() {
-                    continue;
-                }
-                for dx in 0..gw as i32 {
-                    let pxx = gx + dx + x;
-                    if pxx < clip.x || pxx >= clip.right() {
-                        continue;
-                    }
-                    let i = (py * w + pxx) as usize;
-                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
-                }
-            }
-        });
+        // Mask glyphs are tinted with the piece color, color glyphs (emoji bitmaps) keep their
+        // own; the decoration rectangles (underlines) are painted here too.
+        blit_buffer(&mut self.buf, &mut self.fonts, &mut self.swash, cv, sc(x), sc(y), clip);
     }
 
     /// Draw one row of bidirectional code on the cell grid (see `bidi`): `pieces` hold the row's
@@ -1349,14 +1716,9 @@ impl TextCtx {
                     let pg = g.physical((dx, oy + run.line_y), 1.0);
                     let (bx, by) = (pg.x, pg.y);
                     let color = g.color_opt.unwrap_or(white);
-                    self.swash.with_pixels(&mut self.fonts, pg.cache_key, color, |gx, gy, c| {
-                        let (pxx, py) = (bx + gx, by + gy);
-                        if py < clip.y || py >= clip.bottom() || pxx < clip.x || pxx >= clip.right() {
-                            return;
-                        }
-                        let k = (py * w + pxx) as usize;
-                        px[k] = blend_px(px[k], Rgba(c.r(), c.g(), c.b(), c.a()));
-                    });
+                    if let Some(image) = self.swash.get_image(&mut self.fonts, pg.cache_key) {
+                        blend_image(px, w, clip, bx, by, image, color);
+                    }
                 }
             }
         }
@@ -1364,7 +1726,7 @@ impl TextCtx {
 
     /// Width in px of `text` in the UI font.
     pub fn ui_width(&mut self, text: &str, bold: bool) -> i32 {
-        if let Some(w) = self.widths.get(&(text.to_string(), bold)) {
+        if let Some(w) = self.widths[bold as usize].get(text) {
             return w.round() as i32;
         }
         if !self.fallbacks_loaded && needs_fallback(text) {
@@ -1379,11 +1741,16 @@ impl TextCtx {
         b.set_text(text, &a, Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.fonts, false);
         let w = b.layout_runs().next().map_or(0.0, |r| r.line_w) / s;
-        if self.widths.len() > 4000 {
-            self.widths.clear();
+        if self.widths[0].len() + self.widths[1].len() > 4000 {
+            self.clear_widths();
         }
-        self.widths.insert((text.to_string(), bold), w);
+        self.widths[bold as usize].insert(text.to_string(), w);
         w.round() as i32
+    }
+
+    fn clear_widths(&mut self) {
+        self.widths[0].clear();
+        self.widths[1].clear();
     }
 
     /// X offset (px, unscaled) of every char boundary of `text` in the UI font: `n + 1` values, the
@@ -1465,6 +1832,21 @@ impl TextCtx {
         bold: bool,
         italic: bool,
     ) {
+        let spans: Vec<(&str, Rgba)> = pieces.iter().map(|(s, c)| (s.as_str(), *c)).collect();
+        self.draw_ui_spans(cv, x, y, &spans, clip, bold, italic);
+    }
+
+    /// [`draw_ui_pieces_i`](Self::draw_ui_pieces_i) over borrowed text: nothing is copied.
+    fn draw_ui_spans(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        pieces: &[(&str, Rgba)],
+        clip: Rect,
+        bold: bool,
+        italic: bool,
+    ) {
         if pieces.is_empty() || clip.w <= 0 || clip.h <= 0 {
             return;
         }
@@ -1483,37 +1865,19 @@ impl TextCtx {
             Some(ui_line() * 2.0 * s),
         );
         self.ui_buf.set_wrap(Wrap::None);
-        let spans: Vec<(&str, Attrs)> =
-            pieces.iter().map(|(s, c)| (s.as_str(), base.clone().color(to_color(*c)))).collect();
+        let spans = pieces.iter().map(|(s, c)| (*s, base.clone().color(to_color(*c))));
         self.ui_buf.set_rich_text(spans, &base, Shaping::Advanced, Some(Align::Left));
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
-        let (x, y) = (sc(x), sc(y));
-        let (w, px) = (cv.w, &mut *cv.px);
-        self.ui_buf.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
-            for dy in 0..gh as i32 {
-                let py = gy + dy + y;
-                if py < clip.y || py >= clip.bottom() {
-                    continue;
-                }
-                for dx in 0..gw as i32 {
-                    let pxx = gx + dx + x;
-                    if pxx < clip.x || pxx >= clip.right() {
-                        continue;
-                    }
-                    let i = (py * w + pxx) as usize;
-                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
-                }
-            }
-        });
+        blit_buffer(&mut self.ui_buf, &mut self.fonts, &mut self.swash, cv, sc(x), sc(y), clip);
     }
 
     pub fn draw_ui(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool) {
-        self.draw_ui_pieces(cv, x, y, &[(text.to_string(), color)], clip, bold);
+        self.draw_ui_spans(cv, x, y, &[(text, color)], clip, bold, false);
     }
 
     /// [`draw_ui`](Self::draw_ui) in (synthetic) italic.
     pub fn draw_ui_italic(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool) {
-        self.draw_ui_pieces_i(cv, x, y, &[(text.to_string(), color)], clip, bold, true);
+        self.draw_ui_spans(cv, x, y, &[(text, color)], clip, bold, true);
     }
 
     /// True when italic UI text really renders slanted (the synthetic slant works). Measured once
@@ -1603,24 +1967,7 @@ impl TextCtx {
         b.set_text(text, &a, Shaping::Advanced, Some(Align::Left));
         b.shape_until_scroll(&mut self.fonts, false);
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
-        let (x, y) = (sc(x), sc(y));
-        let (w, px) = (cv.w, &mut *cv.px);
-        b.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
-            for dy in 0..gh as i32 {
-                let py = gy + dy + y;
-                if py < clip.y || py >= clip.bottom() {
-                    continue;
-                }
-                for dx in 0..gw as i32 {
-                    let pxx = gx + dx + x;
-                    if pxx < clip.x || pxx >= clip.right() {
-                        continue;
-                    }
-                    let i = (py * w + pxx) as usize;
-                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
-                }
-            }
-        });
+        blit_buffer(&mut b, &mut self.fonts, &mut self.swash, cv, sc(x), sc(y), clip);
     }
 
     /// Width in px of `text` in the UI font at `size` (uncached; callers cache).
@@ -1940,6 +2287,342 @@ mod tests {
             mb(m1.pss_kb, m3.pss_kb),
         );
         assert!(mb(m1.pss_kb, m3.pss_kb) < 6.0, "variants + fallbacks exceed the +6 MB budget");
+    }
+
+    #[test]
+    fn ui_width_cache_is_per_weight_and_dropped_with_the_fonts() {
+        let mut ctx = TextCtx::new(None);
+        let text = "Hello width";
+        let (regular, bold) = (ctx.ui_width(text, false), ctx.ui_width(text, true));
+        assert!(ctx.widths[0].contains_key(text) && ctx.widths[1].contains_key(text));
+        assert_eq!((ctx.ui_width(text, false), ctx.ui_width(text, true)), (regular, bold));
+        // The probe reads the cache (by `&str`): a planted value is what comes back, per weight.
+        ctx.widths[0].insert(text.to_string(), 1234.0);
+        assert_eq!(ctx.ui_width(text, false), 1234);
+        assert_eq!(ctx.ui_width(text, true), bold, "bold has its own entry");
+        // New fonts: nothing measured with the old ones survives.
+        ctx.rebuild_fonts();
+        assert!(ctx.widths[0].is_empty() && ctx.widths[1].is_empty());
+        assert_eq!(ctx.ui_width(text, false), regular, "measured again");
+    }
+
+    #[test]
+    fn draw_ui_draws_what_draw_ui_pieces_draws() {
+        let mut ctx = TextCtx::new(None);
+        let color = Rgba(240, 200, 120, 255);
+        let clip = Rect::new(0, 0, 200, 30);
+        let text = "Find é in files";
+        for italic in [false, true] {
+            let (mut a, mut b) = (vec![0u32; 200 * 30], vec![0u32; 200 * 30]);
+            let mut cv = Canvas { px: &mut a, w: 200, h: 30 };
+            if italic {
+                ctx.draw_ui_italic(&mut cv, 3, 4, text, color, clip, true);
+            } else {
+                ctx.draw_ui(&mut cv, 3, 4, text, color, clip, true);
+            }
+            let mut cv = Canvas { px: &mut b, w: 200, h: 30 };
+            ctx.draw_ui_pieces_i(&mut cv, 3, 4, &[(text.to_string(), color)], clip, true, italic);
+            assert!(a.iter().any(|p| *p != 0), "nothing drawn");
+            assert_eq!(a, b, "italic {italic}");
+        }
+    }
+
+    /// A canvas background with every channel in use (the top byte is 0, as on a real canvas).
+    fn noise(n: usize) -> Vec<u32> {
+        (0..n).map(|i| ((i as u64 * 2_654_435_761) & 0x00ff_ffff) as u32).collect()
+    }
+
+    #[test]
+    fn rect_blend_is_the_per_pixel_blend() {
+        let (w, h) = (23i32, 17i32);
+        let clip = Rect::new(2, 3, 18, 11);
+        for c in [Rgba(255, 0, 80, 255), Rgba(10, 200, 30, 128), Rgba(1, 2, 3, 1), Rgba(9, 9, 9, 0)] {
+            for r in
+                [Rect::new(-4, -4, 12, 12), Rect::new(5, 6, 3, 2), Rect::new(15, 10, 30, 30), Rect::new(0, 0, 0, 5)]
+            {
+                let mut got = noise((w * h) as usize);
+                let mut want = got.clone();
+                blend_rect(&mut got, w, clip, r, c);
+                for y in r.y..r.bottom() {
+                    for x in r.x..r.right() {
+                        if clip.contains(x as f64, y as f64) {
+                            let i = (y * w + x) as usize;
+                            want[i] = blend_px(want[i], c);
+                        }
+                    }
+                }
+                assert_eq!(got, want, "{c:?} over {r:?}");
+            }
+        }
+    }
+
+    /// `Buffer::draw` with the callback this file used before: one clip test and one blend per pixel.
+    fn draw_per_pixel(ctx: &mut TextCtx, buf: &mut TextBuf, cv: &mut Canvas, x: i32, y: i32, clip: Rect) {
+        let (w, px) = (cv.w, &mut *cv.px);
+        buf.draw(&mut ctx.fonts, &mut ctx.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
+            for dy in 0..gh as i32 {
+                let py = gy + dy + y;
+                if py < clip.y || py >= clip.bottom() {
+                    continue;
+                }
+                for dx in 0..gw as i32 {
+                    let pxx = gx + dx + x;
+                    if pxx < clip.x || pxx >= clip.right() {
+                        continue;
+                    }
+                    let i = (py * w + pxx) as usize;
+                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn row_blit_gives_the_pixels_of_the_per_pixel_callback() {
+        let mut ctx = TextCtx::new(None);
+        let fam = ctx.family.clone();
+        let attrs = family_attrs(&fam);
+        let mut buf = TextBuf::new(&mut ctx.fonts, Metrics::new(15.0, 21.0));
+        buf.set_size(Some(2000.0), Some(200.0));
+        buf.set_wrap(Wrap::None);
+        buf.set_rich_text(
+            [
+                ("fn é", styled(&attrs, Rgba(86, 156, 214, 255), BOLD)),
+                (" main_w", styled(&attrs, Rgba(220, 220, 170, 255), UNDERLINE)),
+                ("\n  gyp", styled(&attrs, Rgba(206, 145, 120, 255), ITALIC)),
+                (" Q", styled(&attrs, Rgba(255, 255, 255, 255), BOLD | ITALIC | UNDERLINE)),
+            ],
+            &attrs,
+            Shaping::Advanced,
+            None,
+        );
+        let (w, h) = (150i32, 60i32);
+        let all = Rect::new(0, 0, w, h);
+        let mut drawn = 0;
+        for (x, y, clip) in [
+            (3, 2, all),
+            (-9, -7, all),
+            (120, 44, all),
+            (10, 4, Rect::new(14, 9, 31, 13)),
+            (3, 2, Rect::new(40, 20, 0, 0)),
+        ] {
+            let mut want = noise((w * h) as usize);
+            let mut got = want.clone();
+            let before = want.clone();
+            draw_per_pixel(&mut ctx, &mut buf, &mut Canvas { px: &mut want, w, h }, x, y, clip);
+            blit_buffer(&mut buf, &mut ctx.fonts, &mut ctx.swash, &mut Canvas { px: &mut got, w, h }, x, y, clip);
+            assert_eq!(got, want, "origin {x},{y} clip {clip:?}");
+            drawn += usize::from(want != before);
+            if clip.w == 0 {
+                assert_eq!(want, before, "an empty clip draws nothing");
+            }
+        }
+        assert!(drawn >= 4, "the text was not drawn");
+    }
+
+    /// The same rows as a [`CodeRows`] and as the pieces `draw_styled` takes.
+    fn rows_and_pieces(lines: &[Vec<(&str, Rgba, u8)>]) -> (CodeRows, Vec<(String, Rgba, u8)>) {
+        let (mut rows, mut pieces) = (CodeRows::default(), Vec::new());
+        for line in lines {
+            for &(s, c, f) in line {
+                rows.push(s, c, f);
+                pieces.push((s.to_string(), c, f));
+            }
+            rows.end_row();
+            pieces.push(("\n".to_string(), Rgba(1, 2, 3, 255), 0));
+        }
+        (rows, pieces)
+    }
+
+    const ROWS_W: i32 = 360;
+    const ROWS_H: i32 = 150;
+
+    fn paint_rows(ctx: &mut TextCtx, rows: &CodeRows, x: i32, y: i32, clip: Rect) -> Vec<u32> {
+        let mut px = vec![0x101418u32; (ROWS_W * ROWS_H) as usize];
+        let mut cv = Canvas { px: &mut px, w: ROWS_W, h: ROWS_H };
+        ctx.draw_rows(&mut cv, x, y, rows, clip);
+        px
+    }
+
+    fn paint_styled(ctx: &mut TextCtx, pieces: &[(String, Rgba, u8)], x: i32, y: i32, clip: Rect) -> Vec<u32> {
+        let mut px = vec![0x101418u32; (ROWS_W * ROWS_H) as usize];
+        let mut cv = Canvas { px: &mut px, w: ROWS_W, h: ROWS_H };
+        ctx.draw_styled(&mut cv, x, y, pieces, clip);
+        px
+    }
+
+    fn sample_rows() -> Vec<Vec<(&'static str, Rgba, u8)>> {
+        let (fg, kw, st) = (Rgba(212, 212, 212, 255), Rgba(86, 156, 214, 255), Rgba(206, 145, 120, 200));
+        vec![
+            vec![("fn", kw, BOLD), (" main() {", fg, 0)],
+            vec![("    let s = ", fg, 0), ("\"text é\"", st, ITALIC), (";", fg, 0)],
+            vec![],
+            vec![("    // note", Rgba(106, 153, 85, 255), ITALIC | UNDERLINE)],
+            vec![("}", fg, 0)],
+            vec![("}", fg, 0)],
+        ]
+    }
+
+    #[test]
+    fn draw_rows_draws_what_draw_styled_draws() {
+        let mut ctx = TextCtx::new(None);
+        let (rows, pieces) = rows_and_pieces(&sample_rows());
+        assert_eq!(rows.row_count(), 6);
+        assert_eq!(rows.row(1).count(), 3);
+        assert_eq!(rows.row(2).count(), 0, "a blank row has no pieces");
+        for (x, y, clip) in [
+            (4, 3, Rect::new(0, 0, ROWS_W, ROWS_H)),
+            (-30, -9, Rect::new(0, 0, ROWS_W, ROWS_H)),
+            (20, 10, Rect::new(40, 20, 120, 70)),
+        ] {
+            let want = paint_styled(&mut ctx, &pieces, x, y, clip);
+            assert!(want.iter().any(|p| *p != 0x101418), "nothing drawn at {x},{y}");
+            assert_eq!(paint_rows(&mut ctx, &rows, x, y, clip), want, "at {x},{y} clip {clip:?}");
+        }
+        // No rows: nothing is drawn (as `draw_styled` with no pieces).
+        let blank = paint_rows(&mut ctx, &CodeRows::default(), 4, 3, Rect::new(0, 0, ROWS_W, ROWS_H));
+        assert!(blank.iter().all(|p| *p == 0x101418));
+    }
+
+    /// Draw `lines` with `draw_rows` and with `draw_styled`: the pixels must be the same.
+    fn same_as_styled(ctx: &mut TextCtx, lines: &[Vec<(&str, Rgba, u8)>], x: i32, y: i32, what: &str) {
+        let clip = Rect::new(0, 0, ROWS_W, ROWS_H);
+        let (rows, pieces) = rows_and_pieces(lines);
+        let want = paint_styled(ctx, &pieces, x, y, clip);
+        assert!(want.iter().any(|p| *p != 0x101418), "{what}: nothing drawn");
+        assert_eq!(paint_rows(ctx, &rows, x, y, clip), want, "{what}");
+    }
+
+    #[test]
+    fn shaped_rows_are_reused_and_dropped_when_their_inputs_change() {
+        let mut ctx = TextCtx::new(None);
+        let mut lines = sample_rows();
+        // Six rows, five different ones (the two closing braces are one row drawn twice).
+        same_as_styled(&mut ctx, &lines, 4, 3, "first frame");
+        assert_eq!(ctx.rows.built, 5);
+        assert_eq!(ctx.rows.count, 6, "every line went back into the cache");
+        assert!(ctx.code_buf.lines.is_empty());
+        // The same frame again, then scrolled by a few pixels: nothing is shaped.
+        same_as_styled(&mut ctx, &lines, 4, 3, "same frame");
+        same_as_styled(&mut ctx, &lines, 4, -8, "scrolled a few pixels");
+        // Scrolled by two rows: the rows that stay are found again at their new place.
+        same_as_styled(&mut ctx, &lines[2..], 4, 3, "scrolled two rows");
+        same_as_styled(&mut ctx, &lines, 4, 3, "scrolled back");
+        assert_eq!(ctx.rows.built, 5, "an unchanged row was shaped again");
+
+        // Text: one row edited, one row shaped.
+        lines[0][1].0 = " main2() {";
+        same_as_styled(&mut ctx, &lines, 4, 3, "text of a row changed");
+        assert_eq!(ctx.rows.built, 6);
+        // Colour (a theme change) and style are part of the row too.
+        lines[4][0].1 = Rgba(255, 90, 90, 255);
+        same_as_styled(&mut ctx, &lines, 4, 3, "colour of a row changed");
+        assert_eq!(ctx.rows.built, 7);
+        lines[1][2].2 = BOLD;
+        same_as_styled(&mut ctx, &lines, 4, 3, "style of a row changed");
+        assert_eq!(ctx.rows.built, 8);
+
+        // Zoom: every row is shaped again at the new size.
+        let size = font_size();
+        // (The six rows are all different by now.)
+        ctx.set_zoom(size + 5.0);
+        same_as_styled(&mut ctx, &lines, 4, 3, "zoomed in");
+        assert_eq!(ctx.rows.built, 8 + 6, "rows shaped at the old size were kept");
+        same_as_styled(&mut ctx, &lines, 4, 3, "zoomed in, again");
+        assert_eq!(ctx.rows.built, 14);
+        ctx.set_zoom(size);
+        same_as_styled(&mut ctx, &lines, 4, 3, "zoom restored");
+        assert_eq!(ctx.rows.built, 20);
+
+        // Font settings (family, weight, features, letter spacing): the same.
+        ctx.buf_spacing = 1.5;
+        ctx.remeasure();
+        same_as_styled(&mut ctx, &lines, 4, 3, "letter spacing");
+        assert_eq!(ctx.rows.built, 26);
+        ctx.buf_spacing = 0.0;
+        ctx.buf_weight = 700;
+        same_as_styled(&mut ctx, &lines, 4, 3, "weight");
+        assert_eq!(ctx.rows.built, 32);
+        ctx.buf_weight = 400;
+        ctx.buf_ligs = true;
+        same_as_styled(&mut ctx, &lines, 4, 3, "ligatures (advanced shaping)");
+        assert_eq!(ctx.rows.built, 38);
+        ctx.buf_ligs = false;
+        ctx.rebuild_fonts();
+        assert_eq!(ctx.rows.count, 0, "new fonts empty the cache");
+        same_as_styled(&mut ctx, &lines, 4, 3, "fonts rebuilt");
+        assert_eq!(ctx.rows.built, 44);
+    }
+
+    #[test]
+    fn rows_below_the_clip_are_neither_shaped_nor_drawn() {
+        let mut ctx = TextCtx::new(None);
+        let fg = Rgba(212, 212, 212, 255);
+        let texts: Vec<String> = (0..30).map(|r| format!("row {r} of thirty")).collect();
+        let lines: Vec<Vec<(&str, Rgba, u8)>> = texts.iter().map(|t| vec![(t.as_str(), fg, 0)]).collect();
+        let (rows, pieces) = rows_and_pieces(&lines);
+        for clip in [Rect::new(0, 0, ROWS_W, 30), Rect::new(10, 20, 200, 1), Rect::new(0, 0, ROWS_W, ROWS_H)] {
+            for y in [3, -40, -200] {
+                let want = paint_styled(&mut ctx, &pieces, 4, y, clip);
+                assert_eq!(paint_rows(&mut ctx, &rows, 4, y, clip), want, "clip {clip:?}, y {y}");
+            }
+        }
+        assert!(ctx.rows.built >= 3, "{} rows shaped", ctx.rows.built);
+        assert!(ctx.rows.built < 30, "all {} rows were shaped for a clip a few rows tall", ctx.rows.built);
+    }
+
+    #[test]
+    fn rows_that_need_the_rich_text_are_drawn_by_it() {
+        let mut ctx = TextCtx::new(None);
+        let fg = Rgba(212, 212, 212, 255);
+        // A control char inside a row: no cached lines, same pixels as before.
+        let lines = vec![vec![("a\u{1c}b", fg, 0)], vec![("tab\there", fg, 0)], vec![("end", fg, BOLD)]];
+        same_as_styled(&mut ctx, &lines, 4, 3, "control chars");
+        assert_eq!((ctx.rows.built, ctx.rows.count), (0, 0));
+        let lines = vec![vec![("é a\u{2029}b", fg, 0)], vec![("end", fg, 0)]];
+        same_as_styled(&mut ctx, &lines, 4, 3, "paragraph separator");
+        assert_eq!(ctx.rows.built, 0);
+        // Chars beyond the code font switch the whole frame to advanced shaping: the rows are
+        // cached under that mode, and shaped again when the frame goes back to basic shaping.
+        let mut lines = vec![vec![("let a = 1;", fg, 0)], vec![("// a → b ✓", fg, ITALIC)]];
+        same_as_styled(&mut ctx, &lines, 4, 3, "wide chars");
+        assert_eq!(ctx.rows.built, 2);
+        same_as_styled(&mut ctx, &lines, 4, 3, "wide chars, again");
+        assert_eq!(ctx.rows.built, 2);
+        lines[1][0].0 = "// a to b";
+        same_as_styled(&mut ctx, &lines, 4, 3, "back to basic shaping");
+        assert_eq!(ctx.rows.built, 4, "a row shaped in advanced mode was drawn in a basic frame");
+    }
+
+    #[test]
+    fn the_row_cache_stays_bounded() {
+        let mut ctx = TextCtx::new(None);
+        let fg = Rgba(212, 212, 212, 255);
+        // Tall enough for every row of a frame to count as visible.
+        let clip = Rect::new(0, 0, ROWS_W, 4000);
+        let mut most = 0;
+        for frame in 0..60 {
+            // Forty rows no other frame has: paging through a file.
+            let texts: Vec<String> = (0..40).map(|r| format!("let v{frame}_{r} = {};", frame * r)).collect();
+            let lines: Vec<Vec<(&str, Rgba, u8)>> = texts.iter().map(|t| vec![(t.as_str(), fg, 0)]).collect();
+            let (rows, _) = rows_and_pieces(&lines);
+            paint_rows(&mut ctx, &rows, 4, 3, clip);
+            let held: usize = ctx.rows.lines.values().map(|e| e.0.len()).sum();
+            assert_eq!(held, ctx.rows.count, "the count follows the lines");
+            most = most.max(held);
+        }
+        assert_eq!(ctx.rows.built, 60 * 40);
+        assert!(most > 40 && most <= 2 * ROW_CACHE_MAX, "{most} lines kept");
+        // What is on screen is still drawn right after all the sweeping.
+        let lines = sample_rows();
+        same_as_styled(&mut ctx, &lines, 4, 3, "after paging");
+        // Rows used by the last few calls survive a sweep: two panes drawing in turn keep theirs.
+        let before = ctx.rows.built;
+        for _ in 0..4 {
+            same_as_styled(&mut ctx, &lines, 4, 3, "pane one");
+            same_as_styled(&mut ctx, &lines[1..4], 4, 3, "pane two");
+        }
+        assert_eq!(ctx.rows.built, before);
     }
 
     #[test]

@@ -68,7 +68,17 @@ impl Doc {
                 line_spans.push(hl.spans(&self.buf, theme, i));
             }
         }
-        let lines: Vec<String> = vlines.iter().map(|&i| self.buf.line(i)).collect();
+        // Text of the visible lines, in the strings of the previous frame (no allocation once
+        // they have grown to the line lengths on screen).
+        let lines = {
+            let mut lines = std::mem::take(&mut tx.scratch.lines);
+            lines.resize_with(vlines.len(), String::new);
+            let rope = self.buf.snapshot();
+            for (text, &i) in lines.iter_mut().zip(&vlines) {
+                crate::highlight::rope_line_into(&rope, i, text);
+            }
+            lines
+        };
         crate::perf::lap!("doc.highlight");
         // Semantic colors over the TextMate ones (only lines the last response still describes).
         if !self.sem.is_empty() {
@@ -507,6 +517,9 @@ impl Doc {
         let fg = theme.foreground;
         let vc0 = (left / cell_w as f64).floor().max(0.0) as usize;
         let vc1 = vc0 + ((rect.w - gutter_w) as f32 / cell_w).ceil() as usize + 3;
+        // The rows go into one reused text buffer (`CodeRows`), not into a `String` per token.
+        let mut code = std::mem::take(&mut tx.scratch.rows);
+        code.clear();
         let mut pieces: Vec<(String, Rgba, u8)> = Vec::new();
         let hint_fg = theme.line_number;
         let mut labels: Vec<(i32, i32, &str)> = Vec::new();
@@ -515,7 +528,7 @@ impl Doc {
             if bidi[r].is_some() {
                 // Drawn on its own below; the blank line keeps the rows (and any ghost rows) aligned.
             } else if hs.is_empty() {
-                window_pieces(
+                window_row(
                     &lines[row.lk],
                     line_spans.get(row.lk).and_then(|s| s.as_ref()),
                     row.b0,
@@ -524,7 +537,7 @@ impl Doc {
                     vc1,
                     tab_w,
                     fg,
-                    &mut pieces,
+                    &mut code,
                 );
             } else {
                 // Inlay hints: a faint pill behind each, its blank cells in the text; the labels
@@ -542,21 +555,25 @@ impl Doc {
                     fg,
                     &mut pieces,
                 );
+                for (s, c, f) in pieces.drain(..) {
+                    code.push(&s, c, f);
+                }
             }
-            pieces.push(("\n".to_string(), fg, 0));
+            code.end_row();
             if Some(r) == ghost_after {
                 let gc = fg.with_alpha(crate::inlay::GHOST_ALPHA);
                 for gl in &ghost_rest {
-                    let s: String = gl.chars().skip(vc0).take(vc1.saturating_sub(vc0)).collect();
-                    if !s.is_empty() {
-                        pieces.push((s, gc, crate::ui::ITALIC));
+                    let at = code.open();
+                    for ch in gl.chars().skip(vc0).take(vc1.saturating_sub(vc0)) {
+                        code.put(ch);
                     }
-                    pieces.push(("\n".to_string(), fg, 0));
+                    code.close(at, gc, crate::ui::ITALIC);
+                    code.end_row();
                 }
             }
         }
         let body_x = body.x + (vc0 as f32 * cell_w).round() as i32 - left.round() as i32;
-        tx.draw_styled(cv, body_x, rect.y + y_off, &pieces, body);
+        tx.draw_rows(cv, body_x, rect.y + y_off, &code, body);
         for (x, y, label) in labels.drain(..) {
             tx.draw_hint(cv, x, y, label, hint_fg, body);
         }
@@ -778,24 +795,31 @@ impl Doc {
         crate::perf::lap!("doc.diagnostics");
         // Gutter: numbers, fold chevrons, git bars, diagnostic markers.
         cv.fill(Rect::new(rect.x, rect.y, gutter_w, rect.h), theme.background);
-        let mut gutter: Vec<(String, Rgba)> = Vec::with_capacity(rows.len());
         let digits = self.gutter_digits();
-        for (r, row) in rows.iter().enumerate() {
-            let color = if row.line == cur_line { theme.line_number_active } else { theme.line_number };
-            gutter.push((if row.sub == 0 { format!("{:>digits$}\n", row.line + 1) } else { "\n".to_string() }, color));
-            if Some(r) == ghost_after {
-                gutter.extend((0..ghost_n).map(|_| ("\n".to_string(), color)));
-            }
-        }
         if crate::display::show_line_numbers() {
-            tx.draw(
+            // One row per visual row: the number on the first row of a line, blank on the others.
+            code.clear();
+            for (r, row) in rows.iter().enumerate() {
+                if row.sub == 0 {
+                    let color = if row.line == cur_line { theme.line_number_active } else { theme.line_number };
+                    code.push_fmt(format_args!("{:>digits$}", row.line + 1), color, 0);
+                }
+                code.end_row();
+                if Some(r) == ghost_after {
+                    for _ in 0..ghost_n {
+                        code.end_row();
+                    }
+                }
+            }
+            tx.draw_rows(
                 cv,
                 rect.x + cell_w.round() as i32,
                 rect.y + y_off,
-                &gutter,
+                &code,
                 Rect::new(rect.x, rect.y, gutter_w, rect.h),
             );
         }
+        tx.scratch.rows = code;
         let gclip = Rect::new(rect.x, rect.y, gutter_w, rect.h);
         for (r, row) in rows.iter().enumerate() {
             if row.sub != 0 {
@@ -931,7 +955,7 @@ impl Doc {
             }
             for (k, l) in heads.iter().enumerate() {
                 let y = rect.y + k as i32 * lh;
-                let num = format!("{:>digits$}", l + 1, digits = self.gutter_digits());
+                let num = format!("{:>digits$}", l + 1);
                 if crate::display::show_line_numbers() {
                     tx.draw_line(
                         cv,
@@ -1133,7 +1157,70 @@ impl Doc {
             cv.fill_clip(Rect::new(fx, caret_y, 3, 2), caret_color, body);
         }
 
+        tx.scratch.lines = lines;
         pending || self.animating || self.caret_animating
+    }
+}
+
+/// `window_pieces` (the coloured text of bytes [b0, b1) of one line, restricted to the visual
+/// columns [vc0, vc1) counted from b0, tabs expanded to spaces) written into `out` as the
+/// pieces of the row being built: no `String` per piece.
+#[allow(clippy::too_many_arguments)]
+fn window_row(
+    line: &str,
+    spans: Option<&Spans>,
+    b0: usize,
+    b1: usize,
+    vc0: usize,
+    vc1: usize,
+    tab_w: usize,
+    fg: Rgba,
+    out: &mut crate::ui::CodeRows,
+) {
+    let mut vc = 0usize;
+    // Emit line[x..y] clipped to the row.
+    let put = |x: usize, y: usize, color: Rgba, flags: u8, vc: &mut usize, out: &mut crate::ui::CodeRows| {
+        let (x, y) = (x.max(b0), y.min(b1));
+        if x >= y {
+            return;
+        }
+        let at = out.open();
+        for ch in line[x..y].chars() {
+            if *vc >= vc1 {
+                break;
+            }
+            if ch == '\t' {
+                let n = tab_w - *vc % tab_w;
+                for _ in 0..n {
+                    if *vc >= vc0 && *vc < vc1 {
+                        out.put(' ');
+                    }
+                    *vc += 1;
+                }
+            } else {
+                if *vc >= vc0 {
+                    out.put(ch);
+                }
+                *vc += 1;
+            }
+        }
+        out.close(at, color, flags);
+    };
+    match spans {
+        Some(sp) => {
+            let mut at = 0;
+            for &(s, e, c, f) in sp.iter() {
+                if s > at {
+                    put(at, s, fg, 0, &mut vc, out);
+                }
+                put(s, e, c, f, &mut vc, out);
+                at = e;
+            }
+            if at < line.len() {
+                put(at, line.len(), fg, 0, &mut vc, out);
+            }
+        }
+        None => put(0, line.len(), fg, 0, &mut vc, out),
     }
 }
 
@@ -1141,6 +1228,50 @@ impl Doc {
 /// warnings are wavy; see the diagnostics loop of [`Doc::draw`]).
 pub(crate) fn info_dot(dx: i32) -> bool {
     dx.rem_euclid(4) < 2
+}
+
+#[cfg(test)]
+mod window_row_tests {
+    use super::*;
+
+    /// `window_row` must cut a row exactly as `window_pieces` does, for any window.
+    #[test]
+    fn window_row_gives_the_pieces_of_window_pieces() {
+        let fg = Rgba(200, 200, 200, 255);
+        let (red, blue) = (Rgba(255, 0, 0, 255), Rgba(0, 0, 255, 255));
+        let line = "\tlet é = \"日本\";\t\t// done\tend";
+        let b = |needle: &str| line.find(needle).unwrap();
+        let spans: Spans = Rc::new(vec![
+            (b("let"), b("let") + 3, red, crate::ui::BOLD),
+            (b("\""), b(";"), blue, 0),
+            (b("//"), line.len(), red, crate::ui::ITALIC),
+        ]);
+        let mut out = crate::ui::CodeRows::default();
+        let mut rows = 0;
+        for sp in [None, Some(&spans)] {
+            for tab_w in [2usize, 4, 8] {
+                for (b0, b1) in [(0, line.len()), (b("let"), b("//")), (b("="), b("="))] {
+                    for (vc0, vc1) in [(0usize, 200usize), (3, 9), (5, 6), (0, 0), (40, 60), (7, 31)] {
+                        let mut want: Vec<(String, Rgba, u8)> = Vec::new();
+                        window_pieces(line, sp, b0, b1, vc0, vc1, tab_w, fg, &mut want);
+                        window_row(line, sp, b0, b1, vc0, vc1, tab_w, fg, &mut out);
+                        out.end_row();
+                        let got: Vec<(String, Rgba, u8)> =
+                            out.row(rows).map(|(s, c, f)| (s.to_string(), c, f)).collect();
+                        assert_eq!(got, want, "tab {tab_w}, bytes {b0}..{b1}, columns {vc0}..{vc1}");
+                        rows += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(out.row_count(), rows);
+        // Cleared, the buffer starts over.
+        out.clear();
+        assert_eq!(out.row_count(), 0);
+        window_row("ab", None, 0, 2, 0, 9, 4, fg, &mut out);
+        out.end_row();
+        assert_eq!(out.row(0).collect::<Vec<_>>(), vec![("ab", fg, 0)]);
+    }
 }
 
 #[cfg(test)]
