@@ -88,13 +88,11 @@ impl App {
         self.focus = crate::app::Focus::Editor;
     }
 
+    /// HEAD moved (commit, checkout, pull): every open file gets a new gutter base, read on a
+    /// worker (see `git_base_fetch`).
     pub(crate) fn sync_docs_with_head(&mut self) {
-        for d in &mut self.docs {
-            if let Some(p) = d.path().map(Path::to_path_buf) {
-                d.git_base = git::head_text(&p);
-                d.git_stale = true;
-            }
-        }
+        let paths: Vec<PathBuf> = self.docs.iter().filter_map(|d| d.path().map(Path::to_path_buf)).collect();
+        self.git_base_fetch(paths);
     }
 
     /// Re-read status / history when the index, HEAD or the working tree moved under us.
