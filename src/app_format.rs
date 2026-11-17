@@ -18,7 +18,9 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
-    path::Path,
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock, mpsc},
     time::{Duration, Instant},
 };
 
@@ -26,6 +28,9 @@ use std::{
 pub const SAVE_WAIT: Duration = Duration::from_millis(1500);
 /// Same wait for the explicit "Format document" command.
 pub const MANUAL_WAIT: Duration = Duration::from_secs(5);
+/// How long Ctrl+S gives the project's formatter when it runs on a worker thread (the window stays
+/// usable meanwhile, so this can be more patient than [`SAVE_WAIT`]).
+pub const BG_SAVE_WAIT: Duration = Duration::from_secs(5);
 /// How long one on-save code action request (and its resolve) may take.
 pub const ACTION_WAIT: Duration = Duration::from_millis(1000);
 
@@ -263,17 +268,118 @@ impl App {
             return None;
         }
         let path = self.docs.get(i)?.path()?.to_path_buf();
-        match self.format_doc(i, SAVE_WAIT) {
+        let r = self.format_doc(i, SAVE_WAIT);
+        self.save_fmt_msg(&path, r)
+    }
+
+    /// What to tell the user about format-on-save outcome `r` for the file at `path`, if anything.
+    fn save_fmt_msg(&mut self, path: &Path, r: Fmt) -> Option<String> {
+        match r {
             Fmt::Changed(_) | Fmt::Same(_) | Fmt::Off => None,
             Fmt::Failed(e) => Some(format!("formatting failed: {e}")),
             Fmt::TimedOut(n) => Some(format!("{n} did not answer in time, so it was saved unformatted")),
             // Once per file: saving it again must not keep repeating it.
             Fmt::Ignored(n) => self.fmt_told.insert(format!("ignored:{}", path.display())).then(|| ignored_msg(&n)),
             Fmt::NoFormatter => {
-                let key = crate::format::type_key(&path);
+                let key = crate::format::type_key(path);
                 self.fmt_told.insert(key.clone()).then(|| no_formatter_msg(&key))
             }
         }
+    }
+
+    /// The project formatter (Biome / Prettier) that format-on-save would run for document `i`:
+    /// the part of the chain in [`format_doc`](Self::format_doc) that is an external process.
+    fn external_for_save(&self, i: usize) -> Option<(crate::format::Formatter, PathBuf)> {
+        let d = self.docs.get(i)?;
+        if d.buf.no_write || !self.config.format_on_save_for(d.lang) {
+            return None;
+        }
+        let path = d.path()?.to_path_buf();
+        let f = match self.config.formatter_for(d.lang) {
+            c @ ("biome" | "prettier") => crate::format::detect_named(&path, c)?,
+            c if c == "none" || c == "lsp" || c.starts_with("lsp:") => return None,
+            _ => crate::format::detect(&path)?,
+        };
+        Some((f, path))
+    }
+
+    /// Ctrl+S: like [`save_active`](Self::save_active), but the project's formatter runs on a
+    /// worker thread and the file is written when it answers (see `pump_format_save`), so a slow
+    /// Biome / Prettier never freezes the window. Every other case (no external formatter, format
+    /// on save off, untitled) saves right away as before.
+    pub fn save_active_bg(&mut self) {
+        if cfg!(test) || !self.start_format_save(self.active) {
+            self.save_active();
+        }
+    }
+
+    /// Start the background format-then-save of document `i`. False when its save does not run
+    /// an external formatter (nothing was started: save it the synchronous way).
+    pub(crate) fn start_format_save(&mut self, i: usize) -> bool {
+        let Some(id) = self.docs.get(i).map(|d| d.buf.gen_id()) else { return false };
+        let Some((f, path)) = self.external_for_save(i) else { return false };
+        {
+            let mut pending = save_bus().pending.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(again) = pending.get_mut(&id) {
+                // A save of this document is on its way: it writes the text as it is when the
+                // formatter answers. Remember that newer text was asked to be saved (formatted) too.
+                *again = true;
+                return true;
+            }
+            pending.insert(id, false);
+        }
+        // Code actions on save come first, as in the synchronous path (they talk to the language
+        // servers, each with its own short wait).
+        let lint = self.eslint_fix_for_save(i);
+        let actions = self.code_actions_for_save(i);
+        let Some(d) = self.docs.get(i).filter(|d| d.buf.gen_id() == id) else {
+            save_bus().pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+            return false;
+        };
+        let (version, text) = (d.version, d.buf.to_string());
+        let warn: Vec<String> = [lint, actions].into_iter().flatten().collect();
+        let (tx, wake) = (save_bus().tx.lock().unwrap_or_else(|e| e.into_inner()).clone(), self.wake());
+        std::thread::spawn(move || {
+            let out = external_outcome(&f, &path, &text, BG_SAVE_WAIT);
+            let _ = tx.send(FormatDone { id, version, text, name: f.name, warn, out });
+            wake();
+        });
+        true
+    }
+
+    /// Finish the saves whose formatter answered: apply the formatted text when the document is
+    /// still the one that was sent (otherwise what was typed meanwhile is saved as it is and the
+    /// stale formatting is dropped), then write the file and report, in that order.
+    pub fn pump_format_save(&mut self) {
+        loop {
+            let Some(bus) = SAVE_BUS.get() else { return };
+            let Ok(done) = bus.rx.lock().unwrap_or_else(|e| e.into_inner()).try_recv() else { return };
+            let again = bus.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&done.id).unwrap_or(false);
+            // The tab was closed meanwhile: nothing to write.
+            let Some(i) = self.docs.iter().position(|d| d.buf.gen_id() == done.id) else { continue };
+            let fresh = self.docs[i].version == done.version && self.docs[i].buf.to_string() == done.text;
+            // Ctrl+S was pressed again on newer text: that text gets its own formatter run.
+            if !fresh && again && self.start_format_save(i) {
+                continue;
+            }
+            let mut warn = done.warn;
+            if fresh {
+                if let External::Changed(new) = &done.out {
+                    self.docs[i].replace_text(new);
+                }
+                let path = self.docs[i].path().map(Path::to_path_buf).unwrap_or_default();
+                warn.extend(self.save_fmt_msg(&path, done.out.into_fmt(done.name)));
+            }
+            self.write_saved(i, (!warn.is_empty()).then(|| warn.join("; ")));
+            self.request_redraw();
+        }
+    }
+
+    /// Is a background format-then-save of document `i` still on its way?
+    #[cfg(test)]
+    pub(crate) fn format_save_pending(&self, i: usize) -> bool {
+        let Some(id) = self.docs.get(i).map(|d| d.buf.gen_id()) else { return false };
+        save_bus().pending.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&id)
     }
 
     /// Palette / shortcut "Format document".
@@ -305,6 +411,37 @@ impl App {
 }
 
 pub(crate) const TIMEOUT: &str = "timeout";
+
+/// A formatter run started by [`App::start_format_save`] that finished.
+struct FormatDone {
+    /// `Buffer::gen_id` of the document (tabs move, so an index would not do).
+    id: u64,
+    /// Document version and text the formatter was given.
+    version: i32,
+    text: String,
+    name: &'static str,
+    /// Messages of the code actions that ran before the formatter.
+    warn: Vec<String>,
+    out: External,
+}
+
+/// Background saves: results come back through the channel; `pending` holds the documents with
+/// a run on its way (true: Ctrl+S was pressed again meanwhile). One window per process, so one
+/// bus per process.
+struct SaveBus {
+    tx: Mutex<mpsc::Sender<FormatDone>>,
+    rx: Mutex<mpsc::Receiver<FormatDone>>,
+    pending: Mutex<HashMap<u64, bool>>,
+}
+
+static SAVE_BUS: OnceLock<SaveBus> = OnceLock::new();
+
+fn save_bus() -> &'static SaveBus {
+    SAVE_BUS.get_or_init(|| {
+        let (tx, rx) = mpsc::channel();
+        SaveBus { tx: Mutex::new(tx), rx: Mutex::new(rx), pending: Mutex::new(HashMap::new()) }
+    })
+}
 
 /// What an external formatter made of a text (nothing here touches the document, so it can be
 /// computed away from the UI thread).
@@ -669,6 +806,90 @@ esac
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "let   x = 1\n", "saved as typed");
         let m = status(&app);
         assert_eq!(m, "Saved a.ts, but prettier did not answer in time, so it was saved unformatted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pump until the background save of document `i` is over.
+    fn wait_saved(app: &mut App, i: usize) {
+        let end = Instant::now() + Duration::from_secs(20);
+        while app.format_save_pending(i) {
+            assert!(Instant::now() < end, "the background save never finished");
+            app.pump_format_save();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn background_save_formats_then_writes_then_reports() {
+        let _g = lock();
+        let dir = project("bgsave");
+        let mut app = test_app(&dir);
+        let f = dir.join("src/a.css");
+        let i = open(&mut app, &f, "a   {  }\n");
+        app.docs[i].replace_text("a   {   color:red }\n");
+        // Nothing to run in the background: the caller saves the usual way.
+        assert!(!app.start_format_save(i), "format on save is off");
+        app.apply_setting("format_on_save", &json!(true));
+        assert!(!app.start_format_save(i), "no project formatter");
+        assert!(!app.format_save_pending(i));
+        fake_prettier(&dir, "sed 's/  */ /g'");
+        assert!(app.start_format_save(i));
+        assert!(app.format_save_pending(i));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "a   {  }\n", "written only once the formatter answered");
+        wait_saved(&mut app, i);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "a { color:red }\n");
+        assert_eq!(app.docs[i].buf.to_string(), "a { color:red }\n", "the buffer shows the formatted text");
+        assert!(!app.docs[i].buf.is_dirty());
+        assert_eq!(status(&app), "Saved a.css");
+        // A failing formatter: still saved, and the problem stays visible.
+        fake_prettier(&dir, "echo '× Syntax error on line 1' >&2; exit 2");
+        app.docs[i].replace_text("a   {\n");
+        assert!(app.start_format_save(i));
+        wait_saved(&mut app, i);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "a   {\n");
+        let m = status(&app);
+        assert!(m.starts_with("Saved a.css, but formatting failed:") && m.contains("Syntax error"), "{m}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn background_save_keeps_what_was_typed_while_the_formatter_ran() {
+        let _g = lock();
+        let dir = project("bgstale");
+        let mut app = test_app(&dir);
+        app.apply_setting("format_on_save", &json!(true));
+        fake_prettier(&dir, "sleep 0.4; sed 's/  */ /g'");
+        let f = dir.join("src/a.css");
+        let i = open(&mut app, &f, "a   {  }\n");
+        app.docs[i].replace_text("a   {   color:red }\n");
+        assert!(app.start_format_save(i));
+        // Typed while the formatter runs: its answer is for a text that is gone.
+        app.docs[i].replace_text("a   {   color:red }\nb   {  }\n");
+        wait_saved(&mut app, i);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "a   {   color:red }\nb   {  }\n", "saved as typed");
+        assert_eq!(app.docs[i].buf.to_string(), "a   {   color:red }\nb   {  }\n", "stale formatting not applied");
+        assert_eq!(status(&app), "Saved a.css");
+
+        // Ctrl+S again on the newer text while the first run is going: that text is formatted too.
+        app.docs[i].replace_text("c   {  }\n");
+        assert!(app.start_format_save(i));
+        app.docs[i].replace_text("c   {  }\nd   {  }\n");
+        assert!(app.start_format_save(i), "joins the save on its way");
+        wait_saved(&mut app, i);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "c { }\nd { }\n");
+        assert_eq!(app.docs[i].buf.to_string(), "c { }\nd { }\n");
+
+        // The tab is closed before the formatter answers: nothing is written.
+        app.docs[i].replace_text("e   {  }\n");
+        assert!(app.start_format_save(i));
+        app.close_tab(i, true);
+        let end = Instant::now() + Duration::from_secs(20);
+        while !save_bus().pending.lock().unwrap().is_empty() {
+            assert!(Instant::now() < end, "the run never came back");
+            app.pump_format_save();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "c { }\nd { }\n", "a closed tab is not saved");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
