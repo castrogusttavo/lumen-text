@@ -17,6 +17,8 @@ use std::{
 
 const MAX_PROJECT_FILES: usize = 30_000;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+/// Generated declaration files are big: the Prisma client of a large schema is several MB.
+const MAX_DECL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_PKG_FILES: usize = 300;
 const MAX_SUBPATHS: usize = 80;
 const MAX_DEPTH: usize = 6;
@@ -433,9 +435,13 @@ impl Builder {
     }
 }
 
-fn read_small(p: &Path) -> Option<String> {
+fn read_capped(p: &Path, max: u64) -> Option<String> {
     let meta = std::fs::metadata(p).ok()?;
-    (meta.is_file() && meta.len() <= MAX_FILE_BYTES).then(|| std::fs::read_to_string(p).ok()).flatten()
+    (meta.is_file() && meta.len() <= max).then(|| std::fs::read_to_string(p).ok()).flatten()
+}
+
+fn read_small(p: &Path) -> Option<String> {
+    read_capped(p, MAX_FILE_BYTES)
 }
 
 fn is_source(p: &Path) -> bool {
@@ -612,6 +618,37 @@ fn resolve_dts(dir: &Path, spec: &str) -> Option<PathBuf> {
     tries.into_iter().find(|p| p.is_file())
 }
 
+/// The declaration file of a bare specifier re-exported by a file in `dir` (`export * from
+/// ".prisma/client/default"` in `@prisma/client`): node resolution from the file's real location.
+fn resolve_bare(dir: &Path, spec: &str) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(dir).ok()?;
+    let mut parts = spec.splitn(if spec.starts_with('@') { 3 } else { 2 }, '/');
+    let pkg =
+        if spec.starts_with('@') { format!("{}/{}", parts.next()?, parts.next()?) } else { parts.next()?.to_string() };
+    let sub = parts.next();
+    for anc in real.ancestors() {
+        let nm = anc.join("node_modules");
+        let pkg_dir = nm.join(&pkg);
+        if !pkg_dir.is_dir() {
+            continue;
+        }
+        let json = std::fs::read_to_string(pkg_dir.join("package.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let exports = &json["exports"];
+        let from_map = |key: &str| types_of(exports.get(key)?, 0).map(|t| pkg_dir.join(t)).filter(|p| p.is_file());
+        return match sub {
+            Some(sub) => from_map(&format!("./{sub}")).or_else(|| resolve_dts(&pkg_dir, sub)),
+            None => from_map(".")
+                .or_else(|| json["types"].as_str().or_else(|| json["typings"].as_str()).map(|t| pkg_dir.join(t)))
+                .filter(|p| p.is_file())
+                .or_else(|| Some(pkg_dir.join("index.d.ts")).filter(|p| p.is_file())),
+        };
+    }
+    None
+}
+
 fn scan_packages(root: &Path, b: &mut Builder) {
     for dep in dependency_names(root) {
         let mut budget = MAX_PKG_FILES;
@@ -639,7 +676,7 @@ fn scan_declaration(
     if depth > MAX_DEPTH || *budget == 0 || !visited.insert(file.to_path_buf()) {
         return;
     }
-    let Some(text) = read_small(file) else { return };
+    let Some(text) = read_capped(file, MAX_DECL_BYTES) else { return };
     *budget -= 1;
     b.files += 1;
     let found = scan(&text);
@@ -658,8 +695,11 @@ fn scan_declaration(
         }
     }
     let dir = file.parent().unwrap_or(Path::new("."));
-    for spec in found.stars.iter().filter(|s| s.starts_with('.')) {
-        if let Some(next) = resolve_dts(dir, spec) {
+    for spec in &found.stars {
+        // `./x` is a file next to this one; anything else is another package (`.prisma/client`).
+        let relative = spec.starts_with("./") || spec.starts_with("../");
+        let next = if relative { resolve_dts(dir, spec) } else { resolve_bare(dir, spec) };
+        if let Some(next) = next {
             scan_declaration(&next, module, depth + 1, budget, visited, b);
         }
     }
@@ -1059,7 +1099,14 @@ mod tests {
             "export type { Metadata } from './meta.js';\nexport * from './more.js';\n",
         )
         .unwrap();
-        std::fs::write(nm.join("pkg/dist/more.d.ts"), "export declare function more(): void;\n").unwrap();
+        std::fs::write(
+            nm.join("pkg/dist/more.d.ts"),
+            "export declare function more(): void;\nexport * from \".gen/client/default\";\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(nm.join(".gen/client")).unwrap();
+        std::fs::write(nm.join(".gen/client/default.d.ts"), "export * from \"./index\"\n").unwrap();
+        std::fs::write(nm.join(".gen/client/index.d.ts"), "export class GenClient {}\n").unwrap();
         std::fs::write(nm.join("pkg/dist/sub.d.ts"), "export declare const sub: number;\n").unwrap();
         std::fs::write(nm.join("@types/bun/package.json"), r#"{"types":"index.d.ts"}"#).unwrap();
         std::fs::write(nm.join("@types/bun/index.d.ts"), "/// <reference path=\"./test.d.ts\" />\nexport = Bun;\ndeclare namespace Bun {\n    function useThing(): void;\n}\ndeclare namespace Other {\n    function hidden(): void;\n}\n").unwrap();
@@ -1073,6 +1120,7 @@ mod tests {
         assert_eq!(src("expectOk"), vec![Source::File(d.join("src/h.ts"))]);
         assert_eq!(src("Metadata"), vec![Source::Module("pkg".into())]);
         assert_eq!(src("more"), vec![Source::Module("pkg".into())]);
+        assert_eq!(src("GenClient"), vec![Source::Module("pkg".into())], "a re-exported generated package");
         assert_eq!(src("sub"), vec![Source::Module("pkg/sub".into())]);
         assert_eq!(src("describe"), vec![Source::Module("bun:test".into())]);
         assert_eq!(src("useThing"), vec![Source::Module("bun".into())], "members of the `export =` namespace");

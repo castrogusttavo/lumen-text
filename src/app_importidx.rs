@@ -38,6 +38,19 @@ impl Default for ImportIdx {
     }
 }
 
+/// The package a module specifier belongs to (`@prisma/client/edge` -> `@prisma/client`): a name
+/// is offered once per package, from its best ranked entry point.
+fn package_of(spec: &str) -> &str {
+    if spec.starts_with('.') || spec.starts_with("@/") {
+        return spec;
+    }
+    let cut = if spec.starts_with('@') { 2 } else { 1 };
+    match spec.match_indices('/').nth(cut - 1) {
+        Some((i, _)) => &spec[..i],
+        None => spec,
+    }
+}
+
 fn enabled() -> bool {
     !cfg!(test) && std::env::var_os("LUMEN_NO_IMPORT_INDEX").is_none()
 }
@@ -129,7 +142,7 @@ impl App {
                 continue;
             }
             let spec = idx.specifier(&h.source, path);
-            if !seen.insert((h.name.clone(), spec.clone())) {
+            if !seen.insert((h.name.clone(), package_of(&spec).to_string())) {
                 continue;
             }
             out.push(CItem {
@@ -170,6 +183,7 @@ impl App {
         let (l1, c1) = d.buf.line_col(sel.end());
         let text = d.buf.to_string();
         let mut out: Vec<Item> = Vec::new();
+        let mut packages: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
         for g in d.diags.iter().filter(|g| (g.sl, g.sc) <= (l1, c1) && (l0, c0) <= (g.el, g.ec.max(g.sc + 1))) {
             if !matches!(g.code.as_str(), "2304" | "2552" | "2503" | "2582" | "2580" | "2686") {
                 continue;
@@ -180,6 +194,9 @@ impl App {
                     continue;
                 }
                 let spec = idx.specifier(&h.source, path);
+                if !packages.insert((name.to_string(), package_of(&spec).to_string())) {
+                    continue;
+                }
                 let Some(ins) = importidx::import_edit(&text, name, &spec, h.is_type, h.is_default) else { continue };
                 let label = format!("Add import from \"{spec}\"");
                 if out.iter().any(|it| it.label == label) {
@@ -202,6 +219,17 @@ impl App {
 mod tests {
     use super::*;
     use crate::app_unsaved::testkit::{lock, scratch_base, test_app};
+
+    #[test]
+    fn package_of_strips_subpaths_only() {
+        assert_eq!(package_of("@prisma/client/edge"), "@prisma/client");
+        assert_eq!(package_of("@prisma/client"), "@prisma/client");
+        assert_eq!(package_of("next/link"), "next");
+        assert_eq!(package_of("next"), "next");
+        assert_eq!(package_of("@/src/h"), "@/src/h");
+        assert_eq!(package_of("./h"), "./h");
+        assert_eq!(package_of("node:fs"), "node:fs");
+    }
 
     #[test]
     fn index_names_complete_import_and_fix_unresolved_names() {
