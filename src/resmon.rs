@@ -89,10 +89,11 @@ impl Default for TrimWatch {
 
 /// What the background sampler measures, as `(pss, resident)`: PSS while the RAM item of the
 /// bottom bar shows it, resident memory while the tsgo guard or the budget check reads it, and
-/// nothing at all while the window is in the background (nobody is looking, and the guard and
-/// the budget check are suspended with it; everything resumes with the focus).
+/// nothing the user looks at while the window is in the background (the status bar and the
+/// budget toast resume with the focus). The tsgo guard keeps its resident-memory reading in the
+/// background: a tsgo that balloons while the user is elsewhere must still be caught.
 pub fn sampling(focused: bool, ram_shown: bool, guard: bool, budget: bool) -> (bool, bool) {
-    (focused && ram_shown, focused && (guard || budget))
+    (focused && ram_shown, guard || (focused && budget))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -425,7 +426,8 @@ mod tests {
         assert_eq!(sampling(true, false, false, true), (false, true), "budget only: no PSS");
         assert_eq!(sampling(true, true, true, true), (true, true));
         assert_eq!(sampling(true, false, false, false), (false, false), "nobody reads");
-        assert_eq!(sampling(false, true, true, true), (false, false), "window in the background");
+        assert_eq!(sampling(false, true, true, true), (false, true), "background: only the guard reads");
+        assert_eq!(sampling(false, true, false, true), (false, false), "background: budget and status wait");
     }
 
     #[test]
