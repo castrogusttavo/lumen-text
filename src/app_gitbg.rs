@@ -17,8 +17,9 @@ use crate::{
     ui::{Canvas, Rect},
 };
 use std::{
+    collections::HashSet,
     path::PathBuf,
-    sync::mpsc::{Receiver, channel},
+    sync::mpsc::{Receiver, Sender, channel},
     time::{Duration, Instant},
 };
 
@@ -79,7 +80,15 @@ pub struct GitBg {
     /// Hash of `App::git_status` as last assigned (`app_git::status_sig`); the Git panel compares
     /// it on every frame.
     pub status_sig: u64,
+    /// Gutter diffs computed on a worker (see `App::git_marks_tick`).
+    pub marks_ch: (Sender<MarksMsg>, Receiver<MarksMsg>),
+    /// Files whose gutter diff is running: one at a time per file.
+    pub marks_busy: HashSet<PathBuf>,
 }
+
+/// A finished gutter diff: the file, the buffer it was computed for (`gen_id`, `version`) and
+/// its marks.
+pub type MarksMsg = (PathBuf, (u64, u64), Vec<crate::doc::GitMark>);
 
 impl Default for GitBg {
     fn default() -> Self {
@@ -98,6 +107,8 @@ impl Default for GitBg {
             rebase: None,
             rebase_merge: false,
             status_sig: 0,
+            marks_ch: channel(),
+            marks_busy: HashSet::new(),
         }
     }
 }
