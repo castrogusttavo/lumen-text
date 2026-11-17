@@ -1488,7 +1488,9 @@ impl App {
         let mk = |uri: &str| json!({"textDocument": {"uri": uri}, "range": range.clone(), "context": {"diagnostics": diags.clone()}});
         let ts_uri = d.uri().unwrap_or_default();
         let real_uri = d.real_uri().unwrap_or_default();
+        let from_index = self.import_action_items(i);
         self.actions_items.clear();
+        self.actions_items.extend(from_index);
         self.actions_expected = 0;
         if let Some((_, li)) = self.with_server() {
             self.lsps[li].request("textDocument/codeAction", mk(&ts_uri), Pending::CodeActions);
@@ -1501,6 +1503,10 @@ impl App {
         let params = mk(&real_uri);
         self.actions_expected += self.lspx_code_actions(i, &params);
         if self.actions_expected == 0 {
+            if !self.actions_items.is_empty() {
+                let items = std::mem::take(&mut self.actions_items);
+                return self.open_code_actions_with(items);
+            }
             if self.ai_has_diag_at_cursor() {
                 let items = self.ai_action_items();
                 return self.open_code_actions_with(items);
@@ -1839,10 +1845,7 @@ impl App {
         }
         // The user's, the project's and the built-in snippets ride along with the server's list.
         items.extend(crate::app_snippets::snippet_citems(&self.root, d.lang));
-        if items.is_empty() {
-            self.completion = None;
-            return;
-        }
+        // An empty server list can still get names from the import index (added by the refilter).
         let mut c =
             Completion { items, filtered: Vec::new(), sel: 0, scroll: 0, start, seed_len: prefix.chars().count() };
         self.refilter_completion_into(&mut c);
@@ -1855,6 +1858,13 @@ impl App {
         let Some(d) = self.docs.get(self.active) else { return };
         let head = d.ed.head();
         let prefix = if head >= c.start { d.buf.slice(c.start, head) } else { String::new() };
+        // Names from the editor's import index follow what is typed (the server's list only narrows).
+        c.items.retain(|it| it.raw.get("__import").is_none());
+        let extra = {
+            let have: std::collections::HashSet<&str> = c.items.iter().map(|it| it.label.as_str()).collect();
+            self.import_citems(self.active, &prefix, &have)
+        };
+        c.items.extend(extra);
         let mut scored: Vec<(i32, usize)> = c
             .items
             .iter()
@@ -2000,6 +2010,12 @@ impl App {
         let version = d.version;
         let uri = d.uri().unwrap_or_default();
 
+        // A name from the editor's import index: the editor writes the import itself.
+        if item.raw.get("__import").is_some() {
+            self.import_apply(i, &item.raw["__import"]);
+            self.request_redraw();
+            return;
+        }
         // Auto-imports and friends come in `additionalTextEdits`, often only after resolve.
         let extra = parse_edits(&item.raw["additionalTextEdits"]);
         if !extra.is_empty() {

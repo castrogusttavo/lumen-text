@@ -222,6 +222,8 @@ pub struct App {
     pub git_status_gen: u64,
     pub git_status_busy: bool,
     pub git_status_again: bool,
+    /// The editor's own index of importable names (see `importidx`).
+    pub import_idx: crate::app_importidx::ImportIdx,
     pub biome_disabled: bool,
     pub eslint_tx: std::sync::mpsc::Sender<(PathBuf, Result<Vec<crate::eslint::Msg>, String>)>,
     pub eslint_rx: std::sync::mpsc::Receiver<(PathBuf, Result<Vec<crate::eslint::Msg>, String>)>,
@@ -399,6 +401,7 @@ impl App {
             git_status_gen: 0,
             git_status_busy: false,
             git_status_again: false,
+            import_idx: Default::default(),
             biome_disabled: false,
             eslint_tx: mpsc::channel().0,
             eslint_rx: mpsc::channel().1,
