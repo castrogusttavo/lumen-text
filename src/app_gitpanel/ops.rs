@@ -100,13 +100,9 @@ impl App {
     /// Re-read status / history when the index, HEAD or the working tree moved under us.
     pub(super) fn gp_sync(&mut self, gp: &mut GitPanel) {
         let mut h = DefaultHasher::new();
-        let mut acc = 0u64;
-        for (p, b) in &self.git_status {
-            let mut e = DefaultHasher::new();
-            (p, b).hash(&mut e);
-            acc ^= e.finish();
-        }
-        acc.hash(&mut h);
+        // The status entries are hashed once, where the status is assigned (`apply_git_status`),
+        // not on every frame; the length catches a status emptied by a project switch.
+        (self.gitbg.status_sig, self.git_status.len()).hash(&mut h);
         let groot = self.git_root();
         groot.hash(&mut h);
         let gitdir = gp.top.clone().unwrap_or_else(|| groot.clone()).join(".git");
@@ -122,7 +118,8 @@ impl App {
         }
         if sig != gp.sig {
             gp.sig = sig;
-            gp.refresh();
+            // On a worker: the frame is drawn with what the panel has, the answer redraws it.
+            gp.refresh_bg();
         }
         if hist != gp.hist_sig {
             gp.hist_sig = hist;
@@ -381,6 +378,10 @@ impl App {
         let Some(mut gp) = self.gitpanel.take() else { return };
         // A page of history arrived from the worker (it woke the event loop).
         if gp.poll_history() && gp.tab == Tab::History {
+            self.request_redraw();
+        }
+        // The status / upstream / stashes read on a worker arrived (see `GitPanel::refresh_bg`).
+        if gp.pump_refresh() {
             self.request_redraw();
         }
         if let Some(job) = gp.job.as_mut() {

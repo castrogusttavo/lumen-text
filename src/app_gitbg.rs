@@ -76,6 +76,9 @@ pub struct GitBg {
     pub rebase: Option<crate::gitrebase::RebasePlan>,
     /// A rebase stopped on conflicts: open the merge editor on the first conflicted file.
     pub rebase_merge: bool,
+    /// Hash of `App::git_status` as last assigned (`app_git::status_sig`); the Git panel compares
+    /// it on every frame.
+    pub status_sig: u64,
 }
 
 impl Default for GitBg {
@@ -94,6 +97,7 @@ impl Default for GitBg {
             pr: Default::default(),
             rebase: None,
             rebase_merge: false,
+            status_sig: 0,
         }
     }
 }

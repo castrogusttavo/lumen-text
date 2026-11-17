@@ -41,6 +41,17 @@ fn compute_git_status(gr: &Path, root: &Path, extra: &[PathBuf]) -> GitStatusOut
     GitStatusOut { branch, worktree_main, map, branches }
 }
 
+/// Order-independent hash of a status map: changes whenever an entry is added, removed or gets
+/// another badge.
+pub fn status_sig(map: &HashMap<PathBuf, char>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    map.iter().fold(0u64, |acc, e| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        e.hash(&mut h);
+        acc ^ h.finish()
+    })
+}
+
 /// Single-letter status for the explorer from a porcelain `XY` pair.
 pub fn badge(xy: &str) -> char {
     let b = xy.as_bytes();
@@ -88,6 +99,8 @@ impl App {
         if let Some(b) = out.branches {
             self.ws.branches = b;
         }
+        // The Git panel compares this on every frame instead of hashing the entries again.
+        self.gitbg.status_sig = status_sig(&out.map);
         self.git_status = out.map;
     }
 
@@ -258,6 +271,20 @@ mod tests {
         assert_eq!(badge("A "), 'A');
         assert_eq!(badge(" D"), 'D');
         assert_eq!(badge("R "), 'R');
+    }
+
+    #[test]
+    fn status_signature_follows_the_entries_not_their_order() {
+        let entry = |p: &str, b: char| (PathBuf::from(p), b);
+        let a: HashMap<PathBuf, char> = [entry("/r/a.ts", 'M'), entry("/r/b.ts", '?')].into_iter().collect();
+        let same: HashMap<PathBuf, char> = [entry("/r/b.ts", '?'), entry("/r/a.ts", 'M')].into_iter().collect();
+        assert_eq!(status_sig(&a), status_sig(&same));
+        let badge_changed: HashMap<PathBuf, char> =
+            [entry("/r/a.ts", 'A'), entry("/r/b.ts", '?')].into_iter().collect();
+        assert_ne!(status_sig(&a), status_sig(&badge_changed));
+        let one_less: HashMap<PathBuf, char> = [entry("/r/a.ts", 'M')].into_iter().collect();
+        assert_ne!(status_sig(&a), status_sig(&one_less));
+        assert_eq!(status_sig(&HashMap::new()), 0);
     }
 
     #[test]
