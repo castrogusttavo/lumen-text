@@ -318,6 +318,18 @@ impl App {
         if !self.config.lsp_auto_lean || !self.lsp_guard.due() {
             return;
         }
+        // A lean server that balloons is broken: restart it rather than let it eat the machine.
+        if let Some(mb) = self
+            .lsps
+            .iter()
+            .filter(|l| l.name == "tsgo" && l.mirror.is_some())
+            .filter_map(|l| crate::mem::pss_of(l.pid()).map(|kb| kb / 1024))
+            .find(|mb| *mb > crate::lsp_guard::LEAN_HARD_MB)
+        {
+            self.restart_lsp();
+            self.say(format!("tsgo (lean) used {mb} MB: restarted"));
+            return;
+        }
         let Some(l) = self.lsps.iter().find(|l| l.name == "tsgo" && l.mirror.is_none()) else { return };
         let Some(mb) = crate::mem::pss_of(l.pid()).map(|kb| kb / 1024) else { return };
         if !self.lsp_guard.over_budget(mb, crate::lsp_guard::budget_mb(crate::lsp_guard::total_ram_mb())) {
