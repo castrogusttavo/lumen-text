@@ -276,7 +276,7 @@ impl App {
         self.last_tree_refresh = Instant::now();
         self.tree.rebuild();
         self.file_index = None;
-        self.refresh_git_status();
+        self.refresh_git_status_bg();
         self.watch_dirs();
         self.request_redraw();
     }
@@ -312,7 +312,7 @@ impl App {
         let branch_changed = sig.head != self.fswatch.git_sig.head;
         self.fswatch.git_sig = sig;
         self.fswatch.git_refreshes += 1;
-        self.refresh_git_status();
+        self.refresh_git_status_bg();
         if head_moved {
             self.fswatch.head_refreshes += 1;
             // The gutter compares with HEAD: new base for every open file.
