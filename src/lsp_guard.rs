@@ -9,8 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A full-project tsgo above this many MB (PSS) is restarted in lean mode, unless the machine has
-/// plenty of RAM (see `budget_mb`).
+/// A full-project tsgo above this many MB is restarted in lean mode, unless the machine has
+/// plenty of RAM (see `budget_mb`). Measured as anonymous + shmem resident memory, which costs
+/// the server nothing to read (`mem::resident_of`); for a server that is its heap, within a few
+/// tens of MB of its PSS.
 pub const BUDGET_MB: u64 = 1000;
 /// Machines with at least this much RAM never start lean on their own: a big project fits comfortably.
 /// (Used to be 12 GB; a 15 GB machine let a Next.js app grow tsgo to 12 GB, so only really big ones qualify.)
