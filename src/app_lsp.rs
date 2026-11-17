@@ -21,13 +21,15 @@ use std::{
 use winit::keyboard::{Key, NamedKey};
 
 const SYNC_DEBOUNCE: Duration = Duration::from_millis(120);
-/// Go soft memory limit. Lean servers stay small; a full-project server must NOT get a limit below its
-/// live heap, or the GC runs flat out and every request crawls, so it only gets a very high ceiling.
-const MEM_LIMIT_LEAN_MIB: u32 = 512;
-/// Lean with auto-import: the index of package exports lives in the heap (~400 MB on a Next.js app).
-/// At 512 MiB the first completion took 8.7 s and later ones 0.22 s; at 768 MiB 5.8 s and 0.03 s,
-/// for the same resident memory once idle (~450 MB).
-const MEM_LIMIT_LEAN_AUTO_MIB: u32 = 768;
+/// Go soft memory limit. It must stay well above the live heap: at or below it the GC runs flat out
+/// and every request crawls. Measured with tsgo 7.0.2 on a lean mirror holding one file that imports
+/// the Prisma client (live heap ~450 MB): at 512 MiB each edit took 10.8 s to re-check and burned
+/// 18 CPU-seconds, and in the editor the backlog grew the server to 5.5 GB; at 1024 MiB or more the
+/// same edit took 1.5-2 s. So lean servers get room for a few such files, and a full-project server
+/// only a very high ceiling.
+const MEM_LIMIT_LEAN_MIB: u32 = 1536;
+/// Lean with auto-import: tsgo's index of package exports adds ~400 MB of live heap.
+const MEM_LIMIT_LEAN_AUTO_MIB: u32 = 2048;
 const MEM_LIMIT_FULL_MIB: u32 = 6144;
 
 pub use crate::app_hover::HoverTip;
