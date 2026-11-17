@@ -3,6 +3,10 @@
 
 #[cfg(target_os = "linux")]
 use std::fs;
+use std::{
+    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock},
+    time::Duration,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct MemSnapshot {
@@ -51,9 +55,9 @@ pub fn report(label: &str) {
     }
 }
 
-/// PSS in kB of another process (e.g. a language server we spawned).
+/// PSS in kB of another process (e.g. a language server we spawned), read now.
 #[cfg(not(target_os = "linux"))]
-pub fn pss_of(pid: u32) -> Option<u64> {
+fn pss_direct(pid: u32) -> Option<u64> {
     resident_kb(pid)
 }
 
@@ -115,7 +119,240 @@ pub fn mem_of(pid: u32) -> Option<MemSnapshot> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn pss_of(pid: u32) -> Option<u64> {
+fn pss_direct(pid: u32) -> Option<u64> {
     let text = fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok()?;
     text.lines().find(|l| l.starts_with("Pss:"))?.split_whitespace().nth(1)?.parse().ok()
+}
+
+// ───────────── background sampler ─────────────
+//
+// `smaps_rollup` makes the kernel walk the page tables of the process it describes while holding
+// that process's mmap lock, so reading it costs time in proportion to the process's size (a
+// language server is hundreds of MB to several GB) and briefly stalls it. One thread therefore
+// does all the periodic reading and publishes the numbers; the status bar, the memory guard and
+// the budget check read what was published and never touch /proc on the UI thread.
+
+/// Period of the background sampler.
+pub const SAMPLE_EVERY: Duration = Duration::from_secs(2);
+/// A displayed number must move by more than this for the sampler to wake the UI.
+const SHOW_STEP_KB: u64 = 1024;
+
+/// What the sampler knows about one process.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcMem {
+    /// PSS (what the user reads); None when it was not sampled or the process is gone.
+    pub pss_kb: Option<u64>,
+}
+
+/// One published measurement: the editor itself and the watched processes, by pid.
+#[derive(Clone, Debug, Default)]
+pub struct Sample {
+    pub own: ProcMem,
+    pub procs: Vec<(u32, ProcMem)>,
+}
+
+/// What the UI thread asked the sampler to measure.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Want {
+    pids: Vec<u32>,
+    /// PSS of everything (the status bar shows it; the guard and the budget check read it).
+    pss: bool,
+}
+
+impl Want {
+    /// Nothing to measure: the thread sleeps until the request changes.
+    fn idle(&self) -> bool {
+        !self.pss
+    }
+}
+
+struct SamplerState {
+    want: Want,
+    /// Measure now instead of waiting for the period to end.
+    kick: bool,
+    sample: Sample,
+    /// Number of samples published so far.
+    generation: u64,
+}
+
+struct Sampler {
+    state: Mutex<SamplerState>,
+    cv: Condvar,
+}
+
+impl Sampler {
+    fn lock(&self) -> MutexGuard<'_, SamplerState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+static SAMPLER: OnceLock<Arc<Sampler>> = OnceLock::new();
+
+/// Tell the sampler what to measure (called from the UI tick; cheap when nothing changed). The
+/// thread starts on the first call and measures at once whenever the request changes. Tests have
+/// no sampler: every reader below then measures synchronously, as before.
+pub fn watch(pids: impl Iterator<Item = u32> + Clone, pss: bool, wake: impl FnOnce() -> Arc<dyn Fn() + Send + Sync>) {
+    if cfg!(test) {
+        return;
+    }
+    let s = SAMPLER.get_or_init(|| {
+        let s = Arc::new(Sampler {
+            state: Mutex::new(SamplerState {
+                want: Want::default(),
+                kick: false,
+                sample: Sample::default(),
+                generation: 0,
+            }),
+            cv: Condvar::new(),
+        });
+        let (t, w) = (s.clone(), wake());
+        // Without the thread nothing is ever published and every reader falls back to reading now.
+        let _ = std::thread::Builder::new().name("mem-sampler".into()).spawn(move || run(&t, &*w));
+        s
+    });
+    let mut g = s.lock();
+    if g.want.pss == pss && g.want.pids.iter().copied().eq(pids.clone()) {
+        return;
+    }
+    g.want = Want { pids: pids.collect(), pss };
+    g.kick = true;
+    drop(g);
+    s.cv.notify_one();
+}
+
+fn run(s: &Sampler, wake: &(dyn Fn() + Send + Sync)) {
+    // The numbers the UI last drew (it is woken only when one of them moves visibly).
+    let mut shown: Vec<(u32, u64)> = Vec::new();
+    loop {
+        let want = {
+            let mut g = s.lock();
+            while !g.kick {
+                if g.want.idle() {
+                    g = s.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                } else {
+                    let (ng, t) = s.cv.wait_timeout(g, SAMPLE_EVERY).unwrap_or_else(|e| e.into_inner());
+                    g = ng;
+                    if t.timed_out() {
+                        break;
+                    }
+                }
+            }
+            g.kick = false;
+            g.want.clone()
+        };
+        if want.idle() {
+            continue;
+        }
+        let sample = measure(&want);
+        let cur = displayed(&sample);
+        {
+            let mut g = s.lock();
+            g.sample = sample;
+            g.generation += 1;
+        }
+        if display_changed(&shown, &cur) {
+            shown = cur;
+            wake();
+        }
+    }
+}
+
+/// Read everything `want` asks for, now (the sampler thread; tests call it directly).
+fn measure(want: &Want) -> Sample {
+    let own = ProcMem { pss_kb: if want.pss { snapshot().map(|m| m.pss_kb) } else { None } };
+    let procs =
+        want.pids.iter().map(|&pid| (pid, ProcMem { pss_kb: if want.pss { pss_direct(pid) } else { None } })).collect();
+    Sample { own, procs }
+}
+
+/// The numbers of a sample the status bar shows: the editor as pid 0, then each process.
+fn displayed(s: &Sample) -> Vec<(u32, u64)> {
+    let own = s.own.pss_kb.map(|kb| (0, kb));
+    own.into_iter().chain(s.procs.iter().filter_map(|(pid, m)| m.pss_kb.map(|kb| (*pid, kb)))).collect()
+}
+
+/// True when the status bar would read differently: another set of processes, or one number
+/// moved by more than a MB since the UI was last woken.
+fn display_changed(prev: &[(u32, u64)], cur: &[(u32, u64)]) -> bool {
+    prev.len() != cur.len() || prev.iter().zip(cur).any(|(a, b)| a.0 != b.0 || a.1.abs_diff(b.1) > SHOW_STEP_KB)
+}
+
+/// Published numbers of `pid` (None = the editor itself); None when nothing was published for it.
+fn published(pid: Option<u32>) -> Option<ProcMem> {
+    let g = SAMPLER.get()?.lock();
+    if g.generation == 0 {
+        return None;
+    }
+    match pid {
+        None => Some(g.sample.own),
+        Some(pid) => g.sample.procs.iter().find(|(p, _)| *p == pid).map(|(_, m)| *m),
+    }
+}
+
+/// How many samples were published; None while no sampler runs (tests, before the first tick).
+/// A reader that counts consecutive samples uses it to tell a new sample from the one it saw.
+pub fn generation() -> Option<u64> {
+    Some(SAMPLER.get()?.lock().generation)
+}
+
+/// PSS in kB of the editor: the published number, read now when there is none yet.
+pub fn own_pss_kb() -> Option<u64> {
+    published(None).and_then(|m| m.pss_kb).or_else(|| snapshot().map(|m| m.pss_kb))
+}
+
+/// PSS in kB of another process (e.g. a language server we spawned): the published number, read
+/// now when there is none yet (a server that just started, or no sampler).
+pub fn pss_of(pid: u32) -> Option<u64> {
+    published(Some(pid)).and_then(|m| m.pss_kb).or_else(|| pss_direct(pid))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_is_woken_only_by_a_visible_change() {
+        let a = [(0, 100 * 1024), (7, 400 * 1024)];
+        assert!(display_changed(&[], &a), "first sample");
+        assert!(!display_changed(&a, &a));
+        assert!(!display_changed(&a, &[(0, 100 * 1024 + 1024), (7, 400 * 1024 - 900)]), "within a MB");
+        assert!(display_changed(&a, &[(0, 100 * 1024), (7, 402 * 1024)]), "a server grew 2 MB");
+        assert!(display_changed(&a, &[(0, 100 * 1024), (8, 400 * 1024)]), "another server");
+        assert!(display_changed(&a, &[(0, 100 * 1024)]), "a server went away");
+    }
+
+    #[test]
+    fn sample_lists_the_editor_first_and_skips_dead_processes() {
+        let s = Sample {
+            own: ProcMem { pss_kb: Some(10) },
+            procs: vec![(5, ProcMem { pss_kb: None }), (6, ProcMem { pss_kb: Some(30) })],
+        };
+        assert_eq!(displayed(&s), vec![(0, 10), (6, 30)]);
+        assert_eq!(displayed(&Sample::default()), Vec::new());
+    }
+
+    #[test]
+    fn measuring_reads_only_what_was_asked() {
+        let me = std::process::id();
+        let off = Want { pids: vec![me], pss: false };
+        assert!(off.idle());
+        let s = measure(&off);
+        assert_eq!((s.own, s.procs), (ProcMem::default(), vec![(me, ProcMem::default())]));
+        let on = measure(&Want { pids: vec![me], pss: true });
+        // Where the OS offers no number (unsupported platform) both stay empty.
+        assert_eq!(on.own.pss_kb.is_some(), on.procs[0].1.pss_kb.is_some());
+        if let Some(kb) = on.procs[0].1.pss_kb {
+            assert!(kb > 0);
+        }
+    }
+
+    #[test]
+    fn without_a_sampler_readers_measure_directly() {
+        // Tests never start the thread: nothing is published and the readers fall back.
+        watch([1u32].into_iter(), true, || Arc::new(|| {}));
+        assert_eq!(generation(), None);
+        assert_eq!(published(None), None);
+        assert_eq!(own_pss_kb().is_some(), snapshot().is_some());
+        assert_eq!(pss_of(std::process::id()).is_some(), snapshot().is_some());
+    }
 }

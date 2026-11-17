@@ -195,10 +195,20 @@ impl App {
         want(self.res.next_budget);
     }
 
-    /// Cheap total for the budget: the editor and its language servers / debug adapter (no `ps`).
+    /// Cheap total for the budget: the editor and its language servers (no `ps`), from the
+    /// numbers the background sampler published.
     fn res_budget_total_kb(&self) -> u64 {
-        let own = crate::mem::snapshot().map_or(0, |m| m.pss_kb);
+        let own = crate::mem::own_pss_kb().unwrap_or(0);
         own + self.lsps.iter().filter_map(|l| crate::mem::pss_of(l.pid())).sum::<u64>()
+    }
+
+    /// Tell the background sampler what to measure: the language servers, for as long as
+    /// something reads the numbers (the RAM item of the bottom bar, the memory guard of tsgo or
+    /// the budget check). With none of them the sampler sleeps.
+    pub(crate) fn mem_watch(&self) {
+        let guard = self.config.lsp_auto_lean && self.lsps.iter().any(|l| l.name == "tsgo");
+        let read = self.config.status_visible("ram") || guard || self.config.mem_budget_mb > 0;
+        crate::mem::watch(self.lsps.iter().map(|l| l.pid()), read, || self.wake());
     }
 
     fn res_refresh(&mut self) {
