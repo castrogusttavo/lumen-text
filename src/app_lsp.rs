@@ -321,10 +321,16 @@ impl App {
         });
     }
 
-    /// Restart a full-project tsgo in lean mode when it grows past the memory budget.
+    /// Restart a full-project tsgo in lean mode when it grows past the memory budget. The check
+    /// and its timer run only while there is a tsgo to guard and the window is focused.
     pub(crate) fn guard_lsp_memory(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
-        want(now + Duration::from_secs(5));
-        if !self.config.lsp_auto_lean || !self.lsp_guard.due() {
+        let has_tsgo = self.lsps.iter().any(|l| l.name == "tsgo");
+        if !crate::lsp_guard::runs(self.config.lsp_auto_lean, self.gitbg.focused, has_tsgo) {
+            return;
+        }
+        let due = self.lsp_guard.due();
+        want(self.lsp_guard.next_check().max(now));
+        if !due {
             return;
         }
         // The numbers below are the ones the background sampler published (`mem::watch`); each
