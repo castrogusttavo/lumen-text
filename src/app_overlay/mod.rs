@@ -4,7 +4,7 @@ use crate::{
     app::{App, Focus, KeyIn},
     buffer::EditKind,
     field::TextField,
-    fuzzy::fuzzy,
+    fuzzy,
     search::{self, Hit},
     ui::{Canvas, Rect},
 };
@@ -319,38 +319,29 @@ impl Picker {
             _ => false,
         };
         if gmode == Some(crate::gotopick::Mode::WorkspaceSymbols) {
+            let prepared = fuzzy::Query::new(&q);
             self.filtered = self
                 .items
                 .iter()
                 .enumerate()
                 .take(search::MAX_REPLACE_HITS)
                 .map(|(i, it)| {
-                    (i, if q.is_empty() { Vec::new() } else { fuzzy(&q, &it.label).map(|x| x.1).unwrap_or_default() })
+                    (
+                        i,
+                        if q.is_empty() {
+                            Vec::new()
+                        } else {
+                            prepared.matched(&it.label).map(|x| x.1).unwrap_or_default()
+                        },
+                    )
                 })
                 .collect();
         } else if !filter || q.is_empty() {
             self.filtered = (0..self.items.len().min(search::MAX_REPLACE_HITS)).map(|i| (i, Vec::new())).collect();
         } else {
             // Several words narrow the list: every term must match somewhere in the label.
-            let terms: Vec<&str> = q.split_whitespace().collect();
-            let mut scored: Vec<(i32, usize, Vec<usize>)> = self
-                .items
-                .iter()
-                .enumerate()
-                .filter_map(|(i, it)| {
-                    let (mut total, mut pos) = (0, Vec::new());
-                    for t in &terms {
-                        let (s, p) = fuzzy(t, &it.label)?;
-                        total += s;
-                        pos.extend(p);
-                    }
-                    pos.sort_unstable();
-                    pos.dedup();
-                    Some((total, i, pos))
-                })
-                .collect();
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-            self.filtered = scored.into_iter().take(300).map(|(_, i, p)| (i, p)).collect();
+            let items = &self.items;
+            self.filtered = fuzzy::rank(&q, items.len(), |i| items[i].label.as_str(), 300);
         }
         if self.typed.is_some() && !q.is_empty() {
             // The typed item: first, unless an item starts with what was typed (then last).
