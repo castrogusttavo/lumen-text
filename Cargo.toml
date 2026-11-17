@@ -13,7 +13,7 @@ categories = ["text-editors"]
 publish = false
 
 [build-dependencies]
-miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
+miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
@@ -43,7 +43,7 @@ encoding_rs = { version = "0.8.35", default-features = false, features = ["alloc
 gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image-webp = "0.2.4"
 minisign-verify = "0.3.0"
-miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
+miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 ignore = "0.4.34"
 onig = "6.5.3"
 png = { version = "0.18.1", default-features = false }
