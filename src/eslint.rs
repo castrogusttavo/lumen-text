@@ -3,9 +3,12 @@
 
 use serde_json::Value;
 use std::{
+    collections::HashMap,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Mutex,
+    time::{Duration, Instant},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +41,41 @@ pub fn detect(file: &Path) -> Option<(PathBuf, PathBuf)> {
     let root = dir.ancestors().find(|d| CONFIGS.iter().any(|c| d.join(c).exists()))?.to_path_buf();
     let bin = root.ancestors().map(|d| d.join("node_modules/.bin/eslint")).find(|p| p.exists())?;
     Some((root, bin))
+}
+
+/// How long an answer of [`detect`] is reused for the files of one directory.
+const DETECT_TTL: Duration = Duration::from_secs(30);
+
+type Found = Option<(PathBuf, PathBuf)>;
+
+/// [`detect`] answers per directory, with the time each was computed.
+static DETECTED: Mutex<Option<HashMap<PathBuf, (Instant, Found)>>> = Mutex::new(None);
+
+/// [`detect`], remembered per directory: linting runs after every typing pause, and the search
+/// (up to ten config names in every ancestor directory, then the binary) is the same for every
+/// file of a directory. An answer is reused for [`DETECT_TTL`], so a config or an install that
+/// appears is noticed within that time; a binary that went away is noticed at once.
+pub fn detect_cached(file: &Path) -> Found {
+    detect_cached_at(file, Instant::now())
+}
+
+fn detect_cached_at(file: &Path, now: Instant) -> Found {
+    let dir = file.parent()?;
+    if let Ok(g) = DETECTED.lock()
+        && let Some((at, found)) = g.as_ref().and_then(|m| m.get(dir))
+        && now.saturating_duration_since(*at) < DETECT_TTL
+        && found.as_ref().is_none_or(|(_, bin)| bin.exists())
+    {
+        return found.clone();
+    }
+    let found = detect(file);
+    if let Ok(mut g) = DETECTED.lock() {
+        let m = g.get_or_insert_with(HashMap::new);
+        // Entries of folders nobody edits any more do not pile up.
+        m.retain(|_, (at, _)| now.saturating_duration_since(*at) < DETECT_TTL);
+        m.insert(dir.to_path_buf(), (now, found.clone()));
+    }
+    found
 }
 
 pub fn parse(json: &str) -> Vec<Msg> {
@@ -175,6 +213,30 @@ mod tests {
         std::fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
         std::fs::write(root.join("node_modules/.bin/eslint"), "").unwrap();
         assert_eq!(detect(&file).unwrap().0, root);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn detection_is_remembered_per_directory_for_a_while() {
+        let root = std::env::temp_dir().join(format!("lumen-eslint-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let (a, b) = (root.join("src/a.ts"), root.join("src/b.ts"));
+        let t0 = Instant::now();
+        assert!(detect_cached_at(&a, t0).is_none());
+        // ESLint gets set up: the remembered "no" stands until it expires.
+        std::fs::write(root.join("eslint.config.js"), "").unwrap();
+        std::fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
+        std::fs::write(root.join("node_modules/.bin/eslint"), "").unwrap();
+        assert!(detect_cached_at(&b, t0 + Duration::from_secs(5)).is_none(), "same directory, same answer");
+        let t1 = t0 + DETECT_TTL + Duration::from_secs(1);
+        assert_eq!(detect_cached_at(&a, t1).unwrap().0, root, "looked again after the expiry");
+        // The config goes away: the remembered "yes" stands for a while too...
+        std::fs::remove_file(root.join("eslint.config.js")).unwrap();
+        assert!(detect_cached_at(&b, t1 + Duration::from_secs(5)).is_some());
+        // ...but a missing binary is noticed at once (it could not be run anyway).
+        std::fs::remove_file(root.join("node_modules/.bin/eslint")).unwrap();
+        assert!(detect_cached_at(&b, t1 + Duration::from_secs(6)).is_none());
         std::fs::remove_dir_all(&root).ok();
     }
 

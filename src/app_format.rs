@@ -250,7 +250,10 @@ impl App {
         let js = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
             matches!(e, "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "vue" | "svelte")
         });
-        let (root, bin) = crate::eslint::detect(&path).filter(|_| js)?;
+        if !js {
+            return None;
+        }
+        let (root, bin) = crate::eslint::detect_cached(&path)?;
         let text = d.buf.to_string();
         match crate::eslint::fix(&root, &bin, &path, &text, ACTION_WAIT * 4) {
             Ok(Some(new)) if new != text => {
@@ -890,6 +893,52 @@ esac
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "c { }\nd { }\n", "a closed tab is not saved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn eslint_waits_for_the_run_in_flight_then_runs_exactly_once_more() {
+        let _g = lock();
+        let dir = project("eslintbusy");
+        let mut app = test_app(&dir);
+        // A fake ESLint that leaves a line in `runs` each time it is started.
+        std::fs::write(dir.join("eslint.config.js"), "").unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/.bin")).unwrap();
+        let bin = dir.join("node_modules/.bin/eslint");
+        std::fs::write(&bin, "#!/bin/sh\ncat >/dev/null\necho x >> runs\necho '[{\"messages\":[]}]'\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runs = || std::fs::read_to_string(dir.join("runs")).unwrap_or_default().lines().count();
+        let f = dir.join("src/a.ts");
+        let i = open(&mut app, &f, "let x = 1\n");
+        let past = || Some(Instant::now() - Duration::from_secs(1));
+
+        // A run for this file is going and the text changes: no second process next to it.
+        app.eslint_busy.insert(f.clone());
+        app.docs[i].replace_text("let x = 2\n");
+        app.docs[i].eslint_due = past();
+        app.tick();
+        app.tick();
+        assert!(app.docs[i].eslint_due.is_some(), "the request waits for the run in flight");
+        assert_eq!(runs(), 0);
+        // That run finishes: one more starts, for the text as it is now.
+        app.eslint_tx.send((f.clone(), Ok(Vec::new()))).unwrap();
+        app.pump_eslint();
+        assert!(!app.eslint_busy.contains(&f));
+        app.tick();
+        assert!(app.docs[i].eslint_due.is_none() && app.eslint_busy.contains(&f), "started");
+        let end = Instant::now() + Duration::from_secs(20);
+        while app.eslint_busy.contains(&f) {
+            assert!(Instant::now() < end, "the lint run never finished");
+            app.pump_eslint();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Nothing changed since: no further run.
+        app.tick();
+        assert!(app.eslint_busy.is_empty());
+        assert_eq!(runs(), 1, "exactly one more run");
+        for l in &mut app.lsps {
+            l.shutdown();
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

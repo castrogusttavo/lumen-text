@@ -113,18 +113,22 @@ impl App {
         // ESLint on a worker thread, a moment after typing stops.
         for i in 0..self.docs.len() {
             let Some(due) = self.docs[i].eslint_due else { continue };
+            // The previous run for this file is still going: no second process next to it. The
+            // request stays (without a deadline, so nothing spins) and is served by the tick that
+            // follows `pump_eslint` taking that run's result: exactly one more run, on the latest text.
+            if self.docs[i].path().is_some_and(|p| self.eslint_busy.contains(p)) {
+                continue;
+            }
             if due > now {
                 want(due);
                 continue;
             }
             self.docs[i].eslint_due = None;
             let Some(path) = self.docs[i].path().map(Path::to_path_buf) else { continue };
-            if !matches!(self.docs[i].lang, Some("typescript" | "tsx" | "javascript" | "jsx"))
-                || self.eslint_busy.contains(&path)
-            {
+            if !matches!(self.docs[i].lang, Some("typescript" | "tsx" | "javascript" | "jsx")) {
                 continue;
             }
-            let Some((root, bin)) = crate::eslint::detect(&path) else { continue };
+            let Some((root, bin)) = crate::eslint::detect_cached(&path) else { continue };
             self.eslint_busy.insert(path.clone());
             let text = self.docs[i].buf.to_string();
             let (tx, wake) = (self.eslint_tx.clone(), self.wake());
