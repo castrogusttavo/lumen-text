@@ -519,7 +519,8 @@ impl App {
                         if self.lsps[li].caps["semanticTokensProvider"].is_object() {
                             if self.docs[i].buf.line_count() <= crate::bigfile::BIG_LINES {
                                 if let Some(uri) = self.docs[i].uri() {
-                                    self.lsps[li].request(
+                                    self.lsps[li].request_single(
+                                        format!("sem:{uri}"),
                                         "textDocument/semanticTokens/full",
                                         json!({"textDocument": {"uri": uri}}),
                                         Pending::SemTokens { uri },
@@ -715,7 +716,8 @@ impl App {
                 continue;
             }
             let Some(uri) = d.uri() else { continue };
-            self.lsps[li].request(
+            self.lsps[li].request_single(
+                format!("diag:{uri}"),
                 "textDocument/diagnostic",
                 json!({"textDocument": {"uri": uri}}),
                 Pending::Diagnostic { uri },
@@ -808,6 +810,7 @@ impl App {
             Msg::Exited => dead.push(li),
             Msg::Response { id, result } => {
                 let Some(what) = self.lsps[li].pending.remove(&id) else { return };
+                self.lsps[li].single_done(id);
                 if matches!(what, Pending::Initialize)
                     && let (true, Err(e)) = (self.lsps[li].is_generic(), &result)
                 {
@@ -821,14 +824,17 @@ impl App {
             }
             Msg::Symbols { id, syms } => {
                 let Some(what) = self.lsps[li].pending.remove(&id) else { return };
+                self.lsps[li].single_done(id);
                 self.on_symbol_list(what, syms);
             }
             Msg::Tokens { id, data } => {
                 let Some(what) = self.lsps[li].pending.remove(&id) else { return };
+                self.lsps[li].single_done(id);
                 self.on_tokens(li, what, data);
             }
             Msg::WsDiag { id, report } => {
                 let Some(what) = self.lsps[li].pending.remove(&id) else { return };
+                self.lsps[li].single_done(id);
                 if let Pending::WorkspaceDiag { token } = what {
                     self.ws_report(li, &token, report, true);
                 }

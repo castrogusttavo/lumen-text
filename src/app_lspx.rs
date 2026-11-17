@@ -552,7 +552,8 @@ impl App {
         }
         let uris: Vec<String> = l.open_uris.iter().cloned().collect();
         for uri in uris {
-            self.lsps[li].request(
+            self.lsps[li].request_single(
+                format!("diag:{uri}"),
                 "textDocument/diagnostic",
                 json!({"textDocument": {"uri": uri}}),
                 Pending::Diagnostic { uri },

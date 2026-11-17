@@ -19,6 +19,9 @@ use std::{
 
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
+/// A single-flight request unanswered for this long no longer holds back the next one.
+const SINGLE_GIVE_UP: std::time::Duration = std::time::Duration::from_secs(30);
+
 // ───────────────────────────── framing ─────────────────────────────
 
 pub fn frame(v: &Value) -> Vec<u8> {
@@ -206,6 +209,9 @@ pub struct Lsp {
     pub mirror: Option<PathBuf>,
     /// The auto-import index warm-up was already requested from this server.
     pub warmed: bool,
+    /// Single-flight requests (see `request_single`): key -> in-flight id, when it was sent, and the
+    /// newest request that waits for its answer.
+    pub single: HashMap<String, (i64, std::time::Instant, Option<(String, Value, Pending)>)>,
     pub includes: Vec<PathBuf>,
     /// Set for servers from the registry (everything but tsgo and Biome): the registry id, and what they need at runtime.
     pub generic: Option<Generic>,
@@ -355,6 +361,7 @@ impl Lsp {
             name: name.to_string(),
             mirror: None,
             warmed: false,
+            single: HashMap::new(),
             includes: Vec::new(),
             open_uris: HashSet::new(),
             idle_since: None,
@@ -406,6 +413,32 @@ impl Lsp {
         }
         self.send_or_queue(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
         id
+    }
+
+    /// A request the server answers by type-checking a whole file (pull diagnostics, semantic
+    /// tokens): at most one per `key` is in flight. Sent again for every edit, they queue up in the
+    /// server faster than it answers (2 s each on a file that imports the Prisma client), each one
+    /// pinning its own snapshot of the program: tsgo grew ~65 MB per edit, up to 6 GB in 90 s of
+    /// typing. The newest request made meanwhile is sent when the answer arrives.
+    pub fn request_single(&mut self, key: String, method: &str, params: Value, what: Pending) {
+        if let Some((id, sent, waiting)) = self.single.get_mut(&key)
+            && self.pending.contains_key(id)
+            && sent.elapsed() < SINGLE_GIVE_UP
+        {
+            *waiting = Some((method.to_string(), params, what));
+            return;
+        }
+        let id = self.request(method, params, what);
+        self.single.insert(key, (id, std::time::Instant::now(), None));
+    }
+
+    /// The answer to request `id` arrived: send the single-flight request that waited for it.
+    pub fn single_done(&mut self, id: i64) {
+        let Some(key) = self.single.iter().find(|(_, v)| v.0 == id).map(|(k, _)| k.clone()) else { return };
+        if let Some((_, _, Some((method, params, what)))) = self.single.remove(&key) {
+            let next = self.request(&method, params, what);
+            self.single.insert(key, (next, std::time::Instant::now(), None));
+        }
     }
 
     pub fn notify(&mut self, method: &str, params: Value) {
