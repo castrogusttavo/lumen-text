@@ -63,6 +63,8 @@ pub struct LspX {
     pub(crate) text_sent: Vec<String>,
     /// Diagnostics pulls put off after an edit: (server process id, when, the documents' URIs).
     pub(crate) pull_rest: Vec<(u32, Instant, Vec<String>)>,
+    /// Code lens bookkeeping per document (server-side URI), see `App::lens_tick`.
+    pub(crate) lens: HashMap<String, crate::app_lsp::LensRun>,
     /// The current `Ctrl+.` round (see `App::code_actions`).
     pub(crate) actions: crate::app_lsp::ActionsRun,
     told: HashSet<String>,

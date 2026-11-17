@@ -139,9 +139,12 @@ pub enum Pending {
         first: usize,
         last: usize,
     },
+    /// `codeLens/resolve` of lens `idx` of the list numbered `run` (see `LensRun`).
     ResolveLens {
         uri: String,
         line: usize,
+        idx: usize,
+        run: u64,
     },
     PrepareCalls {
         incoming: bool,

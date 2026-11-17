@@ -69,6 +69,80 @@ pub(crate) struct ActionsRun {
     pub opened: bool,
 }
 
+/// A scroll must rest this long before the lenses of the new viewport are resolved.
+const LENS_SETTLE: Duration = Duration::from_millis(150);
+/// At most this many `codeLens/resolve` requests per viewport.
+const LENS_BATCH: usize = 120;
+
+/// The code lenses of one document as last listed by the server, and which were resolved. A lens
+/// needs a `codeLens/resolve` round-trip for its title ("3 references"): only those in (and
+/// around) the viewport are asked, and an edit or a scroll cancels what is still unanswered.
+#[derive(Default)]
+pub(crate) struct LensRun {
+    /// Numbers the list: an answer for an older list is dropped.
+    pub run: u64,
+    /// Document version the list was received at.
+    pub version: i32,
+    /// Declaration text under each lens (parallel to `Doc::lenses`), to keep titles across lists.
+    pub names: Vec<String>,
+    /// Resolved (or asked) since the list arrived.
+    pub done: Vec<bool>,
+    /// Unanswered resolves: (server process id, request id, lens index).
+    pub inflight: Vec<(u32, i64, usize)>,
+    /// Line span the resolves were last decided for, and since when the view shows it.
+    pub span: Option<((usize, usize), Instant)>,
+    /// Nothing left to ask for `span`.
+    pub settled: bool,
+}
+
+/// Text a lens sits on: its range on its first line (UTF-16 columns), trimmed.
+fn lens_name(line: &str, range: &Value) -> String {
+    let units: Vec<u16> = line.encode_utf16().collect();
+    let col = |p: &Value| (p["character"].as_u64().unwrap_or(0) as usize).min(units.len());
+    let a = col(&range["start"]);
+    let b = if range["end"]["line"] == range["start"]["line"] { col(&range["end"]).max(a) } else { units.len() };
+    String::from_utf16_lossy(&units[a..b]).trim().to_string()
+}
+
+/// Give the new lenses the titles the old list had: a lens on the same line over the same text
+/// keeps showing its title (no blink while the server recounts). Several lenses of one line
+/// (references, implementations) match in order.
+fn carry_lens_titles(
+    old: &[crate::doc::Lens],
+    old_names: &[String],
+    new: &mut [crate::doc::Lens],
+    new_names: &[String],
+) {
+    if old.len() != old_names.len() || new.len() != new_names.len() {
+        return;
+    }
+    let mut titles: HashMap<(usize, &str), std::collections::VecDeque<&str>> = HashMap::new();
+    for (l, name) in old.iter().zip(old_names) {
+        // Every lens takes its place in the queue, so the second of a line never gets the first's title.
+        titles.entry((l.line, name.as_str())).or_default().push_back(l.title.as_deref().unwrap_or(""));
+    }
+    for (l, name) in new.iter_mut().zip(new_names) {
+        let kept = titles.get_mut(&(l.line, name.as_str())).and_then(|q| q.pop_front());
+        if l.title.is_none()
+            && let Some(t) = kept.filter(|t| !t.is_empty())
+        {
+            l.title = Some(t.to_string());
+        }
+    }
+}
+
+/// Lenses to resolve for the view showing lines `first..=last`: those not done yet in the viewport
+/// and half a screen around it, nearest the top first, at most `LENS_BATCH`.
+fn lenses_to_resolve(lines: &[usize], done: &[bool], (first, last): (usize, usize)) -> Vec<usize> {
+    let margin = (last.saturating_sub(first) / 2).max(4);
+    let (lo, hi) = (first.saturating_sub(margin), last + margin);
+    let mut idx: Vec<usize> =
+        (0..lines.len()).filter(|&k| !done.get(k).copied().unwrap_or(true) && (lo..=hi).contains(&lines[k])).collect();
+    idx.sort_by_key(|&k| lines[k]);
+    idx.truncate(LENS_BATCH);
+    idx
+}
+
 /// Diagnostics to pull after an edit: of the server's open documents (`open`, server-side URIs),
 /// those in `first` (the edited and the active one) now, the others later.
 fn pull_split(open: Vec<String>, first: &[String]) -> (Vec<String>, Vec<String>) {
@@ -595,6 +669,9 @@ impl App {
                     }
                 }
             }
+            if i == self.active && self.config.code_lens {
+                self.lens_tick(i, li, now, want);
+            }
             // Inlay hints for the visible lines only (debounced), once the text is synced.
             if self.config.inlay_hints_for(self.docs[i].lang) && i == self.active && self.docs[i].changed_at.is_none() {
                 self.inlay_tick(i, li, now, want);
@@ -695,6 +772,101 @@ impl App {
                 self.pull_uri(li, uri);
             }
         }
+    }
+
+    /// Resolve the code lenses the active document shows. An edit cancels the unanswered resolves
+    /// (a new list follows); a scroll cancels them too and, once it rests, asks for the new viewport.
+    fn lens_tick(&mut self, i: usize, li: usize, now: Instant, want: &mut impl FnMut(Instant)) {
+        if self.docs[i].lenses.is_empty() || self.lspx.lens.is_empty() {
+            return;
+        }
+        let Some(uri) = self.docs[i].uri() else { return };
+        let Some(run) = self.lspx.lens.get(&uri) else { return };
+        let d = &self.docs[i];
+        if run.names.len() != d.lenses.len() {
+            return; // the lenses were replaced or cleared by someone else
+        }
+        if d.version != run.version || d.changed_at.is_some() {
+            return self.lens_cancel(&uri);
+        }
+        let span = d.visible_line_span();
+        match run.span {
+            Some((s, _)) if s == span => {}
+            // The first viewport of a new list is asked at once; a scroll has to rest first.
+            first => {
+                let since = if first.is_some() { now } else { now.checked_sub(LENS_SETTLE).unwrap_or(now) };
+                self.lens_cancel(&uri);
+                if let Some(run) = self.lspx.lens.get_mut(&uri) {
+                    run.span = Some((span, since));
+                    run.settled = false;
+                }
+            }
+        }
+        let Some(run) = self.lspx.lens.get_mut(&uri) else { return };
+        let Some((_, since)) = run.span else { return };
+        if run.settled {
+            return;
+        }
+        if since + LENS_SETTLE > now {
+            return want(since + LENS_SETTLE);
+        }
+        run.settled = true;
+        let lines: Vec<usize> = self.docs[i].lenses.iter().map(|l| l.line).collect();
+        let (serial, pid) = (run.run, self.lsps[li].pid());
+        for idx in lenses_to_resolve(&lines, &run.done, span) {
+            run.done[idx] = true;
+            let what = Pending::ResolveLens { uri: uri.clone(), line: lines[idx], idx, run: serial };
+            let id = self.lsps[li].request("codeLens/resolve", self.docs[i].lenses[idx].raw.clone(), what);
+            run.inflight.push((pid, id, idx));
+        }
+    }
+
+    /// Cancel the unanswered `codeLens/resolve` requests of a document; their lenses count as not
+    /// asked, so they are resolved again if they are still on screen.
+    fn lens_cancel(&mut self, uri: &str) {
+        let Some(run) = self.lspx.lens.get_mut(uri) else { return };
+        for (pid, id, idx) in std::mem::take(&mut run.inflight) {
+            let Some(l) = self.lsps.iter_mut().find(|l| l.pid() == pid) else { continue };
+            if l.pending.contains_key(&id) {
+                l.cancel(id);
+                if let Some(d) = run.done.get_mut(idx) {
+                    *d = false;
+                }
+                run.settled = false;
+            }
+        }
+    }
+
+    /// The server listed the code lenses of document `i`.
+    fn on_code_lens(&mut self, i: usize, uri: &str, v: &Value) {
+        let d = &self.docs[i];
+        let mut lenses = Vec::new();
+        let mut names = Vec::new();
+        for it in v.as_array().into_iter().flatten() {
+            let r = &it["range"]["start"];
+            let line = r["line"].as_u64().unwrap_or(0) as usize;
+            names.push(if line < d.buf.line_count() {
+                lens_name(&d.buf.line(line), &it["range"])
+            } else {
+                String::new()
+            });
+            lenses.push(crate::doc::Lens {
+                line,
+                col: r["character"].as_u64().unwrap_or(0) as usize,
+                title: it["command"]["title"].as_str().map(str::to_string),
+                raw: it.clone(),
+            });
+        }
+        // Counts need a resolve round-trip (`lens_tick` asks for the visible ones); until the
+        // answer, a lens that did not move keeps the title it had.
+        let done: Vec<bool> = lenses.iter().map(|l| l.title.is_some()).collect();
+        self.lens_cancel(uri);
+        self.lspx.lens.retain(|u, _| u == uri || self.docs.iter().any(|d| d.uri().as_deref() == Some(u.as_str())));
+        let run = self.lspx.lens.entry(uri.to_string()).or_default();
+        carry_lens_titles(&self.docs[i].lenses, &run.names, &mut lenses, &names);
+        *run = LensRun { run: run.run + 1, version: self.docs[i].version, names, done, ..Default::default() };
+        self.docs[i].lenses = lenses;
+        self.request_redraw();
     }
 
     /// Ask the server for the hints of the visible lines when they are missing, the view scrolled
@@ -1271,42 +1443,16 @@ impl App {
             }
             Pending::CodeLens { uri } => {
                 if let Some(i) = self.doc_by_uri(&uri) {
-                    let mut lenses = Vec::new();
-                    for it in v.as_array().into_iter().flatten() {
-                        let r = &it["range"]["start"];
-                        let title = it["command"]["title"].as_str().map(str::to_string);
-                        lenses.push(crate::doc::Lens {
-                            line: r["line"].as_u64().unwrap_or(0) as usize,
-                            col: r["character"].as_u64().unwrap_or(0) as usize,
-                            title,
-                            raw: it.clone(),
-                        });
-                    }
-                    // Counts need a resolve round-trip; ask for the first batch.
-                    let pending: Vec<(usize, Value)> = lenses
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, l)| l.title.is_none())
-                        .take(120)
-                        .map(|(k, l)| (k, l.raw.clone()))
-                        .collect();
-                    self.docs[i].lenses = lenses;
-                    for (_, raw) in pending {
-                        let line = raw["range"]["start"]["line"].as_u64().unwrap_or(0) as usize;
-                        self.lsps[li].request("codeLens/resolve", raw, Pending::ResolveLens { uri: uri.clone(), line });
-                    }
+                    self.on_code_lens(i, &uri, &v);
                 }
             }
-            Pending::ResolveLens { uri, line } => {
+            Pending::ResolveLens { uri, line, idx, run } => {
                 if let Some(i) = self.doc_by_uri(&uri)
                     && let Some(title) = v["command"]["title"].as_str()
+                    && self.lspx.lens.get(&uri).is_some_and(|r| r.run == run)
+                    && let Some(l) = self.docs[i].lenses.get_mut(idx).filter(|l| l.line == line)
                 {
-                    let c = v["range"]["start"]["character"].as_u64().unwrap_or(0) as usize;
-                    if let Some(l) =
-                        self.docs[i].lenses.iter_mut().find(|l| l.line == line && l.col == c && l.title.is_none())
-                    {
-                        l.title = Some(title.to_string());
-                    }
+                    l.title = Some(title.to_string());
                     self.request_redraw();
                 }
             }
@@ -2550,6 +2696,54 @@ mod lang_tests {
         assert_eq!(later, vec!["file:///b.ts"]);
         let (now, later) = pull_split(open, &[]);
         assert!(now.is_empty() && later.len() == 3);
+    }
+
+    fn lens(line: usize, title: Option<&str>) -> crate::doc::Lens {
+        crate::doc::Lens { line, col: 0, title: title.map(str::to_string), raw: Value::Null }
+    }
+
+    #[test]
+    fn only_lenses_near_the_viewport_are_resolved() {
+        // One lens every 10 lines of a 2000-line file; the view shows lines 400..=440.
+        let lines: Vec<usize> = (0..200).map(|k| k * 10).collect();
+        let mut done = vec![false; lines.len()];
+        let ask = lenses_to_resolve(&lines, &done, (400, 440));
+        let asked: Vec<usize> = ask.iter().map(|&k| lines[k]).collect();
+        assert_eq!(asked, vec![380, 390, 400, 410, 420, 430, 440, 450, 460]);
+        // What was asked is not asked again; scrolling a little only adds the new lines.
+        for k in ask {
+            done[k] = true;
+        }
+        assert!(lenses_to_resolve(&lines, &done, (400, 440)).is_empty());
+        let more: Vec<usize> = lenses_to_resolve(&lines, &done, (420, 460)).iter().map(|&k| lines[k]).collect();
+        assert_eq!(more, vec![470, 480]);
+        // A viewport full of lenses is capped.
+        let dense: Vec<usize> = (0..1000).collect();
+        assert_eq!(lenses_to_resolve(&dense, &vec![false; 1000], (0, 999)).len(), LENS_BATCH);
+    }
+
+    #[test]
+    fn a_lens_keeps_its_title_while_line_and_text_are_the_same() {
+        let range = |a: u64, b: u64| json!({"start": {"line": 3, "character": a}, "end": {"line": 3, "character": b}});
+        assert_eq!(lens_name("export function soma(a: number) {", &range(16, 20)), "soma");
+        // UTF-16 columns, and a range that runs past the line or onto the next ones.
+        assert_eq!(lens_name("const 😀x = 1", &range(8, 9)), "x");
+        assert_eq!(lens_name("ab", &range(1, 40)), "b");
+        let multi = json!({"start": {"line": 3, "character": 6}, "end": {"line": 9, "character": 1}});
+        assert_eq!(lens_name("class Repo {", &multi), "Repo {");
+
+        let old = [lens(3, Some("2 references")), lens(3, Some("1 implementation")), lens(8, Some("5 references"))];
+        let old_names: Vec<String> = ["Repo", "Repo", "find"].map(String::from).to_vec();
+        // Same lines and names: titles stay. A renamed symbol or a moved line starts empty.
+        let mut new = [lens(3, None), lens(3, None), lens(8, None), lens(12, None)];
+        let names: Vec<String> = ["Repo", "Repo", "search", "find"].map(String::from).to_vec();
+        carry_lens_titles(&old, &old_names, &mut new, &names);
+        let titles: Vec<Option<&str>> = new.iter().map(|l| l.title.as_deref()).collect();
+        assert_eq!(titles, vec![Some("2 references"), Some("1 implementation"), None, None]);
+        // A title the server already sent is not replaced.
+        let mut new = [lens(3, Some("9 references"))];
+        carry_lens_titles(&old, &old_names, &mut new, &["Repo".to_string()]);
+        assert_eq!(new[0].title.as_deref(), Some("9 references"));
     }
 
     #[test]
