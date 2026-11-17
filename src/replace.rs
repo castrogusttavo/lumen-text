@@ -10,6 +10,8 @@ use std::{io, path::Path};
 #[derive(Clone, Debug)]
 pub struct Matcher {
     re: Regex,
+    /// A plain case-sensitive query is found as a substring, without the regex engine.
+    lit: Option<String>,
     word: bool,
     regex: bool,
 }
@@ -35,7 +37,47 @@ impl Matcher {
         }
         let pat = if regex { query.to_string() } else { regex::escape(query) };
         let re = RegexBuilder::new(&pat).case_insensitive(!case).build().map_err(|e| e.to_string())?;
-        Ok(Matcher { re, word, regex })
+        let lit = (!regex && case).then(|| query.to_string());
+        Ok(Matcher { re, lit, word, regex })
+    }
+
+    /// The same matcher going through the regex engine for everything (what the literal path is
+    /// compared with).
+    #[cfg(test)]
+    pub fn without_literal(mut self) -> Matcher {
+        self.lit = None;
+        self
+    }
+
+    /// False when no line of `text` can match (a cheap check before going line by line).
+    pub fn may_match(&self, text: &str) -> bool {
+        self.lit.as_ref().is_none_or(|l| text.contains(l.as_str()))
+    }
+
+    /// The first match of `line` at or after byte `pos` (a char boundary), whatever it is.
+    fn find_at(&self, line: &str, pos: usize) -> Option<(usize, usize)> {
+        match &self.lit {
+            Some(l) => line[pos..].find(l.as_str()).map(|i| (pos + i, pos + i + l.len())),
+            None => self.re.find_at(line, pos).map(|m| (m.start(), m.end())),
+        }
+    }
+
+    /// Visit the byte range of every non-empty match of `line` in order; `f` returns false to
+    /// stop. No capture groups are tracked: see [`Matcher::each`] for those.
+    fn each_span(&self, line: &str, mut f: impl FnMut(usize, usize) -> bool) {
+        let mut pos = 0;
+        while pos <= line.len() {
+            let Some((s, e)) = self.find_at(line, pos) else { break };
+            if s == e || !self.word_ok(line, s, e) {
+                // Rejected (empty, or not a whole word): look again one char further.
+                pos = line[s..].chars().next().map_or(line.len() + 1, |ch| s + ch.len_utf8());
+                continue;
+            }
+            if !f(s, e) {
+                break;
+            }
+            pos = e;
+        }
     }
 
     fn word_ok(&self, line: &str, s: usize, e: usize) -> bool {
@@ -48,7 +90,8 @@ impl Matcher {
         left && right
     }
 
-    /// Visit every non-empty match of `line` in order; `f` returns false to stop.
+    /// Visit every non-empty match of `line` in order, with its capture groups (what a regex
+    /// replacement template needs); `f` returns false to stop.
     fn each<'a>(&self, line: &'a str, mut f: impl FnMut(&Captures<'a>) -> bool) {
         let mut pos = 0;
         while pos <= line.len() {
@@ -69,8 +112,8 @@ impl Matcher {
     /// Byte range of the first match of `line`.
     pub fn first(&self, line: &str) -> Option<(usize, usize)> {
         let mut out = None;
-        self.each(line, |c| {
-            out = c.get(0).map(|m| (m.start(), m.end()));
+        self.each_span(line, |s, e| {
+            out = Some((s, e));
             false
         });
         out
@@ -80,10 +123,17 @@ impl Matcher {
     /// the replacement is literal otherwise).
     pub fn matches(&self, line: &str, rep: &str) -> Vec<LineMatch> {
         let mut out = Vec::new();
+        if !self.regex {
+            // A literal replacement: only the ranges matter.
+            self.each_span(line, |start, end| {
+                out.push(LineMatch { start, end, rep: rep.to_string() });
+                true
+            });
+            return out;
+        }
         self.each(line, |c| {
             let m = c.get(0).expect("group 0");
-            let rep = if self.regex { expand(c, rep) } else { rep.to_string() };
-            out.push(LineMatch { start: m.start(), end: m.end(), rep });
+            out.push(LineMatch { start: m.start(), end: m.end(), rep: expand(c, rep) });
             true
         });
         out
@@ -341,6 +391,46 @@ mod tests {
         assert_eq!(replace_text("a.b axb", &x, "$1$$").0, "$1$$ axb");
         assert!(Matcher::new("(", true, true, false).is_err());
         assert!(Matcher::new("", true, false, false).is_err());
+    }
+
+    #[test]
+    fn literal_path_finds_what_the_regex_path_finds() {
+        let lines = [
+            "",
+            "foo",
+            "foo foo food _foo foo.x Foo FOO",
+            "aaaa aaa aa a",
+            "a.b axb a.b.a.b",
+            "f(x) (x) ((x))",
+            "$1 $$ \\d+ [a-z] ^start end$",
+            "café é ée éé É",
+            "日本語 日本 本日本語",
+            "tab\tseparated\tfoo",
+            "  leading and trailing foo  ",
+            "x*x x+ x? x{2}",
+        ];
+        let queries =
+            ["foo", "a", "aa", "a.b", "(x)", "(", "$1", "\\d+", "[a-z]", "é", "日本", " ", "x*", "^", "FOO", "o f"];
+        for q in queries {
+            for word in [false, true] {
+                let fast = m(q, true, false, word);
+                let slow = m(q, true, false, word).without_literal();
+                assert!(fast.lit.is_some() && slow.lit.is_none());
+                for line in lines {
+                    assert_eq!(fast.first(line), slow.first(line), "first of {q:?} (word {word}) in {line:?}");
+                    assert_eq!(fast.matches(line, "$1"), slow.matches(line, "$1"), "{q:?} (word {word}) in {line:?}");
+                    assert_eq!(fast.replace_line(line, "<$&>", "\n"), slow.replace_line(line, "<$&>", "\n"));
+                    assert!(fast.may_match(line) || fast.first(line).is_none());
+                }
+            }
+        }
+        // Only a plain case-sensitive query takes the literal path.
+        assert!(m("foo", false, false, false).lit.is_none());
+        assert!(m("foo", true, true, false).lit.is_none());
+        assert!(!m("foo", true, false, false).may_match("bar\nbaz") && m("foo", false, false, false).may_match("bar"));
+        // Replace mode with groups still expands them (the capturing path).
+        let x = m(r"(f)(o+)", true, true, false);
+        assert_eq!(x.matches("foo fo", "$2$1").iter().map(|l| l.rep.as_str()).collect::<Vec<_>>(), vec!["oof", "of"]);
     }
 
     #[test]

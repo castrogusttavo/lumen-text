@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::Sender,
     },
 };
@@ -32,7 +32,7 @@ pub const MAX_REPLACE_HITS: usize = 5000;
 /// Files larger than this are skipped (search and replace alike).
 pub const MAX_FILE: u64 = 1_000_000;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hit {
     pub path: PathBuf,
     pub line: usize,
@@ -80,6 +80,7 @@ fn skipped(e: &ignore::DirEntry) -> bool {
     e.file_type().is_some_and(|t| t.is_dir()) && SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref())
 }
 
+#[cfg(test)]
 fn walker(root: &Path) -> ignore::Walk {
     builder(root).filter_entry(|e| !skipped(e)).build()
 }
@@ -89,14 +90,18 @@ pub fn list_files(root: &Path, limit: usize) -> Vec<PathBuf> {
     list_files_in(std::slice::from_ref(&root.to_path_buf()), limit)
 }
 
-/// At most `limit` files below `root`, sorted by path. The walk runs on several threads, so the
-/// order it finds them in is not stable: sorting is what makes the result deterministic.
-fn list_root(root: &Path, limit: usize) -> Vec<PathBuf> {
+/// At most `limit` files below `root`, sorted by path; the walk gives up when `live` turns false.
+/// It runs on several threads, so the order it finds files in is not stable: sorting is what makes
+/// the result deterministic.
+fn walk_files(root: &Path, limit: usize, live: &(dyn Fn() -> bool + Sync)) -> Vec<PathBuf> {
     let (tx, rx) = std::sync::mpsc::channel();
     let count = AtomicUsize::new(0);
     builder(root).filter_entry(|e| !skipped(e)).build_parallel().run(|| {
         let (tx, count) = (tx.clone(), &count);
         Box::new(move |entry: Result<ignore::DirEntry, ignore::Error>| {
+            if !live() {
+                return ignore::WalkState::Quit;
+            }
             let Ok(entry) = entry else { return ignore::WalkState::Continue };
             if entry.file_type().is_some_and(|t| t.is_file()) {
                 if count.fetch_add(1, Ordering::Relaxed) >= limit {
@@ -111,6 +116,10 @@ fn list_root(root: &Path, limit: usize) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = rx.into_iter().collect();
     files.sort_unstable();
     files
+}
+
+fn list_root(root: &Path, limit: usize) -> Vec<PathBuf> {
+    walk_files(root, limit, &|| true)
 }
 
 /// Files of every workspace root, in root order and sorted inside each (`limit` counts all of them).
@@ -237,7 +246,78 @@ pub fn search(
     search_in(std::slice::from_ref(&root.to_path_buf()), q, overrides, generation, my_gen, tx, wake)
 }
 
+/// Files searched at once at most.
+const SEARCH_THREADS: usize = 8;
+/// How many files the searching threads may be ahead of the last one reported.
+const SEARCH_AHEAD: usize = 256;
+
+/// The text of a file to search: `None` for big and binary files. Bytes that are UTF-8 (nearly
+/// every file) become the text without being copied; others are read lossily.
+fn read_text(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > MAX_FILE {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if bytes[..bytes.len().min(8000)].contains(&0) {
+        return None;
+    }
+    Some(match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    })
+}
+
+/// The hits of one file in line order, `cap` at most.
+fn search_file(path: &Path, m: &Matcher, q: &Query, overrides: &HashMap<PathBuf, String>, cap: usize) -> Vec<Hit> {
+    let owned;
+    let text: &str = match overrides.get(path) {
+        Some(t) if t.len() as u64 <= MAX_FILE => t,
+        Some(_) => return Vec::new(),
+        None => match read_text(path) {
+            Some(t) => {
+                owned = t;
+                &owned
+            }
+            None => return Vec::new(),
+        },
+    };
+    let mut hits = Vec::new();
+    if !m.may_match(text) {
+        return hits;
+    }
+    // Same lines as `replace::replace_text` (a BOM is not part of the first line).
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    for (ln, line) in text.lines().enumerate() {
+        let found: Vec<(usize, usize, Option<String>)> = match &q.replace {
+            Some(rep) => m.matches(line, rep).into_iter().map(|x| (x.start, x.end, Some(x.rep))).collect(),
+            None => m.first(line).map(|(s, e)| (s, e, None)).into_iter().collect(),
+        };
+        for (start, end, rep) in found {
+            let (text, mark) = snippet(line, start, end);
+            hits.push(Hit {
+                path: path.to_path_buf(),
+                line: ln,
+                col: line[..start].chars().count(),
+                text,
+                start,
+                end,
+                mark,
+                rep,
+            });
+            if hits.len() >= cap {
+                return hits;
+            }
+        }
+    }
+    hits
+}
+
 /// [`search`] over every root of a multi-root workspace, one after the other.
+///
+/// The files are listed first (a parallel walk, sorted), then searched by several threads; hits
+/// are reported in the order of that list whatever thread found them, so the result is the same
+/// on every run: files in path order, each file's hits together and in line order.
 pub fn search_in(
     roots: &[PathBuf],
     q: &Query,
@@ -249,64 +329,69 @@ pub fn search_in(
 ) {
     let Ok(m) = Matcher::new(&q.text, q.case, q.regex, q.word) else { return };
     let cap = if q.replace.is_some() { MAX_REPLACE_HITS } else { MAX_HITS };
-    let mut batch = Vec::new();
-    let mut total = 0;
-    for entry in roots.iter().flat_map(|r| walker(r)).flatten() {
-        if generation.load(Ordering::Relaxed) != my_gen || total >= cap {
-            break;
-        }
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
-        let owned;
-        let text: &str = match overrides.get(entry.path()) {
-            Some(t) if t.len() as u64 <= MAX_FILE => t,
-            Some(_) => continue,
-            None => {
-                let Ok(meta) = entry.metadata() else { continue };
-                if meta.len() > MAX_FILE {
-                    continue;
-                }
-                let Ok(bytes) = std::fs::read(entry.path()) else { continue };
-                if bytes[..bytes.len().min(8000)].contains(&0) {
-                    continue;
-                }
-                owned = String::from_utf8_lossy(&bytes).into_owned();
-                &owned
-            }
-        };
-        // Same lines as `replace::replace_text` (a BOM is not part of the first line).
-        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-        'lines: for (ln, line) in text.lines().enumerate() {
-            let found: Vec<(usize, usize, Option<String>)> = match &q.replace {
-                Some(rep) => m.matches(line, rep).into_iter().map(|x| (x.start, x.end, Some(x.rep))).collect(),
-                None => m.first(line).map(|(s, e)| (s, e, None)).into_iter().collect(),
-            };
-            for (start, end, rep) in found {
-                let (text, mark) = snippet(line, start, end);
-                batch.push(Hit {
-                    path: entry.path().to_path_buf(),
-                    line: ln,
-                    col: line[..start].chars().count(),
-                    text,
-                    start,
-                    end,
-                    mark,
-                    rep,
-                });
-                total += 1;
-                if total >= cap {
-                    break 'lines;
-                }
-            }
-        }
-        if batch.len() >= 40 {
-            if tx.send((my_gen, std::mem::take(&mut batch))).is_err() {
-                return;
-            }
-            wake();
-        }
+    let live = || generation.load(Ordering::Relaxed) == my_gen;
+    let mut files: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        files.extend(walk_files(root, usize::MAX, &live));
     }
+    let threads = std::thread::available_parallelism().map_or(2, |n| n.get()).min(SEARCH_THREADS).min(files.len());
+    // The next file to take, how many were reported, and "enough" (the cap, or nobody listens).
+    let (next, reported, stop) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicBool::new(false));
+    let (found_tx, found_rx) = std::sync::mpsc::channel::<(usize, Vec<Hit>)>();
+    let mut batch: Vec<Hit> = Vec::new();
+    let mut total = 0;
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            // Its own matcher: a regex shared between threads contends for its scratch space.
+            let (found_tx, m) = (found_tx.clone(), m.clone());
+            let (files, next, reported, stop, live) = (&files, &next, &reported, &stop, &live);
+            s.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= files.len() {
+                        break;
+                    }
+                    // Hits wait in memory until every file before theirs is reported: stay close.
+                    while i >= reported.load(Ordering::Relaxed) + SEARCH_AHEAD
+                        && !stop.load(Ordering::Relaxed)
+                        && live()
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    if stop.load(Ordering::Relaxed) || !live() {
+                        break;
+                    }
+                    if found_tx.send((i, search_file(&files[i], &m, q, overrides, cap))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(found_tx);
+        // Files finish in any order: hold the early ones back until their turn.
+        let mut early: HashMap<usize, Vec<Hit>> = HashMap::new();
+        let mut turn = 0;
+        'report: for (i, hits) in found_rx.iter() {
+            early.insert(i, hits);
+            while let Some(hits) = early.remove(&turn) {
+                turn += 1;
+                reported.store(turn, Ordering::Relaxed);
+                let room = cap - total;
+                total += hits.len().min(room);
+                batch.extend(hits.into_iter().take(room));
+                if batch.len() >= 40 {
+                    if tx.send((my_gen, std::mem::take(&mut batch))).is_err() {
+                        break 'report;
+                    }
+                    wake();
+                }
+                if total >= cap || !live() {
+                    break 'report;
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+    });
     if !batch.is_empty() {
         let _ = tx.send((my_gen, batch));
     }
@@ -419,6 +504,115 @@ mod tests {
         let (tx, rx) = channel();
         search(root, q, ov, Arc::new(AtomicUsize::new(1)), 1, tx, || {});
         rx.try_iter().flat_map(|(_, h)| h).collect()
+    }
+
+    /// The search as it was before the parallel walk and the literal matcher: one thread, files
+    /// in the order the walk yields them, every line through the regex engine.
+    fn reference(roots: &[PathBuf], q: &Query, overrides: &HashMap<PathBuf, String>) -> Vec<Hit> {
+        let m = Matcher::new(&q.text, q.case, q.regex, q.word).unwrap().without_literal();
+        let cap = if q.replace.is_some() { MAX_REPLACE_HITS } else { MAX_HITS };
+        let mut out = Vec::new();
+        for entry in roots.iter().flat_map(|r| walker(r)).flatten() {
+            if out.len() >= cap {
+                break;
+            }
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
+                continue;
+            }
+            let owned;
+            let text: &str = match overrides.get(entry.path()) {
+                Some(t) if t.len() as u64 <= MAX_FILE => t,
+                Some(_) => continue,
+                None => {
+                    let Ok(meta) = entry.metadata() else { continue };
+                    if meta.len() > MAX_FILE {
+                        continue;
+                    }
+                    let Ok(bytes) = std::fs::read(entry.path()) else { continue };
+                    if bytes[..bytes.len().min(8000)].contains(&0) {
+                        continue;
+                    }
+                    owned = String::from_utf8_lossy(&bytes).into_owned();
+                    &owned
+                }
+            };
+            let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+            'lines: for (ln, line) in text.lines().enumerate() {
+                let found: Vec<(usize, usize, Option<String>)> = match &q.replace {
+                    Some(rep) => m.matches(line, rep).into_iter().map(|x| (x.start, x.end, Some(x.rep))).collect(),
+                    None => m.first(line).map(|(s, e)| (s, e, None)).into_iter().collect(),
+                };
+                for (start, end, rep) in found {
+                    let (text, mark) = snippet(line, start, end);
+                    let col = line[..start].chars().count();
+                    out.push(Hit { path: entry.path().to_path_buf(), line: ln, col, text, start, end, mark, rep });
+                    if out.len() >= cap {
+                        break 'lines;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn parallel_search_finds_what_the_sequential_search_found() {
+        let root = project();
+        let write = |rel: &str, data: &[u8]| {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, data).unwrap();
+        };
+        for d in 0..6 {
+            for f in 0..9 {
+                let body = format!("// file {d}/{f}\nconst needle{f} = Needle.make({d});\nneedle needle\n\tend\n");
+                write(&format!("pkg{d}/sub/f{f}.ts"), body.as_bytes());
+            }
+        }
+        write("crlf.txt", b"needle one\r\nNEEDLE two\r\n\r\nthree needle\r\n");
+        write("bom.txt", "\u{feff}needle after a bom\nsecond needle".as_bytes());
+        write("multi.txt", "caf\u{e9} needle \u{65e5}\u{672c} needle\n\u{e9}needle\u{e9}\n".as_bytes());
+        write(
+            "latin1.txt",
+            &[b'n', b'e', b'e', b'd', b'l', b'e', b' ', 0xe9, b'\n', 0xe9, b' ', b'n', b'e', b'e', b'd', b'l', b'e'],
+        );
+        write("big.txt", "needle\n".repeat(200_000).as_bytes());
+        write("empty.txt", b"");
+        write("unsaved.txt", b"nothing on disk");
+        let overrides = HashMap::from([(root.join("unsaved.txt"), "an unsaved needle\n".to_string())]);
+        let roots = vec![root.clone()];
+        let queries = [
+            Query { case: true, ..q("needle") },
+            q("needle"),
+            Query { case: true, word: true, ..q("needle") },
+            Query { word: true, ..q("needle") },
+            Query { case: true, ..q("Needle.make(") },
+            Query { case: true, ..q("\u{e9}") },
+            Query { case: true, regex: true, ..q(r"needle(\d)") },
+            Query { case: true, replace: Some("pin".into()), ..q("needle") },
+            Query { replace: Some("$1".into()), ..q("needle") },
+            Query { case: true, regex: true, replace: Some("<$2:$1>".into()), ..q(r"(need)(le\d?)") },
+            Query { case: true, ..q("no such text anywhere") },
+        ];
+        let key = |h: &Hit| (h.path.clone(), h.line, h.start);
+        for query in &queries {
+            let (tx, rx) = channel();
+            search_in(&roots, query, &overrides, Arc::new(AtomicUsize::new(1)), 1, tx, || {});
+            let new: Vec<Hit> = rx.try_iter().flat_map(|(_, h)| h).collect();
+            let mut old = reference(&roots, query, &overrides);
+            old.sort_by_key(key);
+            let mut sorted = new.clone();
+            sorted.sort_by_key(key);
+            assert_eq!(sorted, old, "{query:?}");
+            assert_eq!(new, sorted, "files in path order, hits in line order: {query:?}");
+        }
+        // A search that hits the cap reports exactly the cap, and the same hits every time.
+        write("many.txt", "needle\n".repeat(3000).as_bytes());
+        let capped = || run(&root, &Query { case: true, ..q("needle") }, &overrides);
+        let (a, b) = (capped(), capped());
+        assert_eq!(a.len(), MAX_HITS);
+        assert_eq!(a, b);
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
