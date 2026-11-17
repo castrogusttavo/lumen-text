@@ -851,7 +851,7 @@ impl App {
                     self.lspx.agg[kind.slot()] = None;
                     return;
                 }
-                self.on_completion(&uri, at, &v);
+                self.on_completion(&uri, at, v);
                 if again
                     && let (Some((Some(label), sel, scroll)), Some(c)) = (keep, &mut self.completion)
                     && let Some(k) = c.filtered.iter().position(|&k| c.items[k].label == label)

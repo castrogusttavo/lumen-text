@@ -100,7 +100,9 @@ impl Agg {
         self.parts.sort_by_key(|p| p.0);
         match self.kind {
             MultiKind::Hover => merge_hover(&self.parts),
-            MultiKind::Completion => merge_completion(&self.parts),
+            // Completion lists are big: once everyone answered they are moved out, not copied.
+            MultiKind::Completion if self.expected == 0 => merge_completion(std::mem::take(&mut self.parts)),
+            MultiKind::Completion => merge_completion(self.parts.clone()),
         }
     }
 }
@@ -142,28 +144,38 @@ fn items_of(v: &Value) -> &[Value] {
     v.get("items").unwrap_or(v).as_array().map(Vec::as_slice).unwrap_or(&[])
 }
 
-pub fn merge_completion(parts: &[(usize, String, Value)]) -> Value {
-    let live: Vec<&(usize, String, Value)> = parts.iter().filter(|p| !items_of(&p.2).is_empty()).collect();
+/// The items of a completion answer (a `CompletionList` or a bare array), moved out of it.
+pub fn take_items(mut v: Value) -> Vec<Value> {
+    let list = v.get_mut("items").map(Value::take);
+    match list.unwrap_or(v) {
+        Value::Array(a) => a,
+        _ => Vec::new(),
+    }
+}
+
+/// Merge completion answers given in server order (primary first). The items are moved, never
+/// copied: a list has thousands of them.
+pub fn merge_completion(parts: Vec<(usize, String, Value)>) -> Value {
+    let mut live: Vec<(usize, String, Value)> = parts.into_iter().filter(|p| !items_of(&p.2).is_empty()).collect();
     if live.len() <= 1 {
-        return live.first().map(|p| p.2.clone()).unwrap_or(Value::Null);
+        return live.pop().map_or(Value::Null, |p| p.2);
     }
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     let mut incomplete = false;
-    for (n, (order, name, v)) in live.iter().map(|p| (p.0, &p.1, &p.2)).enumerate() {
+    for (n, (order, name, v)) in live.into_iter().enumerate() {
         incomplete |= v["isIncomplete"].as_bool().unwrap_or(false);
-        for it in items_of(v) {
+        for mut it in take_items(v) {
             let label = it["label"].as_str().unwrap_or("");
             let text = it["textEdit"]["newText"].as_str().or_else(|| it["insertText"].as_str()).unwrap_or(label);
             if !seen.insert((label.to_string(), text.to_string())) {
                 continue;
             }
-            let mut it = it.clone();
             if n > 0 || order > 0 {
-                it["__server"] = json!(name);
                 if it["detail"].as_str().is_none_or(str::is_empty) {
                     it["detail"] = json!(name);
                 }
+                it["__server"] = json!(name);
             }
             out.push(it);
         }
@@ -239,7 +251,11 @@ mod tests {
         assert_eq!(items[2]["detail"], "tailwind");
         // a lone answer is untouched
         let only = json!([{"label": "a"}]);
-        assert_eq!(merge_completion(&[part(0, "x", only.clone()), part(1, "y", Value::Null)]), only);
+        assert_eq!(merge_completion(vec![part(0, "x", only.clone()), part(1, "y", Value::Null)]), only);
+        // both shapes of an answer give their items; anything else gives none
+        assert_eq!(take_items(only.clone()), only.as_array().unwrap().clone());
+        assert_eq!(take_items(json!({"isIncomplete": false, "items": [{"label": "a"}]})), vec![json!({"label": "a"})]);
+        assert!(take_items(Value::Null).is_empty() && take_items(json!({"items": null})).is_empty());
     }
 
     #[test]
