@@ -131,8 +131,16 @@ fn is_break(c: char) -> bool {
 
 /// Same text as `Buffer::line` (no line break), for a snapshot.
 fn rope_line(r: &Rope, l: usize) -> String {
+    let mut s = String::new();
+    rope_line_into(r, l, &mut s);
+    s
+}
+
+/// [`rope_line`] into a `String` the caller reuses: no allocation once it has the capacity.
+pub(crate) fn rope_line_into(r: &Rope, l: usize, out: &mut String) {
+    out.clear();
     if l >= r.len_lines() {
-        return String::new();
+        return;
     }
     let s = r.line(l);
     let mut n = s.len_chars();
@@ -143,7 +151,9 @@ fn rope_line(r: &Rope, l: usize) -> String {
             n -= 1;
         }
     }
-    s.slice(..n).to_string()
+    for chunk in s.slice(..n).chunks() {
+        out.push_str(chunk);
+    }
 }
 
 /// State after tokenizing `text` (no line break) from `st`.
@@ -933,6 +943,19 @@ mod tests {
         hl.advance(&buf, buf.line_count(), Duration::ZERO);
         wait_ready(&hl, buf.line_count() + 1, 120);
         check_all(&mut hl, &buf, &theme, "after late edit");
+    }
+
+    #[test]
+    fn rope_line_into_reuses_the_string_and_matches_buffer_line() {
+        let buf = Buffer::from_str("one\r\ntwo é 日本\n\n\tfour\rfive\nlast");
+        let rope = buf.snapshot();
+        let mut s = String::from("left over from the previous line");
+        for l in 0..buf.line_count() + 2 {
+            rope_line_into(&rope, l, &mut s);
+            let want = if l < buf.line_count() { buf.line(l) } else { String::new() };
+            assert_eq!(s, want, "line {l}");
+            assert_eq!(rope_line(&rope, l), want, "line {l}");
+        }
     }
 
     #[test]
