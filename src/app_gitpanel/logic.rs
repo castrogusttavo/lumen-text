@@ -62,31 +62,105 @@ pub fn parse_status_z(out: &str) -> Vec<Change> {
             continue;
         }
         let (x, y) = (e.as_bytes()[0] as char, e.as_bytes()[1] as char);
-        let path = e[3..].to_string();
         let old = (matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C')).then(|| it.next().unwrap_or("").to_string());
-        let mk = |code: char, group: Group| Change { path: path.clone(), old: old.clone(), code, group };
-        if x == '?' && y == '?' {
-            v.push(mk('?', Group::Untracked));
-        } else if x == '!' {
-            continue;
-        } else if x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D') {
-            v.push(mk('U', Group::Changes));
-        } else {
-            match (x != ' ', y != ' ') {
-                // Staged and modified again: listed under Staged (what the index holds) and under
-                // Unstaged (the edits made since).
-                (true, true) => {
-                    v.push(mk(x, Group::Staged));
-                    v.push(mk(y, Group::Changes));
-                }
-                (true, false) => v.push(mk(x, Group::Staged)),
-                (false, true) => v.push(mk(y, Group::Changes)),
-                (false, false) => {}
-            }
-        }
+        push_change(&mut v, x, y, &e[3..], old);
     }
     v.sort_by(|a, b| (a.group as u8, &a.path).cmp(&(b.group as u8, &b.path)));
     v
+}
+
+/// The entries of one status record: its `XY` pair (a space for "unchanged"), path and old path.
+fn push_change(v: &mut Vec<Change>, x: char, y: char, path: &str, old: Option<String>) {
+    let mk = |code: char, group: Group| Change { path: path.to_string(), old: old.clone(), code, group };
+    if x == '?' && y == '?' {
+        v.push(mk('?', Group::Untracked));
+    } else if x == '!' {
+        // Ignored: never listed.
+    } else if x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D') {
+        v.push(mk('U', Group::Changes));
+    } else {
+        match (x != ' ', y != ' ') {
+            // Staged and modified again: listed under Staged (what the index holds) and under
+            // Unstaged (the edits made since).
+            (true, true) => {
+                v.push(mk(x, Group::Staged));
+                v.push(mk(y, Group::Changes));
+            }
+            (true, false) => v.push(mk(x, Group::Staged)),
+            (false, true) => v.push(mk(y, Group::Changes)),
+            (false, false) => {}
+        }
+    }
+}
+
+/// Arguments of the one `git status` the panel runs: the changes (every untracked file) plus the
+/// branch headers (upstream, ahead / behind). `--no-optional-locks`: it runs on a worker thread
+/// and must not hold `index.lock` while the user stages or commits.
+pub const STATUS_V2_ARGS: [&str; 7] =
+    ["--no-optional-locks", "status", "--porcelain=v2", "--branch", "--ahead-behind", "-z", "-uall"];
+
+/// What `git status --porcelain=v2 --branch -z` says: the changes (as [`parse_status_z`] lists
+/// them) and where the branch stands against its upstream (as `gitsync::info` reports it).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatusV2 {
+    pub changes: Vec<Change>,
+    pub sync: SyncInfo,
+}
+
+/// `+3 -1` of the `# branch.ab` header: (ahead, behind).
+fn parse_ab(s: &str) -> Option<(usize, usize)> {
+    let mut it = s.split_whitespace();
+    let ahead = it.next()?.strip_prefix('+')?.parse().ok()?;
+    let behind = it.next()?.strip_prefix('-')?.parse().ok()?;
+    Some((ahead, behind))
+}
+
+/// Parse `git status --porcelain=v2 --branch -z`. Records end with NUL; a rename / copy is
+/// followed by one more field, its old path. The upstream only counts when git could compare
+/// with it (`# branch.ab` is missing when the upstream branch is gone), like `gitsync::info`.
+pub fn parse_status_v2(out: &str) -> StatusV2 {
+    let mut v = Vec::new();
+    let (mut upstream, mut ab) = (None, None);
+    let mut it = out.split('\0');
+    while let Some(e) = it.next() {
+        if let Some(h) = e.strip_prefix("# ") {
+            if let Some(u) = h.strip_prefix("branch.upstream ") {
+                upstream = Some(u.trim().to_string()).filter(|u| !u.is_empty());
+            } else if let Some(c) = h.strip_prefix("branch.ab ") {
+                ab = parse_ab(c);
+            }
+            continue;
+        }
+        let Some((kind, rest)) = e.split_once(' ') else { continue };
+        // Fields up to and including the path: `XY sub mH mI mW hH hI path` for an ordinary
+        // entry, one more (the score) for a rename, two more (stages) for an unmerged one.
+        let n = match kind {
+            "?" => {
+                push_change(&mut v, '?', '?', rest, None);
+                continue;
+            }
+            "1" => 8,
+            "2" => 9,
+            "u" => 10,
+            _ => continue,
+        };
+        // The old path follows a rename even when the record itself is malformed.
+        let old = (kind == "2").then(|| it.next().unwrap_or("").to_string());
+        let f: Vec<&str> = rest.splitn(n, ' ').collect();
+        let xy = f[0].as_bytes();
+        if f.len() < n || xy.len() != 2 {
+            continue;
+        }
+        // v2 writes `.` where v1 writes a space.
+        let flag = |b: u8| if b == b'.' { ' ' } else { b as char };
+        push_change(&mut v, flag(xy[0]), flag(xy[1]), f[n - 1], old);
+    }
+    v.sort_by(|a, b| (a.group as u8, &a.path).cmp(&(b.group as u8, &b.path)));
+    let sync = match (upstream, ab) {
+        (Some(u), Some((ahead, behind))) => SyncInfo { upstream: Some(u), ahead, behind },
+        _ => SyncInfo::default(),
+    };
+    StatusV2 { changes: v, sync }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

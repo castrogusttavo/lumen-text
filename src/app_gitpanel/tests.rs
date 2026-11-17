@@ -41,6 +41,121 @@ fn status_z_groups_and_renames() {
 }
 
 #[test]
+fn status_v2_gives_the_same_changes_and_the_upstream_counts() {
+    let h = "0000000000000000000000000000000000000000";
+    let one = |xy: &str, path: &str| format!("1 {xy} N... 100644 100644 100644 {h} {h} {path}\0");
+    let out = [
+        format!("# branch.oid {h}\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +3 -1\0"),
+        one("M.", "staged.ts"),
+        one(".M", "work.ts"),
+        one("MM", "both.ts"),
+        format!("2 R. N... 100644 100644 100644 {h} {h} R100 new name.ts\0old name.ts\0"),
+        one("A.", "añadido.ts"),
+        one(".D", "gone.ts"),
+        format!("u UU N... 100644 100644 100644 100644 {h} {h} {h} conflict.ts\0"),
+        "? new.ts\0".to_string(),
+        "! ignored.ts\0".to_string(),
+    ]
+    .concat();
+    let v1 = "M  staged.ts\0 M work.ts\0MM both.ts\0?? new.ts\0R  new name.ts\0old name.ts\0A  añadido.ts\0 D gone.ts\0UU conflict.ts\0";
+    let st = parse_status_v2(&out);
+    assert_eq!(st.changes, parse_status_z(v1), "the same list as the v1 parser");
+    assert_eq!(st.sync, SyncInfo { upstream: Some("origin/main".into()), ahead: 3, behind: 1 });
+    // No upstream, or an upstream that is gone (no `branch.ab`): no counts, like `gitsync::info`.
+    assert_eq!(parse_status_v2("# branch.oid x\0# branch.head main\0").sync, SyncInfo::default());
+    assert_eq!(parse_status_v2("# branch.head main\0# branch.upstream origin/gone\0").sync, SyncInfo::default());
+    assert_eq!(parse_status_v2(""), StatusV2::default());
+    // Truncated records are skipped, not misread.
+    assert!(parse_status_v2("1 M. N... 100644\0junk\0").changes.is_empty());
+}
+
+#[test]
+fn status_v2_matches_v1_and_sync_info_in_a_real_repo() {
+    let base = tmp_repo("v2");
+    let (remote, work) = (base.join("remote.git"), base.join("work"));
+    std::fs::create_dir_all(&work).unwrap();
+    git_run(&base, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]).unwrap();
+    git_run(&work, &["init", "-q", "-b", "main"]).unwrap();
+    for a in
+        [&["config", "user.email", "t@t"][..], &["config", "user.name", "T"], &["config", "commit.gpgsign", "false"]]
+    {
+        git_run(&work, a).unwrap();
+    }
+    git_run(&work, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+    for f in ["a.ts", "b.ts", "old.ts", "gone.ts"] {
+        std::fs::write(work.join(f), format!("{f}\nline two\nline three\n")).unwrap();
+    }
+    git_run(&work, &["add", "."]).unwrap();
+    git_run(&work, &["commit", "-q", "-m", "one"]).unwrap();
+    let both = |d: &Path| {
+        let v1 = parse_status_z(&git_run(d, &["status", "--porcelain=v1", "-z", "-uall"]).unwrap());
+        (v1, parse_status_v2(&git_run(d, &STATUS_V2_ARGS).unwrap()))
+    };
+    // Before the branch is published: no counts.
+    let (v1, v2) = both(&work);
+    assert!(v1.is_empty() && v2.changes.is_empty());
+    assert_eq!((&v2.sync, &gitsync::info(&work)), (&SyncInfo::default(), &SyncInfo::default()));
+    git_run(&work, &["push", "-q", "-u", "origin", "main"]).unwrap();
+    // Staged, staged + edited again, renamed, deleted, untracked inside a new folder.
+    std::fs::write(work.join("a.ts"), "staged\n").unwrap();
+    git_run(&work, &["add", "a.ts"]).unwrap();
+    std::fs::write(work.join("a.ts"), "staged and edited\n").unwrap();
+    std::fs::write(work.join("b.ts"), "edited\n").unwrap();
+    git_run(&work, &["mv", "old.ts", "new name.ts"]).unwrap();
+    std::fs::remove_file(work.join("gone.ts")).unwrap();
+    std::fs::create_dir_all(work.join("dir/sub")).unwrap();
+    std::fs::write(work.join("dir/sub/new.ts"), "x\n").unwrap();
+    let (v1, v2) = both(&work);
+    assert_eq!(v2.changes, v1);
+    assert!(v1.iter().any(|c| c.path == "dir/sub/new.ts" && c.group == Group::Untracked), "{v1:?}");
+    assert!(v1.iter().any(|c| c.code == 'R' && c.old.as_deref() == Some("old.ts")), "{v1:?}");
+    // One commit ahead of the upstream.
+    git_run(&work, &["commit", "-q", "-m", "two"]).unwrap();
+    let (v1, v2) = both(&work);
+    assert_eq!(v2.changes, v1);
+    assert_eq!(v2.sync, gitsync::info(&work));
+    assert_eq!((v2.sync.upstream.as_deref(), v2.sync.ahead, v2.sync.behind), (Some("origin/main"), 1, 0));
+    // The panel reads all of it in one go.
+    let data = read_panel(&work);
+    assert_eq!((data.changes, data.sync, data.can_undo), (v1, v2.sync, true));
+    assert_eq!(data.top.as_deref().and_then(|t| crate::paths::canonical(t).ok()), crate::paths::canonical(&work).ok());
+    std::fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn a_background_refresh_older_than_the_last_one_is_dropped() {
+    let root = std::env::temp_dir().join("lumen-gp-no-such-dir");
+    let mut gp = GitPanel::new(&root);
+    let answer = |root: &Path, path: &str| PanelData {
+        root: root.to_path_buf(),
+        top: Some(root.to_path_buf()),
+        changes: vec![Change { path: path.into(), old: None, code: 'M', group: Group::Changes }],
+        sync: SyncInfo::default(),
+        state: RepoState::Clean,
+        can_undo: true,
+        stashes: Vec::new(),
+    };
+    // The current generation is applied.
+    gp.refresh_busy = true;
+    gp.refresh_ch.0.send((gp.refresh_gen, answer(&root, "now.ts"))).unwrap();
+    assert!(gp.pump_refresh());
+    assert_eq!((gp.changes.len(), gp.changes[0].path.as_str(), gp.can_undo), (1, "now.ts", true));
+    assert!(!gp.refresh_busy);
+    // An answer computed before a newer refresh (here a synchronous one) is ignored...
+    let stale = gp.refresh_gen;
+    gp.refresh();
+    assert!(gp.changes.is_empty(), "not a repository");
+    gp.refresh_ch.0.send((stale, answer(&root, "stale.ts"))).unwrap();
+    assert!(!gp.pump_refresh());
+    assert!(gp.changes.is_empty());
+    // ...and so is one read for another folder.
+    gp.refresh_ch.0.send((gp.refresh_gen, answer(Path::new("/elsewhere"), "other.ts"))).unwrap();
+    assert!(!gp.pump_refresh());
+    assert!(gp.changes.is_empty());
+    assert!(!gp.pump_refresh(), "nothing waiting");
+}
+
+#[test]
 fn log_and_name_status_parsing() {
     let out =
         "aaaa\x1faaa\x1fAna\x1f1700000000\x1ffix: a | b\nbbbb\x1fbbb\x1fBeto\x1f1699990000\x1f\nlixo sem separador";
