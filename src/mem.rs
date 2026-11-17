@@ -124,6 +124,20 @@ fn pss_direct(pid: u32) -> Option<u64> {
     text.lines().find(|l| l.starts_with("Pss:"))?.split_whitespace().nth(1)?.parse().ok()
 }
 
+/// Bytes the allocator holds free inside the heap (freed by the program, not yet returned to the
+/// OS), in kB. glibc only; it walks the allocator's free lists, so callers rate-limit it.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub fn heap_free_kb() -> Option<u64> {
+    // SAFETY: `mallinfo2` only reads the allocator's own bookkeeping.
+    let mi = unsafe { libc::mallinfo2() };
+    Some(mi.fordblks as u64 / 1024)
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub fn heap_free_kb() -> Option<u64> {
+    None
+}
+
 // ───────────── resident memory (cheap) ─────────────
 //
 // What the periodic threshold checks read (the tsgo memory guard and the memory budget): the
@@ -417,6 +431,15 @@ mod tests {
         assert_eq!((s.own.pss_kb, s.procs[0].1.pss_kb), (None, None));
         assert_eq!(s.own.resident_kb.is_some(), s.procs[0].1.resident_kb.is_some());
         assert!(displayed(&s).is_empty(), "nothing displayed changes: the UI is not woken");
+    }
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn free_heap_is_reported_by_the_allocator() {
+        // Free a block too small to be its own mapping: it stays in the heap as free bytes.
+        let keep: Vec<Vec<u8>> = (0..64).map(|_| vec![1u8; 64 * 1024]).collect();
+        drop(keep);
+        assert!(heap_free_kb().is_some());
     }
 
     #[test]

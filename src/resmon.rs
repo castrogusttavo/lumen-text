@@ -2,6 +2,8 @@
 //! agents, debug adapter, task, Build & Run), what they cost and the soft memory budget. Pure
 //! logic and formatting; the app glue is `app_resmon`. Nothing here samples by itself: the
 //! panel measures only while it is open and the budget check only runs when a budget is set.
+//! Also here: when freed heap goes back to the OS (`TrimWatch`) and what the background memory
+//! sampler measures (`sampling`).
 
 use std::{
     collections::HashMap,
@@ -17,6 +19,81 @@ pub const BUDGET_EVERY: Duration = Duration::from_secs(10);
 /// The warning re-arms once the total falls below this share of the budget.
 const REARM: f64 = 0.9;
 const MAX_BUDGET_MB: u32 = 1 << 20;
+/// At most one `malloc_trim` per this long (closing twenty tabs is one trim, not twenty).
+pub const TRIM_GAP: Duration = Duration::from_secs(1);
+/// The allocator's free bytes are looked at no more often than this, and only on a tick that
+/// runs anyway: it never asks for a wake-up.
+const PROBE_EVERY: Duration = Duration::from_secs(4);
+/// Free heap that grew by this much since the last trim means something large was freed.
+const FREED_KB: u64 = 8 * 1024;
+
+/// Decides when freed heap is handed back to the OS (`malloc_trim`). It used to happen every 4 s
+/// for the whole session, whether or not anything had been freed, which woke an idle editor
+/// forever. Now a trim follows a known large free: a document closed, a language server gone,
+/// or the allocator reporting clearly more free heap than right after the previous trim (big
+/// LSP responses, search results, anything else that came and went).
+pub struct TrimWatch {
+    docs: usize,
+    servers: usize,
+    /// Something large was freed; the trim runs once `TRIM_GAP` has passed since the last one.
+    pub pending: bool,
+    /// Free heap right after the last trim (what trimming cannot give back), or the lowest seen since.
+    floor_kb: u64,
+    last_probe: Instant,
+}
+
+impl TrimWatch {
+    pub fn new() -> Self {
+        TrimWatch { docs: 0, servers: 0, pending: false, floor_kb: 0, last_probe: Instant::now() }
+    }
+
+    /// The number of open documents and running language servers now: fewer than before means
+    /// their buffers, syntax state, diagnostics and so on were just freed.
+    pub fn note(&mut self, docs: usize, servers: usize) {
+        if docs < self.docs || servers < self.servers {
+            self.pending = true;
+        }
+        (self.docs, self.servers) = (docs, servers);
+    }
+
+    /// True when the allocator's free bytes may be read now (rate limit).
+    pub fn probe_due(&mut self, now: Instant) -> bool {
+        if now.saturating_duration_since(self.last_probe) < PROBE_EVERY {
+            return false;
+        }
+        self.last_probe = now;
+        true
+    }
+
+    /// The allocator's free heap now.
+    pub fn probed(&mut self, free_kb: u64) {
+        if free_kb > self.floor_kb + FREED_KB {
+            self.pending = true;
+        } else {
+            self.floor_kb = self.floor_kb.min(free_kb);
+        }
+    }
+
+    /// A trim just ran; `free_kb` is what stayed free in the heap after it.
+    pub fn trimmed(&mut self, free_kb: u64) {
+        self.pending = false;
+        self.floor_kb = free_kb;
+    }
+}
+
+impl Default for TrimWatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// What the background sampler measures, as `(pss, resident)`: PSS while the RAM item of the
+/// bottom bar shows it, resident memory while the tsgo guard or the budget check reads it, and
+/// nothing at all while the window is in the background (nobody is looking, and the guard and
+/// the budget check are suspended with it; everything resumes with the focus).
+pub fn sampling(focused: bool, ram_shown: bool, guard: bool, budget: bool) -> (bool, bool) {
+    (focused && ram_shown, focused && (guard || budget))
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -94,6 +171,8 @@ pub struct State {
     pub warned: bool,
     /// The sample (`mem::generation`) the status bar's memory text was built from.
     pub mem_generation: Option<u64>,
+    /// When freed heap is handed back to the OS.
+    pub trim: TrimWatch,
 }
 
 impl State {
@@ -106,6 +185,7 @@ impl State {
             over: false,
             warned: false,
             mem_generation: None,
+            trim: TrimWatch::new(),
         }
     }
 
@@ -294,6 +374,58 @@ mod tests {
         assert!(!s.observe(800 * 1024, 1000));
         assert!(!s.over);
         assert!(s.observe(1100 * 1024, 1000), "warns again after dropping");
+    }
+
+    #[test]
+    fn trim_follows_a_closed_document_or_a_stopped_server() {
+        let mut t = TrimWatch::new();
+        t.note(3, 1);
+        assert!(!t.pending, "opening frees nothing");
+        t.note(3, 1);
+        assert!(!t.pending, "an idle tick frees nothing");
+        t.note(2, 1);
+        assert!(t.pending, "a document was closed");
+        t.trimmed(0);
+        assert!(!t.pending);
+        t.note(2, 2);
+        t.note(2, 0);
+        assert!(t.pending, "the servers were stopped");
+    }
+
+    #[test]
+    fn trim_follows_free_heap_that_grew_since_the_last_trim() {
+        let mut t = TrimWatch::new();
+        t.trimmed(20 * 1024);
+        t.probed(24 * 1024);
+        assert!(!t.pending, "4 MB more free heap is not worth a trim");
+        t.probed(12 * 1024);
+        t.probed(19 * 1024);
+        assert!(!t.pending, "measured against the lowest point since the trim (12 MB)");
+        t.probed(21 * 1024);
+        assert!(t.pending, "9 MB were freed since");
+        t.trimmed(13 * 1024);
+        t.probed(20 * 1024);
+        assert!(!t.pending, "fragmentation the trim could not return does not trigger the next one");
+    }
+
+    #[test]
+    fn free_heap_is_probed_at_most_every_few_seconds() {
+        let mut t = TrimWatch::new();
+        let t0 = Instant::now();
+        assert!(!t.probe_due(t0), "not right at startup");
+        assert!(t.probe_due(t0 + PROBE_EVERY + Duration::from_millis(50)));
+        assert!(!t.probe_due(t0 + PROBE_EVERY + Duration::from_millis(900)));
+        assert!(t.probe_due(t0 + 2 * PROBE_EVERY + Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn nothing_is_sampled_in_the_background_or_when_nobody_reads_it() {
+        assert_eq!(sampling(true, true, false, false), (true, false), "status bar only");
+        assert_eq!(sampling(true, false, true, false), (false, true), "guard only: no PSS");
+        assert_eq!(sampling(true, false, false, true), (false, true), "budget only: no PSS");
+        assert_eq!(sampling(true, true, true, true), (true, true));
+        assert_eq!(sampling(true, false, false, false), (false, false), "nobody reads");
+        assert_eq!(sampling(false, true, true, true), (false, false), "window in the background");
     }
 
     #[test]

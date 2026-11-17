@@ -70,6 +70,11 @@ impl Guard {
         true
     }
 
+    /// When the next periodic check is due.
+    pub fn next_check(&self) -> Instant {
+        self.last + CHECK_EVERY
+    }
+
     /// True when the periodic check is due; resets the timer.
     pub fn due(&mut self) -> bool {
         if self.last.elapsed() < CHECK_EVERY {
@@ -107,6 +112,12 @@ impl Guard {
         }
         false
     }
+}
+
+/// Whether the periodic check runs at all (and asks for its wake-up): only with the guard
+/// enabled, a tsgo running (nothing else is guarded) and the window in the foreground.
+pub fn runs(auto_lean: bool, focused: bool, has_tsgo: bool) -> bool {
+    auto_lean && focused && has_tsgo
 }
 
 impl Default for Guard {
@@ -194,6 +205,25 @@ mod tests {
         assert!(!g.lean_over(500));
         assert!(!g.lean_over(LEAN_HARD_MB + 1));
         assert!(g.lean_over(LEAN_HARD_MB + 1));
+    }
+
+    #[test]
+    fn the_check_runs_only_with_a_tsgo_in_a_focused_window() {
+        assert!(runs(true, true, true));
+        assert!(!runs(true, true, false), "no server: no timer");
+        assert!(!runs(true, false, true), "window in the background");
+        assert!(!runs(false, true, true), "guard switched off");
+    }
+
+    #[test]
+    fn the_next_check_is_one_period_after_the_last() {
+        let mut g = Guard::new();
+        assert!(!g.due(), "a period has to pass first");
+        let at = g.next_check();
+        assert!(at > Instant::now() && at <= Instant::now() + CHECK_EVERY);
+        g.last = Instant::now() - CHECK_EVERY;
+        assert!(g.due());
+        assert!(g.next_check() > Instant::now(), "the timer was reset");
     }
 
     #[test]
