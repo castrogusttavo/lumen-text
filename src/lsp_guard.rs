@@ -16,7 +16,7 @@ pub const BUDGET_MB: u64 = 1000;
 /// (Used to be 12 GB; a 15 GB machine let a Next.js app grow tsgo to 12 GB, so only really big ones qualify.)
 const ROOMY_MB: u64 = 32 * 1024;
 /// No full-project tsgo may be allowed more than this, however much RAM the machine has.
-pub const HARD_BUDGET_MB: u64 = 3 * 1024;
+pub const HARD_BUDGET_MB: u64 = 5 * 1024;
 /// A lean tsgo is meant to stay near 220 MB; past this it is restarted (something is wrong).
 pub const LEAN_HARD_MB: u64 = 5 * 1024;
 /// Projects with more TS/JS source files than this start lean.
@@ -202,8 +202,9 @@ mod tests {
         assert_eq!(heavy_reason_on(&d, 64_000), None);
         assert_eq!(budget_mb(4_000), BUDGET_MB);
         assert_eq!(budget_mb(7_600), 1_520);
-        assert_eq!(budget_mb(16_000), 3_072);
+        assert_eq!(budget_mb(16_000), 3_200);
         assert_eq!(budget_mb(64_000), HARD_BUDGET_MB);
+        assert_eq!(budget_mb(1_000_000), HARD_BUDGET_MB);
         std::fs::remove_dir_all(&d).ok();
     }
 }
