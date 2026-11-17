@@ -319,7 +319,7 @@ impl App {
         crate::editor::set_default_tab_w(config.tab_width);
         crate::scroller::set_speed(config.scroll_speed);
         let missing_fonts = crate::app_display::startup_fonts(&mut tx, &config);
-        mem::report("fonts ready");
+        mem::report_startup("fonts ready");
         crate::startup::mark("fonts ready");
         let assets = crate::config::assets_dir();
         let (stx, srx) = mpsc::channel();
@@ -590,7 +590,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.dpi.device = window.scale_factor();
         self.gfx = Some(Gfx { window, surface });
         self.apply_scale();
-        mem::report("window created");
+        mem::report_startup("window created");
     }
 
     fn user_event(&mut self, _: &ActiveEventLoop, _: UserEvent) {
