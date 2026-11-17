@@ -33,7 +33,7 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
-rfd = { version = "0.15", default-features = false }
+rfd = { version = "0.18", default-features = false }
 
 [dependencies]
 accesskit = "0.25.2"
