@@ -17,8 +17,9 @@ use std::{
 
 const MAX_PROJECT_FILES: usize = 30_000;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
-/// Generated declaration files are big: the Prisma client of a large schema is several MB.
-const MAX_DECL_BYTES: u64 = 32 * 1024 * 1024;
+/// Generated declaration files are big: the Prisma client of a large schema is 4-70 MB (they are
+/// read line by line, never loaded whole).
+const MAX_DECL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_PKG_FILES: usize = 300;
 const MAX_SUBPATHS: usize = 80;
 const MAX_DEPTH: usize = 6;
@@ -264,13 +265,19 @@ fn declaration(rest: &str) -> Option<(&str, u8)> {
 /// Exports of one source file. Only statements that start a line are seen (and, inside
 /// `declare module "x" { ... }`, statements one indentation level in).
 fn scan(text: &str) -> Scan {
+    scan_lines(text.lines())
+}
+
+/// [`scan`] over any source of lines (a big file is streamed instead of read into memory).
+fn scan_lines<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Scan {
     let mut out = Scan::default();
     let mut ambient: Option<String> = None;
     // Indentation of the statements directly inside the ambient module (its first line decides).
     let mut ambient_indent: Option<usize> = None;
     // A multi-line `export { ... }` being collected: (body so far, `export type {`).
     let mut open: Option<(String, bool)> = None;
-    for raw in text.lines() {
+    for raw in lines {
+        let raw = raw.as_ref();
         if let Some((body, all_types)) = &mut open {
             match raw.find('}') {
                 Some(end) => {
@@ -435,13 +442,9 @@ impl Builder {
     }
 }
 
-fn read_capped(p: &Path, max: u64) -> Option<String> {
-    let meta = std::fs::metadata(p).ok()?;
-    (meta.is_file() && meta.len() <= max).then(|| std::fs::read_to_string(p).ok()).flatten()
-}
-
 fn read_small(p: &Path) -> Option<String> {
-    read_capped(p, MAX_FILE_BYTES)
+    let meta = std::fs::metadata(p).ok()?;
+    (meta.is_file() && meta.len() <= MAX_FILE_BYTES).then(|| std::fs::read_to_string(p).ok()).flatten()
 }
 
 fn is_source(p: &Path) -> bool {
@@ -656,11 +659,29 @@ fn scan_packages(root: &Path, b: &mut Builder) {
         // `next` and `next/types` reach is importable from either.
         let mut entries = package_entries(root, &dep);
         entries.sort_by_key(|(module, _)| module.len());
+        // Each file is parsed once per package, however many entry points reach it.
+        let mut parsed: Parsed = Parsed::new();
         for (module, file) in entries {
             let mut visited: HashSet<PathBuf> = HashSet::new();
-            scan_declaration(&file, Some(&module), 0, &mut budget, &mut visited, b);
+            scan_declaration(&file, Some(&module), 0, &mut budget, &mut visited, &mut parsed, b);
         }
     }
+}
+
+/// Declaration files already scanned in the package being indexed.
+type Parsed = std::collections::HashMap<PathBuf, std::rc::Rc<Scan>>;
+
+fn parse_declaration(file: &Path) -> Option<Scan> {
+    let meta = std::fs::metadata(file).ok()?;
+    if !meta.is_file() || meta.len() > MAX_DECL_BYTES {
+        return None;
+    }
+    if meta.len() <= MAX_FILE_BYTES {
+        return Some(scan(&std::fs::read_to_string(file).ok()?));
+    }
+    use std::io::BufRead;
+    let f = std::fs::File::open(file).ok()?;
+    Some(scan_lines(std::io::BufReader::with_capacity(1 << 16, f).lines().map_while(Result::ok)))
 }
 
 /// `module` is `None` for a file reached through `/// <reference path>`: it is part of the
@@ -671,15 +692,26 @@ fn scan_declaration(
     depth: usize,
     budget: &mut usize,
     visited: &mut HashSet<PathBuf>,
+    parsed: &mut Parsed,
     b: &mut Builder,
 ) {
-    if depth > MAX_DEPTH || *budget == 0 || !visited.insert(file.to_path_buf()) {
+    if depth > MAX_DEPTH || !visited.insert(file.to_path_buf()) {
         return;
     }
-    let Some(text) = read_capped(file, MAX_DECL_BYTES) else { return };
-    *budget -= 1;
-    b.files += 1;
-    let found = scan(&text);
+    let found = match parsed.get(file) {
+        Some(f) => f.clone(),
+        None => {
+            if *budget == 0 {
+                return;
+            }
+            let Some(f) = parse_declaration(file) else { return };
+            *budget -= 1;
+            b.files += 1;
+            let f = std::rc::Rc::new(f);
+            parsed.insert(file.to_path_buf(), f.clone());
+            f
+        }
+    };
     for (name, flags, ambient) in &found.exports {
         let target = match ambient.as_deref() {
             None => module,
@@ -700,12 +732,12 @@ fn scan_declaration(
         let relative = spec.starts_with("./") || spec.starts_with("../");
         let next = if relative { resolve_dts(dir, spec) } else { resolve_bare(dir, spec) };
         if let Some(next) = next {
-            scan_declaration(&next, module, depth + 1, budget, visited, b);
+            scan_declaration(&next, module, depth + 1, budget, visited, parsed, b);
         }
     }
     for spec in &found.refs {
         if let Some(next) = resolve_dts(dir, spec) {
-            scan_declaration(&next, None, depth + 1, budget, visited, b);
+            scan_declaration(&next, None, depth + 1, budget, visited, parsed, b);
         }
     }
 }
