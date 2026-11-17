@@ -3,8 +3,8 @@
 
 use crate::theme::Rgba;
 use cosmic_text::{
-    Align, Attrs, Buffer as TextBuf, Color, Family, FeatureTag, FontFeatures, FontSystem, Metrics, Shaping, SwashCache,
-    UnderlineStyle, Wrap, fontdb,
+    Align, Attrs, Buffer as TextBuf, Color, Family, FeatureTag, FontFeatures, FontSystem, Metrics, PhysicalGlyph,
+    Renderer, Shaping, SwashCache, SwashContent, SwashImage, UnderlineStyle, Wrap, fontdb,
 };
 use std::{
     path::{Path, PathBuf},
@@ -152,6 +152,111 @@ fn blend_px(dst: u32, c: Rgba) -> u32 {
     }
     let mix = |d: u32, s: u8| (d * (255 - a) + s as u32 * a) / 255;
     (mix((dst >> 16) & 0xff, c.0) << 16) | (mix((dst >> 8) & 0xff, c.1) << 8) | mix(dst & 0xff, c.2)
+}
+
+/// Blend `c` over every pixel of the device rect `r` that lies inside `clip` (itself inside a
+/// canvas `w` pixels wide): the same pixels as `blend_px` one at a time, a row slice at a time.
+fn blend_rect(px: &mut [u32], w: i32, clip: Rect, r: Rect, c: Rgba) {
+    let r = r.intersect(&clip);
+    // Blending alpha 0 leaves a canvas pixel (0x00RRGGBB) as it is.
+    if r.w <= 0 || r.h <= 0 || c.3 == 0 {
+        return;
+    }
+    for y in r.y..r.bottom() {
+        let at = (y * w + r.x) as usize;
+        for p in &mut px[at..at + r.w as usize] {
+            *p = blend_px(*p, c);
+        }
+    }
+}
+
+/// Blend a rasterized glyph whose origin is at the device position (x, y): its box is clipped
+/// once, then every row is blended as a slice, skipping the pixels the glyph does not cover.
+/// A mask is tinted with `base`; a colour bitmap (emoji) keeps its own colours. Same pixels as
+/// `blend_px` called for each pixel of the image.
+fn blend_image(px: &mut [u32], w: i32, clip: Rect, x: i32, y: i32, image: &SwashImage, base: Color) {
+    let (x0, y0) = (x + image.placement.left, y - image.placement.top);
+    let (iw, ih) = (image.placement.width as i32, image.placement.height as i32);
+    let vis = Rect::new(x0, y0, iw, ih).intersect(&clip);
+    if vis.w <= 0 || vis.h <= 0 {
+        return;
+    }
+    let n = vis.w as usize;
+    let (r, g, b) = (base.r(), base.g(), base.b());
+    for py in vis.y..vis.bottom() {
+        let src = ((py - y0) * iw + (vis.x - x0)) as usize;
+        let at = (py * w + vis.x) as usize;
+        let dst = &mut px[at..at + n];
+        match image.content {
+            SwashContent::Mask => {
+                let Some(mask) = image.data.get(src..src + n) else { return };
+                for (d, &a) in dst.iter_mut().zip(mask) {
+                    if a != 0 {
+                        *d = blend_px(*d, Rgba(r, g, b, a));
+                    }
+                }
+            }
+            SwashContent::Color => {
+                let Some(rgba) = image.data.get(src * 4..(src + n) * 4) else { return };
+                for (d, s) in dst.iter_mut().zip(rgba.as_chunks::<4>().0) {
+                    if s[3] != 0 {
+                        *d = blend_px(*d, Rgba(s[0], s[1], s[2], s[3]));
+                    }
+                }
+            }
+            SwashContent::SubpixelMask => return,
+        }
+    }
+}
+
+/// Paints what cosmic-text lays out (glyphs, underlines) into canvas pixels: positions are
+/// shifted by (`ox`, `oy`) and everything is clipped to `clip`, a device rect inside the canvas.
+struct Blit<'a> {
+    fonts: &'a mut FontSystem,
+    swash: &'a mut SwashCache,
+    px: &'a mut [u32],
+    /// Canvas width in device pixels.
+    w: i32,
+    clip: Rect,
+    ox: i32,
+    oy: i32,
+}
+
+impl Renderer for Blit<'_> {
+    fn rectangle(&mut self, x: i32, y: i32, w: u32, h: u32, color: Color) {
+        let r = Rect::new(x + self.ox, y + self.oy, w as i32, h as i32);
+        blend_rect(self.px, self.w, self.clip, r, Rgba(color.r(), color.g(), color.b(), color.a()));
+    }
+
+    fn glyph(&mut self, glyph: PhysicalGlyph, color: Color) {
+        if let Some(image) = self.swash.get_image(self.fonts, glyph.cache_key) {
+            blend_image(self.px, self.w, self.clip, glyph.x + self.ox, glyph.y + self.oy, image, color);
+        }
+    }
+}
+
+/// Draw a text buffer with its origin at the device position (x, y), clipped to the device rect
+/// `clip` (inside the canvas). What `Buffer::draw` does (glyphs in their own colour, white
+/// without one, then the decorations of each run), without a callback per pixel.
+fn blit_buffer(
+    buf: &mut TextBuf,
+    fonts: &mut FontSystem,
+    swash: &mut SwashCache,
+    cv: &mut Canvas,
+    x: i32,
+    y: i32,
+    clip: Rect,
+) {
+    buf.shape_until_scroll(fonts, false);
+    let white = Color::rgba(255, 255, 255, 255);
+    let mut blit = Blit { fonts, swash, px: &mut *cv.px, w: cv.w, clip, ox: x, oy: y };
+    for run in buf.layout_runs() {
+        for glyph in run.glyphs {
+            let physical = glyph.physical((0., run.line_y), 1.0);
+            blit.glyph(physical, glyph.color_opt.unwrap_or(white));
+        }
+        cosmic_text::render_decoration(&mut blit, &run, white);
+    }
 }
 
 pub struct Canvas<'a> {
@@ -1208,24 +1313,7 @@ impl TextCtx {
         b.set_text(text, a, Shaping::Advanced, Some(Align::Left));
         b.shape_until_scroll(&mut self.fonts, false);
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
-        let (x, y) = (sc(x), sc(y));
-        let (w, px) = (cv.w, &mut *cv.px);
-        b.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
-            for dy in 0..gh as i32 {
-                let py = gy + dy + y;
-                if py < clip.y || py >= clip.bottom() {
-                    continue;
-                }
-                for dx in 0..gw as i32 {
-                    let pxx = gx + dx + x;
-                    if pxx < clip.x || pxx >= clip.right() {
-                        continue;
-                    }
-                    let i = (py * w + pxx) as usize;
-                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
-                }
-            }
-        });
+        blit_buffer(&mut b, &mut self.fonts, &mut self.swash, cv, sc(x), sc(y), clip);
     }
 
     /// Width of `n` buffer cells for ligature tests: the shaped width of `text` in the buffer font.
@@ -1338,26 +1426,9 @@ impl TextCtx {
             Some(Align::Left),
         );
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
-        let (x, y) = (sc(x), sc(y));
-        let (w, px) = (cv.w, &mut *cv.px);
-        // Glyph pixels arrive as final RGBA: tinted with the piece color for mask glyphs, real
-        // colors for color glyphs (emoji bitmaps); decoration rectangles come through here too.
-        self.buf.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
-            for dy in 0..gh as i32 {
-                let py = gy + dy + y;
-                if py < clip.y || py >= clip.bottom() {
-                    continue;
-                }
-                for dx in 0..gw as i32 {
-                    let pxx = gx + dx + x;
-                    if pxx < clip.x || pxx >= clip.right() {
-                        continue;
-                    }
-                    let i = (py * w + pxx) as usize;
-                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
-                }
-            }
-        });
+        // Mask glyphs are tinted with the piece color, color glyphs (emoji bitmaps) keep their
+        // own; the decoration rectangles (underlines) are painted here too.
+        blit_buffer(&mut self.buf, &mut self.fonts, &mut self.swash, cv, sc(x), sc(y), clip);
     }
 
     /// Draw one row of bidirectional code on the cell grid (see `bidi`): `pieces` hold the row's
@@ -1450,14 +1521,9 @@ impl TextCtx {
                     let pg = g.physical((dx, oy + run.line_y), 1.0);
                     let (bx, by) = (pg.x, pg.y);
                     let color = g.color_opt.unwrap_or(white);
-                    self.swash.with_pixels(&mut self.fonts, pg.cache_key, color, |gx, gy, c| {
-                        let (pxx, py) = (bx + gx, by + gy);
-                        if py < clip.y || py >= clip.bottom() || pxx < clip.x || pxx >= clip.right() {
-                            return;
-                        }
-                        let k = (py * w + pxx) as usize;
-                        px[k] = blend_px(px[k], Rgba(c.r(), c.g(), c.b(), c.a()));
-                    });
+                    if let Some(image) = self.swash.get_image(&mut self.fonts, pg.cache_key) {
+                        blend_image(px, w, clip, bx, by, image, color);
+                    }
                 }
             }
         }
@@ -1607,24 +1673,7 @@ impl TextCtx {
         let spans = pieces.iter().map(|(s, c)| (*s, base.clone().color(to_color(*c))));
         self.ui_buf.set_rich_text(spans, &base, Shaping::Advanced, Some(Align::Left));
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
-        let (x, y) = (sc(x), sc(y));
-        let (w, px) = (cv.w, &mut *cv.px);
-        self.ui_buf.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
-            for dy in 0..gh as i32 {
-                let py = gy + dy + y;
-                if py < clip.y || py >= clip.bottom() {
-                    continue;
-                }
-                for dx in 0..gw as i32 {
-                    let pxx = gx + dx + x;
-                    if pxx < clip.x || pxx >= clip.right() {
-                        continue;
-                    }
-                    let i = (py * w + pxx) as usize;
-                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
-                }
-            }
-        });
+        blit_buffer(&mut self.ui_buf, &mut self.fonts, &mut self.swash, cv, sc(x), sc(y), clip);
     }
 
     pub fn draw_ui(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool) {
@@ -1723,24 +1772,7 @@ impl TextCtx {
         b.set_text(text, &a, Shaping::Advanced, Some(Align::Left));
         b.shape_until_scroll(&mut self.fonts, false);
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
-        let (x, y) = (sc(x), sc(y));
-        let (w, px) = (cv.w, &mut *cv.px);
-        b.draw(&mut self.fonts, &mut self.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
-            for dy in 0..gh as i32 {
-                let py = gy + dy + y;
-                if py < clip.y || py >= clip.bottom() {
-                    continue;
-                }
-                for dx in 0..gw as i32 {
-                    let pxx = gx + dx + x;
-                    if pxx < clip.x || pxx >= clip.right() {
-                        continue;
-                    }
-                    let i = (py * w + pxx) as usize;
-                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
-                }
-            }
-        });
+        blit_buffer(&mut b, &mut self.fonts, &mut self.swash, cv, sc(x), sc(y), clip);
     }
 
     /// Width in px of `text` in the UI font at `size` (uncached; callers cache).
@@ -2098,6 +2130,99 @@ mod tests {
             assert!(a.iter().any(|p| *p != 0), "nothing drawn");
             assert_eq!(a, b, "italic {italic}");
         }
+    }
+
+    /// A canvas background with every channel in use (the top byte is 0, as on a real canvas).
+    fn noise(n: usize) -> Vec<u32> {
+        (0..n).map(|i| ((i as u64 * 2_654_435_761) & 0x00ff_ffff) as u32).collect()
+    }
+
+    #[test]
+    fn rect_blend_is_the_per_pixel_blend() {
+        let (w, h) = (23i32, 17i32);
+        let clip = Rect::new(2, 3, 18, 11);
+        for c in [Rgba(255, 0, 80, 255), Rgba(10, 200, 30, 128), Rgba(1, 2, 3, 1), Rgba(9, 9, 9, 0)] {
+            for r in
+                [Rect::new(-4, -4, 12, 12), Rect::new(5, 6, 3, 2), Rect::new(15, 10, 30, 30), Rect::new(0, 0, 0, 5)]
+            {
+                let mut got = noise((w * h) as usize);
+                let mut want = got.clone();
+                blend_rect(&mut got, w, clip, r, c);
+                for y in r.y..r.bottom() {
+                    for x in r.x..r.right() {
+                        if clip.contains(x as f64, y as f64) {
+                            let i = (y * w + x) as usize;
+                            want[i] = blend_px(want[i], c);
+                        }
+                    }
+                }
+                assert_eq!(got, want, "{c:?} over {r:?}");
+            }
+        }
+    }
+
+    /// `Buffer::draw` with the callback this file used before: one clip test and one blend per pixel.
+    fn draw_per_pixel(ctx: &mut TextCtx, buf: &mut TextBuf, cv: &mut Canvas, x: i32, y: i32, clip: Rect) {
+        let (w, px) = (cv.w, &mut *cv.px);
+        buf.draw(&mut ctx.fonts, &mut ctx.swash, Color::rgba(255, 255, 255, 255), |gx, gy, gw, gh, c| {
+            for dy in 0..gh as i32 {
+                let py = gy + dy + y;
+                if py < clip.y || py >= clip.bottom() {
+                    continue;
+                }
+                for dx in 0..gw as i32 {
+                    let pxx = gx + dx + x;
+                    if pxx < clip.x || pxx >= clip.right() {
+                        continue;
+                    }
+                    let i = (py * w + pxx) as usize;
+                    px[i] = blend_px(px[i], Rgba(c.r(), c.g(), c.b(), c.a()));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn row_blit_gives_the_pixels_of_the_per_pixel_callback() {
+        let mut ctx = TextCtx::new(None);
+        let fam = ctx.family.clone();
+        let attrs = family_attrs(&fam);
+        let mut buf = TextBuf::new(&mut ctx.fonts, Metrics::new(15.0, 21.0));
+        buf.set_size(Some(2000.0), Some(200.0));
+        buf.set_wrap(Wrap::None);
+        buf.set_rich_text(
+            [
+                ("fn é", styled(&attrs, Rgba(86, 156, 214, 255), BOLD)),
+                (" main_w", styled(&attrs, Rgba(220, 220, 170, 255), UNDERLINE)),
+                ("\n  gyp", styled(&attrs, Rgba(206, 145, 120, 255), ITALIC)),
+                (" Q", styled(&attrs, Rgba(255, 255, 255, 255), BOLD | ITALIC | UNDERLINE)),
+            ],
+            &attrs,
+            Shaping::Advanced,
+            None,
+        );
+        let (w, h) = (150i32, 60i32);
+        let all = Rect::new(0, 0, w, h);
+        let mut drawn = 0;
+        for (x, y, clip) in [
+            (3, 2, all),
+            (-9, -7, all),
+            (120, 44, all),
+            (10, 4, Rect::new(14, 9, 31, 13)),
+            (3, 2, Rect::new(40, 20, 0, 0)),
+        ] {
+            let mut want = noise((w * h) as usize);
+            let mut got = want.clone();
+            let before = want.clone();
+            draw_per_pixel(&mut ctx, &mut buf, &mut Canvas { px: &mut want, w, h }, x, y, clip);
+            blit_buffer(&mut buf, &mut ctx.fonts, &mut ctx.swash, &mut Canvas { px: &mut got, w, h }, x, y, clip);
+            assert_eq!(got, want, "origin {x},{y} clip {clip:?}");
+            drawn += usize::from(want != before);
+            if clip.w == 0 {
+                assert_eq!(want, before, "an empty clip draws nothing");
+            }
+        }
+        assert!(drawn >= 4, "the text was not drawn");
     }
 
     /// The same rows as a [`CodeRows`] and as the pieces `draw_styled` takes.
