@@ -6,12 +6,18 @@
 //! recorded against, so an edit made elsewhere simply makes it unused. Each file is capped
 //! ([`MAX_FILE`]) and the folder is kept under [`BUDGET`] by dropping the least recently used ones
 //! (a load touches the file); entries unused for [`MAX_AGE_DAYS`] go too.
+//!
+//! The folder is read once per session (the first [`save`] measures it) and once more by the
+//! pruning at quit ([`finish`]): in between a running total says whether the budget is exceeded,
+//! so closing a tab costs one small write and no directory scan.
 
 use crate::buffer::{Buffer, SavedAt};
 use std::{
+    collections::HashMap,
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::Mutex,
     time::{Duration, SystemTime},
 };
 
@@ -34,13 +40,54 @@ fn file_for(dir: &Path, path: &Path) -> PathBuf {
     dir.join(format!("{h:016x}.undo"))
 }
 
-/// Keep `buf`'s history for `path` (canonical). Nothing to keep removes an old entry.
+/// Bytes held by each undo folder written to in this session.
+static TOTALS: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
+
+/// Size of the `.undo` files in `dir` (the one scan a session makes before quitting).
+fn folder_size(dir: &Path) -> u64 {
+    let Ok(rd) = fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "undo"))
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// An entry of `dir` went from `old` to `new` bytes (already on disk): the folder's new total.
+fn account(dir: &Path, old: u64, new: u64) -> u64 {
+    let mut g = TOTALS.lock().unwrap_or_else(|e| e.into_inner());
+    let totals = g.get_or_insert_with(HashMap::new);
+    let total = match totals.get(dir) {
+        Some(t) => (t + new).saturating_sub(old),
+        // First write of the session: measure (the change is on disk, so it is counted).
+        None => folder_size(dir),
+    };
+    totals.insert(dir.to_path_buf(), total);
+    total
+}
+
+fn set_total(dir: &Path, total: u64) {
+    let mut g = TOTALS.lock().unwrap_or_else(|e| e.into_inner());
+    g.get_or_insert_with(HashMap::new).insert(dir.to_path_buf(), total);
+}
+
+/// Keep `buf`'s history for `path` (canonical). Nothing to keep removes an old entry. The folder
+/// is pruned by [`finish`] at quit; here only when the running total passes the budget.
 pub fn save(dir: &Path, path: &Path, buf: &Buffer) -> io::Result<()> {
+    save_within(dir, path, buf, BUDGET)
+}
+
+fn save_within(dir: &Path, path: &Path, buf: &Buffer, budget: u64) -> io::Result<()> {
     let file = file_for(dir, path);
+    let old = fs::metadata(&file).map_or(0, |m| m.len());
     let Some(hist) = buf.history_bytes(MAX_FILE) else {
         return match fs::remove_file(&file) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
+            Err(_) => Ok(()),
+            Ok(()) => {
+                account(dir, old, 0);
+                Ok(())
+            }
         };
     };
     fs::create_dir_all(dir)?;
@@ -54,8 +101,17 @@ pub fn save(dir: &Path, path: &Path, buf: &Buffer) -> io::Result<()> {
         f.write_all(&hist)?;
     }
     fs::rename(&tmp, &file)?;
-    prune(dir, BUDGET, Duration::from_secs(MAX_AGE_DAYS * 86_400));
+    let new = (MAGIC.len() + 4 + p.len() + hist.len()) as u64;
+    if account(dir, old, new) > budget {
+        set_total(dir, prune(dir, budget, Duration::from_secs(MAX_AGE_DAYS * 86_400)));
+    }
     Ok(())
+}
+
+/// End of the session, after every history was saved: drop what is too old or over the budget,
+/// in one pass over the folder.
+pub fn finish(dir: &Path) {
+    set_total(dir, prune(dir, BUDGET, Duration::from_secs(MAX_AGE_DAYS * 86_400)));
 }
 
 /// The encoded history stored for `path`, if any.
@@ -82,9 +138,9 @@ pub fn load(dir: &Path, path: &Path, buf: &mut Buffer, saved: SavedAt) -> bool {
 }
 
 /// Drop entries older than `max_age`, then the least recently used ones until the folder holds at
-/// most `budget` bytes.
-pub fn prune(dir: &Path, budget: u64, max_age: Duration) {
-    let Ok(rd) = fs::read_dir(dir) else { return };
+/// most `budget` bytes. Returns the bytes left.
+pub fn prune(dir: &Path, budget: u64, max_age: Duration) -> u64 {
+    let Ok(rd) = fs::read_dir(dir) else { return 0 };
     let now = SystemTime::now();
     let mut files: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
     for e in rd.flatten() {
@@ -110,6 +166,7 @@ pub fn prune(dir: &Path, budget: u64, max_age: Duration) {
             total -= len;
         }
     }
+    total
 }
 
 #[cfg(test)]
@@ -148,6 +205,62 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    fn edited(text: &str) -> Buffer {
+        let mut b = Buffer::from_str("");
+        b.replace(0, 0, text, EditKind::Other, Sel::caret(0));
+        b
+    }
+
+    fn known_total(dir: &Path) -> Option<u64> {
+        TOTALS.lock().unwrap().as_ref().and_then(|m| m.get(dir).copied())
+    }
+
+    fn set_age(p: &Path, age: Duration) {
+        let f = fs::File::options().append(true).open(p).unwrap();
+        f.set_modified(SystemTime::now() - age).unwrap();
+    }
+
+    #[test]
+    fn saving_keeps_a_running_total_and_leaves_pruning_to_the_end_of_the_session() {
+        let dir = tmp("total");
+        // Left by an earlier session and long unused: saving does not go looking for it.
+        let stale = dir.join("stale.undo");
+        fs::write(&stale, vec![0u8; 700]).unwrap();
+        set_age(&stale, Duration::from_secs((MAX_AGE_DAYS + 1) * 86_400));
+        assert_eq!(known_total(&dir), None);
+        save(&dir, &dir.join("a.txt"), &edited("one")).unwrap();
+        assert_eq!(known_total(&dir), Some(folder_size(&dir)), "measured by the first save");
+        assert!(stale.exists(), "no pruning on save");
+        // Later saves adjust the total without reading the folder: a file that appears behind
+        // its back is not counted.
+        fs::write(dir.join("unseen.undo"), vec![0u8; 300]).unwrap();
+        save(&dir, &dir.join("b.txt"), &edited("two two")).unwrap();
+        save(&dir, &dir.join("a.txt"), &edited("one, but longer this time")).unwrap();
+        assert_eq!(known_total(&dir), Some(folder_size(&dir) - 300), "new and replaced entries are accounted");
+        save(&dir, &dir.join("b.txt"), &Buffer::from_str("x")).unwrap();
+        assert_eq!(known_total(&dir), Some(folder_size(&dir) - 300), "a dropped entry too");
+        // The end of the session prunes once and takes stock.
+        finish(&dir);
+        assert!(!stale.exists(), "too old");
+        assert!(file_for(&dir, &dir.join("a.txt")).exists());
+        assert_eq!(known_total(&dir), Some(folder_size(&dir)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_that_passes_the_budget_prunes_right_away() {
+        let dir = tmp("overbudget");
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        save_within(&dir, &a, &edited(&"a".repeat(600)), 1000).unwrap();
+        set_age(&file_for(&dir, &a), Duration::from_secs(3600));
+        assert!(file_for(&dir, &a).exists());
+        save_within(&dir, &b, &edited(&"b".repeat(600)), 1000).unwrap();
+        assert!(!file_for(&dir, &a).exists(), "the least recently used entry made room");
+        assert!(file_for(&dir, &b).exists());
+        assert_eq!(known_total(&dir), Some(folder_size(&dir)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn pruning_keeps_the_budget_dropping_least_recently_used_first() {
         let dir = tmp("prune");
@@ -159,7 +272,7 @@ mod tests {
             f.set_modified(old + Duration::from_secs(i as u64 * 60)).unwrap();
         }
         fs::write(dir.join("keep.txt"), vec![0u8; 5000]).unwrap();
-        prune(&dir, 2000, Duration::from_secs(86_400));
+        assert_eq!(prune(&dir, 2000, Duration::from_secs(86_400)), 2000);
         assert!(!dir.join("a.undo").exists(), "the oldest goes first");
         assert!(dir.join("b.undo").exists() && dir.join("c.undo").exists());
         assert!(dir.join("keep.txt").exists(), "only undo files are touched");
