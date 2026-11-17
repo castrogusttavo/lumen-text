@@ -729,7 +729,7 @@ impl Doc {
         self.version += 1;
         self.changed_at = Some(Instant::now());
         self.lint_changed_at = Some(Instant::now());
-        self.eslint_due = Some(Instant::now() + std::time::Duration::from_millis(700));
+        self.eslint_due = Some(Instant::now() + std::time::Duration::from_millis(1000));
         self.sel_stack.clear();
         let recs = self.view_on_edit(l);
         let mirror = self.linked_follow(&recs);
