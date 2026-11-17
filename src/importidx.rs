@@ -118,13 +118,14 @@ impl Index {
     pub fn search(&self, typed: &str, limit: usize) -> Vec<Hit> {
         let Some(&first) = typed.as_bytes().first() else { return Vec::new() };
         let lower: Vec<u8> = typed.bytes().map(|b| b.to_ascii_lowercase()).collect();
+        let query = crate::fuzzy::Query::new(typed);
         let mut scored: Vec<(i32, &Entry)> = Vec::new();
         for e in self.bucket(first) {
             let name = self.name(e);
             if !subsequence(&lower, name.as_bytes()) {
                 continue;
             }
-            let Some((mut s, _)) = crate::fuzzy::fuzzy(typed, name) else { continue };
+            let Some(mut s) = query.score(name) else { continue };
             if name.len() >= lower.len() && name.as_bytes()[..lower.len()].eq_ignore_ascii_case(&lower) {
                 s += 40;
             }
