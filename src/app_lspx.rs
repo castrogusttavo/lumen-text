@@ -25,7 +25,8 @@ use std::{
 };
 
 const PLAN_TTL: Duration = Duration::from_secs(30);
-/// A merged request waits this long for a slow companion before answering with what it has.
+/// A merged request is forgotten after this long: what a server answers later is not shown (the
+/// primary's answer never waits for it, see `lspmerge::COMPANION_WAIT`).
 const AGG_WAIT: Duration = Duration::from_millis(2500);
 /// How often the open-document sets of registry servers are checked for leaked URIs.
 const STRAY_CHECK: Duration = Duration::from_secs(2);
@@ -55,7 +56,8 @@ pub struct LspX {
     pub reg: Registry,
     pub health: HashMap<(String, PathBuf), Health>,
     plans: RefCell<HashMap<(PathBuf, Option<&'static str>), Rc<Plan>>>,
-    agg: Option<(Agg, Instant)>,
+    /// Requests sent to several servers, one slot per kind (`MultiKind::slot`).
+    agg: [Option<AggRun>; 2],
     serial: u64,
     /// The current `Ctrl+.` round (see `App::code_actions`).
     pub(crate) actions: crate::app_lsp::ActionsRun,
@@ -70,6 +72,16 @@ pub struct LspX {
     pub problems: crate::problems::ProjectDiags,
     /// In-flight `workspace/diagnostic` requests and the panel's refresh bookkeeping.
     pub ws: crate::app_problems::WsState,
+}
+
+/// A hover or completion asked of the primary and its companions.
+struct AggRun {
+    agg: Agg,
+    sent: Instant,
+    /// Process id of the primary (server indexes shift when a server stops).
+    primary: u32,
+    /// (server process id, request id) of every request, to cancel the unanswered ones.
+    ids: Vec<(u32, i64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -400,11 +412,10 @@ impl App {
                 want(t);
             }
         }
-        if let Some((_, t0)) = &self.lspx.agg {
-            if *t0 + AGG_WAIT <= now {
-                self.lspx_finish_agg();
-            } else {
-                want(*t0 + AGG_WAIT);
+        for kind in [MultiKind::Hover, MultiKind::Completion] {
+            self.lspx_flush_agg(kind, now);
+            if let Some(run) = &self.lspx.agg[kind.slot()] {
+                want(run.sent + if run.agg.holding() { crate::lspmerge::COMPANION_WAIT } else { AGG_WAIT });
             }
         }
     }
@@ -751,7 +762,8 @@ impl App {
     // ───────────── merged requests ─────────────
 
     /// Send `method` to the document's primary server and to every companion that can answer, and
-    /// merge the answers. False when no companion applies (the caller then sends its plain request).
+    /// merge the answers. Returns the primary's request id; `None` when no companion applies (the
+    /// caller then sends its plain request).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lspx_request_multi(
         &mut self,
@@ -762,47 +774,102 @@ impl App {
         method: &str,
         params: Value,
         provider: &str,
-    ) -> bool {
+    ) -> Option<i64> {
         let cs: Vec<usize> =
             self.lspx_open_companions(i).into_iter().filter(|&c| self.lsps[c].has_cap(provider)).collect();
         if cs.is_empty() {
-            return false;
+            return None;
         }
-        let Some(real) = self.docs[i].real_uri() else { return false };
+        let real = self.docs[i].real_uri()?;
         let uri = self.docs[i].uri().unwrap_or_default();
+        // The previous request of this kind is superseded: the servers can stop working on it.
+        self.lspx_cancel_multi(kind);
         self.lspx.serial += 1;
         let serial = self.lspx.serial;
-        self.lspx.agg = Some((Agg::new(kind, serial, uri, at, 1 + cs.len()), Instant::now()));
-        self.lsps[primary].request(method, params.clone(), Pending::Multi { kind, serial });
+        let id = self.lsps[primary].request(method, params.clone(), Pending::Multi { kind, serial });
+        let mut ids = vec![(self.lsps[primary].pid(), id)];
         for c in cs {
-            self.lsps[c].request(method, real_params(&params, &real), Pending::Multi { kind, serial });
+            let cid = self.lsps[c].request(method, real_params(&params, &real), Pending::Multi { kind, serial });
+            ids.push((self.lsps[c].pid(), cid));
         }
-        true
+        let agg = Agg::new(kind, serial, uri, at, ids.len());
+        self.lspx.agg[kind.slot()] = Some(AggRun { agg, sent: Instant::now(), primary: self.lsps[primary].pid(), ids });
+        Some(id)
+    }
+
+    /// Forget the merged request of `kind` and tell its servers to stop computing the answers.
+    pub(crate) fn lspx_cancel_multi(&mut self, kind: MultiKind) {
+        let Some(run) = self.lspx.agg[kind.slot()].take() else { return };
+        for (pid, id) in run.ids {
+            if let Some(l) = self.lsps.iter_mut().find(|l| l.pid() == pid) {
+                l.cancel(id);
+            }
+        }
     }
 
     pub(crate) fn lspx_on_multi(&mut self, li: usize, kind: MultiKind, serial: u64, v: Value) {
-        let primary = self.active_primary_index();
-        let Some((agg, _)) = &mut self.lspx.agg else { return };
-        if agg.kind != kind || agg.serial != serial {
+        let Some(run) = &mut self.lspx.agg[kind.slot()] else { return };
+        if run.agg.serial != serial {
             return;
         }
-        let order = if Some(li) == primary { 0 } else { 1 + li };
-        let name = self.lsps.get(li).map(|l| l.name.clone()).unwrap_or_default();
-        if agg.push(order, &name, v) {
-            self.lspx_finish_agg();
+        let Some(l) = self.lsps.get(li) else { return };
+        let order = if l.pid() == run.primary { 0 } else { 1 + li };
+        run.agg.push(order, &l.name, v);
+        self.lspx_flush_agg(kind, Instant::now());
+    }
+
+    /// Show the merged answer of `kind` when it is due: the primary's as soon as the companions
+    /// had their moment, then again for each companion that answers later with something.
+    fn lspx_flush_agg(&mut self, kind: MultiKind, now: Instant) {
+        let Some(run) = &mut self.lspx.agg[kind.slot()] else { return };
+        let waited = now.saturating_duration_since(run.sent);
+        let over = waited >= AGG_WAIT;
+        let due = run.agg.due(waited) || (over && !run.agg.painted());
+        if !due && !over {
+            return;
         }
-    }
-
-    fn active_primary_index(&self) -> Option<usize> {
-        self.doc_lsp(self.active)
-    }
-
-    fn lspx_finish_agg(&mut self) {
-        let Some((mut agg, _)) = self.lspx.agg.take() else { return };
-        let v = agg.merged();
-        match agg.kind {
-            MultiKind::Hover => self.on_hover(&agg.uri, agg.at, &v),
-            MultiKind::Completion => self.on_completion(&agg.uri, agg.at, &v),
+        let again = run.agg.painted();
+        let shown = due.then(|| (run.agg.merged(), run.agg.uri.clone(), run.agg.at));
+        if over || run.agg.expected == 0 {
+            self.lspx.agg[kind.slot()] = None;
+        }
+        let Some((v, uri, at)) = shown else { return };
+        match kind {
+            MultiKind::Hover => {
+                // A late companion only extends the tip that is still up for this symbol.
+                let keep = self
+                    .hover
+                    .as_ref()
+                    .filter(|t| t.uri == uri && t.anchor.0 <= at && at <= t.anchor.1.max(t.anchor.0 + 1))
+                    .map(|t| t.scroll);
+                if again && keep.is_none() {
+                    self.lspx.agg[kind.slot()] = None;
+                    return;
+                }
+                self.on_hover(&uri, at, &v);
+                if again && let (Some(scroll), Some(t)) = (keep, &mut self.hover) {
+                    t.scroll = scroll;
+                }
+            }
+            MultiKind::Completion => {
+                // A late companion only extends the list that is still open; the selected item stays.
+                let keep = self
+                    .completion
+                    .as_ref()
+                    .map(|c| (c.filtered.get(c.sel).map(|&k| c.items[k].label.clone()), c.sel, c.scroll));
+                if again && keep.is_none() {
+                    self.lspx.agg[kind.slot()] = None;
+                    return;
+                }
+                self.on_completion(&uri, at, &v);
+                if again
+                    && let (Some((Some(label), sel, scroll)), Some(c)) = (keep, &mut self.completion)
+                    && let Some(k) = c.filtered.iter().position(|&k| c.items[k].label == label)
+                {
+                    c.scroll = (scroll + k).saturating_sub(sel);
+                    c.sel = k;
+                }
+            }
         }
     }
 
@@ -910,7 +977,7 @@ impl App {
         self.lspx.plans.borrow_mut().clear();
         self.lspx.which.clear();
         self.lspx.told.clear();
-        self.lspx.agg = None;
+        self.lspx.agg = Default::default();
         self.lspx.dead_logs.clear();
     }
 
@@ -1191,19 +1258,26 @@ mod tests {
         let d = &mut app.docs[i];
         d.ed.click(&mut d.buf, 5, false);
         app.request_hover(5);
-        assert!(pump(&mut app, 4000, |a| a.hover.is_some()), "no hover");
+        // The primary's answer is shown at most 150 ms after it arrives; the companion's joins it.
+        let both = |a: &mut App| {
+            a.hover.as_ref().is_some_and(|t| {
+                let text = format!("{:?}", t.blocks);
+                text.contains("hover from a") && text.contains("hover from b")
+            })
+        };
+        assert!(pump(&mut app, 4000, both), "no merged hover: {:?}", app.hover.as_ref().map(|t| &t.blocks));
         for l in &app.lsps {
             assert!(l.log_text().contains("textDocument/hover"), "{} was not asked", l.name);
         }
-        let tip_text = format!("{:?}", app.hover.as_ref().unwrap().blocks);
-        assert!(tip_text.contains("hover from a") && tip_text.contains("hover from b"), "{tip_text}");
 
         // Completion: both lists, the repeated label once, companion items tagged.
         let end = app.docs[i].buf.len_chars();
         let d = &mut app.docs[i];
         d.ed.click(&mut d.buf, end, false);
         app.request_completion(None);
-        assert!(pump(&mut app, 4000, |a| a.completion.is_some()), "no completion");
+        let merged = |a: &mut App| a.completion.as_ref().is_some_and(|c| c.items.iter().any(|it| it.label == "b_item"));
+        assert!(pump(&mut app, 4000, merged), "no merged completion");
+        assert!(app.comp_inflight.is_none(), "the primary answered: nothing is in flight");
         let mut labels: Vec<String> = app.completion.as_ref().unwrap().items.iter().map(|c| c.label.clone()).collect();
         labels.sort();
         assert_eq!(labels, vec!["a_item", "b_item", "shared_item"]);

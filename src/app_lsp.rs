@@ -1040,6 +1040,10 @@ impl App {
             self.comp_inflight = None;
         }
         if let Pending::Multi { kind, serial } = what {
+            // The primary's part of a merged completion is the request `comp_inflight` tracks.
+            if kind == MultiKind::Completion && self.comp_inflight.as_ref().is_some_and(|c| c.0 == li) {
+                self.comp_inflight = None;
+            }
             return self.lspx_on_multi(li, kind, serial, result.unwrap_or(Value::Null));
         }
         if matches!(what, Pending::Highlight { .. } | Pending::LinkedEditing { .. }) {
@@ -1317,7 +1321,10 @@ impl App {
         let Some((i, li)) = self.with_server() else { return self.show_diag_hover(at) };
         let params = self.pos_params(i, at);
         let uri = self.docs[i].uri().unwrap_or_default();
-        if self.lspx_request_multi(MultiKind::Hover, i, li, at, "textDocument/hover", params.clone(), "hoverProvider") {
+        if self
+            .lspx_request_multi(MultiKind::Hover, i, li, at, "textDocument/hover", params.clone(), "hoverProvider")
+            .is_some()
+        {
             return;
         }
         self.lsps[li].request("textDocument/hover", params, Pending::Hover { uri, at });
@@ -1831,7 +1838,12 @@ impl App {
         };
         self.comp_t0 = Some(Instant::now());
         let uri = self.docs[i].uri().unwrap_or_default();
-        if self.lspx_request_multi(
+        let mut ws = at;
+        while ws > 0 && self.docs[i].buf.char_at(ws - 1).is_some_and(is_ident) {
+            ws -= 1;
+        }
+        // With companions the request goes to all of them; the primary's part is the one tracked.
+        let multi = self.lspx_request_multi(
             MultiKind::Completion,
             i,
             li,
@@ -1839,24 +1851,24 @@ impl App {
             "textDocument/completion",
             params.clone(),
             "completionProvider",
-        ) {
-            return;
-        }
-        let mut ws = at;
-        while ws > 0 && self.docs[i].buf.char_at(ws - 1).is_some_and(is_ident) {
-            ws -= 1;
-        }
-        let id = self.lsps[li].request("textDocument/completion", params, Pending::Completion { uri: uri.clone(), at });
+        );
+        let id = match multi {
+            Some(id) => id,
+            None => {
+                self.lsps[li].request("textDocument/completion", params, Pending::Completion { uri: uri.clone(), at })
+            }
+        };
         self.comp_inflight = Some((li, id, uri, ws, Instant::now()));
     }
 
-    /// Drop the unanswered completion request (the server stops computing it).
+    /// Drop the unanswered completion request (the servers stop computing it).
     fn cancel_completion(&mut self) {
         if let Some((li, id, ..)) = self.comp_inflight.take()
             && let Some(l) = self.lsps.get_mut(li)
         {
             l.cancel(id);
         }
+        self.lspx_cancel_multi(MultiKind::Completion);
     }
 
     /// True while a completion for the word starting at `ws` of `uri` is still being computed: its
