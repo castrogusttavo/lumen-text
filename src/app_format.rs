@@ -72,7 +72,7 @@ impl App {
             "none" => return Fmt::Off,
             "biome" | "prettier" => {
                 return match crate::format::detect_named(&path, &choice) {
-                    Some(f) => self.format_external(i, &f, &path),
+                    Some(f) => self.format_external(i, &f, &path, wait),
                     None => Fmt::Failed(format!(
                         "{choice} is not set up for this file (needs its config and node_modules/.bin/{choice})"
                     )),
@@ -88,7 +88,7 @@ impl App {
             _ => {}
         }
         if let Some(f) = crate::format::detect(&path) {
-            return self.format_external(i, &f, &path);
+            return self.format_external(i, &f, &path, wait);
         }
         if let Some(r) = self.format_with_lsp(i, wait) {
             return r;
@@ -112,19 +112,14 @@ impl App {
         Fmt::NoFormatter
     }
 
-    /// Biome / Prettier on stdin.
-    fn format_external(&mut self, i: usize, f: &crate::format::Formatter, path: &Path) -> Fmt {
+    /// Biome / Prettier on stdin, waiting at most `wait` for the tool (it is killed after that).
+    fn format_external(&mut self, i: usize, f: &crate::format::Formatter, path: &Path, wait: Duration) -> Fmt {
         let text = self.docs[i].buf.to_string();
-        match crate::format::run(f, &text) {
-            // Unchanged may also mean "not one of mine": Biome says nothing about ignored files.
-            Ok(new) if new == text && crate::format::biome_ignores(f, path) => Fmt::Ignored(f.name.into()),
-            Ok(new) if new == text => Fmt::Same(f.name.into()),
-            Ok(new) => {
-                self.docs[i].replace_text(&new);
-                Fmt::Changed(f.name.into())
-            }
-            Err(e) => Fmt::Failed(e),
+        let out = external_outcome(f, path, &text, wait);
+        if let External::Changed(new) = &out {
+            self.docs[i].replace_text(new);
         }
+        out.into_fmt(f.name)
     }
 
     /// `formatter: "lsp:<name>"`: the document's primary server or one of its companions, by name.
@@ -310,6 +305,41 @@ impl App {
 }
 
 pub(crate) const TIMEOUT: &str = "timeout";
+
+/// What an external formatter made of a text (nothing here touches the document, so it can be
+/// computed away from the UI thread).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum External {
+    Changed(String),
+    Same,
+    Ignored,
+    TimedOut,
+    Failed(String),
+}
+
+impl External {
+    fn into_fmt(self, name: &str) -> Fmt {
+        match self {
+            External::Changed(_) => Fmt::Changed(name.into()),
+            External::Same => Fmt::Same(name.into()),
+            External::Ignored => Fmt::Ignored(name.into()),
+            External::TimedOut => Fmt::TimedOut(name.into()),
+            External::Failed(e) => Fmt::Failed(e),
+        }
+    }
+}
+
+/// Run formatter `f` on `text` (the contents of `path`), waiting at most `wait` for it.
+pub(crate) fn external_outcome(f: &crate::format::Formatter, path: &Path, text: &str, wait: Duration) -> External {
+    match crate::format::run(f, text, wait) {
+        // Unchanged may also mean "not one of mine": Biome says nothing about ignored files.
+        Ok(new) if new == text && crate::format::biome_ignores(f, path, wait) => External::Ignored,
+        Ok(new) if new == text => External::Same,
+        Ok(new) => External::Changed(new),
+        Err(e) if e == crate::format::TIMED_OUT => External::TimedOut,
+        Err(e) => External::Failed(e),
+    }
+}
 
 /// Does an action of kind `got` belong to the requested kind `want` (`source.fixAll.eslint` is a
 /// `source.fixAll`)? An action without a kind is taken (the server already filtered by `only`).
@@ -620,6 +650,25 @@ esac
         assert!(!m.contains("schema mismatch"), "{m}");
         // Still shown after the usual 6 seconds.
         assert!(app.status.as_ref().unwrap().1 > Instant::now());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hung_formatter_does_not_hold_the_save() {
+        let _g = lock();
+        let dir = project("fmthang");
+        let mut app = test_app(&dir);
+        app.apply_setting("format_on_save", &json!(true));
+        fake_prettier(&dir, "sleep 30; cat");
+        let f = dir.join("src/a.ts");
+        let i = open(&mut app, &f, "x\n");
+        app.docs[i].replace_text("let   x = 1\n");
+        let t0 = Instant::now();
+        app.save_active();
+        assert!(t0.elapsed() < SAVE_WAIT * 4, "the formatter was given up on: {:?}", t0.elapsed());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "let   x = 1\n", "saved as typed");
+        let m = status(&app);
+        assert_eq!(m, "Saved a.ts, but prettier did not answer in time, so it was saved unformatted");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

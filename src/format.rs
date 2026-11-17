@@ -2,11 +2,17 @@
 //! formatted without being saved first.
 
 use std::{
-    io::Write,
+    collections::HashMap,
+    io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::{Mutex, mpsc},
     thread,
+    time::{Duration, Instant, SystemTime},
 };
+
+/// The error [`run`] returns when the tool was still running after its wait and was killed.
+pub const TIMED_OUT: &str = "did not answer in time";
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Formatter {
@@ -69,53 +75,141 @@ pub fn detect_named(file: &Path, name: &str) -> Option<Formatter> {
     None
 }
 
-/// Format `text`; returns the new text, or an error message (formatter output on failure).
-pub fn run(f: &Formatter, text: &str) -> Result<String, String> {
-    let mut child = Command::new(&f.bin)
-        .args(&f.args)
-        .current_dir(&f.cwd)
+/// The tool gets a process group of its own, so a wrapper script and what it started (Biome's
+/// launcher runs the native binary as a child) can be stopped together.
+fn own_group(cmd: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd
+}
+
+fn kill_tree(child: &mut Child) {
+    #[cfg(unix)]
+    // SAFETY: plain signal to the group created by `own_group` (its id is the child's pid, which
+    // is still ours: the child has not been reaped yet).
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// What a finished tool left: exit status, stdout, stderr.
+type Finished = (ExitStatus, Vec<u8>, Vec<u8>);
+
+/// Feed `input` to `child` and collect its output, waiting at most `wait`: `None` when it was
+/// still running then (it is killed). The pipes are read on threads, so a large buffer never
+/// deadlocks against a full pipe and a process that keeps a pipe open cannot hold the caller.
+fn wait_output(mut child: Child, input: Option<String>, wait: Duration) -> Option<Finished> {
+    let deadline = Instant::now() + wait;
+    if let (Some(mut stdin), Some(input)) = (child.stdin.take(), input) {
+        thread::spawn(move || {
+            let _ = stdin.write_all(input.as_bytes());
+        });
+    }
+    let (tx, rx) = mpsc::channel::<(bool, Vec<u8>)>();
+    let mut pipes = 0;
+    let mut read = |pipe: Option<Box<dyn Read + Send>>, is_out: bool| {
+        let Some(mut pipe) = pipe else { return };
+        pipes += 1;
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            let _ = tx.send((is_out, buf));
+        });
+    };
+    read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), true);
+    read(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>), false);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    for _ in 0..pipes {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok((true, b)) => out = b,
+            Ok((false, b)) => err = b,
+            Err(_) => {
+                kill_tree(&mut child);
+                return None;
+            }
+        }
+    }
+    // Both pipes are closed: the process is gone or about to be.
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some((status, out, err)),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(2)),
+            _ => {
+                kill_tree(&mut child);
+                return None;
+            }
+        }
+    }
+}
+
+/// Format `text`; returns the new text, or an error message (formatter output on failure,
+/// [`TIMED_OUT`] when the tool was still running after `wait` and was killed).
+pub fn run(f: &Formatter, text: &str, wait: Duration) -> Result<String, String> {
+    let child = own_group(Command::new(&f.bin).args(&f.args).current_dir(&f.cwd))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{}: {e}", f.name))?;
-    let mut stdin = child.stdin.take().unwrap();
-    let input = text.to_string();
-    // Write on a thread: large buffers would deadlock against a full stdout pipe otherwise.
-    let writer = thread::spawn(move || {
-        let _ = stdin.write_all(input.as_bytes());
-    });
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    let _ = writer.join();
-    if out.status.success() {
-        String::from_utf8(out.stdout).map_err(|e| e.to_string())
+    let Some((status, out, err)) = wait_output(child, Some(text.to_string()), wait) else {
+        return Err(TIMED_OUT.to_string());
+    };
+    if status.success() {
+        String::from_utf8(out).map_err(|e| e.to_string())
     } else {
-        let err = String::from_utf8_lossy(&out.stderr);
-        Err(format!("{}: {}", f.name, error_line(&err)))
+        Err(format!("{}: {}", f.name, error_line(&String::from_utf8_lossy(&err))))
     }
 }
 
+/// Modification times of the Biome config files in the formatter's directory.
+type BiomeStamp = [Option<SystemTime>; 2];
+
+fn biome_stamp(cwd: &Path) -> BiomeStamp {
+    ["biome.json", "biome.jsonc"].map(|n| std::fs::metadata(cwd.join(n)).and_then(|m| m.modified()).ok())
+}
+
+/// Answers of [`biome_ignores`] per file, each valid while the config files keep their stamp.
+static IGNORED: Mutex<Option<HashMap<PathBuf, (BiomeStamp, bool)>>> = Mutex::new(None);
+
 /// Does Biome's config leave `file` out (`files.includes`, ignore files)? Through stdin Biome hands
 /// an ignored file back unchanged and says nothing, so ask it about the path itself (no `--write`:
-/// nothing is touched on disk). Only asked when the stdin run changed nothing.
-pub fn biome_ignores(f: &Formatter, file: &Path) -> bool {
+/// nothing is touched on disk). Only asked when the stdin run changed nothing, and once per file:
+/// the answer is kept until `biome.json` / `biome.jsonc` changes. Waits at most `wait` (no answer
+/// counts as "not ignored" and is asked again next time).
+pub fn biome_ignores(f: &Formatter, file: &Path, wait: Duration) -> bool {
     if f.name != "biome" {
         return false;
     }
+    let stamp = biome_stamp(&f.cwd);
+    if let Ok(g) = IGNORED.lock()
+        && let Some((s, ignored)) = g.as_ref().and_then(|m| m.get(file))
+        && *s == stamp
+    {
+        return *ignored;
+    }
     let rel = file.strip_prefix(&f.cwd).unwrap_or(file);
-    let Ok(out) = Command::new(&f.bin)
-        .arg("format")
-        .arg(rel)
-        .current_dir(&f.cwd)
+    let Ok(child) = own_group(Command::new(&f.bin).arg("format").arg(rel).current_dir(&f.cwd))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
     else {
         return false;
     };
-    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    reports_ignored(&text)
+    let Some((_, out, err)) = wait_output(child, None, wait) else { return false };
+    let text = format!("{}{}", String::from_utf8_lossy(&out), String::from_utf8_lossy(&err));
+    let ignored = reports_ignored(&text);
+    if let Ok(mut g) = IGNORED.lock() {
+        g.get_or_insert_with(HashMap::new).insert(file.to_path_buf(), (stamp, ignored));
+    }
+    ignored
 }
 
 /// Biome's report for a path its configuration ignores.
@@ -244,6 +338,8 @@ pub fn type_key(file: &Path) -> String {
 mod tests {
     use super::*;
 
+    const W: Duration = Duration::from_secs(30);
+
     /// Scratch dir for tests (never under /tmp).
     pub fn test_base(tag: &str) -> PathBuf {
         let d = crate::app_unsaved::testkit::scratch_base().join(format!("fmt-{tag}-{}", std::process::id()));
@@ -276,16 +372,16 @@ mod tests {
             args: vec!["a-z".into(), "A-Z".into()],
             cwd: cwd.clone(),
         };
-        assert_eq!(run(&f, "hello\n").unwrap(), "HELLO\n");
+        assert_eq!(run(&f, "hello\n", W).unwrap(), "HELLO\n");
         let big = "x".repeat(2_000_000);
-        assert_eq!(run(&f, &big).unwrap().len(), 2_000_000, "no pipe deadlock");
+        assert_eq!(run(&f, &big, W).unwrap().len(), 2_000_000, "no pipe deadlock");
         let bad = Formatter {
             name: "sh",
             bin: PathBuf::from("sh"),
             args: vec!["-c".into(), "echo boom >&2; exit 3".into()],
             cwd,
         };
-        assert!(run(&bad, "").unwrap_err().contains("boom"));
+        assert!(run(&bad, "", W).unwrap_err().contains("boom"));
         // stderr noise on success is not a failure
         let noisy = Formatter {
             name: "sh",
@@ -293,7 +389,7 @@ mod tests {
             args: vec!["-c".into(), "echo 'i schema mismatch' >&2; echo out".into()],
             cwd: PathBuf::from("/"),
         };
-        assert_eq!(run(&noisy, "").unwrap(), "out\n");
+        assert_eq!(run(&noisy, "", W).unwrap(), "out\n");
     }
 
     #[test]
@@ -337,10 +433,56 @@ mod tests {
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let f = detect(&inner.join("src/a.ts")).unwrap();
         assert_eq!(f.cwd, inner);
-        assert_eq!(run(&f, "ok\n").unwrap(), "ok\n");
+        assert_eq!(run(&f, "ok\n", W).unwrap(), "ok\n");
         let mut outer = f.clone();
         outer.cwd = base.clone();
-        assert!(run(&outer, "ok\n").unwrap_err().contains("nested root"));
+        assert!(run(&outer, "ok\n", W).unwrap_err().contains("nested root"));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_formatter_that_hangs_is_killed_when_its_wait_expires() {
+        let f = Formatter {
+            name: "sh",
+            bin: PathBuf::from("sh"),
+            args: vec!["-c".into(), "sleep 30; cat".into()],
+            cwd: PathBuf::from("/"),
+        };
+        let t0 = Instant::now();
+        assert_eq!(run(&f, "x\n", Duration::from_millis(200)).unwrap_err(), TIMED_OUT);
+        assert!(t0.elapsed() < Duration::from_secs(10), "did not wait for the tool: {:?}", t0.elapsed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn biome_is_asked_about_a_path_once_until_its_config_changes() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = test_base("ignored-cache");
+        std::fs::create_dir_all(base.join("lib")).unwrap();
+        std::fs::write(base.join("biome.json"), "{}").unwrap();
+        let bin = base.join("biome");
+        // Every call leaves a line in `calls`; `lib/` is reported as ignored.
+        let script = "#!/bin/sh\necho x >> calls\ncase \"$2\" in lib/*) echo 'These paths were provided but ignored:' ;; *) echo 'Checked 1 file' ;; esac\n";
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let f = Formatter { name: "biome", bin, args: Vec::new(), cwd: base.clone() };
+        let calls = || std::fs::read_to_string(base.join("calls")).unwrap_or_default().lines().count();
+        assert!(biome_ignores(&f, &base.join("lib/a.ts"), W));
+        assert!(biome_ignores(&f, &base.join("lib/a.ts"), W));
+        assert_eq!(calls(), 1, "the second answer came from the cache");
+        assert!(!biome_ignores(&f, &base.join("src/a.ts"), W));
+        assert!(!biome_ignores(&f, &base.join("src/a.ts"), W));
+        assert_eq!(calls(), 2, "one question per file");
+        // The config changed: ask again.
+        let cfg = std::fs::File::options().append(true).open(base.join("biome.json")).unwrap();
+        cfg.set_modified(SystemTime::now() + Duration::from_secs(5)).unwrap();
+        drop(cfg);
+        assert!(biome_ignores(&f, &base.join("lib/a.ts"), W));
+        assert_eq!(calls(), 3);
+        let prettier = Formatter { name: "prettier", ..f.clone() };
+        assert!(!biome_ignores(&prettier, &base.join("lib/a.ts"), W));
+        assert_eq!(calls(), 3, "only Biome is asked");
         std::fs::remove_dir_all(&base).ok();
     }
 
