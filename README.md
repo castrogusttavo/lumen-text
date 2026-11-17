@@ -80,6 +80,7 @@ is in the [changelog](https://castrogusttavo.github.io/lumen-text/changelog), an
 - Document highlights: the caret resting on a symbol lights its read/write occurrences (`textDocument/documentHighlight`; the same word when no server offers it)
 - Linked editing: renaming an opening tag renames the closing one live, one undo step (`textDocument/linkedEditingRange`: tsgo for JSX/TSX, the HTML server for HTML)
 - **Inline completions** (opt-in, setting `inline_completion`): faded ghost text from any language server with `textDocument/inlineCompletion`, such as GitHub Copilot's `copilot-language-server` with your own login (*Copilot: Sign in*, device code; Lumen never handles API keys). `Tab` accepts, `Ctrl+Right` takes a word, `Esc` dismisses, `Alt+]` / `Alt+[` cycle, `Alt+\` asks; a status bar item shows on / off / signed out / loading
+- **Import index of the editor**: every `export` of the project and of the packages in `package.json` is indexed on a worker thread when the project opens (about 80,000 names in ~2.4 MB for a large Next.js app). Completion offers them by abbreviation (`exok` finds `expectOk`) and writes the `import` on accept (merging into an existing statement, `import type` for types, the tsconfig `paths` alias or a relative path); `Ctrl+.` on an unresolved name offers "Add import" before any server answers. It works with tsgo's `auto_import` off, which keeps the server at ~150-200 MB instead of a 1.5 GB peak
 - Full-project mode (default; also reacts to files changed, created or deleted on disk) versus an opt-in lean mode; uses the project's own `tsgo` or a bundled one
 - Formatting with the project's Biome or Prettier (falls back to `tsgo`), or the formatter you pick per language
   (`formatter`); code actions on save (`code_actions_on_save`, e.g. organize imports and fix all, ~1 s timeout each,
@@ -471,7 +472,7 @@ settings are in effect; its tooltip lists the keys (amber while commands wait fo
 | `buffer_letter_spacing` | `0` | Extra space between buffer characters in px, -1 to 3 (part of the cell width, so columns stay aligned) |
 
 Environment variables: `LUMEN_THEME` (path to a theme file), `LUMEN_ASSETS` (assets directory),
-`LUMEN_TSGO` (path to a `tsgo` binary), `LUMEN_AUTOIMPORT=1`, `LUMEN_DEBUG=1`, `LUMEN_GIT_POLL_MS` (interval of the background ahead/behind refresh, default 60000),
+`LUMEN_TSGO` (path to a `tsgo` binary), `LUMEN_AUTOIMPORT=1`, `LUMEN_NO_IMPORT_INDEX=1` (turn the editor's own import index off), `LUMEN_DEBUG=1`, `LUMEN_GIT_POLL_MS` (interval of the background ahead/behind refresh, default 60000),
 `LUMEN_FORCE_POLL=1` (treat every folder as a network mount, to try the polling fallback on a local disk).
 Assets are searched in `$LUMEN_ASSETS`, then `<exe dir>/../share/lumen-text/assets`, then `~/.local/share/lumen-text/assets`.
 

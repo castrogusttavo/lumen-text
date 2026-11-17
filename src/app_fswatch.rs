@@ -277,6 +277,7 @@ impl App {
         self.tree.rebuild();
         self.file_index = None;
         self.refresh_git_status_bg();
+        self.import_idx_dirty();
         self.watch_dirs();
         self.request_redraw();
     }
