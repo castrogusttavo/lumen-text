@@ -31,26 +31,8 @@ impl App {
         self.ide_tick(now, &mut want);
         self.term_tick(&mut want);
 
-        // Git gutter against the buffer, debounced.
-        let active = self.active;
-        for (i, d) in self.docs.iter_mut().enumerate() {
-            if !d.git_stale {
-                continue;
-            }
-            let due = d.changed_at.map_or(now, |t| t + Duration::from_millis(350));
-            if due > now && i == active {
-                want(due);
-                continue;
-            }
-            if i != active && d.changed_at.is_some() {
-                // background tabs refresh when activated
-            }
-            d.git_stale = false;
-            d.git = match (&d.git_base, d.buf.line_count() < 200_000) {
-                (Some(base), true) => git::marks(base, &d.buf.to_string()),
-                _ => Vec::new(),
-            };
-        }
+        // Git gutter against the buffer, debounced; the diff itself runs on a worker.
+        self.git_marks_tick(now, &mut want);
 
         self.pump_git_status();
         self.import_idx_tick(now, &mut want);
