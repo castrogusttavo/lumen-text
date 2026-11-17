@@ -19,7 +19,8 @@ use std::{
 const MAX_ITEMS: usize = 40;
 /// Typing less than this offers nothing from the index (too many names match one letter).
 const MIN_PREFIX: usize = 2;
-/// A change on disk rebuilds the index this long after the last one.
+/// A change on disk updates the index this long after the last one (only what changed is read
+/// again, see `importidx::build_from`).
 const REBUILD_AFTER: Duration = Duration::from_secs(3);
 
 /// State of the import index of the open project.
@@ -57,7 +58,7 @@ fn enabled() -> bool {
 
 impl App {
     /// Something that can change the exports happened (a save, files created or removed, a new
-    /// `package.json`): rebuild shortly.
+    /// `package.json`): update shortly.
     pub(crate) fn import_idx_dirty(&mut self) {
         if self.import_idx.current.is_some() || self.import_idx.busy {
             self.import_idx.due = Some(Instant::now() + REBUILD_AFTER);
@@ -68,7 +69,12 @@ impl App {
         while let Ok((root, idx, took)) = self.import_idx.ch.1.try_recv() {
             self.import_idx.busy = false;
             if std::env::var_os("LUMEN_DEBUG").is_some() {
-                eprintln!("[imports] {} names from {} files in {took:?}", idx.len(), idx.files_scanned);
+                eprintln!(
+                    "[imports] {} names, {} files and {} packages read in {took:?}",
+                    idx.len(),
+                    idx.files_scanned,
+                    idx.packages_scanned
+                );
             }
             if root == self.root {
                 self.import_idx.current = Some((root, Arc::new(idx)));
@@ -89,9 +95,12 @@ impl App {
         self.import_idx.due = None;
         self.import_idx.busy = true;
         let (root, tx, wake) = (self.root.clone(), self.import_idx.ch.0.clone(), self.wake());
+        // The index in use is the base of the next one: what did not change is not read again.
+        let old = self.import_index().cloned();
         std::thread::spawn(move || {
             let t = Instant::now();
-            let idx = importidx::build(&root);
+            let idx = importidx::build_from(&root, old.as_deref());
+            drop(old);
             let _ = tx.send((root, idx, t.elapsed()));
             wake();
         });

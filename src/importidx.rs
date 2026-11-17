@@ -9,10 +9,15 @@
 //! It is syntactic: exports are found by scanning top-level `export` statements, and re-exports are
 //! followed only through `export * from` / `/// <reference path>` inside a package. The `import`
 //! statement is written by the editor (see [`import_edit`]).
+//!
+//! The index keeps what it was made from, piece by piece (one per project file, one per package,
+//! see [`Parts`]): after a save only the files that changed are read again ([`build_from`]).
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
 };
 
 const MAX_PROJECT_FILES: usize = 30_000;
@@ -69,7 +74,11 @@ pub struct Index {
     usage: Vec<u32>,
     /// `compilerOptions.paths` of the root tsconfig as (alias prefix, absolute directory).
     aliases: Vec<(String, PathBuf)>,
+    /// Files and packages read to make this index (an update reads only what changed).
     pub files_scanned: usize,
+    pub packages_scanned: usize,
+    /// What the index was assembled from, kept so the next build can reuse what did not change.
+    parts: Parts,
 }
 
 impl Index {
@@ -396,7 +405,6 @@ struct Builder {
     sources: Vec<Source>,
     source_ids: std::collections::HashMap<Source, u32>,
     seen: HashSet<(u32, String, u8)>,
-    files: usize,
     /// Module specifier -> import statements of the project that name it.
     imported: std::collections::HashMap<String, u32>,
 }
@@ -439,13 +447,118 @@ impl Builder {
                 Source::File(_) => 0,
             })
             .collect();
-        Index { names, entries: self.entries, sources: self.sources, usage, aliases, files_scanned: self.files }
+        Index {
+            names,
+            entries: self.entries,
+            sources: self.sources,
+            usage,
+            aliases,
+            files_scanned: 0,
+            packages_scanned: 0,
+            parts: Parts::default(),
+        }
     }
 }
 
-fn read_small(p: &Path) -> Option<String> {
-    let meta = std::fs::metadata(p).ok()?;
-    (meta.is_file() && meta.len() <= MAX_FILE_BYTES).then(|| std::fs::read_to_string(p).ok()).flatten()
+/// What tells a changed file from an unchanged one: (modification time in ns, length).
+type Stamp = (u64, u64);
+
+fn stamp_of(meta: &std::fs::Metadata) -> Option<Stamp> {
+    let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some((mtime.as_nanos() as u64, meta.len()))
+}
+
+/// The stamp of a path, `None` when nothing is there.
+fn stamp(p: &Path) -> Option<Stamp> {
+    stamp_of(&std::fs::metadata(p).ok()?)
+}
+
+/// Export names back to back, each with its flags and a group (the module, in a package).
+#[derive(Clone, Default, Debug, PartialEq)]
+struct Packed {
+    text: String,
+    /// (offset in `text`, length, flags, group).
+    items: Vec<(u32, u16, u8, u16)>,
+}
+
+impl Packed {
+    fn push(&mut self, name: &str, flags: u8, group: u16) {
+        if name.len() > 200 || self.text.len() > u32::MAX as usize - 256 {
+            return;
+        }
+        self.items.push((self.text.len() as u32, name.len() as u16, flags, group));
+        self.text.push_str(name);
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&str, u8, u16)> {
+        self.items
+            .iter()
+            .map(|&(off, len, flags, group)| (&self.text[off as usize..off as usize + len as usize], flags, group))
+    }
+}
+
+/// What one project file gives the index.
+#[derive(Default)]
+struct FilePart {
+    stamp: Stamp,
+    exports: Packed,
+    /// The module specifiers its import statements name, one per line (relative ones left out:
+    /// they only rank packages).
+    imports: String,
+}
+
+/// What one package of `package.json` gives the index, through all its entry points.
+#[derive(Default)]
+struct PkgPart {
+    dep: String,
+    /// Files and folders that change without the version changing, as they were when it was
+    /// scanned (`None`: not there): declaration files outside the package's folder (the generated
+    /// `.prisma/client` that `@prisma/client` re-exports), the package another one re-exports
+    /// that was not found, and every file of a package that is not a real install (a linked
+    /// workspace package, one without a version).
+    stamps: Vec<(PathBuf, Option<Stamp>)>,
+    /// Module specifiers (`next`, `next/link`): the groups of `exports`.
+    modules: Vec<String>,
+    exports: Packed,
+    /// Declaration files read.
+    files: usize,
+}
+
+impl PkgPart {
+    fn stamps_current(&self) -> bool {
+        self.stamps.iter().all(|(p, s)| stamp(p) == *s)
+    }
+}
+
+/// Everything an [`Index`] is assembled from.
+#[derive(Default)]
+struct Parts {
+    root: PathBuf,
+    /// Every source file of the project, by path.
+    files: BTreeMap<PathBuf, Arc<FilePart>>,
+    pkgs: Vec<Arc<PkgPart>>,
+    /// Stamps of what decides the package list and their versions (see [`deps_stamps`]).
+    deps: Vec<Option<Stamp>>,
+}
+
+/// `package.json`, the lockfiles and `node_modules`: when none of them moved, the packages are the
+/// ones already indexed.
+fn deps_stamps(root: &Path) -> Vec<Option<Stamp>> {
+    [
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lock",
+        "bun.lockb",
+        "node_modules",
+        "node_modules/.package-lock.json",
+        "node_modules/.modules.yaml",
+        "node_modules/.yarn-integrity",
+    ]
+    .iter()
+    .map(|f| stamp(&root.join(f)))
+    .collect()
 }
 
 fn is_source(p: &Path) -> bool {
@@ -459,39 +572,114 @@ fn is_source(p: &Path) -> bool {
 
 /// Build the index of the project at `root` (blocking: call it from a worker thread).
 pub fn build(root: &Path) -> Index {
-    let mut b = Builder::default();
-    scan_project(root, &mut b);
-    scan_packages(root, &mut b);
-    b.finish(read_aliases(root))
+    build_from(root, None)
 }
 
-fn scan_project(root: &Path, b: &mut Builder) {
+/// [`build`], reading only what changed since `old` (an earlier index of the same project) was
+/// made: project files with another modification time or size, and packages whose generated
+/// files moved. A change of `package.json`, a lockfile or `node_modules` scans every package again.
+pub fn build_from(root: &Path, old: Option<&Index>) -> Index {
+    let old = old.map(|i| &i.parts).filter(|p| p.root == root);
+    let deps = deps_stamps(root);
+    let mut files_scanned = 0;
+    let files = scan_project(root, old.map(|p| &p.files), &mut files_scanned);
+    let mut packages_scanned = 0;
+    let mut fresh = |dep: &str| {
+        let part = scan_package(root, dep);
+        packages_scanned += 1;
+        files_scanned += part.files;
+        Arc::new(part)
+    };
+    let pkgs: Vec<Arc<PkgPart>> = match old.filter(|p| p.deps == deps) {
+        Some(p) => {
+            p.pkgs.iter().map(|pkg| if pkg.stamps_current() { pkg.clone() } else { fresh(pkg.dep.as_str()) }).collect()
+        }
+        None => dependency_names(root).iter().map(|dep| fresh(dep.as_str())).collect(),
+    };
+    let mut idx = assemble(Parts { root: root.to_path_buf(), files, pkgs, deps }, read_aliases(root));
+    (idx.files_scanned, idx.packages_scanned) = (files_scanned, packages_scanned);
+    idx
+}
+
+/// The searchable index of `parts`.
+fn assemble(parts: Parts, aliases: Vec<(String, PathBuf)>) -> Index {
+    let mut b = Builder::default();
+    for (path, file) in &parts.files {
+        for spec in file.imports.lines() {
+            match b.imported.get_mut(spec) {
+                Some(n) => *n += 1,
+                None => {
+                    b.imported.insert(spec.to_string(), 1);
+                }
+            }
+        }
+        if file.exports.items.is_empty() {
+            continue;
+        }
+        let src = b.source(Source::File(path.clone()));
+        for (name, flags, _) in file.exports.iter() {
+            b.add(name, flags, src);
+        }
+    }
+    for pkg in &parts.pkgs {
+        let ids: Vec<u32> = pkg.modules.iter().map(|m| b.source(Source::Module(m.clone()))).collect();
+        for (name, flags, module) in pkg.exports.iter() {
+            if let Some(&src) = ids.get(module as usize) {
+                b.add(name, flags, src);
+            }
+        }
+    }
+    let mut idx = b.finish(aliases);
+    idx.parts = parts;
+    idx
+}
+
+/// What `text`, a project source file, exports and imports.
+fn file_part(text: &str, stamp: Stamp) -> FilePart {
+    let mut part = FilePart { stamp, ..Default::default() };
+    for line in text.lines().filter(|l| l.ends_with(['"', '\'', ';'])) {
+        if let Some(spec) = line.rfind(" from ").and_then(|i| quoted(&line[i..]))
+            && !spec.starts_with('.')
+        {
+            part.imports.push_str(spec);
+            part.imports.push('\n');
+        }
+    }
+    for (name, flags, ambient) in &scan(text).exports {
+        if ambient.is_none() {
+            part.exports.push(name, *flags, 0);
+        }
+    }
+    part
+}
+
+/// Every source file of the project. A file with the stamp it has in `old` is taken from there;
+/// the others are read (`scanned` counts them).
+fn scan_project(
+    root: &Path,
+    old: Option<&BTreeMap<PathBuf, Arc<FilePart>>>,
+    scanned: &mut usize,
+) -> BTreeMap<PathBuf, Arc<FilePart>> {
+    let mut files = BTreeMap::new();
     for e in ignore::WalkBuilder::new(root).build().flatten() {
-        if b.files >= MAX_PROJECT_FILES {
+        if files.len() >= MAX_PROJECT_FILES {
             break;
         }
         let p = e.path();
         if !is_source(p) {
             continue;
         }
-        let Some(text) = read_small(p) else { continue };
-        b.files += 1;
-        for line in text.lines().filter(|l| l.ends_with(['"', '\'', ';'])) {
-            if let Some(spec) = line.rfind(" from ").and_then(|i| quoted(&line[i..])) {
-                *b.imported.entry(spec.to_string()).or_default() += 1;
-            }
-        }
-        let found = scan(&text);
-        if found.exports.iter().all(|(_, _, ambient)| ambient.is_some()) {
+        let Ok(meta) = std::fs::metadata(p) else { continue };
+        let Some(stamp) = stamp_of(&meta).filter(|_| meta.is_file() && meta.len() <= MAX_FILE_BYTES) else { continue };
+        if let Some(part) = old.and_then(|o| o.get(p)).filter(|part| part.stamp == stamp) {
+            files.insert(p.to_path_buf(), part.clone());
             continue;
         }
-        let src = b.source(Source::File(p.to_path_buf()));
-        for (name, flags, ambient) in found.exports {
-            if ambient.is_none() {
-                b.add(&name, flags, src);
-            }
-        }
+        let Ok(text) = std::fs::read_to_string(p) else { continue };
+        *scanned += 1;
+        files.insert(p.to_path_buf(), Arc::new(file_part(&text, stamp)));
     }
+    files
 }
 
 fn dependency_names(root: &Path) -> Vec<String> {
@@ -622,14 +810,19 @@ fn resolve_dts(dir: &Path, spec: &str) -> Option<PathBuf> {
     tries.into_iter().find(|p| p.is_file())
 }
 
+/// `@scope/pkg/sub/path` -> (`@scope/pkg`, `sub/path`).
+fn split_bare(spec: &str) -> Option<(String, Option<&str>)> {
+    let mut parts = spec.splitn(if spec.starts_with('@') { 3 } else { 2 }, '/');
+    let pkg =
+        if spec.starts_with('@') { format!("{}/{}", parts.next()?, parts.next()?) } else { parts.next()?.to_string() };
+    Some((pkg, parts.next()))
+}
+
 /// The declaration file of a bare specifier re-exported by a file in `dir` (`export * from
 /// ".prisma/client/default"` in `@prisma/client`): node resolution from the file's real location.
 fn resolve_bare(dir: &Path, spec: &str) -> Option<PathBuf> {
     let real = std::fs::canonicalize(dir).ok()?;
-    let mut parts = spec.splitn(if spec.starts_with('@') { 3 } else { 2 }, '/');
-    let pkg =
-        if spec.starts_with('@') { format!("{}/{}", parts.next()?, parts.next()?) } else { parts.next()?.to_string() };
-    let sub = parts.next();
+    let (pkg, sub) = split_bare(spec)?;
     for anc in real.ancestors() {
         let nm = anc.join("node_modules");
         let pkg_dir = nm.join(&pkg);
@@ -653,24 +846,103 @@ fn resolve_bare(dir: &Path, spec: &str) -> Option<PathBuf> {
     None
 }
 
-fn scan_packages(root: &Path, b: &mut Builder) {
-    for dep in dependency_names(root) {
-        let mut budget = MAX_PKG_FILES;
-        // The main entry first (it gets the budget), and a fresh `visited` per entry: a file both
-        // `next` and `next/types` reach is importable from either.
-        let mut entries = package_entries(root, &dep);
-        entries.sort_by_key(|(module, _)| module.len());
-        // Each file is parsed once per package, however many entry points reach it.
-        let mut parsed: Parsed = Parsed::new();
-        for (module, file) in entries {
-            let mut visited: HashSet<PathBuf> = HashSet::new();
-            scan_declaration(&file, Some(&module), 0, &mut budget, &mut visited, &mut parsed, b);
+/// A package being scanned.
+struct PkgScan {
+    part: PkgPart,
+    module_ids: HashMap<String, u16>,
+    seen: HashSet<(u16, String, u8)>,
+    /// The package's folder and the project's `node_modules`.
+    dir: PathBuf,
+    node_modules: PathBuf,
+    /// Not a real install: every file read is stamped (see `PkgPart::stamps`).
+    volatile: bool,
+    /// Declaration files it may still read.
+    budget: usize,
+    /// Each file is parsed once per package, however many entry points reach it.
+    parsed: HashMap<PathBuf, Rc<Scan>>,
+}
+
+impl PkgScan {
+    fn add(&mut self, module: &str, name: &str, flags: u8) {
+        let id = match self.module_ids.get(module) {
+            Some(&id) => id,
+            None => {
+                let Ok(id) = u16::try_from(self.part.modules.len()) else { return };
+                self.part.modules.push(module.to_string());
+                self.module_ids.insert(module.to_string(), id);
+                id
+            }
+        };
+        if self.seen.insert((id, name.to_string(), flags & DEFAULT)) {
+            self.part.exports.push(name, flags, id);
         }
+    }
+
+    fn note(&mut self, path: PathBuf) {
+        if !self.part.stamps.iter().any(|(p, _)| *p == path) {
+            let stamp = stamp(&path);
+            self.part.stamps.push((path, stamp));
+        }
+    }
+
+    /// The scan of a declaration file, `None` when it cannot be read or the budget is spent.
+    fn parse(&mut self, file: &Path) -> Option<Rc<Scan>> {
+        if let Some(found) = self.parsed.get(file) {
+            return Some(found.clone());
+        }
+        if self.budget == 0 {
+            return None;
+        }
+        let found = Rc::new(parse_declaration(file)?);
+        self.budget -= 1;
+        self.part.files += 1;
+        if self.volatile || !file.starts_with(&self.dir) {
+            self.note(file.to_path_buf());
+        }
+        self.parsed.insert(file.to_path_buf(), found.clone());
+        Some(found)
     }
 }
 
-/// Declaration files already scanned in the package being indexed.
-type Parsed = std::collections::HashMap<PathBuf, std::rc::Rc<Scan>>;
+/// The `version` of a `package.json`.
+fn package_version(manifest: &Path) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(manifest).ok()?).ok()?;
+    v["version"].as_str().map(str::to_string)
+}
+
+/// Everything the dependency `dep` of the project at `root` exports, through all its entry points.
+fn scan_package(root: &Path, dep: &str) -> PkgPart {
+    let node_modules = root.join("node_modules");
+    let dir = node_modules.join(dep);
+    let manifest = dir.join("package.json");
+    let version = package_version(&manifest);
+    // A real install sits in a `node_modules` folder (through the links of pnpm too) and has a
+    // version; a linked workspace package is rebuilt in place under the same version.
+    let installed =
+        std::fs::canonicalize(&dir).is_ok_and(|real| real.components().any(|c| c.as_os_str() == "node_modules"));
+    let mut s = PkgScan {
+        part: PkgPart { dep: dep.to_string(), ..Default::default() },
+        module_ids: HashMap::new(),
+        seen: HashSet::new(),
+        dir,
+        node_modules,
+        volatile: version.is_none() || !installed,
+        budget: MAX_PKG_FILES,
+        parsed: HashMap::new(),
+    };
+    if s.volatile {
+        s.note(manifest);
+    }
+    // The main entry first (it gets the budget), and a fresh `visited` per entry: a file both
+    // `next` and `next/types` reach is importable from either.
+    let mut entries = package_entries(root, dep);
+    entries.sort_by_key(|(module, _)| module.len());
+    for (module, file) in entries {
+        let mut visited: HashSet<PathBuf> = HashSet::new();
+        scan_declaration(&file, Some(&module), 0, &mut visited, &mut s);
+    }
+    s.part
+}
 
 fn parse_declaration(file: &Path) -> Option<Scan> {
     let meta = std::fs::metadata(file).ok()?;
@@ -687,32 +959,11 @@ fn parse_declaration(file: &Path) -> Option<Scan> {
 
 /// `module` is `None` for a file reached through `/// <reference path>`: it is part of the
 /// compilation but not of the module, so only its `declare module "x"` blocks count.
-fn scan_declaration(
-    file: &Path,
-    module: Option<&str>,
-    depth: usize,
-    budget: &mut usize,
-    visited: &mut HashSet<PathBuf>,
-    parsed: &mut Parsed,
-    b: &mut Builder,
-) {
+fn scan_declaration(file: &Path, module: Option<&str>, depth: usize, visited: &mut HashSet<PathBuf>, s: &mut PkgScan) {
     if depth > MAX_DEPTH || !visited.insert(file.to_path_buf()) {
         return;
     }
-    let found = match parsed.get(file) {
-        Some(f) => f.clone(),
-        None => {
-            if *budget == 0 {
-                return;
-            }
-            let Some(f) = parse_declaration(file) else { return };
-            *budget -= 1;
-            b.files += 1;
-            let f = std::rc::Rc::new(f);
-            parsed.insert(file.to_path_buf(), f.clone());
-            f
-        }
-    };
+    let Some(found) = s.parse(file) else { return };
     for (name, flags, ambient) in &found.exports {
         let target = match ambient.as_deref() {
             None => module,
@@ -723,8 +974,7 @@ fn scan_declaration(
             Some(named) => Some(named),
         };
         if let Some(target) = target {
-            let src = b.source(Source::Module(target.to_string()));
-            b.add(name, *flags, src);
+            s.add(target, name, *flags);
         }
     }
     let dir = file.parent().unwrap_or(Path::new("."));
@@ -732,13 +982,20 @@ fn scan_declaration(
         // `./x` is a file next to this one; anything else is another package (`.prisma/client`).
         let relative = spec.starts_with("./") || spec.starts_with("../");
         let next = if relative { resolve_dts(dir, spec) } else { resolve_bare(dir, spec) };
-        if let Some(next) = next {
-            scan_declaration(&next, module, depth + 1, budget, visited, parsed, b);
+        match next {
+            Some(next) => scan_declaration(&next, module, depth + 1, visited, s),
+            // Not there (yet): when that package appears, this one is scanned again.
+            None if !relative => {
+                if let Some((pkg, _)) = split_bare(spec) {
+                    s.note(s.node_modules.join(pkg));
+                }
+            }
+            None => {}
         }
     }
     for spec in &found.refs {
         if let Some(next) = resolve_dts(dir, spec) {
-            scan_declaration(&next, None, depth + 1, budget, visited, parsed, b);
+            scan_declaration(&next, None, depth + 1, visited, s);
         }
     }
 }
@@ -1079,6 +1336,9 @@ mod tests {
         let t = std::time::Instant::now();
         let idx = build(&root);
         let took = t.elapsed();
+        let t = std::time::Instant::now();
+        let again = build_from(&root, Some(&idx));
+        println!("update with nothing changed: {:?}, {} files read", t.elapsed(), again.files_scanned);
         let bytes = idx.names.len() + idx.entries.len() * std::mem::size_of::<Entry>();
         println!(
             "{}: {} names, {} sources, {} files, {took:?}, ~{} KB",
@@ -1103,6 +1363,95 @@ mod tests {
                 hits.iter().map(|h| format!("{} <{}>", h.name, idx.specifier(&h.source, &from))).collect();
             println!("  search {q:<8} in {took:?}: {shown:?}");
         }
+    }
+
+    /// Every entry of an index, in its order.
+    fn dump(idx: &Index) -> Vec<(String, Source, u8)> {
+        idx.entries.iter().map(|e| (idx.name(e).to_string(), idx.sources[e.source as usize].clone(), e.flags)).collect()
+    }
+
+    /// A project on disk: two source files, and a package that re-exports a generated one.
+    fn fixture(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("lumen-importidx-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let nm = d.join("node_modules");
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        std::fs::create_dir_all(nm.join("pkg")).unwrap();
+        std::fs::create_dir_all(nm.join(".gen/client")).unwrap();
+        std::fs::write(d.join("package.json"), r#"{"dependencies":{"pkg":"1"}}"#).unwrap();
+        std::fs::write(d.join("src/a.ts"), "import { pkgThing } from 'pkg'\nexport const alpha = 1;\n").unwrap();
+        std::fs::write(d.join("src/b.ts"), "export function beta() {}\n").unwrap();
+        std::fs::write(nm.join("pkg/package.json"), r#"{"version":"1.0.0","types":"index.d.ts"}"#).unwrap();
+        std::fs::write(
+            nm.join("pkg/index.d.ts"),
+            "export declare function pkgThing(): void;\nexport * from \".gen/client\";\nexport * from \"absent\";\n",
+        )
+        .unwrap();
+        std::fs::write(nm.join(".gen/client/index.d.ts"), "export class GenOne {}\n").unwrap();
+        d
+    }
+
+    #[test]
+    fn an_update_reads_only_what_changed() {
+        let d = fixture("update");
+        let nm = d.join("node_modules");
+        let idx = build(&d);
+        assert_eq!((idx.files_scanned, idx.packages_scanned), (4, 1), "two sources, two declaration files");
+        let found = |i: &Index, n: &str| !i.exact(n).is_empty();
+        assert!(found(&idx, "alpha") && found(&idx, "beta") && found(&idx, "pkgThing") && found(&idx, "GenOne"));
+
+        // Nothing changed: nothing is read again.
+        let same = build_from(&d, Some(&idx));
+        assert_eq!((same.files_scanned, same.packages_scanned), (0, 0));
+        assert_eq!(dump(&same), dump(&idx));
+
+        // One file edited, one created, one removed: two files are read, no package.
+        std::fs::write(d.join("src/a.ts"), "export const alphaRenamed = 1;\n").unwrap();
+        std::fs::write(d.join("src/c.ts"), "export type Gamma = 1;\n").unwrap();
+        std::fs::remove_file(d.join("src/b.ts")).unwrap();
+        let next = build_from(&d, Some(&same));
+        assert_eq!((next.files_scanned, next.packages_scanned), (2, 0));
+        assert!(!found(&next, "alpha") && !found(&next, "beta"));
+        assert!(found(&next, "alphaRenamed") && found(&next, "Gamma") && found(&next, "pkgThing"));
+        assert_eq!(dump(&next), dump(&build(&d)), "an updated index is what a fresh build makes");
+
+        // A generated file a package re-exports changes under the same version: that package again.
+        std::fs::write(nm.join(".gen/client/index.d.ts"), "export class GenOne {}\nexport class GenTwo {}\n").unwrap();
+        let regen = build_from(&d, Some(&next));
+        assert_eq!((regen.files_scanned, regen.packages_scanned), (2, 1));
+        assert!(found(&regen, "GenTwo"));
+
+        // A package that was re-exported but missing appears: again.
+        std::fs::create_dir_all(nm.join("absent")).unwrap();
+        std::fs::write(nm.join("absent/index.d.ts"), "export declare const wasAbsent: number;\n").unwrap();
+        // (`node_modules` itself changed here, so this is the full path.)
+        let appeared = build_from(&d, Some(&regen));
+        assert!(found(&appeared, "wasAbsent"));
+
+        // `package.json` lists another package: every package is scanned again, no project file.
+        std::fs::create_dir_all(nm.join("other")).unwrap();
+        std::fs::write(nm.join("other/package.json"), r#"{"version":"2.0.0","types":"index.d.ts"}"#).unwrap();
+        std::fs::write(nm.join("other/index.d.ts"), "export declare const otherThing: number;\n").unwrap();
+        std::fs::write(d.join("package.json"), r#"{"dependencies":{"pkg":"1","other":"2"}}"#).unwrap();
+        let full = build_from(&d, Some(&appeared));
+        assert_eq!((full.files_scanned, full.packages_scanned), (4, 2));
+        assert!(found(&full, "otherThing") && found(&full, "pkgThing") && found(&full, "alphaRenamed"));
+        assert_eq!(dump(&full), dump(&build(&d)));
+
+        // An index of another project is no base for this one.
+        let other_root = fixture("update-other");
+        assert_eq!(build_from(&other_root, Some(&full)).packages_scanned, 1);
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::remove_dir_all(&other_root).ok();
+    }
+
+    #[test]
+    fn packed_names_keep_flags_and_groups() {
+        let mut p = Packed::default();
+        p.push("alpha", TYPE, 0);
+        p.push("b", DEFAULT, 3);
+        p.push(&"x".repeat(201), 0, 0);
+        assert_eq!(p.iter().collect::<Vec<_>>(), vec![("alpha", TYPE, 0), ("b", DEFAULT, 3)]);
     }
 
     #[test]
