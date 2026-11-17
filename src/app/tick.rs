@@ -166,7 +166,7 @@ impl App {
         self.tooltip_tick(now, &mut want);
         self.hover_tick(now, &mut want);
         if let Some((since, pos, requested)) = self.hover_probe {
-            let due = since + Duration::from_millis(450);
+            let due = since + crate::app_hover::PROBE_DELAY;
             if !requested {
                 if due <= now {
                     self.hover_probe = Some((since, pos, true));

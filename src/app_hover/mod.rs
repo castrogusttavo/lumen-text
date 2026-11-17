@@ -9,7 +9,9 @@
 //!    [`App::hover_extra_response`] cuts the declaration out of the source file (open buffer or
 //!    disk) and the tip is recomposed in place (scroll position kept);
 //! 3. tips are cached per (document version, anchor range), so moving the pointer inside the same
-//!    symbol never asks again and never blinks.
+//!    symbol never asks again and never blinks;
+//! 4. a request nobody waits for is cancelled (`$/cancelRequest`): the hover when the pointer moved
+//!    on before the answer, the follow-ups when the tip is gone.
 //!
 //! Layout ([`layout`]) is pure text-metrics work done once per (tip, width) and drawn clipped to
 //! the scroll viewport; geometry ([`place`]) keeps the popup inside the editor area.
@@ -57,6 +59,8 @@ const CODE_PAD: i32 = 7;
 const BAR_W: i32 = 12;
 const FOOT_ROW: i32 = 22;
 const HIDE_DELAY: Duration = Duration::from_millis(280);
+/// The pointer rests this long on a symbol before the server is asked.
+pub(crate) const PROBE_DELAY: Duration = Duration::from_millis(300);
 /// Declarations longer than this are cut with a "mais N linhas" line.
 pub const DECL_LINES: usize = 40;
 const CACHE_MAX: usize = 24;
@@ -263,4 +267,9 @@ pub struct HoverCtl {
     drag_bar: Option<f64>,
     drag_sel: Option<SelPt>,
     hot: Option<Hit>,
+    /// The unanswered `textDocument/hover`: (server process id, request id).
+    asked: Option<(u32, i64)>,
+    /// Unanswered follow-ups (definition, type definition...) of the tip numbered `extras_for`.
+    extras: Vec<(u32, i64)>,
+    extras_for: u64,
 }

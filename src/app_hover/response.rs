@@ -193,7 +193,9 @@ impl App {
         let (serial, kind, uri) = (tip.serial, tip.kind, tip.uri.clone());
         let Some((_, li)) = self.hover_server(i) else { return };
         let ask = |app: &mut App, what: HoverWhat, params: Value, method: &str| {
-            app.lsps[li].request(method, params, Pending::HoverExtra { uri: uri.clone(), at: anchor, serial, what });
+            let what = Pending::HoverExtra { uri: uri.clone(), at: anchor, serial, what };
+            let id = app.lsps[li].request(method, params, what);
+            app.hover_extra_asked(li, id);
         };
         if (kind == Kind::Module || (spec.is_some() && self.hover.as_ref().is_some_and(|t| t.extra.module.is_some())))
             && let Some((_, line, col)) = &spec
@@ -440,11 +442,12 @@ impl App {
             let Some((_, li)) = self.hover_server(i) else { return Some(()) };
             let params = self.hover_pos_params(i, ka);
             let (serial, uri) = self.hover.as_ref().map(|t| (t.serial, t.uri.clone()))?;
-            self.lsps[li].request(
+            let id = self.lsps[li].request(
                 "textDocument/hover",
                 params,
                 Pending::HoverExtra { uri, at: a, serial, what: HoverWhat::KeyType },
             );
+            self.hover_extra_asked(li, id);
         }
         Some(())
     }

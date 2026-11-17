@@ -1547,6 +1547,8 @@ impl App {
             return;
         }
         let Some((i, li)) = self.with_server() else { return self.show_diag_hover(at) };
+        // One hover at a time: the previous one, if still unanswered, is of no use any more.
+        self.hover_cancel_request();
         let params = self.pos_params(i, at);
         let uri = self.docs[i].uri().unwrap_or_default();
         if self
@@ -1555,7 +1557,8 @@ impl App {
         {
             return;
         }
-        self.lsps[li].request("textDocument/hover", params, Pending::Hover { uri, at });
+        let id = self.lsps[li].request("textDocument/hover", params, Pending::Hover { uri, at });
+        self.hover_asked(li, id);
     }
 
     pub fn request_hover_at_cursor(&mut self) {
