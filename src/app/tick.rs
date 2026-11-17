@@ -55,23 +55,51 @@ impl App {
             };
         }
 
-        // Inline blame: follows the cursor line, computed after the cursor rests a moment.
+        self.pump_git_status();
+
+        // Inline blame: follows the cursor line, computed on a worker after the cursor rests a moment.
+        let mut blamed = false;
+        while let Ok((p, l, res)) = self.blame_ch.1.try_recv() {
+            if let Some(d) = self.docs.get_mut(self.active)
+                && self.config.git_blame
+                && d.path() == Some(p.as_path())
+                && d.buf.line_col(d.ed.head()).0 == l
+                && !d.buf.is_dirty()
+            {
+                d.blame = res.map(|t| (l, t));
+                blamed = true;
+            }
+        }
         if let Some(d) = self.docs.get_mut(self.active) {
             let (line, _) = d.buf.line_col(d.ed.head());
             if d.blame.as_ref().is_some_and(|(l, _)| *l != line) || d.buf.is_dirty() || !self.config.git_blame {
                 d.blame = None;
             }
+            if d.buf.is_dirty() || !self.config.git_blame {
+                self.blame_asked = None;
+            }
             let tracked = self.config.git_blame && d.git_base.is_some() && !d.buf.is_dirty();
-            if tracked && d.blame.is_none() {
+            let asked = self.blame_asked.as_ref().is_some_and(|(p, l)| *l == line && d.path() == Some(p.as_path()));
+            if tracked && d.blame.is_none() && !asked {
                 match self.blame_for {
                     Some((i, l, since)) if i == self.active && l == line => {
                         let due = since + Duration::from_millis(280);
                         if due <= now {
                             if let Some(p) = d.path().map(Path::to_path_buf) {
-                                d.blame = git::blame_line(&p, line).map(|t| (line, t));
+                                self.blame_asked = Some((p.clone(), line));
+                                if cfg!(test) {
+                                    d.blame = git::blame_line(&p, line).map(|t| (line, t));
+                                    blamed = true;
+                                } else {
+                                    let (tx, wake) = (self.blame_ch.0.clone(), self.wake_fn.clone());
+                                    std::thread::spawn(move || {
+                                        let res = git::blame_line(&p, line);
+                                        let _ = tx.send((p, line, res));
+                                        wake();
+                                    });
+                                }
                             }
                             self.blame_for = None;
-                            self.request_redraw();
                         } else {
                             want(due);
                         }
@@ -82,6 +110,10 @@ impl App {
                     }
                 }
             }
+        }
+
+        if blamed {
+            self.request_redraw();
         }
 
         // Merge-conflict markers, a moment after the text settles.

@@ -207,6 +207,21 @@ pub struct App {
     pub nav_back: Vec<(PathBuf, usize)>,
     pub nav_fwd: Vec<(PathBuf, usize)>,
     pub blame_for: Option<(usize, usize, Instant)>, // (doc, line, since)
+    /// Inline blame runs `git blame` on a worker: answers as (file, line, text).
+    pub blame_ch: (
+        std::sync::mpsc::Sender<(PathBuf, usize, Option<String>)>,
+        std::sync::mpsc::Receiver<(PathBuf, usize, Option<String>)>,
+    ),
+    /// The (file, line) last asked for, in flight or answered: not asked again until it changes.
+    pub blame_asked: Option<(PathBuf, usize)>,
+    /// Background `git status` (see `refresh_git_status_bg`): answers tagged with a generation.
+    pub git_status_ch: (
+        std::sync::mpsc::Sender<(u64, crate::app_git::GitStatusOut)>,
+        std::sync::mpsc::Receiver<(u64, crate::app_git::GitStatusOut)>,
+    ),
+    pub git_status_gen: u64,
+    pub git_status_busy: bool,
+    pub git_status_again: bool,
     pub biome_disabled: bool,
     pub eslint_tx: std::sync::mpsc::Sender<(PathBuf, Result<Vec<crate::eslint::Msg>, String>)>,
     pub eslint_rx: std::sync::mpsc::Receiver<(PathBuf, Result<Vec<crate::eslint::Msg>, String>)>,
@@ -378,6 +393,12 @@ impl App {
             nav_back: Vec::new(),
             nav_fwd: Vec::new(),
             blame_for: None,
+            blame_ch: mpsc::channel(),
+            blame_asked: None,
+            git_status_ch: mpsc::channel(),
+            git_status_gen: 0,
+            git_status_busy: false,
+            git_status_again: false,
             biome_disabled: false,
             eslint_tx: mpsc::channel().0,
             eslint_rx: mpsc::channel().1,

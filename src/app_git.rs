@@ -13,6 +13,34 @@ use std::{
     process::Command,
 };
 
+/// What one status refresh produces (computed on any thread, applied on the UI thread).
+pub struct GitStatusOut {
+    branch: Option<String>,
+    worktree_main: Option<PathBuf>,
+    map: HashMap<PathBuf, char>,
+    /// Multi-root workspace only: the branch of every root.
+    branches: Option<Vec<Option<String>>>,
+}
+
+fn compute_git_status(gr: &Path, root: &Path, extra: &[PathBuf]) -> GitStatusOut {
+    let branch = git::branch(gr);
+    let top = git::toplevel(gr).unwrap_or_else(|| gr.to_path_buf());
+    let worktree_main = crate::worktree::linked_main(&top);
+    let mut map: HashMap<PathBuf, char> = HashMap::new();
+    let primary_top = if gr == root { top } else { git::toplevel(root).unwrap_or_else(|| root.to_path_buf()) };
+    collect_status(root, &primary_top, &mut map);
+    // Multi-root workspace: every other folder has its own repository, status and branch.
+    let mut branches = None;
+    if !extra.is_empty() {
+        for e in extra {
+            let t = git::toplevel(e).unwrap_or_else(|| e.clone());
+            collect_status(e, &t, &mut map);
+        }
+        branches = Some(std::iter::once(root).chain(extra.iter().map(PathBuf::as_path)).map(git::branch).collect());
+    }
+    GitStatusOut { branch, worktree_main, map, branches }
+}
+
 /// Single-letter status for the explorer from a porcelain `XY` pair.
 pub fn badge(xy: &str) -> char {
     let b = xy.as_bytes();
@@ -48,23 +76,60 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 impl App {
     pub fn refresh_git_status(&mut self) {
-        let gr = self.git_root();
-        self.branch = git::branch(&gr);
-        let top = git::toplevel(&gr).unwrap_or_else(|| gr.clone());
-        self.gitbg.worktree_main = crate::worktree::linked_main(&top);
-        let mut map: HashMap<PathBuf, char> = HashMap::new();
-        let primary_top =
-            if gr == self.root { top } else { git::toplevel(&self.root).unwrap_or_else(|| self.root.clone()) };
-        collect_status(&self.root, &primary_top, &mut map);
-        // Multi-root workspace: every other folder has its own repository, status and branch.
-        if !self.ws.extra.is_empty() {
-            for e in &self.ws.extra {
-                let t = git::toplevel(e).unwrap_or_else(|| e.clone());
-                collect_status(e, &t, &mut map);
-            }
-            self.ws.branches = self.roots().iter().map(|r| git::branch(r)).collect();
+        let out = compute_git_status(&self.git_root(), &self.root, &self.ws.extra);
+        // A background answer computed before this one must not overwrite it.
+        self.git_status_gen += 1;
+        self.apply_git_status(out);
+    }
+
+    fn apply_git_status(&mut self, out: GitStatusOut) {
+        self.branch = out.branch;
+        self.gitbg.worktree_main = out.worktree_main;
+        if let Some(b) = out.branches {
+            self.ws.branches = b;
         }
-        self.git_status = map;
+        self.git_status = out.map;
+    }
+
+    /// `refresh_git_status` on a worker thread, for the automatic refreshes (save, file-system
+    /// events, `.git` changes): the three or more `git` processes no longer freeze the window.
+    /// Requests made while one is running are coalesced into a single follow-up run.
+    pub fn refresh_git_status_bg(&mut self) {
+        if cfg!(test) {
+            return self.refresh_git_status();
+        }
+        if self.git_status_busy {
+            self.git_status_again = true;
+            return;
+        }
+        self.git_status_busy = true;
+        self.git_status_gen += 1;
+        let generation = self.git_status_gen;
+        let (gr, root, extra) = (self.git_root(), self.root.clone(), self.ws.extra.clone());
+        let (tx, wake) = (self.git_status_ch.0.clone(), self.wake());
+        std::thread::spawn(move || {
+            let out = compute_git_status(&gr, &root, &extra);
+            let _ = tx.send((generation, out));
+            wake();
+        });
+    }
+
+    /// Apply finished background status runs (called from the tick).
+    pub(crate) fn pump_git_status(&mut self) {
+        let mut got = false;
+        while let Ok((generation, out)) = self.git_status_ch.1.try_recv() {
+            got = true;
+            self.git_status_busy = false;
+            if generation == self.git_status_gen {
+                self.apply_git_status(out);
+            }
+        }
+        if got {
+            self.request_redraw();
+            if std::mem::take(&mut self.git_status_again) {
+                self.refresh_git_status_bg();
+            }
+        }
     }
 
     fn current_file(&self) -> Option<PathBuf> {
