@@ -97,14 +97,17 @@ impl App {
         // Editor card: the document draws inside, the border ring goes on top so the
         // rounded corners stay intact.
         let editor = self.layout.editor;
-        let find_ranges: Vec<(usize, usize)> = self.find.as_ref().map(|f| f.matches.clone()).unwrap_or_default();
-        let find_cur = self.find.as_ref().and_then(|f| f.current);
         // Zen mode hides the minimaps for this frame only (each document keeps its own switch).
         let minimaps = self.zen_hide_minimaps();
         busy |= self.draw_split_other(cv, dt);
         crate::perf::lap!("split_other");
         // Inline suggestion: follow the latest keystroke before the document draws its ghost text.
         self.inline_sync();
+        // The find bar's matches are borrowed for the draw, not copied every frame.
+        let (find_ranges, find_cur): (&[(usize, usize)], Option<usize>) = match &self.find {
+            Some(f) => (f.matches.as_slice(), f.current),
+            None => (&[], None),
+        };
         if let Some(d) = self.docs.get_mut(self.active) {
             d.cell_w = self.tx.cell_w;
             busy |= d.draw(
@@ -112,7 +115,7 @@ impl App {
                 &mut self.tx,
                 &self.theme,
                 editor,
-                &DrawOpts { dt, find: &find_ranges, find_cur, focused: true },
+                &DrawOpts { dt, find: find_ranges, find_cur, focused: true },
             );
         } else {
             cv.fill(editor, self.theme.background);
