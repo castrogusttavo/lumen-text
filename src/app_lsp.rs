@@ -24,6 +24,10 @@ const SYNC_DEBOUNCE: Duration = Duration::from_millis(120);
 /// Go soft memory limit. Lean servers stay small; a full-project server must NOT get a limit below its
 /// live heap, or the GC runs flat out and every request crawls, so it only gets a very high ceiling.
 const MEM_LIMIT_LEAN_MIB: u32 = 512;
+/// Lean with auto-import: the index of package exports lives in the heap (~400 MB on a Next.js app).
+/// At 512 MiB the first completion took 8.7 s and later ones 0.22 s; at 768 MiB 5.8 s and 0.03 s,
+/// for the same resident memory once idle (~450 MB).
+const MEM_LIMIT_LEAN_AUTO_MIB: u32 = 768;
 const MEM_LIMIT_FULL_MIB: u32 = 6144;
 
 pub use crate::app_hover::HoverTip;
@@ -169,7 +173,11 @@ impl App {
             &["--lsp", "--stdio"],
             &root,
             mirror.as_deref().unwrap_or(&root),
-            if mirror.is_some() { MEM_LIMIT_LEAN_MIB } else { MEM_LIMIT_FULL_MIB },
+            match (mirror.is_some(), self.auto_import_on()) {
+                (true, true) => MEM_LIMIT_LEAN_AUTO_MIB,
+                (true, false) => MEM_LIMIT_LEAN_MIB,
+                (false, _) => MEM_LIMIT_FULL_MIB,
+            },
             self.wake(),
         ) {
             Ok(mut l) => {
