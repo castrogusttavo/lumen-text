@@ -20,6 +20,12 @@ impl App {
                 self.hv.hide_at = Some(Instant::now() + HIDE_DELAY);
             }
         }
+        // The pointer left the symbol its probe asked about: nobody waits for that answer.
+        if let Some((_, q, true)) = self.hover_probe
+            && p != Some(q)
+        {
+            self.hover_cancel_request();
+        }
         match p {
             Some(p) => {
                 let changed = self.hover_probe.is_none_or(|(_, q, _)| q != p);
@@ -49,6 +55,45 @@ impl App {
                 want(t);
             }
         }
+        // The tip is gone or was replaced (from here or anywhere else): its follow-ups are moot.
+        if !self.hv.extras.is_empty() && self.hover.as_ref().is_none_or(|t| t.serial != self.hv.extras_for) {
+            self.hover_cancel_extras();
+        }
+    }
+
+    /// A `textDocument/hover` was sent to server `li` as request `id` (see `hover_cancel_request`).
+    pub(crate) fn hover_asked(&mut self, li: usize, id: i64) {
+        self.hv.asked = Some((self.lsps[li].pid(), id));
+    }
+
+    /// Cancel the hover request that is still unanswered, on every server it went to; a tip that
+    /// is already up stays.
+    pub(crate) fn hover_cancel_request(&mut self) {
+        if let Some((pid, id)) = self.hv.asked.take()
+            && let Some(l) = self.lsps.iter_mut().find(|l| l.pid() == pid)
+        {
+            l.cancel(id);
+        }
+        self.lspx_cancel_multi(crate::lspmerge::MultiKind::Hover);
+    }
+
+    /// Cancel the unanswered follow-up requests of the hover pipeline.
+    pub(super) fn hover_cancel_extras(&mut self) {
+        for (pid, id) in std::mem::take(&mut self.hv.extras) {
+            if let Some(l) = self.lsps.iter_mut().find(|l| l.pid() == pid) {
+                l.cancel(id);
+            }
+        }
+    }
+
+    /// Follow-up request `id` was sent to server `li` for the tip that is showing.
+    pub(super) fn hover_extra_asked(&mut self, li: usize, id: i64) {
+        let serial = self.hover.as_ref().map_or(0, |t| t.serial);
+        if self.hv.extras_for != serial {
+            self.hover_cancel_extras();
+            self.hv.extras_for = serial;
+        }
+        self.hv.extras.push((self.lsps[li].pid(), id));
     }
 
     /// Mouse moved: true when the popup consumed it (dragging, or the pointer is over it).

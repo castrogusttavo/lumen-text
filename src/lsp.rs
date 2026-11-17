@@ -98,7 +98,10 @@ pub enum Pending {
     Rename,
     /// A request the caller waits for synchronously (`App::lsp_request_wait`); a late answer is dropped.
     Blocking,
-    CodeActions,
+    /// `textDocument/codeAction` for the quick-fix menu; `serial` tells a stale answer.
+    CodeActions {
+        serial: u64,
+    },
     Signature {
         uri: String,
     },
@@ -136,9 +139,12 @@ pub enum Pending {
         first: usize,
         last: usize,
     },
+    /// `codeLens/resolve` of lens `idx` of the list numbered `run` (see `LensRun`).
     ResolveLens {
         uri: String,
         line: usize,
+        idx: usize,
+        run: u64,
     },
     PrepareCalls {
         incoming: bool,

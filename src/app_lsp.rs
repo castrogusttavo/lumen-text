@@ -3,7 +3,7 @@
 
 use crate::{
     app::App,
-    app_overlay::{Action, Item},
+    app_overlay::{Action, Item, Overlay, PickKind},
     buffer::EditKind,
     doc::{Diag, Doc, LspEdit, path_to_uri, uri_to_path},
     fuzzy::fuzzy,
@@ -21,6 +21,9 @@ use std::{
 use winit::keyboard::{Key, NamedKey};
 
 const SYNC_DEBOUNCE: Duration = Duration::from_millis(120);
+/// After an edit only the edited and the active document are checked again at once; the other open
+/// documents of the server wait for this long without edits (each pull type-checks a whole file).
+const PULL_REST_DELAY: Duration = Duration::from_millis(1000);
 /// Go soft memory limit: what the server may keep before the GC works harder, and in practice its
 /// resident size once a file is checked. It must stay well above the live heap or the GC runs
 /// flat out. Measured with tsgo 7.0.2 on a lean mirror holding one file that imports the Prisma
@@ -52,6 +55,105 @@ pub struct Completion {
     pub start: usize,
     /// Length of the prefix the list was fetched for; typing less than this needs a new request.
     pub seed_len: usize,
+}
+
+/// One `Ctrl+.` round. The menu opens with the first items there are and every later answer is
+/// merged into it; `serial` and `key` tell an answer nobody waits for any more.
+#[derive(Default)]
+pub(crate) struct ActionsRun {
+    pub serial: u64,
+    /// (document, its version, selection anchor and head) the actions were asked for; `None` when
+    /// no answer is awaited.
+    pub key: Option<(usize, i32, usize, usize)>,
+    /// The menu of this round is on screen: answers are merged into it.
+    pub opened: bool,
+}
+
+/// A scroll must rest this long before the lenses of the new viewport are resolved.
+const LENS_SETTLE: Duration = Duration::from_millis(150);
+/// At most this many `codeLens/resolve` requests per viewport.
+const LENS_BATCH: usize = 120;
+
+/// The code lenses of one document as last listed by the server, and which were resolved. A lens
+/// needs a `codeLens/resolve` round-trip for its title ("3 references"): only those in (and
+/// around) the viewport are asked, and an edit or a scroll cancels what is still unanswered.
+#[derive(Default)]
+pub(crate) struct LensRun {
+    /// Numbers the list: an answer for an older list is dropped.
+    pub run: u64,
+    /// Document version the list was received at.
+    pub version: i32,
+    /// Declaration text under each lens (parallel to `Doc::lenses`), to keep titles across lists.
+    pub names: Vec<String>,
+    /// Resolved (or asked) since the list arrived.
+    pub done: Vec<bool>,
+    /// Unanswered resolves: (server process id, request id, lens index).
+    pub inflight: Vec<(u32, i64, usize)>,
+    /// Line span the resolves were last decided for, and since when the view shows it.
+    pub span: Option<((usize, usize), Instant)>,
+    /// Nothing left to ask for `span`.
+    pub settled: bool,
+}
+
+/// Text a lens sits on: its range on its first line (UTF-16 columns), trimmed.
+fn lens_name(line: &str, range: &Value) -> String {
+    let units: Vec<u16> = line.encode_utf16().collect();
+    let col = |p: &Value| (p["character"].as_u64().unwrap_or(0) as usize).min(units.len());
+    let a = col(&range["start"]);
+    let b = if range["end"]["line"] == range["start"]["line"] { col(&range["end"]).max(a) } else { units.len() };
+    String::from_utf16_lossy(&units[a..b]).trim().to_string()
+}
+
+/// Give the new lenses the titles the old list had: a lens on the same line over the same text
+/// keeps showing its title (no blink while the server recounts). Several lenses of one line
+/// (references, implementations) match in order.
+fn carry_lens_titles(
+    old: &[crate::doc::Lens],
+    old_names: &[String],
+    new: &mut [crate::doc::Lens],
+    new_names: &[String],
+) {
+    if old.len() != old_names.len() || new.len() != new_names.len() {
+        return;
+    }
+    let mut titles: HashMap<(usize, &str), std::collections::VecDeque<&str>> = HashMap::new();
+    for (l, name) in old.iter().zip(old_names) {
+        // Every lens takes its place in the queue, so the second of a line never gets the first's title.
+        titles.entry((l.line, name.as_str())).or_default().push_back(l.title.as_deref().unwrap_or(""));
+    }
+    for (l, name) in new.iter_mut().zip(new_names) {
+        let kept = titles.get_mut(&(l.line, name.as_str())).and_then(|q| q.pop_front());
+        if l.title.is_none()
+            && let Some(t) = kept.filter(|t| !t.is_empty())
+        {
+            l.title = Some(t.to_string());
+        }
+    }
+}
+
+/// Lenses to resolve for the view showing lines `first..=last`: those not done yet in the viewport
+/// and half a screen around it, nearest the top first, at most `LENS_BATCH`.
+fn lenses_to_resolve(lines: &[usize], done: &[bool], (first, last): (usize, usize)) -> Vec<usize> {
+    let margin = (last.saturating_sub(first) / 2).max(4);
+    let (lo, hi) = (first.saturating_sub(margin), last + margin);
+    let mut idx: Vec<usize> =
+        (0..lines.len()).filter(|&k| !done.get(k).copied().unwrap_or(true) && (lo..=hi).contains(&lines[k])).collect();
+    idx.sort_by_key(|&k| lines[k]);
+    idx.truncate(LENS_BATCH);
+    idx
+}
+
+/// Does `label` start with `prefix_lower` (already lowercased), ignoring case? The prefix is
+/// lowercased once per list, and no lowercase copy of each of the thousands of labels is made.
+fn starts_with_lower(label: &str, prefix_lower: &str) -> bool {
+    let mut l = label.chars().flat_map(char::to_lowercase);
+    prefix_lower.chars().all(|p| l.next() == Some(p))
+}
+
+/// Diagnostics to pull after an edit: of the server's open documents (`open`, server-side URIs),
+/// those in `first` (the edited and the active one) now, the others later.
+fn pull_split(open: Vec<String>, first: &[String]) -> (Vec<String>, Vec<String>) {
+    open.into_iter().partition(|u| first.contains(u))
 }
 
 fn is_ident(c: char) -> bool {
@@ -517,9 +619,8 @@ impl App {
             }
             if let Some(t) = self.docs[i].changed_at {
                 if t + SYNC_DEBOUNCE <= now {
+                    // The pull comes from the mark `send_change` leaves (see `pull_after_edits`).
                     self.send_change(i);
-                    pull.push(li);
-                    pull.extend(self.lspx_open_companions(i));
                 } else {
                     want(t + SYNC_DEBOUNCE);
                 }
@@ -575,6 +676,9 @@ impl App {
                     }
                 }
             }
+            if i == self.active && self.config.code_lens {
+                self.lens_tick(i, li, now, want);
+            }
             // Inlay hints for the visible lines only (debounced), once the text is synced.
             if self.config.inlay_hints_for(self.docs[i].lang) && i == self.active && self.docs[i].changed_at.is_none() {
                 self.inlay_tick(i, li, now, want);
@@ -614,17 +718,162 @@ impl App {
                 want(t);
             }
         }
-        pull.sort_unstable();
-        pull.dedup();
-        for li in pull {
-            self.pull_diagnostics(li);
-        }
+        // The completion request is written first: the server answers in arrival order, and a pull
+        // type-checks the whole file (2 s on one that imports the Prisma client).
         if let Some(trig) = comp {
             if std::env::var_os("LUMEN_DEBUG").is_some() {
                 eprintln!("[lsp] firing completion {trig:?}");
             }
             self.request_completion(trig);
         }
+        pull.sort_unstable();
+        pull.dedup();
+        for &li in &pull {
+            self.pull_diagnostics(li);
+        }
+        self.pull_after_edits(&pull, now, want);
+    }
+
+    /// Diagnostics after edits. Every document whose text was just sent (`send_change`, from the
+    /// debounce or from a `flush` before a request) is pulled now, with the active one; the other
+    /// open documents of its servers follow after `PULL_REST_DELAY` without edits. `whole` are the
+    /// servers this tick already pulled completely.
+    fn pull_after_edits(&mut self, whole: &[usize], now: Instant, want: &mut impl FnMut(Instant)) {
+        for uri in std::mem::take(&mut self.lspx.text_sent) {
+            let Some(i) = self.doc_by_uri(&uri) else { continue };
+            let mut servers = self.lspx_open_companions(i);
+            servers.extend(self.doc_lsp(i).filter(|_| self.docs[i].lsp_open));
+            for li in servers {
+                let pid = self.lsps[li].pid();
+                self.lspx.pull_rest.retain(|r| r.0 != pid);
+                if whole.contains(&li) {
+                    continue;
+                }
+                let mut first = Vec::new();
+                for d in [i, self.active] {
+                    first.extend(self.docs.get(d).into_iter().flat_map(|d| [d.uri(), d.real_uri()]).flatten());
+                }
+                let (first, rest) = pull_split(self.pull_targets(li), &first);
+                for uri in first {
+                    self.pull_uri(li, uri);
+                }
+                if !rest.is_empty() {
+                    self.lspx.pull_rest.push((pid, now + PULL_REST_DELAY, rest));
+                }
+            }
+        }
+        let mut k = 0;
+        while k < self.lspx.pull_rest.len() {
+            let (pid, due, _) = &self.lspx.pull_rest[k];
+            if *due > now {
+                want(*due);
+                k += 1;
+                continue;
+            }
+            let pid = *pid;
+            let (_, _, rest) = self.lspx.pull_rest.remove(k);
+            let Some(li) = self.lsps.iter().position(|l| l.pid() == pid) else { continue };
+            // Documents closed meanwhile are no longer among the server's.
+            let open = self.pull_targets(li);
+            for uri in rest.into_iter().filter(|u| open.contains(u)) {
+                self.pull_uri(li, uri);
+            }
+        }
+    }
+
+    /// Resolve the code lenses the active document shows. An edit cancels the unanswered resolves
+    /// (a new list follows); a scroll cancels them too and, once it rests, asks for the new viewport.
+    fn lens_tick(&mut self, i: usize, li: usize, now: Instant, want: &mut impl FnMut(Instant)) {
+        if self.docs[i].lenses.is_empty() || self.lspx.lens.is_empty() {
+            return;
+        }
+        let Some(uri) = self.docs[i].uri() else { return };
+        let Some(run) = self.lspx.lens.get(&uri) else { return };
+        let d = &self.docs[i];
+        if run.names.len() != d.lenses.len() {
+            return; // the lenses were replaced or cleared by someone else
+        }
+        if d.version != run.version || d.changed_at.is_some() {
+            return self.lens_cancel(&uri);
+        }
+        let span = d.visible_line_span();
+        match run.span {
+            Some((s, _)) if s == span => {}
+            // The first viewport of a new list is asked at once; a scroll has to rest first.
+            first => {
+                let since = if first.is_some() { now } else { now.checked_sub(LENS_SETTLE).unwrap_or(now) };
+                self.lens_cancel(&uri);
+                if let Some(run) = self.lspx.lens.get_mut(&uri) {
+                    run.span = Some((span, since));
+                    run.settled = false;
+                }
+            }
+        }
+        let Some(run) = self.lspx.lens.get_mut(&uri) else { return };
+        let Some((_, since)) = run.span else { return };
+        if run.settled {
+            return;
+        }
+        if since + LENS_SETTLE > now {
+            return want(since + LENS_SETTLE);
+        }
+        run.settled = true;
+        let lines: Vec<usize> = self.docs[i].lenses.iter().map(|l| l.line).collect();
+        let (serial, pid) = (run.run, self.lsps[li].pid());
+        for idx in lenses_to_resolve(&lines, &run.done, span) {
+            run.done[idx] = true;
+            let what = Pending::ResolveLens { uri: uri.clone(), line: lines[idx], idx, run: serial };
+            let id = self.lsps[li].request("codeLens/resolve", self.docs[i].lenses[idx].raw.clone(), what);
+            run.inflight.push((pid, id, idx));
+        }
+    }
+
+    /// Cancel the unanswered `codeLens/resolve` requests of a document; their lenses count as not
+    /// asked, so they are resolved again if they are still on screen.
+    fn lens_cancel(&mut self, uri: &str) {
+        let Some(run) = self.lspx.lens.get_mut(uri) else { return };
+        for (pid, id, idx) in std::mem::take(&mut run.inflight) {
+            let Some(l) = self.lsps.iter_mut().find(|l| l.pid() == pid) else { continue };
+            if l.pending.contains_key(&id) {
+                l.cancel(id);
+                if let Some(d) = run.done.get_mut(idx) {
+                    *d = false;
+                }
+                run.settled = false;
+            }
+        }
+    }
+
+    /// The server listed the code lenses of document `i`.
+    fn on_code_lens(&mut self, i: usize, uri: &str, v: &Value) {
+        let d = &self.docs[i];
+        let mut lenses = Vec::new();
+        let mut names = Vec::new();
+        for it in v.as_array().into_iter().flatten() {
+            let r = &it["range"]["start"];
+            let line = r["line"].as_u64().unwrap_or(0) as usize;
+            names.push(if line < d.buf.line_count() {
+                lens_name(&d.buf.line(line), &it["range"])
+            } else {
+                String::new()
+            });
+            lenses.push(crate::doc::Lens {
+                line,
+                col: r["character"].as_u64().unwrap_or(0) as usize,
+                title: it["command"]["title"].as_str().map(str::to_string),
+                raw: it.clone(),
+            });
+        }
+        // Counts need a resolve round-trip (`lens_tick` asks for the visible ones); until the
+        // answer, a lens that did not move keeps the title it had.
+        let done: Vec<bool> = lenses.iter().map(|l| l.title.is_some()).collect();
+        self.lens_cancel(uri);
+        self.lspx.lens.retain(|u, _| u == uri || self.docs.iter().any(|d| d.uri().as_deref() == Some(u.as_str())));
+        let run = self.lspx.lens.entry(uri.to_string()).or_default();
+        carry_lens_titles(&self.docs[i].lenses, &run.names, &mut lenses, &names);
+        *run = LensRun { run: run.run + 1, version: self.docs[i].version, names, done, ..Default::default() };
+        self.docs[i].lenses = lenses;
+        self.request_redraw();
     }
 
     /// Ask the server for the hints of the visible lines when they are missing, the view scrolled
@@ -704,6 +953,12 @@ impl App {
         }
         d.changed_at = None;
         let Some(uri) = d.uri() else { return };
+        // The servers have new text: `lsp_tick` pulls the diagnostics again (also when this was a
+        // `flush` ahead of the debounce, which used to leave them stale).
+        if !self.lspx.text_sent.contains(&uri) {
+            self.lspx.text_sent.push(uri.clone());
+        }
+        let d = &self.docs[i];
         let params = json!({"textDocument": {"uri": uri, "version": d.version}, "contentChanges": [{"text": d.buf.to_string()}]});
         self.lspx_send_change(i, &params);
         if let Some(li) = li {
@@ -718,23 +973,32 @@ impl App {
         }
     }
 
-    fn pull_diagnostics(&mut self, li: usize) {
-        if self.lsps[li].is_generic() {
-            return self.lspx_pull(li);
+    /// Server-side URIs of the documents open on server `li` whose diagnostics are pulled.
+    fn pull_targets(&self, li: usize) -> Vec<String> {
+        let l = &self.lsps[li];
+        if l.is_generic() {
+            return if l.has_cap("diagnosticProvider") { l.open_uris.iter().cloned().collect() } else { Vec::new() };
         }
-        let root = self.lsps[li].root.clone();
-        for i in 0..self.docs.len() {
-            let d = &self.docs[i];
-            if !d.lsp_open || d.lsp_root.as_ref() != Some(&root) {
-                continue;
-            }
-            let Some(uri) = d.uri() else { continue };
-            self.lsps[li].request_single(
-                format!("diag:{uri}"),
-                "textDocument/diagnostic",
-                json!({"textDocument": {"uri": uri}}),
-                Pending::Diagnostic { uri },
-            );
+        self.docs
+            .iter()
+            .filter(|d| d.lsp_open && d.lsp_root.as_ref() == Some(&l.root))
+            .filter_map(|d| d.uri())
+            .collect()
+    }
+
+    fn pull_uri(&mut self, li: usize, uri: String) {
+        self.lsps[li].request_single(
+            format!("diag:{uri}"),
+            "textDocument/diagnostic",
+            json!({"textDocument": {"uri": uri}}),
+            Pending::Diagnostic { uri },
+        );
+    }
+
+    /// Pull the diagnostics of every document open on server `li`.
+    pub(crate) fn pull_diagnostics(&mut self, li: usize) {
+        for uri in self.pull_targets(li) {
+            self.pull_uri(li, uri);
         }
     }
 
@@ -756,6 +1020,8 @@ impl App {
         for c in self.lspx_did_save(i) {
             self.pull_diagnostics(c);
         }
+        // Every server of the document was just pulled completely: the tick need not do it again.
+        self.lspx.text_sent.retain(|u| *u != uri);
     }
 
     /// Tell the server a document is gone from this URI, without touching server lifetime.
@@ -1042,6 +1308,10 @@ impl App {
             self.comp_inflight = None;
         }
         if let Pending::Multi { kind, serial } = what {
+            // The primary's part of a merged completion is the request `comp_inflight` tracks.
+            if kind == MultiKind::Completion && self.comp_inflight.as_ref().is_some_and(|c| c.0 == li) {
+                self.comp_inflight = None;
+            }
             return self.lspx_on_multi(li, kind, serial, result.unwrap_or(Value::Null));
         }
         if matches!(what, Pending::Highlight { .. } | Pending::LinkedEditing { .. }) {
@@ -1074,8 +1344,8 @@ impl App {
                     eprintln!("[lsp] error response for {what:?}: {e}");
                 }
                 let msg = e["message"].as_str().unwrap_or("error").to_string();
-                if matches!(what, Pending::CodeActions) {
-                    return self.actions_response(Vec::new());
+                if let Pending::CodeActions { serial } = what {
+                    return self.actions_response(serial, Vec::new());
                 }
                 self.sem_range_failed(&what);
                 if !matches!(
@@ -1118,7 +1388,7 @@ impl App {
             }
             Pending::Hover { uri, at } => self.on_hover(&uri, at, &v),
             Pending::HoverExtra { uri, at, serial, what } => self.hover_extra_response(&uri, at, serial, what, &v),
-            Pending::Completion { uri, at } => self.on_completion(&uri, at, &v),
+            Pending::Completion { uri, at } => self.on_completion(&uri, at, v),
             Pending::Definition { kind } => {
                 let locs = lsp::locations(&v);
                 match locs.len() {
@@ -1142,7 +1412,7 @@ impl App {
             }
             Pending::Rename => self.apply_workspace_edit(&v),
             Pending::Blocking | Pending::Warm => {}
-            Pending::CodeActions => self.on_code_actions(li, &v),
+            Pending::CodeActions { serial } => self.on_code_actions(li, serial, &v),
             Pending::Signature { uri } => self.on_signature(&uri, &v),
             what @ (Pending::Symbols { .. } | Pending::SymbolsCache { .. }) => {
                 self.on_symbol_list(what, crate::doc::flatten_symbols(&v))
@@ -1180,42 +1450,16 @@ impl App {
             }
             Pending::CodeLens { uri } => {
                 if let Some(i) = self.doc_by_uri(&uri) {
-                    let mut lenses = Vec::new();
-                    for it in v.as_array().into_iter().flatten() {
-                        let r = &it["range"]["start"];
-                        let title = it["command"]["title"].as_str().map(str::to_string);
-                        lenses.push(crate::doc::Lens {
-                            line: r["line"].as_u64().unwrap_or(0) as usize,
-                            col: r["character"].as_u64().unwrap_or(0) as usize,
-                            title,
-                            raw: it.clone(),
-                        });
-                    }
-                    // Counts need a resolve round-trip; ask for the first batch.
-                    let pending: Vec<(usize, Value)> = lenses
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, l)| l.title.is_none())
-                        .take(120)
-                        .map(|(k, l)| (k, l.raw.clone()))
-                        .collect();
-                    self.docs[i].lenses = lenses;
-                    for (_, raw) in pending {
-                        let line = raw["range"]["start"]["line"].as_u64().unwrap_or(0) as usize;
-                        self.lsps[li].request("codeLens/resolve", raw, Pending::ResolveLens { uri: uri.clone(), line });
-                    }
+                    self.on_code_lens(i, &uri, &v);
                 }
             }
-            Pending::ResolveLens { uri, line } => {
+            Pending::ResolveLens { uri, line, idx, run } => {
                 if let Some(i) = self.doc_by_uri(&uri)
                     && let Some(title) = v["command"]["title"].as_str()
+                    && self.lspx.lens.get(&uri).is_some_and(|r| r.run == run)
+                    && let Some(l) = self.docs[i].lenses.get_mut(idx).filter(|l| l.line == line)
                 {
-                    let c = v["range"]["start"]["character"].as_u64().unwrap_or(0) as usize;
-                    if let Some(l) =
-                        self.docs[i].lenses.iter_mut().find(|l| l.line == line && l.col == c && l.title.is_none())
-                    {
-                        l.title = Some(title.to_string());
-                    }
+                    l.title = Some(title.to_string());
                     self.request_redraw();
                 }
             }
@@ -1317,12 +1561,18 @@ impl App {
             return;
         }
         let Some((i, li)) = self.with_server() else { return self.show_diag_hover(at) };
+        // One hover at a time: the previous one, if still unanswered, is of no use any more.
+        self.hover_cancel_request();
         let params = self.pos_params(i, at);
         let uri = self.docs[i].uri().unwrap_or_default();
-        if self.lspx_request_multi(MultiKind::Hover, i, li, at, "textDocument/hover", params.clone(), "hoverProvider") {
+        if self
+            .lspx_request_multi(MultiKind::Hover, i, li, at, "textDocument/hover", params.clone(), "hoverProvider")
+            .is_some()
+        {
             return;
         }
-        self.lsps[li].request("textDocument/hover", params, Pending::Hover { uri, at });
+        let id = self.lsps[li].request("textDocument/hover", params, Pending::Hover { uri, at });
+        self.hover_asked(li, id);
     }
 
     pub fn request_hover_at_cursor(&mut self) {
@@ -1510,20 +1760,21 @@ impl App {
         let ts_uri = d.uri().unwrap_or_default();
         let real_uri = d.real_uri().unwrap_or_default();
         let from_index = self.import_action_items(i);
-        self.actions_items.clear();
-        self.actions_items.extend(from_index);
+        let serial = self.actions_begin(i);
+        self.actions_items = from_index;
         self.actions_expected = 0;
         if let Some((_, li)) = self.with_server() {
-            self.lsps[li].request("textDocument/codeAction", mk(&ts_uri), Pending::CodeActions);
+            self.lsps[li].request("textDocument/codeAction", mk(&ts_uri), Pending::CodeActions { serial });
             self.actions_expected += 1;
         }
         if let Some(lb) = self.biome_index(i) {
-            self.lsps[lb].request("textDocument/codeAction", mk(&real_uri), Pending::CodeActions);
+            self.lsps[lb].request("textDocument/codeAction", mk(&real_uri), Pending::CodeActions { serial });
             self.actions_expected += 1;
         }
         let params = mk(&real_uri);
-        self.actions_expected += self.lspx_code_actions(i, &params);
+        self.actions_expected += self.lspx_code_actions(i, &params, serial);
         if self.actions_expected == 0 {
+            self.lspx.actions.key = None;
             if !self.actions_items.is_empty() {
                 let items = std::mem::take(&mut self.actions_items);
                 return self.open_code_actions_with(items);
@@ -1532,33 +1783,100 @@ impl App {
                 let items = self.ai_action_items();
                 return self.open_code_actions_with(items);
             }
-            self.say("actions need a language server (none is running for this file)");
+            return self.say("actions need a language server (none is running for this file)");
+        }
+        // The import index already has something: show it now, the servers' answers join the list.
+        if !self.actions_items.is_empty() {
+            self.actions_show();
         }
     }
 
-    fn on_code_actions(&mut self, li: usize, v: &Value) {
-        let server = self.lsps.get(li).filter(|l| l.is_generic()).map(|l| l.name.clone());
-        let items = v.as_array().into_iter().flatten().filter_map(|a| code_action_item(a, server.as_deref())).collect();
-        self.actions_response(items);
+    /// Start a `Ctrl+.` round for document `i`: answers of earlier rounds are stale from here on.
+    fn actions_begin(&mut self, i: usize) -> u64 {
+        let run = &mut self.lspx.actions;
+        run.serial += 1;
+        run.opened = false;
+        run.key = self.docs.get(i).map(|d| (i, d.version, d.ed.sel.anchor, d.ed.sel.head));
+        run.serial
     }
 
-    /// One server answered; when all have, show the combined list.
-    fn actions_response(&mut self, items: Vec<Item>) {
+    /// Is an answer of round `serial` still wanted? Not after a newer round, an edit, a caret move,
+    /// a tab switch, or once the user closed the menu this round had opened.
+    fn actions_live(&self, serial: u64) -> bool {
+        let run = &self.lspx.actions;
+        let Some((i, ver, anchor, head)) = run.key.filter(|_| run.serial == serial) else { return false };
+        let same = self.active == i
+            && self.docs.get(i).is_some_and(|d| d.version == ver && d.ed.sel.anchor == anchor && d.ed.sel.head == head);
+        same && (!run.opened || matches!(&self.overlay, Overlay::Picker(p) if p.kind == PickKind::CodeActions))
+    }
+
+    fn on_code_actions(&mut self, li: usize, serial: u64, v: &Value) {
+        let server = self.lsps.get(li).filter(|l| l.is_generic()).map(|l| l.name.clone());
+        let items = v.as_array().into_iter().flatten().filter_map(|a| code_action_item(a, server.as_deref())).collect();
+        self.actions_response(serial, items);
+    }
+
+    /// One server answered round `serial`: its items join the menu, which opens with the first
+    /// answer that has any. Only when every server answered empty there is nothing to show.
+    fn actions_response(&mut self, serial: u64, items: Vec<Item>) {
+        if !self.actions_live(serial) {
+            if self.lspx.actions.serial == serial {
+                self.lspx.actions.key = None;
+                self.actions_items.clear();
+            }
+            return;
+        }
         self.actions_items.extend(items);
         Self::lspx_dedupe_actions(&mut self.actions_items);
         self.actions_expected = self.actions_expected.saturating_sub(1);
-        if self.actions_expected > 0 {
-            return;
+        let done = self.actions_expected == 0;
+        if self.actions_items.is_empty() {
+            if !done {
+                return;
+            }
+            // A problem under the caret can still go to the agent (the items run the AI commands).
+            if !self.ai_has_diag_at_cursor() {
+                self.lspx.actions.key = None;
+                return self.say("no actions available here");
+            }
         }
-        let mut all = std::mem::take(&mut self.actions_items);
-        // A problem under the caret can also go to the agent (the item runs the AI commands).
+        self.actions_show();
+        if done {
+            self.lspx.actions.key = None;
+            self.actions_items.clear();
+        }
+    }
+
+    /// Put what was collected so far in the quick-fix menu. An open menu is rebuilt in place: the
+    /// typed filter, the selected item and its row on screen stay where they are.
+    fn actions_show(&mut self) {
+        let mut all = self.actions_items.clone();
         if self.ai_has_diag_at_cursor() {
             all.extend(self.ai_action_items());
         }
-        if all.is_empty() {
-            return self.say("no actions available here");
-        }
+        let old = match &mut self.overlay {
+            Overlay::Picker(p) if self.lspx.actions.opened && p.kind == PickKind::CodeActions => {
+                let chosen =
+                    p.filtered.get(p.sel).map(|(k, _)| (p.items[*k].label.clone(), p.items[*k].detail.clone()));
+                Some((std::mem::take(&mut p.field), chosen, p.sel, p.scroll))
+            }
+            _ => None,
+        };
         self.open_code_actions_with(all);
+        self.lspx.actions.opened = true;
+        if let (Some((field, chosen, sel, scroll)), Overlay::Picker(p)) = (old, &mut self.overlay) {
+            p.field = field;
+            p.refilter();
+            let at = chosen
+                .and_then(|c| {
+                    p.filtered.iter().position(|(k, _)| p.items[*k].label == c.0 && p.items[*k].detail == c.1)
+                })
+                .unwrap_or(sel)
+                .min(p.filtered.len().saturating_sub(1));
+            p.scroll = (scroll + at).saturating_sub(sel);
+            p.sel = at;
+        }
+        self.request_redraw();
     }
 
     /// Code actions that arrive without an edit are resolved (or executed) when chosen.
@@ -1765,7 +2083,12 @@ impl App {
         };
         self.comp_t0 = Some(Instant::now());
         let uri = self.docs[i].uri().unwrap_or_default();
-        if self.lspx_request_multi(
+        let mut ws = at;
+        while ws > 0 && self.docs[i].buf.char_at(ws - 1).is_some_and(is_ident) {
+            ws -= 1;
+        }
+        // With companions the request goes to all of them; the primary's part is the one tracked.
+        let multi = self.lspx_request_multi(
             MultiKind::Completion,
             i,
             li,
@@ -1773,24 +2096,24 @@ impl App {
             "textDocument/completion",
             params.clone(),
             "completionProvider",
-        ) {
-            return;
-        }
-        let mut ws = at;
-        while ws > 0 && self.docs[i].buf.char_at(ws - 1).is_some_and(is_ident) {
-            ws -= 1;
-        }
-        let id = self.lsps[li].request("textDocument/completion", params, Pending::Completion { uri: uri.clone(), at });
+        );
+        let id = match multi {
+            Some(id) => id,
+            None => {
+                self.lsps[li].request("textDocument/completion", params, Pending::Completion { uri: uri.clone(), at })
+            }
+        };
         self.comp_inflight = Some((li, id, uri, ws, Instant::now()));
     }
 
-    /// Drop the unanswered completion request (the server stops computing it).
+    /// Drop the unanswered completion request (the servers stop computing it).
     fn cancel_completion(&mut self) {
         if let Some((li, id, ..)) = self.comp_inflight.take()
             && let Some(l) = self.lsps.get_mut(li)
         {
             l.cancel(id);
         }
+        self.lspx_cancel_multi(MultiKind::Completion);
     }
 
     /// True while a completion for the word starting at `ws` of `uri` is still being computed: its
@@ -1801,13 +2124,14 @@ impl App {
             .is_some_and(|(_, _, u, w, t)| u == uri && *w == ws && t.elapsed() < Duration::from_secs(20))
     }
 
-    pub(crate) fn on_completion(&mut self, uri: &str, at: usize, v: &Value) {
+    /// A completion answer. It is taken by value: the items that survive the filter are moved into
+    /// the popup's list (`CItem::raw`), not copied.
+    pub(crate) fn on_completion(&mut self, uri: &str, at: usize, v: Value) {
         let Some(i) = self.doc_by_uri(uri) else { return };
         if i != self.active {
             return;
         }
-        let list = v.get("items").unwrap_or(v);
-        let all = list.as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let all = crate::lspmerge::take_items(v);
         if std::env::var_os("LUMEN_DEBUG").is_some() {
             eprintln!("[lsp] completion n={} in {:?}", all.len(), self.comp_t0.map(|t| t.elapsed()));
         }
@@ -1822,17 +2146,18 @@ impl App {
             start -= 1;
         }
         let prefix = d.buf.slice(start, head);
+        let lower = prefix.to_lowercase();
 
         // Servers return thousands of candidates (every auto-import in the program). Keep only
         // those that can still match what was typed, best first: later keystrokes only narrow it.
-        let mut scored: Vec<(i32, &Value)> = Vec::new();
+        let mut scored: Vec<(i32, Value)> = Vec::new();
         for it in all {
             let Some(label) = it["label"].as_str() else { continue };
             let score = if prefix.is_empty() {
                 0
             } else {
                 match fuzzy(&prefix, label) {
-                    Some((s, _)) => s + if label.to_lowercase().starts_with(&prefix.to_lowercase()) { 40 } else { 0 },
+                    Some((s, _)) => s + if starts_with_lower(label, &lower) { 40 } else { 0 },
                     None => continue,
                 }
             };
@@ -1843,26 +2168,18 @@ impl App {
 
         let mut items: Vec<CItem> = Vec::with_capacity(scored.len());
         for (_, it) in scored {
-            let label = it["label"].as_str().unwrap_or("");
+            let label = it["label"].as_str().unwrap_or("").to_string();
             let te = it.get("textEdit").filter(|t| t.is_object() && t.get("range").is_some());
             let insert = te
                 .and_then(|t| t["newText"].as_str())
                 .or_else(|| it["insertText"].as_str())
-                .unwrap_or(label)
+                .unwrap_or(&label)
                 .to_string();
-            items.push(CItem {
-                label: label.to_string(),
-                detail: it["detail"]
-                    .as_str()
-                    .or_else(|| it["labelDetails"]["description"].as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                insert,
-                kind: it["kind"].as_u64().unwrap_or(0) as u32,
-                sort: it["sortText"].as_str().unwrap_or(label).to_string(),
-                range: te.and_then(parse_edit),
-                raw: it.clone(),
-            });
+            let detail =
+                it["detail"].as_str().or_else(|| it["labelDetails"]["description"].as_str()).unwrap_or("").to_string();
+            let sort = it["sortText"].as_str().unwrap_or(&label).to_string();
+            let (kind, range) = (it["kind"].as_u64().unwrap_or(0) as u32, te.and_then(parse_edit));
+            items.push(CItem { label, detail, insert, kind, sort, range, raw: it });
         }
         // The user's, the project's and the built-in snippets ride along with the server's list.
         items.extend(crate::app_snippets::snippet_citems(&self.root, d.lang));
@@ -1871,7 +2188,8 @@ impl App {
             Completion { items, filtered: Vec::new(), sel: 0, scroll: 0, start, seed_len: prefix.chars().count() };
         self.refilter_completion_into(&mut c);
         self.completion = if c.filtered.is_empty() { None } else { Some(c) };
-        release_memory();
+        // No `release_memory()` here: malloc_trim walks the whole heap, synchronously, right before
+        // the popup is drawn. The periodic trim of `App::tick` returns the answer's memory.
         self.request_redraw();
     }
 
@@ -1879,6 +2197,7 @@ impl App {
         let Some(d) = self.docs.get(self.active) else { return };
         let head = d.ed.head();
         let prefix = if head >= c.start { d.buf.slice(c.start, head) } else { String::new() };
+        let lower = prefix.to_lowercase();
         // Names from the editor's import index follow what is typed (the server's list only narrows).
         c.items.retain(|it| it.raw.get("__import").is_none());
         let extra = {
@@ -1895,7 +2214,7 @@ impl App {
                     return Some((0, i));
                 }
                 let (mut s, _) = fuzzy(&prefix, &it.label)?;
-                if it.label.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                if starts_with_lower(&it.label, &lower) {
                     s += 40;
                 }
                 Some((s, i))
@@ -2312,6 +2631,207 @@ mod lang_tests {
         // Nothing to do, or no title: not listed.
         assert!(code_action_item(&json!({"title": "noop"}), None).is_none());
         assert!(code_action_item(&json!({"command": "X"}), None).is_none());
+    }
+
+    fn act(label: &str) -> Item {
+        Item { label: label.into(), detail: "quickfix".into(), action: Action::WorkspaceEdit(json!({"changes": {}})) }
+    }
+
+    fn menu(app: &App) -> Option<(Vec<String>, usize)> {
+        match &app.overlay {
+            Overlay::Picker(p) if p.kind == PickKind::CodeActions => {
+                Some((p.items.iter().map(|it| it.label.clone()).collect(), p.sel))
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn quick_fix_menu_opens_with_the_first_items_and_merges_later_answers() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        let _g = lock();
+        let dir = tmp("actions-progressive");
+        let mut app = test_app(&dir);
+        let i = app.active;
+
+        // Three servers asked: an empty answer shows nothing, the first items open the menu.
+        let s = app.actions_begin(i);
+        app.actions_expected = 3;
+        app.actions_response(s, Vec::new());
+        assert!(menu(&app).is_none());
+        app.actions_response(s, vec![act("Fix A"), act("Fix B")]);
+        assert_eq!(menu(&app), Some((vec!["Fix A".into(), "Fix B".into()], 0)));
+        // The user moved to the second row; the last answer joins without moving the selection.
+        if let Overlay::Picker(p) = &mut app.overlay {
+            p.sel = 1;
+        }
+        app.actions_response(s, vec![act("Fix B"), act("Fix C")]);
+        assert_eq!(menu(&app), Some((vec!["Fix A".into(), "Fix B".into(), "Fix C".into()], 1)));
+        assert!(app.lspx.actions.key.is_none() && app.actions_items.is_empty());
+
+        // Items known before any answer (the import index) open the menu at once.
+        app.overlay = Overlay::None;
+        let s = app.actions_begin(i);
+        app.actions_expected = 1;
+        app.actions_items = vec![act("Add import")];
+        app.actions_show();
+        assert_eq!(menu(&app), Some((vec!["Add import".into()], 0)));
+        app.actions_response(s, vec![act("Fix A")]);
+        assert_eq!(menu(&app), Some((vec!["Add import".into(), "Fix A".into()], 0)));
+
+        // Everyone answered empty: the message, no menu.
+        app.overlay = Overlay::None;
+        app.status = None;
+        let s = app.actions_begin(i);
+        app.actions_expected = 2;
+        app.actions_response(s, Vec::new());
+        assert!(app.status.is_none());
+        app.actions_response(s, Vec::new());
+        assert!(menu(&app).is_none());
+        assert_eq!(app.status.as_ref().map(|m| m.0.as_str()), Some("no actions available here"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn after_an_edit_the_edited_and_active_documents_are_pulled_first() {
+        let open = vec!["file:///a.ts".to_string(), "file:///b.ts".to_string(), "file:///c.ts".to_string()];
+        let first =
+            ["file:///c.ts".to_string(), "file:///a.ts".to_string(), "file:///not-on-this-server.ts".to_string()];
+        let (now, later) = pull_split(open.clone(), &first);
+        assert_eq!(now, vec!["file:///a.ts", "file:///c.ts"]);
+        assert_eq!(later, vec!["file:///b.ts"]);
+        let (now, later) = pull_split(open, &[]);
+        assert!(now.is_empty() && later.len() == 3);
+    }
+
+    fn lens(line: usize, title: Option<&str>) -> crate::doc::Lens {
+        crate::doc::Lens { line, col: 0, title: title.map(str::to_string), raw: Value::Null }
+    }
+
+    #[test]
+    fn only_lenses_near_the_viewport_are_resolved() {
+        // One lens every 10 lines of a 2000-line file; the view shows lines 400..=440.
+        let lines: Vec<usize> = (0..200).map(|k| k * 10).collect();
+        let mut done = vec![false; lines.len()];
+        let ask = lenses_to_resolve(&lines, &done, (400, 440));
+        let asked: Vec<usize> = ask.iter().map(|&k| lines[k]).collect();
+        assert_eq!(asked, vec![380, 390, 400, 410, 420, 430, 440, 450, 460]);
+        // What was asked is not asked again; scrolling a little only adds the new lines.
+        for k in ask {
+            done[k] = true;
+        }
+        assert!(lenses_to_resolve(&lines, &done, (400, 440)).is_empty());
+        let more: Vec<usize> = lenses_to_resolve(&lines, &done, (420, 460)).iter().map(|&k| lines[k]).collect();
+        assert_eq!(more, vec![470, 480]);
+        // A viewport full of lenses is capped.
+        let dense: Vec<usize> = (0..1000).collect();
+        assert_eq!(lenses_to_resolve(&dense, &vec![false; 1000], (0, 999)).len(), LENS_BATCH);
+    }
+
+    #[test]
+    fn a_lens_keeps_its_title_while_line_and_text_are_the_same() {
+        let range = |a: u64, b: u64| json!({"start": {"line": 3, "character": a}, "end": {"line": 3, "character": b}});
+        assert_eq!(lens_name("export function soma(a: number) {", &range(16, 20)), "soma");
+        // UTF-16 columns, and a range that runs past the line or onto the next ones.
+        assert_eq!(lens_name("const 😀x = 1", &range(8, 9)), "x");
+        assert_eq!(lens_name("ab", &range(1, 40)), "b");
+        let multi = json!({"start": {"line": 3, "character": 6}, "end": {"line": 9, "character": 1}});
+        assert_eq!(lens_name("class Repo {", &multi), "Repo {");
+
+        let old = [lens(3, Some("2 references")), lens(3, Some("1 implementation")), lens(8, Some("5 references"))];
+        let old_names: Vec<String> = ["Repo", "Repo", "find"].map(String::from).to_vec();
+        // Same lines and names: titles stay. A renamed symbol or a moved line starts empty.
+        let mut new = [lens(3, None), lens(3, None), lens(8, None), lens(12, None)];
+        let names: Vec<String> = ["Repo", "Repo", "search", "find"].map(String::from).to_vec();
+        carry_lens_titles(&old, &old_names, &mut new, &names);
+        let titles: Vec<Option<&str>> = new.iter().map(|l| l.title.as_deref()).collect();
+        assert_eq!(titles, vec![Some("2 references"), Some("1 implementation"), None, None]);
+        // A title the server already sent is not replaced.
+        let mut new = [lens(3, Some("9 references"))];
+        carry_lens_titles(&old, &old_names, &mut new, &["Repo".to_string()]);
+        assert_eq!(new[0].title.as_deref(), Some("9 references"));
+    }
+
+    #[test]
+    fn prefix_match_ignores_case_without_lowercasing_each_label() {
+        for (label, prefix) in
+            [("useState", "uses"), ("USE_STATE", "use_"), ("Ünïcode", "ünï"), ("İstanbul", "i\u{307}s")]
+        {
+            assert!(starts_with_lower(label, prefix), "{label} / {prefix}");
+            assert!(label.to_lowercase().starts_with(prefix));
+        }
+        for (label, prefix) in [("useState", "state"), ("us", "use"), ("", "a")] {
+            assert!(!starts_with_lower(label, prefix), "{label} / {prefix}");
+            assert!(!label.to_lowercase().starts_with(prefix));
+        }
+        assert!(starts_with_lower("anything", "") && starts_with_lower("", ""));
+    }
+
+    #[test]
+    fn a_completion_answer_is_filtered_ranked_and_its_items_kept_whole() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        let _g = lock();
+        let dir = tmp("completion-answer");
+        let mut app = test_app(&dir);
+        let i = app.active;
+        let uri = app.docs[i].uri().expect("the seed file has a URI");
+        // "se|ed": the word being completed is "se".
+        let d = &mut app.docs[i];
+        d.ed.click(&mut d.buf, 2, false);
+        let answer = json!({"isIncomplete": false, "items": [
+            {"label": "xsxxe", "data": {"n": 1}},
+            {"label": "zzz"},
+            {"label": "SEcond", "data": {"n": 2}, "additionalTextEdits": [{"newText": "import x;\n",
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}}]},
+        ]});
+        app.on_completion(&uri, 2, answer);
+        let c = app.completion.as_ref().expect("the popup");
+        let shown: Vec<&str> = c.filtered.iter().map(|&k| c.items[k].label.as_str()).collect();
+        assert_eq!(shown.first(), Some(&"SEcond"), "a case-insensitive prefix match ranks first: {shown:?}");
+        assert!(shown.contains(&"xsxxe") && !shown.contains(&"zzz"), "{shown:?}");
+        assert!((c.start, c.seed_len) == (0, 2));
+        // The raw item (what resolve and the import edits need) is the server's, untouched.
+        let k = c.items.iter().position(|it| it.label == "SEcond").unwrap();
+        assert_eq!(c.items[k].raw["data"]["n"], 2);
+        assert_eq!(parse_edits(&c.items[k].raw["additionalTextEdits"]).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_quick_fix_answers_are_dropped() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        let _g = lock();
+        let dir = tmp("actions-stale");
+        let mut app = test_app(&dir);
+        let i = app.active;
+
+        // Asked again: the answer of the first round is not shown.
+        let old = app.actions_begin(i);
+        let new = app.actions_begin(i);
+        app.actions_expected = 1;
+        app.actions_response(old, vec![act("Old")]);
+        assert!(menu(&app).is_none());
+        assert_eq!(app.actions_expected, 1, "a stale answer does not count for the new round");
+        app.actions_response(new, vec![act("New")]);
+        assert_eq!(menu(&app).map(|m| m.0), Some(vec!["New".to_string()]));
+
+        // The user closed the menu while a server was still working.
+        let s = app.actions_begin(i);
+        app.actions_expected = 2;
+        app.actions_response(s, vec![act("Fix A")]);
+        assert!(menu(&app).is_some());
+        app.overlay = Overlay::None;
+        app.actions_response(s, vec![act("Fix B")]);
+        assert!(menu(&app).is_none(), "a closed menu must not come back");
+
+        // The caret moved before the first answer.
+        let s = app.actions_begin(i);
+        app.actions_expected = 1;
+        let d = &mut app.docs[i];
+        d.ed.click(&mut d.buf, 2, false);
+        app.actions_response(s, vec![act("Fix A")]);
+        assert!(menu(&app).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
