@@ -104,8 +104,9 @@ impl App {
                 continue;
             }
             d.conflicts_due = None;
-            let text = d.buf.to_string();
-            d.conflicts = if text.contains("<<<<<<<") { crate::gitx::parse_conflicts(&text) } else { Vec::new() };
+            // The rope is searched piece by piece; the text is only copied when there is a marker.
+            let has_marker = crate::gitx::chunks_contain(d.buf.snapshot().chunks(), "<<<<<<<");
+            d.conflicts = if has_marker { crate::gitx::parse_conflicts(&d.buf.to_string()) } else { Vec::new() };
         }
 
         // ESLint on a worker thread, a moment after typing stops.
