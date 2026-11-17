@@ -72,7 +72,9 @@ impl Default for Limits {
     fn default() -> Self {
         Limits {
             stream_above: 256 * 1024,
-            max_value: 4 * 1024 * 1024,
+            // tsgo answers a one-letter completion with auto-imports in ~3.5 MB on a big app; at 4 MB
+            // a slightly larger list was dropped and no popup appeared.
+            max_value: 16 * 1024 * 1024,
             max_symbols: 50_000,
             symbol_levels: 3,
             max_token_ints: 4_000_000,
