@@ -345,6 +345,7 @@ impl App {
     }
 
     pub fn restart_lsp(&mut self) {
+        self.comp_inflight = None;
         self.lspx_restart_all();
         for l in &mut self.lsps {
             crate::doc::unregister_mirror(&l.root);
@@ -1008,6 +1009,9 @@ impl App {
     }
 
     fn on_response(&mut self, li: usize, what: Pending, result: Result<Value, Value>) {
+        if matches!(what, Pending::Completion { .. }) {
+            self.comp_inflight = None;
+        }
         if let Pending::Multi { kind, serial } = what {
             return self.lspx_on_multi(li, kind, serial, result.unwrap_or(Value::Null));
         }
@@ -1051,6 +1055,7 @@ impl App {
                         | Pending::Hover { .. }
                         | Pending::HoverExtra { .. }
                         | Pending::Completion { .. }
+                        | Pending::Warm
                         | Pending::Signature { .. }
                         | Pending::SymbolsCache { .. }
                         | Pending::WorkspaceSymbols { .. }
@@ -1440,18 +1445,17 @@ impl App {
         self.open_symbols_with(items);
     }
 
-    /// tsgo builds its auto-import index on the first code action / completion (2-11 s on a big
-    /// project). Ask for a throwaway one right after the first file opens so the user's first
-    /// `Ctrl+.` finds it ready. Only when auto-import is on and only once per server.
+    /// tsgo builds its auto-import index on the first completion with auto-imports (6-12 s and
+    /// ~1 GB peak on a big project; a code action does not build it). Ask for a throwaway completion
+    /// right after the first file opens so the first real one finds it ready. Only when auto-import
+    /// is on and only once per server.
     fn warm_auto_import(&mut self, li: usize, uri: Value) {
         if !self.auto_import_on() || self.lsps[li].name != "tsgo" || self.lsps[li].warmed {
             return;
         }
         self.lsps[li].warmed = true;
-        let range = json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}});
-        let diag = json!({"range": range.clone(), "message": "Cannot find name 'lumenWarmUp'.", "code": 2304, "severity": 1, "source": "ts"});
-        let params = json!({"textDocument": {"uri": uri}, "range": range, "context": {"diagnostics": [diag]}});
-        self.lsps[li].request("textDocument/codeAction", params, Pending::Warm);
+        let params = json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 0}, "context": {"triggerKind": 1}});
+        self.lsps[li].request("textDocument/completion", params, Pending::Warm);
     }
 
     pub fn code_actions(&mut self) {
@@ -1717,6 +1721,7 @@ impl App {
             self.snippet_completion(true);
             return;
         };
+        self.cancel_completion();
         let at = self.docs[i].ed.head();
         let mut params = self.pos_params(i, at);
         params["context"] = match trigger {
@@ -1736,7 +1741,29 @@ impl App {
         ) {
             return;
         }
-        self.lsps[li].request("textDocument/completion", params, Pending::Completion { uri, at });
+        let mut ws = at;
+        while ws > 0 && self.docs[i].buf.char_at(ws - 1).is_some_and(is_ident) {
+            ws -= 1;
+        }
+        let id = self.lsps[li].request("textDocument/completion", params, Pending::Completion { uri: uri.clone(), at });
+        self.comp_inflight = Some((li, id, uri, ws, Instant::now()));
+    }
+
+    /// Drop the unanswered completion request (the server stops computing it).
+    fn cancel_completion(&mut self) {
+        if let Some((li, id, ..)) = self.comp_inflight.take()
+            && let Some(l) = self.lsps.get_mut(li)
+        {
+            l.cancel(id);
+        }
+    }
+
+    /// True while a completion for the word starting at `ws` of `uri` is still being computed: its
+    /// answer is filtered against whatever was typed meanwhile, so asking again only loads the server.
+    fn completion_inflight_for(&self, uri: &str, ws: usize) -> bool {
+        self.comp_inflight
+            .as_ref()
+            .is_some_and(|(_, _, u, w, t)| u == uri && *w == ws && t.elapsed() < Duration::from_secs(20))
     }
 
     pub(crate) fn on_completion(&mut self, uri: &str, at: usize, v: &Value) {
@@ -1886,7 +1913,9 @@ impl App {
                 while ws > 0 && d.buf.char_at(ws - 1).is_some_and(is_ident) {
                     ws -= 1;
                 }
-                if !d.buf.char_at(ws).is_some_and(|c| c.is_ascii_digit()) {
+                let waiting = d.uri().is_some_and(|u| self.completion_inflight_for(&u, ws));
+                // Keep the first deadline: re-arming on every key starved fast typists of a request.
+                if !d.buf.char_at(ws).is_some_and(|c| c.is_ascii_digit()) && !waiting && self.comp_due.is_none() {
                     self.comp_due = Some((Instant::now() + Duration::from_millis(90), None));
                 }
             }

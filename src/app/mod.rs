@@ -158,6 +158,8 @@ pub struct App {
     pub completion: Option<crate::app_lsp::Completion>,
     pub comp_due: Option<(Instant, Option<char>)>,
     pub comp_t0: Option<Instant>,
+    /// Completion request still unanswered: (server, request id, document uri, word start, sent at).
+    pub comp_inflight: Option<(usize, i64, String, usize, Instant)>,
     pub file_index: Option<Vec<PathBuf>>,
     pub panel: Panel,
     /// The bottom panel's terminals (tabs, split, the one with the keyboard).
@@ -341,6 +343,7 @@ impl App {
             completion: None,
             comp_due: None,
             comp_t0: None,
+            comp_inflight: None,
             file_index: None,
             panel: Panel::new(),
             terms: Default::default(),
