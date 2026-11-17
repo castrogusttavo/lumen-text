@@ -20,7 +20,7 @@ const MAX_ITEMS: usize = 40;
 /// Typing less than this offers nothing from the index (too many names match one letter).
 const MIN_PREFIX: usize = 2;
 /// A change on disk updates the index this long after the last one (only what changed is read
-/// again, see `importidx::build_from`).
+/// again, and packages come from the cache on disk, see `importidx::build_from`).
 const REBUILD_AFTER: Duration = Duration::from_secs(3);
 
 /// State of the import index of the open project.
@@ -99,7 +99,7 @@ impl App {
         let old = self.import_index().cloned();
         std::thread::spawn(move || {
             let t = Instant::now();
-            let idx = importidx::build_from(&root, old.as_deref());
+            let idx = importidx::build_from(&root, old.as_deref(), Some(&importidx::cache_file(&root)));
             drop(old);
             let _ = tx.send((root, idx, t.elapsed()));
             wake();

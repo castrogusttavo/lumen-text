@@ -11,7 +11,9 @@
 //! statement is written by the editor (see [`import_edit`]).
 //!
 //! The index keeps what it was made from, piece by piece (one per project file, one per package,
-//! see [`Parts`]): after a save only the files that changed are read again ([`build_from`]).
+//! see [`Parts`]): after a save only the files that changed are read again ([`build_from`]). The
+//! package pieces are also kept on disk between sessions (see [`cache_file`]), so opening a project
+//! reads its own sources and the packages whose version changed.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -508,9 +510,11 @@ struct FilePart {
 }
 
 /// What one package of `package.json` gives the index, through all its entry points.
-#[derive(Default)]
+#[derive(Clone, Default, Debug, PartialEq)]
 struct PkgPart {
     dep: String,
+    /// `version` of its `package.json` ("" without one).
+    version: String,
     /// Files and folders that change without the version changing, as they were when it was
     /// scanned (`None`: not there): declaration files outside the package's folder (the generated
     /// `.prisma/client` that `@prisma/client` re-exports), the package another one re-exports
@@ -571,14 +575,21 @@ fn is_source(p: &Path) -> bool {
 }
 
 /// Build the index of the project at `root` (blocking: call it from a worker thread).
+#[cfg(test)]
 pub fn build(root: &Path) -> Index {
-    build_from(root, None)
+    build_from(root, None, None)
 }
 
-/// [`build`], reading only what changed since `old` (an earlier index of the same project) was
-/// made: project files with another modification time or size, and packages whose generated
-/// files moved. A change of `package.json`, a lockfile or `node_modules` scans every package again.
-pub fn build_from(root: &Path, old: Option<&Index>) -> Index {
+/// Build the index of the project at `root` (blocking: call it from a worker thread), reading as
+/// little as possible.
+///
+/// With `old`, an earlier index of the same project: only project files with another modification
+/// time or size are read, and packages whose generated files moved. A change of `package.json`, a
+/// lockfile or `node_modules` goes through every package again.
+///
+/// With `cache`, the file the packages are kept in between sessions: going through a package
+/// reads it only when its version (or one of its stamped files) is not the cached one.
+pub fn build_from(root: &Path, old: Option<&Index>, cache: Option<&Path>) -> Index {
     let old = old.map(|i| &i.parts).filter(|p| p.root == root);
     let deps = deps_stamps(root);
     let mut files_scanned = 0;
@@ -594,11 +605,152 @@ pub fn build_from(root: &Path, old: Option<&Index>) -> Index {
         Some(p) => {
             p.pkgs.iter().map(|pkg| if pkg.stamps_current() { pkg.clone() } else { fresh(pkg.dep.as_str()) }).collect()
         }
-        None => dependency_names(root).iter().map(|dep| fresh(dep.as_str())).collect(),
+        None => {
+            let mut cached = cache.map(load_cache).unwrap_or_default();
+            let pkgs: Vec<Arc<PkgPart>> = dependency_names(root)
+                .iter()
+                .map(|dep| {
+                    let manifest = root.join("node_modules").join(dep).join("package.json");
+                    match cached.remove(dep.as_str()) {
+                        Some(part)
+                            if part.version == package_version(&manifest).unwrap_or_default()
+                                && part.stamps_current() =>
+                        {
+                            Arc::new(part)
+                        }
+                        _ => fresh(dep.as_str()),
+                    }
+                })
+                .collect();
+            // Written again when a package was read, or one that was cached is no longer listed.
+            if let Some(path) = cache
+                && (packages_scanned > 0 || !cached.is_empty())
+            {
+                save_cache(path, &pkgs);
+            }
+            pkgs
+        }
     };
     let mut idx = assemble(Parts { root: root.to_path_buf(), files, pkgs, deps }, read_aliases(root));
     (idx.files_scanned, idx.packages_scanned) = (files_scanned, packages_scanned);
     idx
+}
+
+// ───────────── disk cache ─────────────
+
+/// Bumped when a scan finds other things in the same files (the cache of an older format is
+/// ignored and written again).
+const CACHE_FORMAT: u32 = 1;
+
+/// The packages of one project as they are kept on disk.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CacheFile {
+    format: u32,
+    /// The editor that wrote it: another version may scan differently.
+    editor: String,
+    pkgs: Vec<CachedPkg>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedPkg {
+    dep: String,
+    version: String,
+    stamps: Vec<(PathBuf, Option<Stamp>)>,
+    modules: Vec<String>,
+    /// The export names, one per line; `flags` and `groups` (index into `modules`) go in step.
+    names: String,
+    flags: Vec<u8>,
+    groups: Vec<u16>,
+    files: usize,
+}
+
+impl CachedPkg {
+    fn of(p: &PkgPart) -> CachedPkg {
+        let mut names = String::with_capacity(p.exports.text.len() + p.exports.items.len());
+        let (mut flags, mut groups) = (Vec::new(), Vec::new());
+        for (name, f, g) in p.exports.iter() {
+            if !flags.is_empty() {
+                names.push('\n');
+            }
+            names.push_str(name);
+            flags.push(f);
+            groups.push(g);
+        }
+        CachedPkg {
+            dep: p.dep.clone(),
+            version: p.version.clone(),
+            stamps: p.stamps.clone(),
+            modules: p.modules.clone(),
+            names,
+            flags,
+            groups,
+            files: p.files,
+        }
+    }
+
+    /// `None` when the entry does not hold together (a damaged file).
+    fn into_part(self) -> Option<PkgPart> {
+        if self.flags.len() != self.groups.len() || (self.flags.is_empty() && !self.names.is_empty()) {
+            return None;
+        }
+        let mut exports = Packed::default();
+        if !self.flags.is_empty() {
+            let mut names = self.names.split('\n');
+            for (&flags, &group) in self.flags.iter().zip(&self.groups) {
+                let name = names.next().filter(|n| !n.is_empty() && n.len() <= 200)?;
+                if group as usize >= self.modules.len() {
+                    return None;
+                }
+                exports.push(name, flags, group);
+            }
+            if names.next().is_some() {
+                return None;
+            }
+        }
+        Some(PkgPart {
+            dep: self.dep,
+            version: self.version,
+            stamps: self.stamps,
+            modules: self.modules,
+            exports,
+            files: self.files,
+        })
+    }
+}
+
+/// Where the packages of the project at `root` are kept between sessions (next to the lean
+/// mirrors, see `lsp::mirror_dir`).
+pub fn cache_file(root: &Path) -> PathBuf {
+    let h =
+        root.to_string_lossy().bytes().fold(0xcbf29ce484222325u64, |a, b| (a ^ b as u64).wrapping_mul(0x100000001b3));
+    let base = crate::paths::cache_home().unwrap_or_else(std::env::temp_dir);
+    base.join("lumen-text/imports").join(format!("{h:016x}.json"))
+}
+
+/// The cached packages by name. A file that is missing, damaged, of another format or written by
+/// another version of the editor gives nothing (and is written again after the scan).
+fn load_cache(path: &Path) -> HashMap<String, PkgPart> {
+    let Some(file) = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<CacheFile>(&b).ok()) else {
+        return HashMap::new();
+    };
+    if file.format != CACHE_FORMAT || file.editor != env!("CARGO_PKG_VERSION") {
+        return HashMap::new();
+    }
+    file.pkgs.into_iter().filter_map(CachedPkg::into_part).map(|p| (p.dep.clone(), p)).collect()
+}
+
+/// Best effort: a cache that cannot be written is a slower start, nothing else.
+fn save_cache(path: &Path, pkgs: &[Arc<PkgPart>]) {
+    let file = CacheFile {
+        format: CACHE_FORMAT,
+        editor: env!("CARGO_PKG_VERSION").to_string(),
+        pkgs: pkgs.iter().map(|p| CachedPkg::of(p.as_ref())).collect(),
+    };
+    let Ok(data) = serde_json::to_vec(&file) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = crate::replace::write_atomic(path, &data);
 }
 
 /// The searchable index of `parts`.
@@ -921,7 +1073,7 @@ fn scan_package(root: &Path, dep: &str) -> PkgPart {
     let installed =
         std::fs::canonicalize(&dir).is_ok_and(|real| real.components().any(|c| c.as_os_str() == "node_modules"));
     let mut s = PkgScan {
-        part: PkgPart { dep: dep.to_string(), ..Default::default() },
+        part: PkgPart { dep: dep.to_string(), version: version.clone().unwrap_or_default(), ..Default::default() },
         module_ids: HashMap::new(),
         seen: HashSet::new(),
         dir,
@@ -1337,7 +1489,7 @@ mod tests {
         let idx = build(&root);
         let took = t.elapsed();
         let t = std::time::Instant::now();
-        let again = build_from(&root, Some(&idx));
+        let again = build_from(&root, Some(&idx), None);
         println!("update with nothing changed: {:?}, {} files read", t.elapsed(), again.files_scanned);
         let bytes = idx.names.len() + idx.entries.len() * std::mem::size_of::<Entry>();
         println!(
@@ -1401,7 +1553,7 @@ mod tests {
         assert!(found(&idx, "alpha") && found(&idx, "beta") && found(&idx, "pkgThing") && found(&idx, "GenOne"));
 
         // Nothing changed: nothing is read again.
-        let same = build_from(&d, Some(&idx));
+        let same = build_from(&d, Some(&idx), None);
         assert_eq!((same.files_scanned, same.packages_scanned), (0, 0));
         assert_eq!(dump(&same), dump(&idx));
 
@@ -1409,7 +1561,7 @@ mod tests {
         std::fs::write(d.join("src/a.ts"), "export const alphaRenamed = 1;\n").unwrap();
         std::fs::write(d.join("src/c.ts"), "export type Gamma = 1;\n").unwrap();
         std::fs::remove_file(d.join("src/b.ts")).unwrap();
-        let next = build_from(&d, Some(&same));
+        let next = build_from(&d, Some(&same), None);
         assert_eq!((next.files_scanned, next.packages_scanned), (2, 0));
         assert!(!found(&next, "alpha") && !found(&next, "beta"));
         assert!(found(&next, "alphaRenamed") && found(&next, "Gamma") && found(&next, "pkgThing"));
@@ -1417,7 +1569,7 @@ mod tests {
 
         // A generated file a package re-exports changes under the same version: that package again.
         std::fs::write(nm.join(".gen/client/index.d.ts"), "export class GenOne {}\nexport class GenTwo {}\n").unwrap();
-        let regen = build_from(&d, Some(&next));
+        let regen = build_from(&d, Some(&next), None);
         assert_eq!((regen.files_scanned, regen.packages_scanned), (2, 1));
         assert!(found(&regen, "GenTwo"));
 
@@ -1425,7 +1577,7 @@ mod tests {
         std::fs::create_dir_all(nm.join("absent")).unwrap();
         std::fs::write(nm.join("absent/index.d.ts"), "export declare const wasAbsent: number;\n").unwrap();
         // (`node_modules` itself changed here, so this is the full path.)
-        let appeared = build_from(&d, Some(&regen));
+        let appeared = build_from(&d, Some(&regen), None);
         assert!(found(&appeared, "wasAbsent"));
 
         // `package.json` lists another package: every package is scanned again, no project file.
@@ -1433,16 +1585,114 @@ mod tests {
         std::fs::write(nm.join("other/package.json"), r#"{"version":"2.0.0","types":"index.d.ts"}"#).unwrap();
         std::fs::write(nm.join("other/index.d.ts"), "export declare const otherThing: number;\n").unwrap();
         std::fs::write(d.join("package.json"), r#"{"dependencies":{"pkg":"1","other":"2"}}"#).unwrap();
-        let full = build_from(&d, Some(&appeared));
+        let full = build_from(&d, Some(&appeared), None);
         assert_eq!((full.files_scanned, full.packages_scanned), (4, 2));
         assert!(found(&full, "otherThing") && found(&full, "pkgThing") && found(&full, "alphaRenamed"));
         assert_eq!(dump(&full), dump(&build(&d)));
 
         // An index of another project is no base for this one.
         let other_root = fixture("update-other");
-        assert_eq!(build_from(&other_root, Some(&full)).packages_scanned, 1);
+        assert_eq!(build_from(&other_root, Some(&full), None).packages_scanned, 1);
         std::fs::remove_dir_all(&d).ok();
         std::fs::remove_dir_all(&other_root).ok();
+    }
+
+    #[test]
+    fn packages_come_back_from_the_disk_cache() {
+        let d = fixture("cache");
+        let nm = d.join("node_modules");
+        let cache = d.join("cache/imports/project.json");
+        let found = |i: &Index, n: &str| !i.exact(n).is_empty();
+        let first = build_from(&d, None, Some(&cache));
+        assert_eq!((first.files_scanned, first.packages_scanned), (4, 1));
+        assert!(cache.is_file());
+
+        // A new session: the project's own files are read, the package is not.
+        let second = build_from(&d, None, Some(&cache));
+        assert_eq!((second.files_scanned, second.packages_scanned), (2, 0));
+        assert_eq!(dump(&second), dump(&first));
+        assert_eq!(second.parts.pkgs, first.parts.pkgs, "a cached package is the scanned one, exactly");
+
+        // Another version of the package: read again.
+        std::fs::write(nm.join("pkg/package.json"), r#"{"version":"1.1.0","types":"index.d.ts"}"#).unwrap();
+        std::fs::write(
+            nm.join("pkg/index.d.ts"),
+            "export declare function pkgNewer(): void;\nexport * from \".gen/client\";\n",
+        )
+        .unwrap();
+        let third = build_from(&d, None, Some(&cache));
+        assert_eq!(third.packages_scanned, 1);
+        assert!(found(&third, "pkgNewer") && !found(&third, "pkgThing") && found(&third, "GenOne"));
+        assert_eq!(build_from(&d, None, Some(&cache)).packages_scanned, 0, "the new version is cached now");
+
+        // Same version, but the generated file it re-exports was written again: read again.
+        std::fs::write(nm.join(".gen/client/index.d.ts"), "export class GenOne {}\nexport class GenTwo {}\n").unwrap();
+        let regen = build_from(&d, None, Some(&cache));
+        assert_eq!(regen.packages_scanned, 1);
+        assert!(found(&regen, "GenTwo"));
+
+        // One more package: only the new one is read.
+        std::fs::create_dir_all(nm.join("other")).unwrap();
+        std::fs::write(nm.join("other/package.json"), r#"{"version":"2.0.0","types":"index.d.ts"}"#).unwrap();
+        std::fs::write(nm.join("other/index.d.ts"), "export declare const otherThing: number;\n").unwrap();
+        std::fs::write(d.join("package.json"), r#"{"dependencies":{"pkg":"1","other":"2"}}"#).unwrap();
+        let both = build_from(&d, None, Some(&cache));
+        assert_eq!(both.packages_scanned, 1);
+        assert!(found(&both, "otherThing") && found(&both, "pkgNewer") && found(&both, "GenTwo"));
+        let want = dump(&build(&d));
+        assert_eq!(dump(&both), want, "with or without the cache: the same index");
+
+        // A damaged file, another format, another editor: ignored, everything is read, never a crash.
+        let good = std::fs::read(&cache).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&good).unwrap();
+        let (mut old_format, mut old_editor) = (json.clone(), json.clone());
+        old_format["format"] = serde_json::json!(CACHE_FORMAT + 1);
+        old_editor["editor"] = serde_json::json!("0.0.1");
+        let bad: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            b"not json at all".to_vec(),
+            good[..good.len() / 2].to_vec(),
+            b"[1, 2, 3]".to_vec(),
+            br#"{"format":1,"editor":"x","pkgs":"nope"}"#.to_vec(),
+            vec![0xff, 0xfe, 0x00, 0x80],
+            serde_json::to_vec(&old_format).unwrap(),
+            serde_json::to_vec(&old_editor).unwrap(),
+        ];
+        for data in bad {
+            std::fs::write(&cache, &data).unwrap();
+            let idx = build_from(&d, None, Some(&cache));
+            assert_eq!(idx.packages_scanned, 2, "cache {:?}", String::from_utf8_lossy(&data));
+            assert_eq!(dump(&idx), want);
+            assert_eq!(build_from(&d, None, Some(&cache)).packages_scanned, 0, "written again, good again");
+        }
+        // One entry that does not hold together: that package is read, the other still comes back.
+        for (field, value) in [
+            ("groups", serde_json::json!([9999])),
+            ("flags", serde_json::json!([])),
+            ("names", serde_json::json!("")),
+            ("modules", serde_json::json!([])),
+        ] {
+            let mut broken = json.clone();
+            broken["pkgs"][0][field] = value;
+            std::fs::write(&cache, serde_json::to_vec(&broken).unwrap()).unwrap();
+            let idx = build_from(&d, None, Some(&cache));
+            assert_eq!(idx.packages_scanned, 1, "broken {field}");
+            assert_eq!(dump(&idx), want);
+        }
+        // A cache that cannot be written (its folder is a file) is not an error either.
+        std::fs::write(d.join("blocked"), "x").unwrap();
+        assert_eq!(dump(&build_from(&d, None, Some(&d.join("blocked/imports.json")))), want);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn cache_files_are_per_project() {
+        let (a, b) = (cache_file(Path::new("/p/one")), cache_file(Path::new("/p/two")));
+        assert_ne!(a, b);
+        assert_eq!(a, cache_file(Path::new("/p/one")));
+        assert!(
+            a.parent().is_some_and(|d| d.ends_with("lumen-text/imports")) && a.extension().is_some_and(|e| e == "json")
+        );
     }
 
     #[test]
