@@ -1210,22 +1210,21 @@ pub fn match_bracket(buf: &Buffer, pos: usize) -> Option<(usize, usize)> {
             let mut depth = 0i32;
             let limit = 50_000usize;
             if forward {
-                let end = buf.len_chars().min(p + limit);
-                for i in p..end {
-                    let ch = buf.char_at(i)?;
+                for (k, ch) in buf.chars_from(p).take(limit).enumerate() {
                     if ch == same {
                         depth += 1;
                     } else if ch == target {
                         depth -= 1;
                         if depth == 0 {
-                            return Some((p, i));
+                            return Some((p, p + k));
                         }
                     }
                 }
             } else {
-                let start = p.saturating_sub(limit);
-                for i in (start..=p).rev() {
-                    let ch = buf.char_at(i)?;
+                let mut it = buf.chars_from(p + 1);
+                let mut i = p + 1;
+                while let Some(ch) = it.prev() {
+                    i -= 1;
                     if ch == same {
                         depth += 1;
                     } else if ch == target {
@@ -1233,6 +1232,9 @@ pub fn match_bracket(buf: &Buffer, pos: usize) -> Option<(usize, usize)> {
                         if depth == 0 {
                             return Some((i, p));
                         }
+                    }
+                    if p - i >= limit {
+                        break;
                     }
                 }
             }

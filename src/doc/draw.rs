@@ -322,9 +322,14 @@ impl Doc {
         let paint_range = |cv: &mut Canvas, a: usize, b: usize, color: Rgba| {
             range_rects(a, b, &mut |r| cv.fill_clip(r, color, body));
         };
-        for (i, &(a, b)) in o.find.iter().enumerate() {
-            let color = if Some(i) == o.find_cur { c.find_match_current } else { c.find_match };
-            paint_range(cv, a, b, color);
+        // Matches are sorted and do not overlap: paint only those inside the visible char span.
+        if let (Some(&(first, _)), Some(&(ls, ll))) = (geo.first(), geo.last()) {
+            let last = ls + ll + 1;
+            let lo = o.find.partition_point(|&(_, b)| b <= first);
+            for (i, &(a, b)) in o.find.iter().enumerate().skip(lo).take_while(|&(_, &(a, _))| a <= last) {
+                let color = if Some(i) == o.find_cur { c.find_match_current } else { c.find_match };
+                paint_range(cv, a, b, color);
+            }
         }
         // Document highlights: the occurrences of the symbol under the caret (read / write from the
         // language server, or the same word when no server offers them). Only what is on screen.
