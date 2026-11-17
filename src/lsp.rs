@@ -770,6 +770,16 @@ pub fn write_mirror(root: &Path, mirror: &Path, includes: &[PathBuf]) -> std::io
     }
     let mut rels: Vec<String> =
         includes.iter().filter_map(|p| p.strip_prefix(root).ok().map(|r| r.to_string_lossy().into_owned())).collect();
+    // Ambient root files (`next-env.d.ts`, `env.d.ts`...) pull in the framework's types: without them
+    // `Metadata` from "next" is not in the program until a file imports it, so no quick fix offers it.
+    if let Ok(rd) = std::fs::read_dir(root) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.ends_with(".d.ts") && e.path().is_file() {
+                rels.push(n);
+            }
+        }
+    }
     rels.sort();
     rels.dedup();
     // `rootDir` must contain the mirror (the included files) AND the real project (imports resolve
@@ -1102,6 +1112,20 @@ mod tests {
             lsp.shutdown();
             std::fs::remove_dir_all(&base).ok();
         }
+    }
+
+    #[test]
+    fn lean_mirror_includes_root_ambient_declarations() {
+        let base = cache_base().join(format!("lumen-mirror-amb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("tsconfig.json"), "{}").unwrap();
+        std::fs::write(root.join("next-env.d.ts"), "/// <reference types=\"next\" />\n").unwrap();
+        write_mirror(&root, &base.join("m"), &[]).unwrap();
+        let cfg: Value = serde_json::from_str(&std::fs::read_to_string(base.join("m/tsconfig.json")).unwrap()).unwrap();
+        assert_eq!(cfg["include"], json!(["next-env.d.ts"]));
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
