@@ -35,6 +35,7 @@ impl App {
         self.term_tick(&mut want);
 
         // Git gutter against the buffer, debounced; the diff itself runs on a worker.
+        self.pump_git_base();
         self.git_marks_tick(now, &mut want);
 
         self.pump_git_status();

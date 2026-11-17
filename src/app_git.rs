@@ -153,6 +153,45 @@ impl App {
         }
     }
 
+    /// Read the HEAD text (the gutter's base) of the open files at `paths` on a worker, one
+    /// request per file; the gutter is recomputed when each answer arrives (`pump_git_base`).
+    pub(crate) fn git_base_fetch(&mut self, paths: Vec<PathBuf>) {
+        for p in paths {
+            if cfg!(test) {
+                let text = git::head_text(&p);
+                self.git_base_apply(&p, text);
+            } else {
+                self.gitbg.base.ask(p, &self.wake_fn);
+            }
+        }
+    }
+
+    /// Apply the HEAD texts the worker read (called from the tick).
+    pub(crate) fn pump_git_base(&mut self) {
+        let mut got = false;
+        while let Some((path, answer)) = self.gitbg.base.take() {
+            match answer {
+                Some(text) => {
+                    self.git_base_apply(&path, text);
+                    got = true;
+                }
+                // Asked for again while it was being read: only the newer answer counts.
+                None => self.git_base_fetch(vec![path]),
+            }
+        }
+        if got {
+            self.request_redraw();
+        }
+    }
+
+    fn git_base_apply(&mut self, path: &Path, text: Option<String>) {
+        // A file is open in one document (`open_path` activates the existing one).
+        if let Some(d) = self.docs.iter_mut().find(|d| d.path() == Some(path)) {
+            d.git_base = text;
+            d.git_stale = true;
+        }
+    }
+
     /// Git gutter: the marks of every document whose text or HEAD base changed, 350 ms after the
     /// last edit of the active one. The diff (a copy of the whole text plus a line diff) runs on a
     /// worker over a snapshot of the rope; its answer is applied only if the document is still
@@ -296,12 +335,7 @@ impl App {
         match run_git(&self.git_root(), &["commit", "-m", &crate::commitmsg::prepare(&self.git_root(), msg)]) {
             Ok(out) => {
                 self.refresh_git_status();
-                for d in &mut self.docs {
-                    if let Some(p) = d.path().map(Path::to_path_buf) {
-                        d.git_base = git::head_text(&p);
-                        d.git_stale = true;
-                    }
-                }
+                self.sync_docs_with_head();
                 self.say(format!("commit: {}", out.lines().next().unwrap_or("ok")));
             }
             Err(e) => self.say(format!("git commit: {e}")),
