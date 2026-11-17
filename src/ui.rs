@@ -3,10 +3,13 @@
 
 use crate::theme::Rgba;
 use cosmic_text::{
-    Align, Attrs, Buffer as TextBuf, Color, Family, FeatureTag, FontFeatures, FontSystem, Metrics, PhysicalGlyph,
-    Renderer, Shaping, SwashCache, SwashContent, SwashImage, UnderlineStyle, Wrap, fontdb,
+    Align, Attrs, AttrsList, Buffer as TextBuf, BufferLine, Color, Family, FeatureTag, FontFeatures, FontSystem,
+    LineEnding, Metrics, PhysicalGlyph, Renderer, Shaping, SwashCache, SwashContent, SwashImage, UnderlineStyle, Wrap,
+    fontdb,
 };
 use std::{
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -697,6 +700,100 @@ impl CodeRows {
         let from = if r == 0 { 0 } else { self.rows[r - 1] };
         self.pieces[from..self.rows[r]].iter().map(|&(a, b, c, f)| (&self.text[a..b], c, f))
     }
+
+    /// What the shaped form of row `r` depends on, besides the fonts: the text, colour and style
+    /// of its pieces, and `advanced` (the shaping mode of the frame).
+    fn row_key(&self, r: usize, advanced: bool) -> u64 {
+        let mut h = DefaultHasher::new();
+        advanced.hash(&mut h);
+        for (text, c, flags) in self.row(r) {
+            text.hash(&mut h);
+            (c.0, c.1, c.2, c.3, flags).hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// True when a rich text made of these rows joined by "\n" has exactly one paragraph per
+    /// row: no row holds a char that ends a paragraph (bidi class B: the control chars
+    /// U+000A, U+000D, U+001C..U+001E, then U+0085 and U+2029). Any control char says no.
+    fn one_paragraph_per_row(&self) -> bool {
+        !self.text.bytes().any(|b| b < 0x20) && (self.text.is_ascii() || !self.text.contains(['\u{85}', '\u{2029}']))
+    }
+}
+
+/// Shaped rows are dropped when more than this many are kept ...
+const ROW_CACHE_MAX: usize = 256;
+/// ... except those used by the last `ROW_CACHE_KEEP` calls of `draw_rows` (a frame makes two
+/// per editor pane: the text and the line numbers).
+const ROW_CACHE_KEEP: u64 = 16;
+
+/// Shaped and laid out rows of code, kept between frames. Shaping is most of what drawing code
+/// costs, and from one frame to the next nearly every row is the same: unchanged while the
+/// caret blinks or one line is typed in, moved up or down while the view scrolls.
+///
+/// A row is a cosmic-text `BufferLine`, which carries its own shaping and layout. It is found
+/// again by [`CodeRows::row_key`] (the row's text, colours and styles, and the shaping mode);
+/// everything else it depends on is in `sig`, and another `sig` empties the cache. To draw, the
+/// lines of the visible rows are moved into a text buffer (which places and paints them as it
+/// places the lines of a rich text) and moved back afterwards.
+#[derive(Default)]
+struct RowCache {
+    /// Lines by row key, with the `draw` that last used them. Several rows of one frame can
+    /// have the same key (blank lines, closing braces), hence a list.
+    lines: HashMap<u64, (Vec<BufferLine>, u64)>,
+    /// Lines held in `lines`.
+    count: usize,
+    /// Number of the current `draw_rows` call.
+    draw: u64,
+    /// Hash of what every kept line was shaped and laid out with: font family, weight, letter
+    /// spacing, features, size, UI scale, the font settings generation and the loaded faces.
+    sig: u64,
+    /// Keys of the rows of the call in progress (reused).
+    keys: Vec<u64>,
+    /// Rows shaped from scratch so far (tests check what the cache saves).
+    #[cfg(test)]
+    built: usize,
+}
+
+impl RowCache {
+    fn clear(&mut self) {
+        self.lines.clear();
+        self.count = 0;
+    }
+
+    /// Keep the cache bounded: past `ROW_CACHE_MAX` lines, drop those not used recently, and if
+    /// that is still too many (paging through a file), all but the ones just drawn.
+    fn sweep(&mut self) {
+        if self.count <= ROW_CACHE_MAX {
+            return;
+        }
+        let oldest = self.draw.saturating_sub(ROW_CACHE_KEEP);
+        self.lines.retain(|_, e| e.1 > oldest);
+        self.count = self.lines.values().map(|e| e.0.len()).sum();
+        if self.count > 2 * ROW_CACHE_MAX {
+            let now = self.draw;
+            self.lines.retain(|_, e| e.1 == now);
+            self.count = self.lines.values().map(|e| e.0.len()).sum();
+        }
+    }
+}
+
+/// Row `r` of `rows` as the line a rich text would hold for it: the text of its pieces, each
+/// piece's attributes over its bytes, left aligned.
+fn row_line(rows: &CodeRows, r: usize, attrs: &Attrs, shaping: Shaping) -> BufferLine {
+    let mut text = String::new();
+    let mut list = AttrsList::new(attrs);
+    for (piece, c, flags) in rows.row(r) {
+        let at = text.len();
+        text.push_str(piece);
+        let a = styled(attrs, c, flags);
+        if a != list.defaults() {
+            list.add_span(at..text.len(), &a);
+        }
+    }
+    let mut line = BufferLine::new(text, LineEnding::default(), list, shaping);
+    line.set_align(Some(Align::Left));
+    line
 }
 
 /// Buffers the editor's draw path refills every frame, kept here (one `TextCtx` serves every
@@ -715,6 +812,9 @@ pub struct TextCtx {
     pub swash: SwashCache,
     buf: TextBuf,
     ui_buf: TextBuf,
+    /// Buffer of [`draw_rows`](Self::draw_rows): empty between calls, its lines live in `rows`.
+    code_buf: TextBuf,
+    rows: RowCache,
     family: Option<String>,
     ui_family: Option<String>,
     pub cell_w: f32,
@@ -1050,11 +1150,14 @@ impl TextCtx {
         let sys_all = family.is_none();
         let buf = TextBuf::new(&mut fonts, Metrics::new(font_size() * scale(), line_h() * scale()));
         let ui_buf = TextBuf::new(&mut fonts, Metrics::new(ui_size() * scale(), ui_line() * scale()));
+        let code_buf = TextBuf::new(&mut fonts, Metrics::new(font_size() * scale(), line_h() * scale()));
         Self {
             fonts,
             swash: SwashCache::new(),
             buf,
             ui_buf,
+            code_buf,
+            rows: RowCache::default(),
             default_family: family.clone(),
             default_ui_family: ui_family.clone(),
             family,
@@ -1161,6 +1264,7 @@ impl TextCtx {
         let db = std::mem::take(self.fonts.db_mut());
         self.fonts = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
         self.swash = SwashCache::new();
+        self.rows.clear();
         self.clear_widths();
         self.italic_ok = None;
         crate::fontcfg::bump();
@@ -1371,11 +1475,102 @@ impl TextCtx {
 
     /// Draw rows of code, the first with its top-left at (x, y), clipped to `clip`. Same pixels
     /// as [`draw_styled`](Self::draw_styled) with a "\n" piece after every row.
+    ///
+    /// Each row is shaped once and kept (see [`RowCache`]): a frame only shapes the rows it did
+    /// not draw before.
     pub fn draw_rows(&mut self, cv: &mut Canvas, x: i32, y: i32, rows: &CodeRows, clip: Rect) {
-        if rows.row_count() == 0 {
+        if rows.row_count() == 0 || clip.w <= 0 || clip.h <= 0 {
             return;
         }
-        self.draw_rows_unshaped(cv, x, y, rows, clip);
+        if !rows.one_paragraph_per_row() {
+            // A row would be split in two lines: only the rich text knows where.
+            return self.draw_rows_unshaped(cv, x, y, rows, clip);
+        }
+        // From here on, the steps of `draw_spans_scaled` for these rows.
+        if !self.fallbacks_loaded && needs_fallback(&rows.text) {
+            self.ensure_fallbacks();
+        }
+        let advanced = needs_fallback(&rows.text) || self.buffer_fancy();
+        let family = self.family.clone();
+        let mut attrs = self.buffer_attrs(&family);
+        let s = scale();
+        let sig = {
+            let mut h = DefaultHasher::new();
+            attrs.hash(&mut h);
+            (self.buf_ligs, &self.buf_feats, s.to_bits(), font_size().to_bits()).hash(&mut h);
+            (crate::fontcfg::generation(), self.fonts.db().len()).hash(&mut h);
+            h.finish()
+        };
+        if advanced {
+            attrs = attrs.font_features(buffer_features(self.buf_ligs, &self.buf_feats));
+        }
+        let shaping = if advanced { Shaping::Advanced } else { Shaping::Basic };
+        if self.rows.sig != sig {
+            self.rows.clear();
+            self.rows.sig = sig;
+        }
+        self.rows.draw += 1;
+        let now = self.rows.draw;
+        let (row_h, height) = (line_h() * s, (clip.h as f32 + 2.0 * line_h()) * s);
+        self.code_buf.set_metrics_and_size(Metrics::new(font_size() * s, row_h), Some(4000.0 * s), Some(height));
+        self.code_buf.set_wrap(Wrap::None);
+        // A rich text is shaped line by line until the lines above one are taller than the
+        // buffer, and drawn up to the last shaped line: the rows past it are left out here.
+        let mut visible = 0;
+        let mut above = 0.0f32;
+        while visible < rows.row_count() && above <= height {
+            above += row_h;
+            visible += 1;
+        }
+
+        // One line per row: the kept one when the row was drawn before, else a new one.
+        let mut lines = std::mem::take(&mut self.code_buf.lines);
+        lines.clear();
+        let mut keys = std::mem::take(&mut self.rows.keys);
+        keys.clear();
+        for r in 0..visible {
+            let key = rows.row_key(r, advanced);
+            let kept = self.rows.lines.get_mut(&key).and_then(|e| {
+                e.1 = now;
+                e.0.pop()
+            });
+            let line = match kept {
+                Some(line) => {
+                    self.rows.count -= 1;
+                    line
+                }
+                // The same row earlier in this frame: a copy of it (shaped or not yet).
+                None => match keys.iter().position(|k| *k == key) {
+                    Some(same) => lines[same].clone(),
+                    None => {
+                        #[cfg(test)]
+                        {
+                            self.rows.built += 1;
+                        }
+                        row_line(rows, r, &attrs, shaping)
+                    }
+                },
+            };
+            lines.push(line);
+            keys.push(key);
+        }
+        self.code_buf.lines = lines;
+        // Shape and lay out the new lines (the kept ones already are).
+        for i in 0..keys.len() {
+            self.code_buf.line_layout(&mut self.fonts, i);
+        }
+        let dev = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
+        blit_buffer(&mut self.code_buf, &mut self.fonts, &mut self.swash, cv, sc(x), sc(y), dev);
+
+        // Back into the cache, for the next frame.
+        self.rows.count += keys.len();
+        for (line, key) in self.code_buf.lines.drain(..).zip(keys.drain(..)) {
+            let e = self.rows.lines.entry(key).or_insert_with(|| (Vec::new(), now));
+            e.1 = now;
+            e.0.push(line);
+        }
+        self.rows.keys = keys;
+        self.rows.sweep();
     }
 
     /// [`draw_rows`](Self::draw_rows) through one rich text: every row is shaped again.
@@ -2287,6 +2482,147 @@ mod tests {
         // No rows: nothing is drawn (as `draw_styled` with no pieces).
         let blank = paint_rows(&mut ctx, &CodeRows::default(), 4, 3, Rect::new(0, 0, ROWS_W, ROWS_H));
         assert!(blank.iter().all(|p| *p == 0x101418));
+    }
+
+    /// Draw `lines` with `draw_rows` and with `draw_styled`: the pixels must be the same.
+    fn same_as_styled(ctx: &mut TextCtx, lines: &[Vec<(&str, Rgba, u8)>], x: i32, y: i32, what: &str) {
+        let clip = Rect::new(0, 0, ROWS_W, ROWS_H);
+        let (rows, pieces) = rows_and_pieces(lines);
+        let want = paint_styled(ctx, &pieces, x, y, clip);
+        assert!(want.iter().any(|p| *p != 0x101418), "{what}: nothing drawn");
+        assert_eq!(paint_rows(ctx, &rows, x, y, clip), want, "{what}");
+    }
+
+    #[test]
+    fn shaped_rows_are_reused_and_dropped_when_their_inputs_change() {
+        let mut ctx = TextCtx::new(None);
+        let mut lines = sample_rows();
+        // Six rows, five different ones (the two closing braces are one row drawn twice).
+        same_as_styled(&mut ctx, &lines, 4, 3, "first frame");
+        assert_eq!(ctx.rows.built, 5);
+        assert_eq!(ctx.rows.count, 6, "every line went back into the cache");
+        assert!(ctx.code_buf.lines.is_empty());
+        // The same frame again, then scrolled by a few pixels: nothing is shaped.
+        same_as_styled(&mut ctx, &lines, 4, 3, "same frame");
+        same_as_styled(&mut ctx, &lines, 4, -8, "scrolled a few pixels");
+        // Scrolled by two rows: the rows that stay are found again at their new place.
+        same_as_styled(&mut ctx, &lines[2..], 4, 3, "scrolled two rows");
+        same_as_styled(&mut ctx, &lines, 4, 3, "scrolled back");
+        assert_eq!(ctx.rows.built, 5, "an unchanged row was shaped again");
+
+        // Text: one row edited, one row shaped.
+        lines[0][1].0 = " main2() {";
+        same_as_styled(&mut ctx, &lines, 4, 3, "text of a row changed");
+        assert_eq!(ctx.rows.built, 6);
+        // Colour (a theme change) and style are part of the row too.
+        lines[4][0].1 = Rgba(255, 90, 90, 255);
+        same_as_styled(&mut ctx, &lines, 4, 3, "colour of a row changed");
+        assert_eq!(ctx.rows.built, 7);
+        lines[1][2].2 = BOLD;
+        same_as_styled(&mut ctx, &lines, 4, 3, "style of a row changed");
+        assert_eq!(ctx.rows.built, 8);
+
+        // Zoom: every row is shaped again at the new size.
+        let size = font_size();
+        // (The six rows are all different by now.)
+        ctx.set_zoom(size + 5.0);
+        same_as_styled(&mut ctx, &lines, 4, 3, "zoomed in");
+        assert_eq!(ctx.rows.built, 8 + 6, "rows shaped at the old size were kept");
+        same_as_styled(&mut ctx, &lines, 4, 3, "zoomed in, again");
+        assert_eq!(ctx.rows.built, 14);
+        ctx.set_zoom(size);
+        same_as_styled(&mut ctx, &lines, 4, 3, "zoom restored");
+        assert_eq!(ctx.rows.built, 20);
+
+        // Font settings (family, weight, features, letter spacing): the same.
+        ctx.buf_spacing = 1.5;
+        ctx.remeasure();
+        same_as_styled(&mut ctx, &lines, 4, 3, "letter spacing");
+        assert_eq!(ctx.rows.built, 26);
+        ctx.buf_spacing = 0.0;
+        ctx.buf_weight = 700;
+        same_as_styled(&mut ctx, &lines, 4, 3, "weight");
+        assert_eq!(ctx.rows.built, 32);
+        ctx.buf_weight = 400;
+        ctx.buf_ligs = true;
+        same_as_styled(&mut ctx, &lines, 4, 3, "ligatures (advanced shaping)");
+        assert_eq!(ctx.rows.built, 38);
+        ctx.buf_ligs = false;
+        ctx.rebuild_fonts();
+        assert_eq!(ctx.rows.count, 0, "new fonts empty the cache");
+        same_as_styled(&mut ctx, &lines, 4, 3, "fonts rebuilt");
+        assert_eq!(ctx.rows.built, 44);
+    }
+
+    #[test]
+    fn rows_below_the_clip_are_neither_shaped_nor_drawn() {
+        let mut ctx = TextCtx::new(None);
+        let fg = Rgba(212, 212, 212, 255);
+        let texts: Vec<String> = (0..30).map(|r| format!("row {r} of thirty")).collect();
+        let lines: Vec<Vec<(&str, Rgba, u8)>> = texts.iter().map(|t| vec![(t.as_str(), fg, 0)]).collect();
+        let (rows, pieces) = rows_and_pieces(&lines);
+        for clip in [Rect::new(0, 0, ROWS_W, 30), Rect::new(10, 20, 200, 1), Rect::new(0, 0, ROWS_W, ROWS_H)] {
+            for y in [3, -40, -200] {
+                let want = paint_styled(&mut ctx, &pieces, 4, y, clip);
+                assert_eq!(paint_rows(&mut ctx, &rows, 4, y, clip), want, "clip {clip:?}, y {y}");
+            }
+        }
+        assert!(ctx.rows.built >= 3, "{} rows shaped", ctx.rows.built);
+        assert!(ctx.rows.built < 30, "all {} rows were shaped for a clip a few rows tall", ctx.rows.built);
+    }
+
+    #[test]
+    fn rows_that_need_the_rich_text_are_drawn_by_it() {
+        let mut ctx = TextCtx::new(None);
+        let fg = Rgba(212, 212, 212, 255);
+        // A control char inside a row: no cached lines, same pixels as before.
+        let lines = vec![vec![("a\u{1c}b", fg, 0)], vec![("tab\there", fg, 0)], vec![("end", fg, BOLD)]];
+        same_as_styled(&mut ctx, &lines, 4, 3, "control chars");
+        assert_eq!((ctx.rows.built, ctx.rows.count), (0, 0));
+        let lines = vec![vec![("é a\u{2029}b", fg, 0)], vec![("end", fg, 0)]];
+        same_as_styled(&mut ctx, &lines, 4, 3, "paragraph separator");
+        assert_eq!(ctx.rows.built, 0);
+        // Chars beyond the code font switch the whole frame to advanced shaping: the rows are
+        // cached under that mode, and shaped again when the frame goes back to basic shaping.
+        let mut lines = vec![vec![("let a = 1;", fg, 0)], vec![("// a → b ✓", fg, ITALIC)]];
+        same_as_styled(&mut ctx, &lines, 4, 3, "wide chars");
+        assert_eq!(ctx.rows.built, 2);
+        same_as_styled(&mut ctx, &lines, 4, 3, "wide chars, again");
+        assert_eq!(ctx.rows.built, 2);
+        lines[1][0].0 = "// a to b";
+        same_as_styled(&mut ctx, &lines, 4, 3, "back to basic shaping");
+        assert_eq!(ctx.rows.built, 4, "a row shaped in advanced mode was drawn in a basic frame");
+    }
+
+    #[test]
+    fn the_row_cache_stays_bounded() {
+        let mut ctx = TextCtx::new(None);
+        let fg = Rgba(212, 212, 212, 255);
+        // Tall enough for every row of a frame to count as visible.
+        let clip = Rect::new(0, 0, ROWS_W, 4000);
+        let mut most = 0;
+        for frame in 0..60 {
+            // Forty rows no other frame has: paging through a file.
+            let texts: Vec<String> = (0..40).map(|r| format!("let v{frame}_{r} = {};", frame * r)).collect();
+            let lines: Vec<Vec<(&str, Rgba, u8)>> = texts.iter().map(|t| vec![(t.as_str(), fg, 0)]).collect();
+            let (rows, _) = rows_and_pieces(&lines);
+            paint_rows(&mut ctx, &rows, 4, 3, clip);
+            let held: usize = ctx.rows.lines.values().map(|e| e.0.len()).sum();
+            assert_eq!(held, ctx.rows.count, "the count follows the lines");
+            most = most.max(held);
+        }
+        assert_eq!(ctx.rows.built, 60 * 40);
+        assert!(most > 40 && most <= 2 * ROW_CACHE_MAX, "{most} lines kept");
+        // What is on screen is still drawn right after all the sweeping.
+        let lines = sample_rows();
+        same_as_styled(&mut ctx, &lines, 4, 3, "after paging");
+        // Rows used by the last few calls survive a sweep: two panes drawing in turn keep theirs.
+        let before = ctx.rows.built;
+        for _ in 0..4 {
+            same_as_styled(&mut ctx, &lines, 4, 3, "pane one");
+            same_as_styled(&mut ctx, &lines[1..4], 4, 3, "pane two");
+        }
+        assert_eq!(ctx.rows.built, before);
     }
 
     #[test]
