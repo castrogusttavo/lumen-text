@@ -378,6 +378,10 @@ impl Buffer {
     pub fn char_at(&self, c: usize) -> Option<char> {
         self.rope.get_char(c)
     }
+    /// Char iterator positioned at char index `c` (`next` goes forward, `prev` backward); O(1) per step.
+    pub fn chars_from(&self, c: usize) -> ropey::iter::Chars<'_> {
+        self.rope.chars_at(c.min(self.rope.len_chars()))
+    }
     pub fn line_start(&self, l: usize) -> usize {
         self.rope.line_to_char(l.min(self.line_count()))
     }

@@ -75,6 +75,11 @@ winit = "0.30.13"
 zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
 
 # Accessibility stack (AT-SPI over D-Bus on Linux): not hot code, so favour size over speed.
+# Cross-crate inlining for the hot draw loops (ui.rs is called from cosmic-text callbacks).
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [profile.release.package.accesskit_unix]
 opt-level = "s"
 [profile.release.package.accesskit_atspi_common]

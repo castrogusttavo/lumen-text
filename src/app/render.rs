@@ -568,9 +568,10 @@ impl App {
         self.mem_cache.1.clone()
     }
 
-    pub(super) fn update_title(&mut self, window: &Window, ms: f32) {
+    pub(super) fn update_title(&mut self, window: &Window, _ms: f32) {
+        // No frame time here: it changed the title (a compositor round trip) on almost every frame.
         let title = match self.docs.get(self.active) {
-            Some(d) => format!("{}{} — lumen-text — {:.1} ms", if d.buf.is_dirty() { "● " } else { "" }, d.name, ms),
+            Some(d) => format!("{}{} — lumen-text", if d.buf.is_dirty() { "● " } else { "" }, d.name),
             None => "lumen-text".to_string(),
         };
         if title != self.last_title {

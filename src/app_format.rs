@@ -220,6 +220,10 @@ impl App {
                 m => self.handle_lsp_msg(li, m, &mut dead),
             }
         }
+        // Timed out: tell the server to stop computing an answer nobody will read.
+        if self.lsps.get(li).is_some_and(|l| l.pending.contains_key(&id)) {
+            self.lsps[li].cancel(id);
+        }
         self.drop_dead_servers(dead);
         out
     }

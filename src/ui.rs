@@ -216,13 +216,32 @@ impl Canvas<'_> {
     /// Fill a rect given in device pixels.
     fn fill_dev(&mut self, r: Rect, c: Rgba, clip: Rect) {
         let r = r.intersect(&clip).intersect(&self.dev_bounds());
+        if r.w <= 0 || r.h <= 0 || c.3 == 0 {
+            return;
+        }
+        let opaque = blend_px(0, Rgba(c.0, c.1, c.2, 255));
         for y in r.y..r.bottom() {
-            let row = (y * self.w) as usize;
-            for x in r.x..r.right() {
-                let i = row + x as usize;
-                self.px[i] = blend_px(self.px[i], c);
+            let start = (y * self.w + r.x) as usize;
+            let row = &mut self.px[start..start + r.w as usize];
+            if c.3 == 255 {
+                row.fill(opaque);
+            } else {
+                for px in row {
+                    *px = blend_px(*px, c);
+                }
             }
         }
+    }
+
+    /// `fill_dev` leaving `hole` untouched (up to four bands around it).
+    fn fill_dev_hole(&mut self, r: Rect, c: Rgba, clip: Rect, hole: Option<Rect>) {
+        let Some(h) = hole.map(|h| h.intersect(&r)).filter(|h| h.w > 0 && h.h > 0) else {
+            return self.fill_dev(r, c, clip);
+        };
+        self.fill_dev(Rect::new(r.x, r.y, r.w, h.y - r.y), c, clip);
+        self.fill_dev(Rect::new(r.x, h.bottom(), r.w, r.bottom() - h.bottom()), c, clip);
+        self.fill_dev(Rect::new(r.x, h.y, h.x - r.x, h.h), c, clip);
+        self.fill_dev(Rect::new(h.right(), h.y, r.right() - h.right(), h.h), c, clip);
     }
 
     /// One logical pixel (a `scale` x `scale` block of device pixels).
@@ -254,13 +273,18 @@ impl Canvas<'_> {
     }
 
     fn round_dev(&mut self, r: Rect, rad: i32, c: Rgba, clip: Rect) {
+        self.round_dev_hole(r, rad, c, clip, None);
+    }
+
+    /// `round_dev` whose straight parts skip `hole` (the antialiased corners are always drawn).
+    fn round_dev_hole(&mut self, r: Rect, rad: i32, c: Rgba, clip: Rect, hole: Option<Rect>) {
         let rad = rad.min(r.w / 2).min(r.h / 2).max(0);
         if rad == 0 {
-            return self.fill_dev(r, c, clip);
+            return self.fill_dev_hole(r, c, clip, hole);
         }
-        self.fill_dev(Rect::new(r.x + rad, r.y, r.w - 2 * rad, r.h), c, clip);
-        self.fill_dev(Rect::new(r.x, r.y + rad, rad, r.h - 2 * rad), c, clip);
-        self.fill_dev(Rect::new(r.right() - rad, r.y + rad, rad, r.h - 2 * rad), c, clip);
+        self.fill_dev_hole(Rect::new(r.x + rad, r.y, r.w - 2 * rad, r.h), c, clip, hole);
+        self.fill_dev_hole(Rect::new(r.x, r.y + rad, rad, r.h - 2 * rad), c, clip, hole);
+        self.fill_dev_hole(Rect::new(r.right() - rad, r.y + rad, rad, r.h - 2 * rad), c, clip, hole);
         let rf = rad as f32;
         for (cx, cy, x0, y0) in [
             (r.x + rad, r.y + rad, r.x, r.y),
@@ -327,9 +351,18 @@ impl Canvas<'_> {
     /// Soft drop shadow under a rounded rectangle (call before drawing the card).
     pub fn shadow(&mut self, r: Rect, rad: i32) {
         // Soft, wide, low-contrast shadow (macOS style): many faint layers, shifted down.
+        // Every layer covers the part of the card that is inset by `rad` (and the card is drawn
+        // over it afterwards), so that core is blended once instead of sixteen times.
+        let clip = self.to_dev(self.bounds());
+        let core = self.to_dev(Rect::new(r.x + rad, r.y + 8 + rad, r.w - 2 * rad, r.h - 2 * rad - 8));
+        let core = (core.w > 0 && core.h > 0).then_some(core);
         for i in 1..=16 {
-            let g = Rect::new(r.x - i, r.y - i + 8, r.w + 2 * i, r.h + 2 * i);
-            self.fill_round(g, rad + i, Rgba(0, 0, 0, 3));
+            let g = self.to_dev(Rect::new(r.x - i, r.y - i + 8, r.w + 2 * i, r.h + 2 * i));
+            self.round_dev_hole(g, sc(rad + i), Rgba(0, 0, 0, 3), clip, core);
+        }
+        if let Some(k) = core {
+            // Sixteen layers of alpha 3 darken by 1 - (252/255)^16, about alpha 44.
+            self.fill_dev(k, Rgba(0, 0, 0, 44), clip);
         }
     }
 }
