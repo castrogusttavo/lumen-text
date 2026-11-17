@@ -327,6 +327,13 @@ impl App {
         if !self.config.lsp_auto_lean || !self.lsp_guard.due() {
             return;
         }
+        // The numbers below are the ones the background sampler published (`mem::watch`); each
+        // sample counts once. With no sampler (tests) they are read here and now.
+        if let Some(generation) = crate::mem::generation()
+            && !self.lsp_guard.fresh(generation)
+        {
+            return;
+        }
         // A lean server that balloons is broken: restart it rather than let it eat the machine.
         let lean_mb = self
             .lsps

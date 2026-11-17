@@ -48,11 +48,24 @@ pub struct Guard {
     last: Instant,
     strikes: u8,
     lean_strikes: u8,
+    /// The published memory sample (`mem::generation`) the last check counted.
+    seen: Option<u64>,
 }
 
 impl Guard {
     pub fn new() -> Self {
-        Guard { lean: HashSet::new(), last: Instant::now(), strikes: 0, lean_strikes: 0 }
+        Guard { lean: HashSet::new(), last: Instant::now(), strikes: 0, lean_strikes: 0, seen: None }
+    }
+
+    /// The checks count consecutive *samples*, and the numbers now come from a background
+    /// sampler: true when `generation` is a sample no earlier check counted (a stalled sampler
+    /// must not turn one reading into two strikes).
+    pub fn fresh(&mut self, generation: u64) -> bool {
+        if self.seen == Some(generation) {
+            return false;
+        }
+        self.seen = Some(generation);
+        true
     }
 
     /// True when the periodic check is due; resets the timer.
@@ -179,6 +192,14 @@ mod tests {
         assert!(!g.lean_over(500));
         assert!(!g.lean_over(LEAN_HARD_MB + 1));
         assert!(g.lean_over(LEAN_HARD_MB + 1));
+    }
+
+    #[test]
+    fn a_published_sample_is_counted_once() {
+        let mut g = Guard::new();
+        assert!(g.fresh(1));
+        assert!(!g.fresh(1), "the same sample again is not a second strike");
+        assert!(g.fresh(2));
     }
 
     #[test]

@@ -92,12 +92,21 @@ pub struct State {
     pub over: bool,
     /// The toast for the current excess was shown.
     pub warned: bool,
+    /// The sample (`mem::generation`) the status bar's memory text was built from.
+    pub mem_generation: Option<u64>,
 }
 
 impl State {
     pub fn new() -> Self {
         let now = Instant::now();
-        State { started: now, next_refresh: None, next_budget: now + BUDGET_EVERY, over: false, warned: false }
+        State {
+            started: now,
+            next_refresh: None,
+            next_budget: now + BUDGET_EVERY,
+            over: false,
+            warned: false,
+            mem_generation: None,
+        }
     }
 
     /// Feed one measurement; true when the warning must be shown now (first time over, again only

@@ -555,15 +555,20 @@ impl App {
         true
     }
 
+    /// The memory readout of the bottom bar. The numbers come from the background sampler (see
+    /// `mem::watch`): nothing here reads /proc unless no sample was published yet. The text is
+    /// rebuilt when a new sample arrived, and every 2 s for what is not memory (crashed servers).
     pub fn memory_text(&mut self) -> String {
-        if self.mem_cache.0.elapsed() > Duration::from_secs(2) {
-            let own = mem::snapshot().map_or(0, |m| m.pss_kb) as f64 / 1024.0;
+        let generation = mem::generation();
+        if self.mem_cache.0.elapsed() > Duration::from_secs(2) || self.res.mem_generation != generation {
+            let own = mem::own_pss_kb().unwrap_or(0) as f64 / 1024.0;
             let mut s = format!("RAM {own:.0} MB");
             s.push_str(&self.lspx_ram_suffix());
             if self.res.over {
                 s.push_str(" · over budget");
             }
             self.mem_cache = (Instant::now(), s);
+            self.res.mem_generation = generation;
         }
         self.mem_cache.1.clone()
     }
