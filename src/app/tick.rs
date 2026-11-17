@@ -57,6 +57,7 @@ impl App {
 
         self.pump_git_status();
         self.import_idx_tick(now, &mut want);
+        self.file_index_tick(now, &mut want);
 
         // Inline blame: follows the cursor line, computed on a worker after the cursor rests a moment.
         let mut blamed = false;

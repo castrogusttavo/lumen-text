@@ -198,6 +198,7 @@ impl App {
             return self.request_redraw();
         }
         self.lsp_fs_events(&evs);
+        self.file_index_events(&evs);
         self.last_disk_check = Instant::now() - Duration::from_secs(60);
         if evs.iter().any(|e| crate::ignore_filter::IgnoreFilter::is_ignore_file(&e.path)) {
             self.tree.invalidate_ignore();

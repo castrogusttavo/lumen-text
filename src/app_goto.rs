@@ -16,17 +16,165 @@ use crate::{
     field::TextField,
     gotopick::{self, Mode},
     lsp::Pending,
+    search::FileIndex,
 };
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{Receiver, TryRecvError},
+    },
+    time::{Duration, Instant},
 };
 
 /// Most results of a project symbol search that are listed.
 const WS_LIMIT: usize = 200;
 
 static SERIAL: AtomicU64 = AtomicU64::new(0);
+
+/// The first build of the file index starts this long after the editor does (the first frame is
+/// on screen by then); opening Quick Open starts it at once.
+const INDEX_START_AFTER: Duration = Duration::from_millis(400);
+/// A full rebuild waits this long, so a burst of events costs one walk.
+const INDEX_SETTLE: Duration = Duration::from_millis(300);
+/// More created / removed paths than this in one go are a burst: one walk instead of patches.
+const INDEX_BURST: usize = 64;
+/// Opening Quick Open refreshes an index older than this in the background (folders nobody
+/// watches change without an event).
+const INDEX_FRESH: Duration = Duration::from_secs(5);
+/// A worker that died is tried again after this long.
+const INDEX_RETRY: Duration = Duration::from_secs(5);
+
+/// The file index of the open workspace and the worker that keeps it current. Setting the app's
+/// `file_index` to `None` invalidates it (other roots, other ignore rules): a build in flight is
+/// dropped with it and a new one starts on the next tick.
+pub struct FileIdx {
+    /// What Quick Open lists; shared with an open picker, replaced (never changed) by the worker.
+    pub index: Arc<FileIndex>,
+    /// The first build arrived.
+    ready: bool,
+    /// The job on the worker (`None` from it: nothing changed) and whether it is a full walk.
+    job: Option<(Receiver<Option<FileIndex>>, bool)>,
+    /// A full rebuild is wanted at this time.
+    full_due: Option<Instant>,
+    /// Paths created, removed or moved since the last job.
+    pending: Vec<PathBuf>,
+    /// File-system events arrived since the explorer was last rebuilt.
+    events: bool,
+    /// When the last full walk finished.
+    walked: Instant,
+}
+
+impl FileIdx {
+    fn new(first_build: Instant) -> FileIdx {
+        FileIdx {
+            index: Arc::default(),
+            ready: false,
+            job: None,
+            full_due: Some(first_build),
+            pending: Vec::new(),
+            events: false,
+            walked: first_build,
+        }
+    }
+
+    /// A full rebuild `after` from now, unless one is already wanted sooner.
+    fn want_full(&mut self, after: Duration) {
+        let at = Instant::now() + after;
+        self.full_due = Some(self.full_due.map_or(at, |t| t.min(at)));
+    }
+
+    /// Note file-system events: created, removed and moved paths wait to be patched in; a burst,
+    /// or a change of the ignore rules, asks for one walk instead.
+    fn note(&mut self, evs: &[crate::watcher::FsEvent]) {
+        self.events = true;
+        for e in evs {
+            if crate::ignore_filter::IgnoreFilter::is_ignore_file(&e.path) {
+                self.want_full(INDEX_SETTLE);
+            } else if e.kind != crate::watcher::FsKind::Modified {
+                self.pending.push(e.path.clone());
+            }
+        }
+        if self.pending.len() > INDEX_BURST {
+            self.pending.clear();
+            self.want_full(INDEX_SETTLE);
+        }
+    }
+
+    /// What the worker should do at `now`, if it is free and something is due: the paths to
+    /// patch, or `None` for a full walk.
+    fn next_job(&mut self, now: Instant) -> Option<Option<Vec<PathBuf>>> {
+        if self.job.is_some() {
+            return None;
+        }
+        if self.full_due.is_some_and(|t| t <= now) {
+            // A walk sees everything that is pending; events from now on are patched after it.
+            self.full_due = None;
+            self.pending.clear();
+            return Some(None);
+        }
+        (self.ready && !self.pending.is_empty()).then(|| Some(std::mem::take(&mut self.pending)))
+    }
+}
+
+/// What the Go to picker lists in file mode: the open documents (most recent first), then the
+/// file index without them. Rows are made only for what is shown (see `Picker::refilter`).
+pub struct FileSource {
+    index: Arc<FileIndex>,
+    /// Open documents as (path, label).
+    open: Vec<(PathBuf, String)>,
+    /// Rows of the index that are open documents (listed already).
+    skip: HashSet<usize>,
+}
+
+impl FileSource {
+    pub fn new(index: Arc<FileIndex>, open: Vec<(PathBuf, String)>) -> FileSource {
+        let mut s = FileSource { index: Arc::default(), open, skip: HashSet::new() };
+        s.set_index(index);
+        s
+    }
+
+    /// Another index (it was rebuilt or patched while the picker is open).
+    pub fn set_index(&mut self, index: Arc<FileIndex>) {
+        self.skip = self.open.iter().filter_map(|(p, _)| index.position(p)).collect();
+        self.index = index;
+    }
+
+    fn label(&self, i: usize) -> Option<&str> {
+        match i.checked_sub(self.open.len()) {
+            None => Some(self.open[i].1.as_str()),
+            Some(k) => (!self.skip.contains(&k)).then(|| self.index.label(k)),
+        }
+    }
+
+    fn item(&self, i: usize) -> Item {
+        let (path, label) = match i.checked_sub(self.open.len()) {
+            None => (self.open[i].0.clone(), self.open[i].1.clone()),
+            Some(k) => (self.index.path(k).to_path_buf(), self.index.label(k).to_string()),
+        };
+        Item { label, detail: String::new(), action: Action::Open(path, None) }
+    }
+
+    /// The rows to show for `query` and their matched label positions: the best 300, or the
+    /// start of the list while nothing is typed.
+    pub fn rows(&self, query: &str) -> (Vec<Item>, Vec<(usize, Vec<usize>)>) {
+        let n = self.open.len() + self.index.len();
+        let rows: Vec<(usize, Vec<usize>)> = if query.is_empty() {
+            (0..n)
+                .filter(|&i| self.label(i).is_some())
+                .take(crate::search::MAX_REPLACE_HITS)
+                .map(|i| (i, Vec::new()))
+                .collect()
+        } else {
+            crate::fuzzy::rank(query, n, |i| self.label(i), 300)
+        };
+        let items = rows.iter().map(|(i, _)| self.item(*i)).collect();
+        (items, rows.into_iter().enumerate().map(|(k, (_, pos))| (k, pos)).collect())
+    }
+}
 
 /// A `workspace/symbol` search in flight: requests still unanswered and answers so far.
 struct WsRun {
@@ -64,16 +212,28 @@ fn title_for(mode: Mode) -> &'static str {
 impl App {
     /// Open the Go to picker with `prefix` typed ("" = files, "@", "#", ":").
     pub fn open_goto(&mut self, prefix: &str) {
-        if self.file_index.is_none() {
-            self.file_index = Some(crate::search::list_files_in(&self.roots(), 50_000));
+        let now = Instant::now();
+        if cfg!(test) {
+            // Tests read the list right after opening: build it here.
+            if self.file_index.is_none() {
+                let mut fi = FileIdx::new(now);
+                (fi.index, fi.ready, fi.full_due) = (Arc::new(FileIndex::build(&self.roots())), true, None);
+                self.file_index = Some(fi);
+            }
+        } else {
+            // Never on this thread: the picker opens with what there is and fills in.
+            let fi = self.file_index.get_or_insert_with(|| FileIdx::new(now));
+            if !fi.ready || fi.walked + INDEX_FRESH <= now {
+                fi.full_due = Some(now);
+            }
+            self.file_index_work(now);
         }
-        let files = self.file_index.clone().unwrap_or_default();
-        let open: Vec<PathBuf> = self.docs.iter().filter_map(|d| d.path().map(PathBuf::from)).collect();
-        let mut items: Vec<Item> = Vec::new();
-        for p in open.iter().rev().chain(files.iter().filter(|f| !open.contains(f))) {
-            items.push(Item { label: self.rel(p), detail: String::new(), action: Action::Open(p.clone(), None) });
-        }
-        let mut p = Picker::new(PickKind::QuickOpen, title_for(Mode::Files), items);
+        let index = self.file_index.as_ref().map(|fi| fi.index.clone()).unwrap_or_default();
+        let open: Vec<(PathBuf, String)> =
+            self.docs.iter().rev().filter_map(|d| d.path()).map(|p| (p.to_path_buf(), self.rel(p))).collect();
+        let mut p = Picker::new(PickKind::QuickOpen, title_for(Mode::Files), Vec::new());
+        p.files = Some(Box::new(FileSource::new(index, open)));
+        p.refilter();
         p.goto = Some(Box::new(GotoState {
             mode: Mode::Files,
             files: None,
@@ -90,6 +250,102 @@ impl App {
         if !prefix.is_empty() {
             let _ = self.goto_changed();
             self.goto_preview();
+        }
+    }
+
+    // ───────────── file index ─────────────
+
+    /// File-system events (see `pump_watcher`): the index is patched on the worker.
+    pub(crate) fn file_index_events(&mut self, evs: &[crate::watcher::FsEvent]) {
+        let Some(fi) = self.file_index.as_mut() else { return };
+        fi.note(evs);
+        if !cfg!(test) {
+            self.file_index_work(Instant::now());
+        }
+    }
+
+    /// The explorer was rebuilt. After events the index is already being patched; without any
+    /// (the window got the focus back, "Refresh explorer") nobody knows what changed: one walk in
+    /// the background, the list in use stays until it is done.
+    pub(crate) fn file_index_refresh(&mut self) {
+        if cfg!(test) {
+            // No worker in tests: the next Quick Open builds the list again.
+            self.file_index = None;
+            return;
+        }
+        if let Some(fi) = self.file_index.as_mut()
+            && !std::mem::take(&mut fi.events)
+        {
+            fi.want_full(INDEX_SETTLE);
+        }
+    }
+
+    /// Start the job that is due, if the worker is free: a full walk, or a patch of the pending
+    /// paths. Returns when to look again.
+    fn file_index_work(&mut self, now: Instant) -> Option<Instant> {
+        let fi = self.file_index.as_mut()?;
+        let Some(job) = fi.next_job(now) else { return fi.full_due };
+        let (tx, rx) = std::sync::mpsc::channel();
+        fi.job = Some((rx, job.is_none()));
+        let old = fi.index.clone();
+        let (roots, wake) = (self.roots(), self.wake());
+        std::thread::spawn(move || {
+            let new = match job {
+                None => FileIndex::build(&roots),
+                Some(paths) => {
+                    let mut patched = (*old).clone();
+                    patched.patch(&paths);
+                    patched
+                }
+            };
+            let _ = tx.send((new != *old).then_some(new));
+            wake();
+        });
+        None
+    }
+
+    pub(crate) fn file_index_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        if cfg!(test) {
+            return;
+        }
+        let fi = self.file_index.get_or_insert_with(|| FileIdx::new(now + INDEX_START_AFTER));
+        let done = fi.job.as_ref().and_then(|(rx, full)| match rx.try_recv() {
+            Ok(new) => Some((Ok(new), *full)),
+            Err(TryRecvError::Disconnected) => Some((Err(()), *full)),
+            Err(TryRecvError::Empty) => None,
+        });
+        if let Some((res, full)) = done {
+            fi.job = None;
+            match res {
+                Ok(new) => {
+                    fi.ready = true;
+                    if full {
+                        fi.walked = now;
+                    }
+                    if let Some(new) = new {
+                        fi.index = Arc::new(new);
+                        self.file_index_publish();
+                    }
+                }
+                Err(()) => fi.want_full(INDEX_RETRY),
+            }
+        }
+        if let Some(t) = self.file_index_work(now) {
+            want(t);
+        }
+    }
+
+    /// The index changed: an open Go to picker lists the new one.
+    fn file_index_publish(&mut self) {
+        let Some(index) = self.file_index.as_ref().map(|fi| fi.index.clone()) else { return };
+        if let Overlay::Picker(p) = &mut self.overlay
+            && let Some(src) = p.files.as_mut()
+        {
+            src.set_index(index);
+            if gotopick::parse(&p.field.text).0 == Mode::Files {
+                p.refilter();
+                self.request_redraw();
+            }
         }
     }
 
@@ -461,6 +717,80 @@ mod tests {
         p.field = TextField::with(text);
         p.refilter();
         p
+    }
+
+    #[test]
+    fn file_source_lists_open_documents_first_and_only_once() {
+        let d = std::env::temp_dir().join(format!("lumen-goto-src-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        for f in ["src/alpha.rs", "src/beta.rs", "src/gamma.rs", "notes.md"] {
+            std::fs::write(d.join(f), "x").unwrap();
+        }
+        let index = Arc::new(FileIndex::build(std::slice::from_ref(&d)));
+        let open = vec![
+            (d.join("src/gamma.rs"), "src/gamma.rs".to_string()),
+            (d.join("untracked.txt"), "untracked.txt".into()),
+        ];
+        let src = FileSource::new(index, open);
+        let labels = |q: &str| src.rows(q).0.iter().map(|i| i.label.replace('\\', "/")).collect::<Vec<_>>();
+        assert_eq!(labels(""), vec!["src/gamma.rs", "untracked.txt", "notes.md", "src/alpha.rs", "src/beta.rs"]);
+        assert_eq!(labels("gam"), vec!["src/gamma.rs"], "an open file is not listed again from the index");
+        assert_eq!(labels("src a"), vec!["src/alpha.rs", "src/gamma.rs", "src/beta.rs"]);
+        let (items, filtered) = src.rows("beta");
+        assert_eq!(filtered, vec![(0, vec![4, 5, 6, 7])]);
+        assert!(matches!(&items[0].action, Action::Open(p, None) if *p == d.join("src/beta.rs")));
+
+        // The same rows through the picker: `items` holds only what is shown.
+        let mut p = Picker::new(PickKind::QuickOpen, "t", Vec::new());
+        p.files = Some(Box::new(src));
+        p.field = TextField::with("beta");
+        p.refilter();
+        assert_eq!((p.items.len(), p.filtered.len()), (1, 1));
+        assert_eq!(p.selected().map(|i| i.label.replace('\\', "/")).as_deref(), Some("src/beta.rs"));
+        p.field = TextField::with("@beta");
+        p.refilter();
+        assert_eq!(p.filtered.len(), 1, "another mode filters the picker's own items");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn index_jobs_patch_small_changes_and_walk_on_bursts() {
+        use crate::watcher::{FsEvent, FsKind};
+        let t0 = Instant::now();
+        let ev = |p: &str, kind| FsEvent { path: PathBuf::from(p), kind };
+        let mut fi = FileIdx::new(t0 + Duration::from_secs(1));
+        assert_eq!(fi.next_job(t0), None, "the first build waits for its time");
+        fi.note(&[ev("/p/new.rs", FsKind::Created)]);
+        assert_eq!(fi.next_job(t0), None, "nothing to patch before the first build");
+        assert_eq!(fi.next_job(t0 + Duration::from_secs(1)), Some(None), "the first build is a walk");
+        assert!(fi.pending.is_empty(), "the walk covers what was pending");
+        fi.ready = true;
+
+        // Saves change nothing in the list; created and removed paths are patched.
+        fi.note(&[ev("/p/a.rs", FsKind::Modified)]);
+        assert_eq!(fi.next_job(t0), None);
+        fi.note(&[ev("/p/b.rs", FsKind::Created), ev("/p/c.rs", FsKind::Removed), ev("/p/d.rs", FsKind::Moved)]);
+        let want: Vec<PathBuf> = ["/p/b.rs", "/p/c.rs", "/p/d.rs"].iter().map(PathBuf::from).collect();
+        assert_eq!(fi.next_job(t0), Some(Some(want)));
+        assert_eq!(fi.next_job(t0), None);
+
+        // A burst, or new ignore rules: one walk, once things settle.
+        let burst: Vec<FsEvent> = (0..=INDEX_BURST).map(|i| ev(&format!("/p/f{i}.rs"), FsKind::Created)).collect();
+        fi.note(&burst);
+        assert!(fi.pending.is_empty());
+        assert_eq!(fi.next_job(Instant::now()), None, "not before the burst settles");
+        assert_eq!(fi.next_job(Instant::now() + INDEX_SETTLE), Some(None));
+        fi.note(&[ev("/p/.gitignore", FsKind::Modified)]);
+        assert_eq!(fi.next_job(Instant::now() + INDEX_SETTLE), Some(None));
+
+        // One job at a time: events during a job wait for it.
+        let (_tx, rx) = std::sync::mpsc::channel();
+        fi.job = Some((rx, false));
+        fi.note(&[ev("/p/e.rs", FsKind::Created)]);
+        assert_eq!(fi.next_job(Instant::now() + INDEX_SETTLE), None);
+        fi.job = None;
+        assert_eq!(fi.next_job(t0), Some(Some(vec![PathBuf::from("/p/e.rs")])));
     }
 
     #[test]

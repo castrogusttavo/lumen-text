@@ -139,13 +139,19 @@ pub fn fuzzy(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
     Query::new(query).matched(text)
 }
 
-/// The best `keep` of `labels` for the whitespace-separated terms of `query` (every term must
-/// match somewhere in the label), best first, as (label index, matched char positions).
-pub fn rank<'a>(query: &str, n: usize, label: impl Fn(usize) -> &'a str, keep: usize) -> Vec<(usize, Vec<usize>)> {
+/// The best `keep` of `n` labels for the whitespace-separated terms of `query` (every term must
+/// match somewhere in the label), best first, as (label index, matched char positions). A row
+/// whose `label` is `None` is not listed.
+pub fn rank<'a>(
+    query: &str,
+    n: usize,
+    label: impl Fn(usize) -> Option<&'a str>,
+    keep: usize,
+) -> Vec<(usize, Vec<usize>)> {
     let terms: Vec<Query> = query.split_whitespace().map(Query::new).collect();
     let mut scored: Vec<(i32, usize)> = Vec::new();
     for i in 0..n {
-        let text = label(i);
+        let Some(text) = label(i) else { continue };
         if let Some(total) = terms.iter().map(|t| t.score(text)).sum::<Option<i32>>() {
             scored.push((total, i));
         }
@@ -164,7 +170,7 @@ pub fn rank<'a>(query: &str, n: usize, label: impl Fn(usize) -> &'a str, keep: u
         .into_iter()
         .map(|(_, i)| {
             // Positions only for the rows that are shown.
-            let mut pos: Vec<usize> = terms.iter().filter_map(|t| t.matched(label(i))).flat_map(|(_, p)| p).collect();
+            let mut pos: Vec<usize> = terms.iter().filter_map(|t| t.matched(label(i)?)).flat_map(|(_, p)| p).collect();
             pos.sort_unstable();
             pos.dedup();
             (i, pos)
@@ -340,7 +346,7 @@ mod tests {
             all.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             for keep in [0, 1, 3, 7, 1000] {
                 let want: Vec<(usize, Vec<usize>)> = all.iter().take(keep).map(|(_, i, p)| (*i, p.clone())).collect();
-                assert_eq!(rank(q, corpus.len(), |i| corpus[i].as_str(), keep), want, "query {q:?} keep {keep}");
+                assert_eq!(rank(q, corpus.len(), |i| Some(corpus[i].as_str()), keep), want, "query {q:?} keep {keep}");
             }
         }
     }

@@ -160,7 +160,7 @@ pub struct App {
     pub comp_t0: Option<Instant>,
     /// Completion request still unanswered: (server, request id, document uri, word start, sent at).
     pub comp_inflight: Option<(usize, i64, String, usize, Instant)>,
-    pub file_index: Option<Vec<PathBuf>>,
+    pub file_index: Option<crate::app_goto::FileIdx>,
     pub panel: Panel,
     /// The bottom panel's terminals (tabs, split, the one with the keyboard).
     pub terms: crate::app_terms::Terms,
