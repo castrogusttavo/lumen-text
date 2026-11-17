@@ -18,7 +18,7 @@ const ROOMY_MB: u64 = 32 * 1024;
 /// No full-project tsgo may be allowed more than this, however much RAM the machine has.
 pub const HARD_BUDGET_MB: u64 = 3 * 1024;
 /// A lean tsgo is meant to stay near 220 MB; past this it is restarted (something is wrong).
-pub const LEAN_HARD_MB: u64 = 3 * 1024;
+pub const LEAN_HARD_MB: u64 = 5 * 1024;
 /// Projects with more TS/JS source files than this start lean.
 pub const HEAVY_FILES: usize = 400;
 /// Projects declaring at least this many dependencies start lean (their type packages are huge).
