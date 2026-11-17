@@ -1407,7 +1407,7 @@ dependencies = [
  "image-webp",
  "libc",
  "minisign-verify",
- "miniz_oxide 0.8.9",
+ "miniz_oxide 0.9.1",
  "onig",
  "png",
  "portable-pty",
