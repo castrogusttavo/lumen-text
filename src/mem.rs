@@ -124,6 +124,42 @@ fn pss_direct(pid: u32) -> Option<u64> {
     text.lines().find(|l| l.starts_with("Pss:"))?.split_whitespace().nth(1)?.parse().ok()
 }
 
+// ───────────── resident memory (cheap) ─────────────
+//
+// What the periodic threshold checks read (the tsgo memory guard and the memory budget): the
+// anonymous and shmem resident pages, `RssAnon` + `RssShmem` of `/proc/<pid>/status`. The kernel
+// answers that from counters it keeps per process, with no page-table walk and without the
+// target's mmap lock, so the cost does not grow with the process (unlike `smaps_rollup`).
+//
+// It is not PSS. It over-counts whatever is shared: a shmem page, or an anonymous page still
+// shared copy-on-write after a fork, counts in full for every process mapping it, where PSS
+// divides it among them. And it leaves file-backed pages out altogether (the executable and
+// mapped files, a few tens of MB that can be dropped and re-read at will). For a language
+// server nearly everything is its own heap, which is anonymous and private, so the two numbers
+// differ by tens of MB at most: nothing against thresholds of one to five GB that already need
+// two samples in a row. The numbers the user reads (status bar, Resources panel) stay PSS.
+
+/// `RssAnon` + `RssShmem` in kB out of the text of `/proc/<pid>/status`.
+#[cfg(any(target_os = "linux", test))]
+fn status_resident_kb(text: &str) -> Option<u64> {
+    let field = |name: &str| -> Option<u64> {
+        text.lines().find_map(|l| l.strip_prefix(name)?.split_whitespace().next()?.parse().ok())
+    };
+    Some(field("RssAnon:")? + field("RssShmem:").unwrap_or(0))
+}
+
+/// Anonymous + shmem resident memory in kB of a process, read now (see above).
+#[cfg(target_os = "linux")]
+fn resident_direct(pid: u32) -> Option<u64> {
+    status_resident_kb(&fs::read_to_string(format!("/proc/{pid}/status")).ok()?)
+}
+
+/// Outside Linux the resident size is the only number there is.
+#[cfg(not(target_os = "linux"))]
+fn resident_direct(pid: u32) -> Option<u64> {
+    resident_kb(pid)
+}
+
 // ───────────── background sampler ─────────────
 //
 // `smaps_rollup` makes the kernel walk the page tables of the process it describes while holding
@@ -142,6 +178,8 @@ const SHOW_STEP_KB: u64 = 1024;
 pub struct ProcMem {
     /// PSS (what the user reads); None when it was not sampled or the process is gone.
     pub pss_kb: Option<u64>,
+    /// Anonymous + shmem resident memory (what the threshold checks read); None likewise.
+    pub resident_kb: Option<u64>,
 }
 
 /// One published measurement: the editor itself and the watched processes, by pid.
@@ -155,14 +193,16 @@ pub struct Sample {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Want {
     pids: Vec<u32>,
-    /// PSS of everything (the status bar shows it; the guard and the budget check read it).
+    /// PSS of everything (the status bar shows it): one `smaps_rollup` per process.
     pss: bool,
+    /// Resident memory of everything (the guard and the budget check): one `status` per process.
+    resident: bool,
 }
 
 impl Want {
     /// Nothing to measure: the thread sleeps until the request changes.
     fn idle(&self) -> bool {
-        !self.pss
+        !self.pss && !self.resident
     }
 }
 
@@ -191,7 +231,12 @@ static SAMPLER: OnceLock<Arc<Sampler>> = OnceLock::new();
 /// Tell the sampler what to measure (called from the UI tick; cheap when nothing changed). The
 /// thread starts on the first call and measures at once whenever the request changes. Tests have
 /// no sampler: every reader below then measures synchronously, as before.
-pub fn watch(pids: impl Iterator<Item = u32> + Clone, pss: bool, wake: impl FnOnce() -> Arc<dyn Fn() + Send + Sync>) {
+pub fn watch(
+    pids: impl Iterator<Item = u32> + Clone,
+    pss: bool,
+    resident: bool,
+    wake: impl FnOnce() -> Arc<dyn Fn() + Send + Sync>,
+) {
     if cfg!(test) {
         return;
     }
@@ -211,10 +256,10 @@ pub fn watch(pids: impl Iterator<Item = u32> + Clone, pss: bool, wake: impl FnOn
         s
     });
     let mut g = s.lock();
-    if g.want.pss == pss && g.want.pids.iter().copied().eq(pids.clone()) {
+    if g.want.pss == pss && g.want.resident == resident && g.want.pids.iter().copied().eq(pids.clone()) {
         return;
     }
-    g.want = Want { pids: pids.collect(), pss };
+    g.want = Want { pids: pids.collect(), pss, resident };
     g.kick = true;
     drop(g);
     s.cv.notify_one();
@@ -259,9 +304,12 @@ fn run(s: &Sampler, wake: &(dyn Fn() + Send + Sync)) {
 
 /// Read everything `want` asks for, now (the sampler thread; tests call it directly).
 fn measure(want: &Want) -> Sample {
-    let own = ProcMem { pss_kb: if want.pss { snapshot().map(|m| m.pss_kb) } else { None } };
-    let procs =
-        want.pids.iter().map(|&pid| (pid, ProcMem { pss_kb: if want.pss { pss_direct(pid) } else { None } })).collect();
+    let one = |pss: Option<u64>, pid: u32| ProcMem {
+        pss_kb: pss,
+        resident_kb: if want.resident { resident_direct(pid) } else { None },
+    };
+    let own = one(if want.pss { snapshot().map(|m| m.pss_kb) } else { None }, std::process::id());
+    let procs = want.pids.iter().map(|&pid| (pid, one(if want.pss { pss_direct(pid) } else { None }, pid))).collect();
     Sample { own, procs }
 }
 
@@ -306,6 +354,18 @@ pub fn pss_of(pid: u32) -> Option<u64> {
     published(Some(pid)).and_then(|m| m.pss_kb).or_else(|| pss_direct(pid))
 }
 
+/// Anonymous + shmem resident memory in kB of the editor (published, else read now): for
+/// threshold checks, not for display.
+pub fn own_resident_kb() -> Option<u64> {
+    published(None).and_then(|m| m.resident_kb).or_else(|| resident_direct(std::process::id()))
+}
+
+/// Anonymous + shmem resident memory in kB of another process (published, else read now): for
+/// threshold checks, not for display.
+pub fn resident_of(pid: u32) -> Option<u64> {
+    published(Some(pid)).and_then(|m| m.resident_kb).or_else(|| resident_direct(pid))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,8 +384,11 @@ mod tests {
     #[test]
     fn sample_lists_the_editor_first_and_skips_dead_processes() {
         let s = Sample {
-            own: ProcMem { pss_kb: Some(10) },
-            procs: vec![(5, ProcMem { pss_kb: None }), (6, ProcMem { pss_kb: Some(30) })],
+            own: ProcMem { pss_kb: Some(10), resident_kb: Some(9) },
+            procs: vec![
+                (5, ProcMem { pss_kb: None, resident_kb: Some(70) }),
+                (6, ProcMem { pss_kb: Some(30), resident_kb: None }),
+            ],
         };
         assert_eq!(displayed(&s), vec![(0, 10), (6, 30)]);
         assert_eq!(displayed(&Sample::default()), Vec::new());
@@ -334,22 +397,52 @@ mod tests {
     #[test]
     fn measuring_reads_only_what_was_asked() {
         let me = std::process::id();
-        let off = Want { pids: vec![me], pss: false };
+        let off = Want { pids: vec![me], pss: false, resident: false };
         assert!(off.idle());
         let s = measure(&off);
         assert_eq!((s.own, s.procs), (ProcMem::default(), vec![(me, ProcMem::default())]));
-        let on = measure(&Want { pids: vec![me], pss: true });
+        let on = Want { pids: vec![me], pss: true, resident: false };
+        assert!(!on.idle());
+        let s = measure(&on);
         // Where the OS offers no number (unsupported platform) both stay empty.
-        assert_eq!(on.own.pss_kb.is_some(), on.procs[0].1.pss_kb.is_some());
-        if let Some(kb) = on.procs[0].1.pss_kb {
+        assert_eq!(s.own.pss_kb.is_some(), s.procs[0].1.pss_kb.is_some());
+        assert_eq!((s.own.resident_kb, s.procs[0].1.resident_kb), (None, None));
+        if let Some(kb) = s.procs[0].1.pss_kb {
             assert!(kb > 0);
         }
+        // The guard alone needs no PSS: no `smaps_rollup` is read for it.
+        let cheap = Want { pids: vec![me], pss: false, resident: true };
+        assert!(!cheap.idle());
+        let s = measure(&cheap);
+        assert_eq!((s.own.pss_kb, s.procs[0].1.pss_kb), (None, None));
+        assert_eq!(s.own.resident_kb.is_some(), s.procs[0].1.resident_kb.is_some());
+        assert!(displayed(&s).is_empty(), "nothing displayed changes: the UI is not woken");
+    }
+
+    #[test]
+    fn resident_memory_is_anonymous_plus_shmem() {
+        let status = "Name:\ttsgo\nVmRSS:\t 2100000 kB\nRssAnon:\t 2000000 kB\nRssFile:\t   90000 kB\n\
+                      RssShmem:\t   10000 kB\nVmData:\t 9999999 kB\n";
+        assert_eq!(status_resident_kb(status), Some(2_010_000), "file-backed pages are left out");
+        assert_eq!(status_resident_kb("RssAnon:\t 5 kB\n"), Some(5));
+        assert_eq!(status_resident_kb("Name:\tkthreadd\n"), None, "no memory fields");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resident_memory_of_this_process_is_within_its_rss() {
+        let me = std::process::id();
+        let (res, snap) = (resident_direct(me).unwrap(), snapshot().unwrap());
+        // Two readings a moment apart while other tests allocate: allow some slack.
+        assert!(res > 0 && res <= snap.rss_kb + 64 * 1024, "anon + shmem {res} kB, RSS {} kB", snap.rss_kb);
+        assert_eq!(resident_of(me).is_some(), own_resident_kb().is_some());
+        assert_eq!(resident_direct(u32::MAX), None, "no such process");
     }
 
     #[test]
     fn without_a_sampler_readers_measure_directly() {
         // Tests never start the thread: nothing is published and the readers fall back.
-        watch([1u32].into_iter(), true, || Arc::new(|| {}));
+        watch([1u32].into_iter(), true, true, || Arc::new(|| {}));
         assert_eq!(generation(), None);
         assert_eq!(published(None), None);
         assert_eq!(own_pss_kb().is_some(), snapshot().is_some());

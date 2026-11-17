@@ -196,19 +196,21 @@ impl App {
     }
 
     /// Cheap total for the budget: the editor and its language servers (no `ps`), from the
-    /// numbers the background sampler published.
+    /// numbers the background sampler published. Resident memory rather than PSS (see `mem`:
+    /// no page-table walk; it counts shared pages in full, harmless against a budget in GB).
     fn res_budget_total_kb(&self) -> u64 {
-        let own = crate::mem::own_pss_kb().unwrap_or(0);
-        own + self.lsps.iter().filter_map(|l| crate::mem::pss_of(l.pid())).sum::<u64>()
+        let own = crate::mem::own_resident_kb().unwrap_or(0);
+        own + self.lsps.iter().filter_map(|l| crate::mem::resident_of(l.pid())).sum::<u64>()
     }
 
-    /// Tell the background sampler what to measure: the language servers, for as long as
-    /// something reads the numbers (the RAM item of the bottom bar, the memory guard of tsgo or
-    /// the budget check). With none of them the sampler sleeps.
+    /// Tell the background sampler what to measure: PSS of the editor and its language servers
+    /// while the RAM item of the bottom bar shows it, their resident memory while the memory
+    /// guard of tsgo or the budget check reads it. With neither the sampler sleeps.
     pub(crate) fn mem_watch(&self) {
         let guard = self.config.lsp_auto_lean && self.lsps.iter().any(|l| l.name == "tsgo");
-        let read = self.config.status_visible("ram") || guard || self.config.mem_budget_mb > 0;
-        crate::mem::watch(self.lsps.iter().map(|l| l.pid()), read, || self.wake());
+        let pss = self.config.status_visible("ram");
+        let resident = guard || self.config.mem_budget_mb > 0;
+        crate::mem::watch(self.lsps.iter().map(|l| l.pid()), pss, resident, || self.wake());
     }
 
     fn res_refresh(&mut self) {
