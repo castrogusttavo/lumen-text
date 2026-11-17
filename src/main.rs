@@ -261,7 +261,7 @@ fn main() -> ExitCode {
             None => config::assets_dir().join("themes").join(format!("{name}.json")),
         }
     });
-    mem::report("startup");
+    mem::report_startup("startup");
     startup::mark("config loaded");
     let theme = match theme::Theme::load(&theme_path) {
         Ok(t) => t,
@@ -372,7 +372,7 @@ fn main() -> ExitCode {
         }
         None => app.take_orphans(),
     }
-    mem::report("app ready");
+    mem::report_startup("app ready");
     startup::mark("app ready");
     app::run(app, el);
     ExitCode::SUCCESS

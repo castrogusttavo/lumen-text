@@ -55,6 +55,20 @@ pub fn report(label: &str) {
     }
 }
 
+/// True when the startup milestones are reported: only with `LUMEN_DEBUG` set.
+fn startup_reports(debug: Option<&std::ffi::OsStr>) -> bool {
+    debug.is_some()
+}
+
+/// `report` for the startup milestones ("startup", "fonts ready", "app ready", "window
+/// created"). Each one reads `smaps_rollup`, asks the allocator for its statistics and prints,
+/// on the way to the first frame, so they are for `LUMEN_DEBUG=1` runs only.
+pub fn report_startup(label: &str) {
+    if startup_reports(std::env::var_os("LUMEN_DEBUG").as_deref()) {
+        report(label);
+    }
+}
+
 /// PSS in kB of another process (e.g. a language server we spawned), read now.
 #[cfg(not(target_os = "linux"))]
 fn pss_direct(pid: u32) -> Option<u64> {
@@ -440,6 +454,12 @@ mod tests {
         let keep: Vec<Vec<u8>> = (0..64).map(|_| vec![1u8; 64 * 1024]).collect();
         drop(keep);
         assert!(heap_free_kb().is_some());
+    }
+
+    #[test]
+    fn startup_milestones_are_reported_only_when_debugging() {
+        assert!(!startup_reports(None));
+        assert!(startup_reports(Some(std::ffi::OsStr::new("1"))));
     }
 
     #[test]
