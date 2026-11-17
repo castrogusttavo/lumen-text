@@ -411,6 +411,7 @@ modal edits `config.json` and applies changes live; unknown or invalid values fa
 | `updates` | `"auto"` | `"auto"` (check, download and install in the background), `"notify"` (only announce) or `"off"`; see [Updates](#updates) |
 | `auto_import` | `false` | Auto-import in completion (costs RAM and time) |
 | `lsp_narrow` | `false` | opt-in tsgo lean mode (only open files and their imports; less RAM, incomplete cross-file errors/references) |
+| `lsp_auto_lean` | `true` | memory guard for tsgo: big projects (over 400 source files or 150 dependencies) start in lean mode on machines under 32 GB, a full-project server above its budget (1 GB, or 20 % of the RAM, never more than **5 GB**) is restarted in lean mode, and a lean server above **5 GB** for two checks in a row is restarted. Set it to `false` to turn the guard off |
 | `tsgo_source` | `"auto"` | `"auto"` (project's own, else bundled), `"project"`, `"bundled"` |
 | `language_servers` | `{}` | Add, replace or switch off language servers, e.g. `{"rust": {"command": "my-ra"}, "python": {"enabled": false}, "my-server": {"command": "x", "languages": ["foo"]}}`; fields `command`, `args`, `env`, `languages`, `extensions`, `root_markers`, `initialization_options`, `settings`, `enabled`, `role`, `requires`. Mistakes are reported in the status bar, never fatal |
 | `code_lens` / `inlay_hints` | `false` | Optional LSP extras (cost server CPU) |
@@ -639,7 +640,7 @@ Each conflict has two checkboxes: *Accept incoming* and *Accept current*; checki
 - RTL editing is logical (arrows, Home/End walk the text order, the caret shows a small direction flag); a Hebrew/Arabic line is reordered but not right-aligned to the window, and inlay hints are not shown on those lines. Selecting with the mouse across direction runs highlights separate pieces.
 - No TextMate `injections` (code embedded in Markdown/HTML gets only the outer grammar).
 - Opening a very large file and jumping to its end leaves that stretch uncolored for a few seconds.
-- Full-project mode (default) can use several hundred MB on very large projects; the opt-in lean mode
+- Full-project mode (default) can use several hundred MB on very large projects (a Next.js app with ~8,000 files measured ~1.4 GB with auto-import on); the memory guard (`lsp_auto_lean`) caps it at 5 GB; the opt-in lean mode
   (setting `lsp_narrow`, palette "LSP: Toggle lean mode") trades that for errors and references that only see open files and their imports.
 - "Open folder" inside the app is limited; the project root normally comes from the command line.
 - Window positions are not restored on Wayland (the protocol does not let applications place windows); sizes are.

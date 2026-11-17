@@ -16,9 +16,9 @@ pub const BUDGET_MB: u64 = 1000;
 /// (Used to be 12 GB; a 15 GB machine let a Next.js app grow tsgo to 12 GB, so only really big ones qualify.)
 const ROOMY_MB: u64 = 32 * 1024;
 /// No full-project tsgo may be allowed more than this, however much RAM the machine has.
-pub const HARD_BUDGET_MB: u64 = 3 * 1024;
+pub const HARD_BUDGET_MB: u64 = 5 * 1024;
 /// A lean tsgo is meant to stay near 220 MB; past this it is restarted (something is wrong).
-pub const LEAN_HARD_MB: u64 = 2 * 1024;
+pub const LEAN_HARD_MB: u64 = 5 * 1024;
 /// Projects with more TS/JS source files than this start lean.
 pub const HEAVY_FILES: usize = 400;
 /// Projects declaring at least this many dependencies start lean (their type packages are huge).
@@ -47,11 +47,12 @@ pub struct Guard {
     pub lean: HashSet<PathBuf>,
     last: Instant,
     strikes: u8,
+    lean_strikes: u8,
 }
 
 impl Guard {
     pub fn new() -> Self {
-        Guard { lean: HashSet::new(), last: Instant::now(), strikes: 0 }
+        Guard { lean: HashSet::new(), last: Instant::now(), strikes: 0, lean_strikes: 0 }
     }
 
     /// True when the periodic check is due; resets the timer.
@@ -61,6 +62,21 @@ impl Guard {
         }
         self.last = Instant::now();
         true
+    }
+
+    /// One sample of a lean server: true after `STRIKES` consecutive samples above `LEAN_HARD_MB`
+    /// (a reload spike that comes back down must not restart the server).
+    pub fn lean_over(&mut self, pss_mb: u64) -> bool {
+        if pss_mb > LEAN_HARD_MB {
+            self.lean_strikes += 1;
+        } else {
+            self.lean_strikes = 0;
+        }
+        if self.lean_strikes >= STRIKES {
+            self.lean_strikes = 0;
+            return true;
+        }
+        false
     }
 
     /// Record one sample of a full-project server; true after `STRIKES` consecutive over-budget samples.
@@ -157,6 +173,15 @@ mod tests {
     }
 
     #[test]
+    fn lean_spike_that_recovers_is_not_restarted() {
+        let mut g = Guard::new();
+        assert!(!g.lean_over(LEAN_HARD_MB + 1));
+        assert!(!g.lean_over(500));
+        assert!(!g.lean_over(LEAN_HARD_MB + 1));
+        assert!(g.lean_over(LEAN_HARD_MB + 1));
+    }
+
+    #[test]
     fn over_budget_needs_consecutive_samples() {
         let mut g = Guard::new();
         assert!(!g.over_budget(BUDGET_MB + 1, BUDGET_MB));
@@ -177,8 +202,9 @@ mod tests {
         assert_eq!(heavy_reason_on(&d, 64_000), None);
         assert_eq!(budget_mb(4_000), BUDGET_MB);
         assert_eq!(budget_mb(7_600), 1_520);
-        assert_eq!(budget_mb(16_000), 3_072);
+        assert_eq!(budget_mb(16_000), 3_200);
         assert_eq!(budget_mb(64_000), HARD_BUDGET_MB);
+        assert_eq!(budget_mb(1_000_000), HARD_BUDGET_MB);
         std::fs::remove_dir_all(&d).ok();
     }
 }
