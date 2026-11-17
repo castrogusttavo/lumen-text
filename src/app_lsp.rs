@@ -143,6 +143,13 @@ fn lenses_to_resolve(lines: &[usize], done: &[bool], (first, last): (usize, usiz
     idx
 }
 
+/// Does `label` start with `prefix_lower` (already lowercased), ignoring case? The prefix is
+/// lowercased once per list, and no lowercase copy of each of the thousands of labels is made.
+fn starts_with_lower(label: &str, prefix_lower: &str) -> bool {
+    let mut l = label.chars().flat_map(char::to_lowercase);
+    prefix_lower.chars().all(|p| l.next() == Some(p))
+}
+
 /// Diagnostics to pull after an edit: of the server's open documents (`open`, server-side URIs),
 /// those in `first` (the edited and the active one) now, the others later.
 fn pull_split(open: Vec<String>, first: &[String]) -> (Vec<String>, Vec<String>) {
@@ -1367,7 +1374,7 @@ impl App {
             }
             Pending::Hover { uri, at } => self.on_hover(&uri, at, &v),
             Pending::HoverExtra { uri, at, serial, what } => self.hover_extra_response(&uri, at, serial, what, &v),
-            Pending::Completion { uri, at } => self.on_completion(&uri, at, &v),
+            Pending::Completion { uri, at } => self.on_completion(&uri, at, v),
             Pending::Definition { kind } => {
                 let locs = lsp::locations(&v);
                 match locs.len() {
@@ -2100,13 +2107,14 @@ impl App {
             .is_some_and(|(_, _, u, w, t)| u == uri && *w == ws && t.elapsed() < Duration::from_secs(20))
     }
 
-    pub(crate) fn on_completion(&mut self, uri: &str, at: usize, v: &Value) {
+    /// A completion answer. It is taken by value: the items that survive the filter are moved into
+    /// the popup's list (`CItem::raw`), not copied.
+    pub(crate) fn on_completion(&mut self, uri: &str, at: usize, v: Value) {
         let Some(i) = self.doc_by_uri(uri) else { return };
         if i != self.active {
             return;
         }
-        let list = v.get("items").unwrap_or(v);
-        let all = list.as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let all = crate::lspmerge::take_items(v);
         if std::env::var_os("LUMEN_DEBUG").is_some() {
             eprintln!("[lsp] completion n={} in {:?}", all.len(), self.comp_t0.map(|t| t.elapsed()));
         }
@@ -2121,17 +2129,18 @@ impl App {
             start -= 1;
         }
         let prefix = d.buf.slice(start, head);
+        let lower = prefix.to_lowercase();
 
         // Servers return thousands of candidates (every auto-import in the program). Keep only
         // those that can still match what was typed, best first: later keystrokes only narrow it.
-        let mut scored: Vec<(i32, &Value)> = Vec::new();
+        let mut scored: Vec<(i32, Value)> = Vec::new();
         for it in all {
             let Some(label) = it["label"].as_str() else { continue };
             let score = if prefix.is_empty() {
                 0
             } else {
                 match fuzzy(&prefix, label) {
-                    Some((s, _)) => s + if label.to_lowercase().starts_with(&prefix.to_lowercase()) { 40 } else { 0 },
+                    Some((s, _)) => s + if starts_with_lower(label, &lower) { 40 } else { 0 },
                     None => continue,
                 }
             };
@@ -2142,26 +2151,18 @@ impl App {
 
         let mut items: Vec<CItem> = Vec::with_capacity(scored.len());
         for (_, it) in scored {
-            let label = it["label"].as_str().unwrap_or("");
+            let label = it["label"].as_str().unwrap_or("").to_string();
             let te = it.get("textEdit").filter(|t| t.is_object() && t.get("range").is_some());
             let insert = te
                 .and_then(|t| t["newText"].as_str())
                 .or_else(|| it["insertText"].as_str())
-                .unwrap_or(label)
+                .unwrap_or(&label)
                 .to_string();
-            items.push(CItem {
-                label: label.to_string(),
-                detail: it["detail"]
-                    .as_str()
-                    .or_else(|| it["labelDetails"]["description"].as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                insert,
-                kind: it["kind"].as_u64().unwrap_or(0) as u32,
-                sort: it["sortText"].as_str().unwrap_or(label).to_string(),
-                range: te.and_then(parse_edit),
-                raw: it.clone(),
-            });
+            let detail =
+                it["detail"].as_str().or_else(|| it["labelDetails"]["description"].as_str()).unwrap_or("").to_string();
+            let sort = it["sortText"].as_str().unwrap_or(&label).to_string();
+            let (kind, range) = (it["kind"].as_u64().unwrap_or(0) as u32, te.and_then(parse_edit));
+            items.push(CItem { label, detail, insert, kind, sort, range, raw: it });
         }
         // The user's, the project's and the built-in snippets ride along with the server's list.
         items.extend(crate::app_snippets::snippet_citems(&self.root, d.lang));
@@ -2170,7 +2171,8 @@ impl App {
             Completion { items, filtered: Vec::new(), sel: 0, scroll: 0, start, seed_len: prefix.chars().count() };
         self.refilter_completion_into(&mut c);
         self.completion = if c.filtered.is_empty() { None } else { Some(c) };
-        release_memory();
+        // No `release_memory()` here: malloc_trim walks the whole heap, synchronously, right before
+        // the popup is drawn. The periodic trim of `App::tick` returns the answer's memory.
         self.request_redraw();
     }
 
@@ -2178,6 +2180,7 @@ impl App {
         let Some(d) = self.docs.get(self.active) else { return };
         let head = d.ed.head();
         let prefix = if head >= c.start { d.buf.slice(c.start, head) } else { String::new() };
+        let lower = prefix.to_lowercase();
         // Names from the editor's import index follow what is typed (the server's list only narrows).
         c.items.retain(|it| it.raw.get("__import").is_none());
         let extra = {
@@ -2194,7 +2197,7 @@ impl App {
                     return Some((0, i));
                 }
                 let (mut s, _) = fuzzy(&prefix, &it.label)?;
-                if it.label.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                if starts_with_lower(&it.label, &lower) {
                     s += 40;
                 }
                 Some((s, i))
@@ -2730,6 +2733,51 @@ mod lang_tests {
         let mut new = [lens(3, Some("9 references"))];
         carry_lens_titles(&old, &old_names, &mut new, &["Repo".to_string()]);
         assert_eq!(new[0].title.as_deref(), Some("9 references"));
+    }
+
+    #[test]
+    fn prefix_match_ignores_case_without_lowercasing_each_label() {
+        for (label, prefix) in
+            [("useState", "uses"), ("USE_STATE", "use_"), ("Ünïcode", "ünï"), ("İstanbul", "i\u{307}s")]
+        {
+            assert!(starts_with_lower(label, prefix), "{label} / {prefix}");
+            assert!(label.to_lowercase().starts_with(prefix));
+        }
+        for (label, prefix) in [("useState", "state"), ("us", "use"), ("", "a")] {
+            assert!(!starts_with_lower(label, prefix), "{label} / {prefix}");
+            assert!(!label.to_lowercase().starts_with(prefix));
+        }
+        assert!(starts_with_lower("anything", "") && starts_with_lower("", ""));
+    }
+
+    #[test]
+    fn a_completion_answer_is_filtered_ranked_and_its_items_kept_whole() {
+        use crate::app_unsaved::testkit::{lock, test_app, tmp};
+        let _g = lock();
+        let dir = tmp("completion-answer");
+        let mut app = test_app(&dir);
+        let i = app.active;
+        let uri = app.docs[i].uri().expect("the seed file has a URI");
+        // "se|ed": the word being completed is "se".
+        let d = &mut app.docs[i];
+        d.ed.click(&mut d.buf, 2, false);
+        let answer = json!({"isIncomplete": false, "items": [
+            {"label": "xsxxe", "data": {"n": 1}},
+            {"label": "zzz"},
+            {"label": "SEcond", "data": {"n": 2}, "additionalTextEdits": [{"newText": "import x;\n",
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}}]},
+        ]});
+        app.on_completion(&uri, 2, answer);
+        let c = app.completion.as_ref().expect("the popup");
+        let shown: Vec<&str> = c.filtered.iter().map(|&k| c.items[k].label.as_str()).collect();
+        assert_eq!(shown.first(), Some(&"SEcond"), "a case-insensitive prefix match ranks first: {shown:?}");
+        assert!(shown.contains(&"xsxxe") && !shown.contains(&"zzz"), "{shown:?}");
+        assert!((c.start, c.seed_len) == (0, 2));
+        // The raw item (what resolve and the import edits need) is the server's, untouched.
+        let k = c.items.iter().position(|it| it.label == "SEcond").unwrap();
+        assert_eq!(c.items[k].raw["data"]["n"], 2);
+        assert_eq!(parse_edits(&c.items[k].raw["additionalTextEdits"]).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
