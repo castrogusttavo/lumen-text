@@ -9,8 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A full-project tsgo above this many MB (PSS) is restarted in lean mode, unless the machine has
-/// plenty of RAM (see `budget_mb`).
+/// A full-project tsgo above this many MB is restarted in lean mode, unless the machine has
+/// plenty of RAM (see `budget_mb`). Measured as anonymous + shmem resident memory, which costs
+/// the server nothing to read (`mem::resident_of`); for a server that is its heap, within a few
+/// tens of MB of its PSS.
 pub const BUDGET_MB: u64 = 1000;
 /// Machines with at least this much RAM never start lean on their own: a big project fits comfortably.
 /// (Used to be 12 GB; a 15 GB machine let a Next.js app grow tsgo to 12 GB, so only really big ones qualify.)
@@ -48,11 +50,29 @@ pub struct Guard {
     last: Instant,
     strikes: u8,
     lean_strikes: u8,
+    /// The published memory sample (`mem::generation`) the last check counted.
+    seen: Option<u64>,
 }
 
 impl Guard {
     pub fn new() -> Self {
-        Guard { lean: HashSet::new(), last: Instant::now(), strikes: 0, lean_strikes: 0 }
+        Guard { lean: HashSet::new(), last: Instant::now(), strikes: 0, lean_strikes: 0, seen: None }
+    }
+
+    /// The checks count consecutive *samples*, and the numbers now come from a background
+    /// sampler: true when `generation` is a sample no earlier check counted (a stalled sampler
+    /// must not turn one reading into two strikes).
+    pub fn fresh(&mut self, generation: u64) -> bool {
+        if self.seen == Some(generation) {
+            return false;
+        }
+        self.seen = Some(generation);
+        true
+    }
+
+    /// When the next periodic check is due.
+    pub fn next_check(&self) -> Instant {
+        self.last + CHECK_EVERY
     }
 
     /// True when the periodic check is due; resets the timer.
@@ -92,6 +112,12 @@ impl Guard {
         }
         false
     }
+}
+
+/// Whether the periodic check runs at all (and asks for its wake-up): only with the guard
+/// enabled, a tsgo running (nothing else is guarded) and the window in the foreground.
+pub fn runs(auto_lean: bool, focused: bool, has_tsgo: bool) -> bool {
+    auto_lean && focused && has_tsgo
 }
 
 impl Default for Guard {
@@ -179,6 +205,33 @@ mod tests {
         assert!(!g.lean_over(500));
         assert!(!g.lean_over(LEAN_HARD_MB + 1));
         assert!(g.lean_over(LEAN_HARD_MB + 1));
+    }
+
+    #[test]
+    fn the_check_runs_only_with_a_tsgo_in_a_focused_window() {
+        assert!(runs(true, true, true));
+        assert!(!runs(true, true, false), "no server: no timer");
+        assert!(!runs(true, false, true), "window in the background");
+        assert!(!runs(false, true, true), "guard switched off");
+    }
+
+    #[test]
+    fn the_next_check_is_one_period_after_the_last() {
+        let mut g = Guard::new();
+        assert!(!g.due(), "a period has to pass first");
+        let at = g.next_check();
+        assert!(at > Instant::now() && at <= Instant::now() + CHECK_EVERY);
+        g.last = Instant::now() - CHECK_EVERY;
+        assert!(g.due());
+        assert!(g.next_check() > Instant::now(), "the timer was reset");
+    }
+
+    #[test]
+    fn a_published_sample_is_counted_once() {
+        let mut g = Guard::new();
+        assert!(g.fresh(1));
+        assert!(!g.fresh(1), "the same sample again is not a second strike");
+        assert!(g.fresh(2));
     }
 
     #[test]

@@ -321,10 +321,24 @@ impl App {
         });
     }
 
-    /// Restart a full-project tsgo in lean mode when it grows past the memory budget.
+    /// Restart a full-project tsgo in lean mode when it grows past the memory budget. The check
+    /// and its timer run only while there is a tsgo to guard and the window is focused.
     pub(crate) fn guard_lsp_memory(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
-        want(now + Duration::from_secs(5));
-        if !self.config.lsp_auto_lean || !self.lsp_guard.due() {
+        let has_tsgo = self.lsps.iter().any(|l| l.name == "tsgo");
+        if !crate::lsp_guard::runs(self.config.lsp_auto_lean, self.gitbg.focused, has_tsgo) {
+            return;
+        }
+        let due = self.lsp_guard.due();
+        want(self.lsp_guard.next_check().max(now));
+        if !due {
+            return;
+        }
+        // The numbers below are the ones the background sampler published (`mem::watch`); each
+        // sample counts once. With no sampler (tests) they are read here and now. They are
+        // resident memory (anonymous + shmem), not PSS: see `mem` for why that is close enough.
+        if let Some(generation) = crate::mem::generation()
+            && !self.lsp_guard.fresh(generation)
+        {
             return;
         }
         // A lean server that balloons is broken: restart it rather than let it eat the machine.
@@ -332,7 +346,7 @@ impl App {
             .lsps
             .iter()
             .filter(|l| l.name == "tsgo" && l.mirror.is_some())
-            .filter_map(|l| crate::mem::pss_of(l.pid()).map(|kb| kb / 1024))
+            .filter_map(|l| crate::mem::resident_of(l.pid()).map(|kb| kb / 1024))
             .max();
         if let Some(mb) = lean_mb.filter(|mb| self.lsp_guard.lean_over(*mb)) {
             self.restart_lsp();
@@ -340,7 +354,7 @@ impl App {
             return;
         }
         let Some(l) = self.lsps.iter().find(|l| l.name == "tsgo" && l.mirror.is_none()) else { return };
-        let Some(mb) = crate::mem::pss_of(l.pid()).map(|kb| kb / 1024) else { return };
+        let Some(mb) = crate::mem::resident_of(l.pid()).map(|kb| kb / 1024) else { return };
         if !self.lsp_guard.over_budget(mb, crate::lsp_guard::budget_mb(crate::lsp_guard::total_ram_mb())) {
             return;
         }

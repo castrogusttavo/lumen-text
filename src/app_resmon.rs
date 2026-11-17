@@ -1,7 +1,8 @@
 //! Resource panel glue (RAM item of the bottom bar): a picker listing the editor and everything
 //! it started with PSS/RSS and uptime, a Stop / Restart menu per row, and the optional soft
 //! memory budget. Measuring happens only while the panel is open (every 2 s) and, with a budget
-//! set, every 10 s over the editor and its servers; with no budget and no panel nothing runs.
+//! set, every 10 s over the editor and its servers; with no budget and no panel nothing runs,
+//! and nothing runs either while the window is in the background.
 
 use crate::{
     app::App,
@@ -160,6 +161,11 @@ impl App {
 
     /// Refresh the open panel and run the budget check; asks for wake-ups only when it needs them.
     pub(crate) fn res_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        // Window in the background: no periodic measuring (it resumes with the focus, whose
+        // event runs a tick; both timers below are then overdue and fire at once).
+        if !self.gitbg.focused {
+            return;
+        }
         if let Some(at) = self.res.next_refresh {
             if !self.res_panel_open() {
                 self.res.next_refresh = None;
@@ -195,10 +201,47 @@ impl App {
         want(self.res.next_budget);
     }
 
-    /// Cheap total for the budget: the editor and its language servers / debug adapter (no `ps`).
+    /// Cheap total for the budget: the editor and its language servers (no `ps`), from the
+    /// numbers the background sampler published. Resident memory rather than PSS (see `mem`:
+    /// no page-table walk; it counts shared pages in full, harmless against a budget in GB).
     fn res_budget_total_kb(&self) -> u64 {
-        let own = crate::mem::snapshot().map_or(0, |m| m.pss_kb);
-        own + self.lsps.iter().filter_map(|l| crate::mem::pss_of(l.pid())).sum::<u64>()
+        let own = crate::mem::own_resident_kb().unwrap_or(0);
+        own + self.lsps.iter().filter_map(|l| crate::mem::resident_of(l.pid())).sum::<u64>()
+    }
+
+    /// Tell the background sampler what to measure (see `resmon::sampling`).
+    pub(crate) fn mem_watch(&self) {
+        let guard = self.config.lsp_auto_lean && self.lsps.iter().any(|l| l.name == "tsgo");
+        let (pss, resident) = resmon::sampling(
+            self.gitbg.focused,
+            self.config.status_visible("ram"),
+            guard,
+            self.config.mem_budget_mb > 0,
+        );
+        crate::mem::watch(self.lsps.iter().map(|l| l.pid()), pss, resident, || self.wake());
+    }
+
+    /// Hand freed heap back to the OS after something large was freed (see `resmon::TrimWatch`).
+    /// It asks for a wake-up only while a trim is pending.
+    pub(crate) fn trim_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        self.res.trim.note(self.docs.len(), self.lsps.len());
+        if !self.res.trim.pending
+            && self.res.trim.probe_due(now)
+            && let Some(kb) = crate::mem::heap_free_kb()
+        {
+            self.res.trim.probed(kb);
+        }
+        if !self.res.trim.pending {
+            return;
+        }
+        let due = self.last_trim + resmon::TRIM_GAP;
+        if due > now {
+            want(due);
+            return;
+        }
+        self.last_trim = now;
+        crate::app_lsp::release_memory();
+        self.res.trim.trimmed(crate::mem::heap_free_kb().unwrap_or(0));
     }
 
     fn res_refresh(&mut self) {
