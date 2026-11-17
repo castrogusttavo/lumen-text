@@ -21,6 +21,9 @@ use std::{
 use winit::keyboard::{Key, NamedKey};
 
 const SYNC_DEBOUNCE: Duration = Duration::from_millis(120);
+/// After an edit only the edited and the active document are checked again at once; the other open
+/// documents of the server wait for this long without edits (each pull type-checks a whole file).
+const PULL_REST_DELAY: Duration = Duration::from_millis(1000);
 /// Go soft memory limit: what the server may keep before the GC works harder, and in practice its
 /// resident size once a file is checked. It must stay well above the live heap or the GC runs
 /// flat out. Measured with tsgo 7.0.2 on a lean mirror holding one file that imports the Prisma
@@ -64,6 +67,12 @@ pub(crate) struct ActionsRun {
     pub key: Option<(usize, i32, usize, usize)>,
     /// The menu of this round is on screen: answers are merged into it.
     pub opened: bool,
+}
+
+/// Diagnostics to pull after an edit: of the server's open documents (`open`, server-side URIs),
+/// those in `first` (the edited and the active one) now, the others later.
+fn pull_split(open: Vec<String>, first: &[String]) -> (Vec<String>, Vec<String>) {
+    open.into_iter().partition(|u| first.contains(u))
 }
 
 fn is_ident(c: char) -> bool {
@@ -515,9 +524,8 @@ impl App {
             }
             if let Some(t) = self.docs[i].changed_at {
                 if t + SYNC_DEBOUNCE <= now {
+                    // The pull comes from the mark `send_change` leaves (see `pull_after_edits`).
                     self.send_change(i);
-                    pull.push(li);
-                    pull.extend(self.lspx_open_companions(i));
                 } else {
                     want(t + SYNC_DEBOUNCE);
                 }
@@ -612,16 +620,66 @@ impl App {
                 want(t);
             }
         }
-        pull.sort_unstable();
-        pull.dedup();
-        for li in pull {
-            self.pull_diagnostics(li);
-        }
+        // The completion request is written first: the server answers in arrival order, and a pull
+        // type-checks the whole file (2 s on one that imports the Prisma client).
         if let Some(trig) = comp {
             if std::env::var_os("LUMEN_DEBUG").is_some() {
                 eprintln!("[lsp] firing completion {trig:?}");
             }
             self.request_completion(trig);
+        }
+        pull.sort_unstable();
+        pull.dedup();
+        for &li in &pull {
+            self.pull_diagnostics(li);
+        }
+        self.pull_after_edits(&pull, now, want);
+    }
+
+    /// Diagnostics after edits. Every document whose text was just sent (`send_change`, from the
+    /// debounce or from a `flush` before a request) is pulled now, with the active one; the other
+    /// open documents of its servers follow after `PULL_REST_DELAY` without edits. `whole` are the
+    /// servers this tick already pulled completely.
+    fn pull_after_edits(&mut self, whole: &[usize], now: Instant, want: &mut impl FnMut(Instant)) {
+        for uri in std::mem::take(&mut self.lspx.text_sent) {
+            let Some(i) = self.doc_by_uri(&uri) else { continue };
+            let mut servers = self.lspx_open_companions(i);
+            servers.extend(self.doc_lsp(i).filter(|_| self.docs[i].lsp_open));
+            for li in servers {
+                let pid = self.lsps[li].pid();
+                self.lspx.pull_rest.retain(|r| r.0 != pid);
+                if whole.contains(&li) {
+                    continue;
+                }
+                let mut first = Vec::new();
+                for d in [i, self.active] {
+                    first.extend(self.docs.get(d).into_iter().flat_map(|d| [d.uri(), d.real_uri()]).flatten());
+                }
+                let (first, rest) = pull_split(self.pull_targets(li), &first);
+                for uri in first {
+                    self.pull_uri(li, uri);
+                }
+                if !rest.is_empty() {
+                    self.lspx.pull_rest.push((pid, now + PULL_REST_DELAY, rest));
+                }
+            }
+        }
+        let mut k = 0;
+        while k < self.lspx.pull_rest.len() {
+            let (pid, due, _) = &self.lspx.pull_rest[k];
+            if *due > now {
+                want(*due);
+                k += 1;
+                continue;
+            }
+            let pid = *pid;
+            let (_, _, rest) = self.lspx.pull_rest.remove(k);
+            let Some(li) = self.lsps.iter().position(|l| l.pid() == pid) else { continue };
+            // Documents closed meanwhile are no longer among the server's.
+            let open = self.pull_targets(li);
+            for uri in rest.into_iter().filter(|u| open.contains(u)) {
+                self.pull_uri(li, uri);
+            }
         }
     }
 
@@ -702,6 +760,12 @@ impl App {
         }
         d.changed_at = None;
         let Some(uri) = d.uri() else { return };
+        // The servers have new text: `lsp_tick` pulls the diagnostics again (also when this was a
+        // `flush` ahead of the debounce, which used to leave them stale).
+        if !self.lspx.text_sent.contains(&uri) {
+            self.lspx.text_sent.push(uri.clone());
+        }
+        let d = &self.docs[i];
         let params = json!({"textDocument": {"uri": uri, "version": d.version}, "contentChanges": [{"text": d.buf.to_string()}]});
         self.lspx_send_change(i, &params);
         if let Some(li) = li {
@@ -716,23 +780,32 @@ impl App {
         }
     }
 
-    fn pull_diagnostics(&mut self, li: usize) {
-        if self.lsps[li].is_generic() {
-            return self.lspx_pull(li);
+    /// Server-side URIs of the documents open on server `li` whose diagnostics are pulled.
+    fn pull_targets(&self, li: usize) -> Vec<String> {
+        let l = &self.lsps[li];
+        if l.is_generic() {
+            return if l.has_cap("diagnosticProvider") { l.open_uris.iter().cloned().collect() } else { Vec::new() };
         }
-        let root = self.lsps[li].root.clone();
-        for i in 0..self.docs.len() {
-            let d = &self.docs[i];
-            if !d.lsp_open || d.lsp_root.as_ref() != Some(&root) {
-                continue;
-            }
-            let Some(uri) = d.uri() else { continue };
-            self.lsps[li].request_single(
-                format!("diag:{uri}"),
-                "textDocument/diagnostic",
-                json!({"textDocument": {"uri": uri}}),
-                Pending::Diagnostic { uri },
-            );
+        self.docs
+            .iter()
+            .filter(|d| d.lsp_open && d.lsp_root.as_ref() == Some(&l.root))
+            .filter_map(|d| d.uri())
+            .collect()
+    }
+
+    fn pull_uri(&mut self, li: usize, uri: String) {
+        self.lsps[li].request_single(
+            format!("diag:{uri}"),
+            "textDocument/diagnostic",
+            json!({"textDocument": {"uri": uri}}),
+            Pending::Diagnostic { uri },
+        );
+    }
+
+    /// Pull the diagnostics of every document open on server `li`.
+    pub(crate) fn pull_diagnostics(&mut self, li: usize) {
+        for uri in self.pull_targets(li) {
+            self.pull_uri(li, uri);
         }
     }
 
@@ -754,6 +827,8 @@ impl App {
         for c in self.lspx_did_save(i) {
             self.pull_diagnostics(c);
         }
+        // Every server of the document was just pulled completely: the tick need not do it again.
+        self.lspx.text_sent.retain(|u| *u != uri);
     }
 
     /// Tell the server a document is gone from this URI, without touching server lifetime.
@@ -2449,6 +2524,18 @@ mod lang_tests {
         assert!(menu(&app).is_none());
         assert_eq!(app.status.as_ref().map(|m| m.0.as_str()), Some("no actions available here"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn after_an_edit_the_edited_and_active_documents_are_pulled_first() {
+        let open = vec!["file:///a.ts".to_string(), "file:///b.ts".to_string(), "file:///c.ts".to_string()];
+        let first =
+            ["file:///c.ts".to_string(), "file:///a.ts".to_string(), "file:///not-on-this-server.ts".to_string()];
+        let (now, later) = pull_split(open.clone(), &first);
+        assert_eq!(now, vec!["file:///a.ts", "file:///c.ts"]);
+        assert_eq!(later, vec!["file:///b.ts"]);
+        let (now, later) = pull_split(open, &[]);
+        assert!(now.is_empty() && later.len() == 3);
     }
 
     #[test]

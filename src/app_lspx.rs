@@ -59,6 +59,10 @@ pub struct LspX {
     /// Requests sent to several servers, one slot per kind (`MultiKind::slot`).
     agg: [Option<AggRun>; 2],
     serial: u64,
+    /// Documents (server-side URIs) whose text was just sent: `lsp_tick` pulls their diagnostics.
+    pub(crate) text_sent: Vec<String>,
+    /// Diagnostics pulls put off after an edit: (server process id, when, the documents' URIs).
+    pub(crate) pull_rest: Vec<(u32, Instant, Vec<String>)>,
     /// The current `Ctrl+.` round (see `App::code_actions`).
     pub(crate) actions: crate::app_lsp::ActionsRun,
     told: HashSet<String>,
@@ -374,8 +378,8 @@ impl App {
             && let Some(t) = self.docs[i].changed_at
         {
             if t + Duration::from_millis(120) <= now {
+                // `send_change` marks the document; `lsp_tick` pulls its diagnostics.
                 self.send_change(i);
-                pull.extend(self.lspx_open_companions(i));
             } else {
                 want(t + Duration::from_millis(120));
             }
@@ -556,22 +560,6 @@ impl App {
         }
         d.symbols_due = Some(soon);
         d.sem_due = Some(soon);
-    }
-
-    pub(crate) fn lspx_pull(&mut self, li: usize) {
-        let l = &self.lsps[li];
-        if !l.has_cap("diagnosticProvider") {
-            return;
-        }
-        let uris: Vec<String> = l.open_uris.iter().cloned().collect();
-        for uri in uris {
-            self.lsps[li].request_single(
-                format!("diag:{uri}"),
-                "textDocument/diagnostic",
-                json!({"textDocument": {"uri": uri}}),
-                Pending::Diagnostic { uri },
-            );
-        }
     }
 
     /// Disk changes under a server's root reach it as `workspace/didChangeWatchedFiles`.
@@ -1290,6 +1278,61 @@ mod tests {
         let detail = app.lspx_ram_detail().expect("tooltip detail");
         assert!(detail.contains("fake-a") && detail.contains("fake-c"), "{detail}");
         assert!(crate::app_topbar::memory_mb(&format!("RAM 10 MB{}", app.lspx_ram_suffix())) > 10.0);
+        stop(&mut app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// URIs of the diagnostics pulls written to server 0 and not answered (as far as we read) yet.
+    fn pulls_in_flight(app: &App) -> Vec<String> {
+        let mut v: Vec<String> = app.lsps[0]
+            .pending
+            .values()
+            .filter_map(|p| match p {
+                Pending::Diagnostic { uri } => Some(uri.rsplit('/').next().unwrap_or("").to_string()),
+                _ => None,
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn an_edit_pulls_the_edited_document_now_and_the_other_tabs_a_second_later() {
+        let _g = lock();
+        let Some(exe) = fake_exe() else { return eprintln!("fake_lsp example not built, skipping") };
+        let dir = project("pullfirst");
+        let mut app = test_app(&dir);
+        app.config.language_servers = json!({"fake-a": server(&exe, "a", "primary", json!({"FAKE_PULL": "1"}))});
+        let x = open(&mut app, &dir.join("x.fk"), "// FIXME\n");
+        let y = open(&mut app, &dir.join("y.fk"), "// FIXME\n");
+        assert!(
+            pump(&mut app, 8000, |a| {
+                !a.docs[x].diags.is_empty() && !a.docs[y].diags.is_empty() && pulls_in_flight(a).is_empty()
+            }),
+            "pull diagnostics never arrived"
+        );
+        // An edit of the active tab, sent by a `flush` before the 120 ms debounce (as a completion
+        // or hover request does): its diagnostics are pulled by the next tick, the other tab's are not.
+        app.active = x;
+        let d = &mut app.docs[x];
+        let before = d.ed.sel;
+        d.buf.replace(0, 0, "ok\n", crate::buffer::EditKind::Other, before);
+        d.sync_edits();
+        app.flush(x);
+        assert!(app.docs[x].changed_at.is_none());
+        let t0 = Instant::now();
+        app.lsp_tick(t0, &mut |_| {});
+        assert_eq!(pulls_in_flight(&app), vec!["x.fk"]);
+        // Still nothing for the other tab half a second later; it follows after a second of quiet.
+        let mut next: Option<Instant> = None;
+        app.lsp_tick(t0 + Duration::from_millis(500), &mut |t| next = Some(next.map_or(t, |n: Instant| n.min(t))));
+        assert_eq!(pulls_in_flight(&app), vec!["x.fk"]);
+        assert!(next.is_some_and(|t| t <= t0 + Duration::from_millis(1000)), "no wake-up for the deferred pull");
+        app.lsp_tick(t0 + Duration::from_millis(1001), &mut |_| {});
+        assert_eq!(pulls_in_flight(&app), vec!["x.fk", "y.fk"]);
+        assert!(app.lspx.pull_rest.is_empty());
+        // The edited line moved the finding: the fresh answer says so.
+        assert!(pump(&mut app, 4000, |a| a.docs[x].diags.first().is_some_and(|g| g.sl == 1)), "stale diagnostics");
         stop(&mut app);
         let _ = std::fs::remove_dir_all(&dir);
     }
