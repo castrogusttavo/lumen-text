@@ -57,7 +57,7 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
           cache: false
