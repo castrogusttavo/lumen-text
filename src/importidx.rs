@@ -7,8 +7,9 @@
 //! ("exok" -> `expectOk`) and the "Add import" quick fix without the server.
 //!
 //! It is syntactic: exports are found by scanning top-level `export` statements, and re-exports are
-//! followed only through `export * from` / `/// <reference path>` inside a package. The `import`
-//! statement is written by the editor (see [`import_edit`]).
+//! followed only through `export * from` / `/// <reference path>` inside a package, and
+//! `export { default } from "./x"` to the name `x` gives its default export. The `import` statement
+//! is written by the editor (see [`import_edit`]).
 //!
 //! The index keeps what it was made from, piece by piece (one per project file, one per package,
 //! see [`Parts`]): after a save only the files that changed are read again ([`build_from`]). The
@@ -202,6 +203,9 @@ struct Scan {
     refs: Vec<String>,
     /// `export = X;`: the members of `namespace X` are the module's exports (React's typings).
     export_eq: Option<String>,
+    /// `export { default } from "x"` specifiers: the default export is the one of `x`, and so is
+    /// its name.
+    default_from: Vec<String>,
 }
 
 fn is_ident(c: char) -> bool {
@@ -222,8 +226,14 @@ fn quoted(s: &str) -> Option<&str> {
     Some(&rest[..rest.find(q)?])
 }
 
-/// Names of an export list body (`a, b as c, type D`), without the braces.
-fn brace_names(body: &str, all_types: bool, ambient: &Option<String>, out: &mut Scan) {
+/// The module of `} from "x"`: what follows the closing brace of an export list.
+fn from_spec(after: &str) -> Option<&str> {
+    quoted(after.trim_start().strip_prefix("from")?)
+}
+
+/// Names of an export list body (`a, b as c, type D`), without the braces; `from` is the module
+/// the list re-exports from, if any.
+fn brace_names(body: &str, all_types: bool, ambient: &Option<String>, from: Option<&str>, out: &mut Scan) {
     for item in body.split(',') {
         let item = item.trim();
         let (item, is_type) = match item.strip_prefix("type ") {
@@ -239,6 +249,12 @@ fn brace_names(body: &str, all_types: bool, ambient: &Option<String>, out: &mut 
             // `export { Foo as default }`: a default export with a usable name.
             if let Some(id) = ident(local).filter(|id| *id != "default" && id.len() == local.len()) {
                 out.exports.push((id.to_string(), ty | DEFAULT, ambient.clone()));
+            } else if local == "default"
+                && ambient.is_none()
+                && let Some(spec) = from
+            {
+                // `export { default } from "./x"`: the name is in `x`.
+                out.default_from.push(spec.to_string());
             }
         } else if let Some(id) = ident(exported).filter(|id| id.len() == exported.len()) {
             out.exports.push((id.to_string(), ty, ambient.clone()));
@@ -295,7 +311,7 @@ fn scan_lines<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Scan {
                 Some(end) => {
                     body.push_str(&raw[..end]);
                     let (body, all_types) = (std::mem::take(body), *all_types);
-                    brace_names(&body, all_types, &ambient, &mut out);
+                    brace_names(&body, all_types, &ambient, from_spec(&raw[end + 1..]), &mut out);
                     open = None;
                 }
                 None => {
@@ -373,7 +389,7 @@ fn scan_lines<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Scan {
         if let Some(list) = list {
             let body = &list[1..];
             match body.find('}') {
-                Some(end) => brace_names(&body[..end], all_types, &ambient, &mut out),
+                Some(end) => brace_names(&body[..end], all_types, &ambient, from_spec(&body[end + 1..]), &mut out),
                 None => open = Some((format!("{} ", body.split("//").next().unwrap_or("")), all_types)),
             }
             continue;
@@ -507,6 +523,8 @@ struct FilePart {
     /// The module specifiers its import statements name, one per line (relative ones left out:
     /// they only rank packages).
     imports: String,
+    /// `export { default } from "./x"` specifiers (see `Scan::default_from`).
+    default_from: Vec<String>,
 }
 
 /// What one package of `package.json` gives the index, through all its entry points.
@@ -539,7 +557,7 @@ impl PkgPart {
 struct Parts {
     root: PathBuf,
     /// Every source file of the project, by path.
-    files: BTreeMap<PathBuf, Arc<FilePart>>,
+    files: ProjectFiles,
     pkgs: Vec<Arc<PkgPart>>,
     /// Stamps of what decides the package list and their versions (see [`deps_stamps`]).
     deps: Vec<Option<Stamp>>,
@@ -765,12 +783,17 @@ fn assemble(parts: Parts, aliases: Vec<(String, PathBuf)>) -> Index {
                 }
             }
         }
-        if file.exports.items.is_empty() {
+        // `export { default } from "./Button"`: this file's default export is called `Button` too.
+        let default = file.default_from.iter().find_map(|spec| project_default(&parts.files, path, spec, 0));
+        if file.exports.items.is_empty() && default.is_none() {
             continue;
         }
         let src = b.source(Source::File(path.clone()));
         for (name, flags, _) in file.exports.iter() {
             b.add(name, flags, src);
+        }
+        if let Some((name, flags)) = default {
+            b.add(name, flags | DEFAULT, src);
         }
     }
     for pkg in &parts.pkgs {
@@ -797,21 +820,66 @@ fn file_part(text: &str, stamp: Stamp) -> FilePart {
             part.imports.push('\n');
         }
     }
-    for (name, flags, ambient) in &scan(text).exports {
+    let found = scan(text);
+    for (name, flags, ambient) in &found.exports {
         if ambient.is_none() {
             part.exports.push(name, *flags, 0);
         }
     }
+    part.default_from = found.default_from;
     part
+}
+
+/// `dir` and a relative specifier, `.` and `..` resolved by name.
+fn join_relative(dir: &Path, spec: &str) -> PathBuf {
+    let mut out = dir.to_path_buf();
+    for part in spec.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            name => out.push(name),
+        }
+    }
+    out
+}
+
+type ProjectFiles = BTreeMap<PathBuf, Arc<FilePart>>;
+
+/// The project file a relative specifier written in `from` names (`./x` is `x.ts`, `x.tsx`,
+/// `x/index.ts`...; `./x.js` is `x.ts` in ESM TypeScript).
+fn project_file<'a>(files: &'a ProjectFiles, from: &Path, spec: &str) -> Option<(&'a Path, &'a FilePart)> {
+    const EXTS: [&str; 8] = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
+    if !spec.starts_with('.') {
+        return None;
+    }
+    let base = join_relative(from.parent()?, spec);
+    let whole = base.to_string_lossy().into_owned();
+    let stem = [".js", ".jsx", ".mjs", ".cjs"].iter().find_map(|e| whole.strip_suffix(e)).unwrap_or(whole.as_str());
+    std::iter::once(base.clone())
+        .chain(EXTS.iter().map(|e| PathBuf::from(format!("{stem}{e}"))))
+        .chain(EXTS.iter().map(|e| base.join(format!("index{e}"))))
+        .find_map(|p| files.get_key_value(&p))
+        .map(|(p, f)| (p.as_path(), f.as_ref()))
+}
+
+/// Name and flags of the default export of the project file `spec` names from `from`, following
+/// `export { default } from` on the way.
+fn project_default<'a>(files: &'a ProjectFiles, from: &Path, spec: &str, depth: usize) -> Option<(&'a str, u8)> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let (path, file) = project_file(files, from, spec)?;
+    if let Some((name, flags, _)) = file.exports.iter().find(|(_, flags, _)| flags & DEFAULT != 0) {
+        return Some((name, flags));
+    }
+    file.default_from.iter().find_map(|next| project_default(files, path, next, depth + 1))
 }
 
 /// Every source file of the project. A file with the stamp it has in `old` is taken from there;
 /// the others are read (`scanned` counts them).
-fn scan_project(
-    root: &Path,
-    old: Option<&BTreeMap<PathBuf, Arc<FilePart>>>,
-    scanned: &mut usize,
-) -> BTreeMap<PathBuf, Arc<FilePart>> {
+fn scan_project(root: &Path, old: Option<&ProjectFiles>, scanned: &mut usize) -> ProjectFiles {
     let mut files = BTreeMap::new();
     for e in ignore::WalkBuilder::new(root).build().flatten() {
         if files.len() >= MAX_PROJECT_FILES {
@@ -1130,6 +1198,16 @@ fn scan_declaration(file: &Path, module: Option<&str>, depth: usize, visited: &m
         }
     }
     let dir = file.parent().unwrap_or(Path::new("."));
+    // `export { default } from "./dist/link"` in an entry point: the default export of the module,
+    // named as the file it comes from names it (`export *` does not pass a default on, so only
+    // the entry point itself counts).
+    if let Some(module) = module.filter(|_| depth == 0) {
+        for spec in found.default_from.iter().filter(|spec| spec.starts_with('.')) {
+            if let Some((name, flags)) = resolve_dts(dir, spec).and_then(|next| default_name(&next, 0, s)) {
+                s.add(module, &name, flags | DEFAULT);
+            }
+        }
+    }
     for spec in &found.stars {
         // `./x` is a file next to this one; anything else is another package (`.prisma/client`).
         let relative = spec.starts_with("./") || spec.starts_with("../");
@@ -1150,6 +1228,26 @@ fn scan_declaration(file: &Path, module: Option<&str>, depth: usize, visited: &m
             scan_declaration(&next, None, depth + 1, visited, s);
         }
     }
+}
+
+/// Name and flags of the default export of a declaration file (`export default function Link`,
+/// `export default Link`), following `export { default } from "./x"` on the way.
+fn default_name(file: &Path, depth: usize, s: &mut PkgScan) -> Option<(String, u8)> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let found = s.parse(file)?;
+    if let Some((name, flags, _)) =
+        found.exports.iter().find(|(_, flags, ambient)| flags & DEFAULT != 0 && ambient.is_none())
+    {
+        return Some((name.clone(), *flags));
+    }
+    let dir = file.parent().unwrap_or(Path::new("."));
+    found
+        .default_from
+        .iter()
+        .filter(|spec| spec.starts_with('.'))
+        .find_map(|spec| default_name(&resolve_dts(dir, spec)?, depth + 1, s))
 }
 
 // ───────────── module specifiers ─────────────
@@ -1693,6 +1791,84 @@ mod tests {
         assert!(
             a.parent().is_some_and(|d| d.ends_with("lumen-text/imports")) && a.extension().is_some_and(|e| e == "json")
         );
+    }
+
+    #[test]
+    fn scans_default_re_exports() {
+        let s = scan(
+            "export { default } from './x';\nexport { default as Named, other } from \"./y\";\nexport {\n  default,\n  \
+             type T,\n} from './z'\nexport { Foo as default } from './w';\nexport { default };\n\
+             declare module \"m\" {\n  export { default } from './inner';\n}\n",
+        );
+        assert_eq!(names(&s), vec![("Named", 0), ("other", 0), ("T", TYPE), ("Foo", DEFAULT)]);
+        assert_eq!(s.default_from, vec!["./x", "./z"]);
+        assert_eq!(from_spec(" from \"./a\";"), Some("./a"));
+        assert_eq!(from_spec(";"), None);
+        assert_eq!(join_relative(Path::new("/p/src/ui"), "../lib/./x.js"), PathBuf::from("/p/src/lib/x.js"));
+    }
+
+    #[test]
+    fn default_exports_keep_their_name_through_re_exports() {
+        let d = std::env::temp_dir().join(format!("lumen-importidx-default-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let ui = d.join("node_modules/ui");
+        std::fs::create_dir_all(ui.join("dist")).unwrap();
+        std::fs::create_dir_all(d.join("src/components")).unwrap();
+        std::fs::write(d.join("package.json"), r#"{"dependencies":{"ui":"1"}}"#).unwrap();
+        std::fs::write(ui.join("package.json"), r#"{"version":"1.0.0"}"#).unwrap();
+        // The package: `ui` and `ui/link` (a declaration file at its root), both re-exporting defaults.
+        std::fs::write(
+            ui.join("index.d.ts"),
+            "export { default } from './dist/button';\nexport { default as Card } from './dist/card';\n",
+        )
+        .unwrap();
+        std::fs::write(ui.join("link.d.ts"), "export { default } from './dist/link';\nexport * from './dist/link';\n")
+            .unwrap();
+        std::fs::write(
+            ui.join("dist/link.d.ts"),
+            "export { default } from './link-impl.js';\nexport type LinkProps = {};\n",
+        )
+        .unwrap();
+        std::fs::write(ui.join("dist/link-impl.d.ts"), "declare function Link(): void;\nexport default Link;\n")
+            .unwrap();
+        std::fs::write(ui.join("dist/button.d.ts"), "export default function Button(): void;\n").unwrap();
+        std::fs::write(ui.join("dist/card.d.ts"), "export default class CardImpl {}\n").unwrap();
+        // The project: an index file passing defaults on, and a file reaching it through `.js`.
+        std::fs::write(d.join("src/components/Button.tsx"), "export default function Button() {}\n").unwrap();
+        std::fs::write(d.join("src/components/Fancy.tsx"), "const Fancy = () => null;\nexport default Fancy;\n")
+            .unwrap();
+        std::fs::write(
+            d.join("src/components/index.ts"),
+            "export { default } from './Button';\nexport { default as Fancy } from './Fancy';\n",
+        )
+        .unwrap();
+        std::fs::write(d.join("src/reexport.ts"), "export { default } from './components/index.js';\n").unwrap();
+        std::fs::write(d.join("src/loop.ts"), "export { default } from './loop';\n").unwrap();
+
+        let idx = build(&d);
+        let hits = |n: &str| idx.exact(n).into_iter().map(|h| (h.source, h.is_default)).collect::<Vec<_>>();
+        let m = |s: &str| Source::Module(s.to_string());
+        assert_eq!(hits("Link"), vec![(m("ui/link"), true)], "`import Link from \"ui/link\"`");
+        assert_eq!(hits("LinkProps"), vec![(m("ui/link"), false)]);
+        assert_eq!(hits("Card"), vec![(m("ui"), false)], "`default as Card` is a named export");
+        assert!(hits("CardImpl").is_empty(), "the name inside the file is not exported");
+        assert_eq!(
+            hits("Button"),
+            vec![
+                (Source::File(d.join("src/components/Button.tsx")), true),
+                (Source::File(d.join("src/components/index.ts")), true),
+                (Source::File(d.join("src/reexport.ts")), true),
+                (m("ui"), true),
+            ]
+        );
+        assert_eq!(
+            hits("Fancy"),
+            vec![
+                (Source::File(d.join("src/components/Fancy.tsx")), true),
+                (Source::File(d.join("src/components/index.ts")), false),
+            ]
+        );
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
