@@ -501,6 +501,81 @@ impl Stack {
         }
         false
     }
+
+    /// Hash of everything a line's tokens depend on in its start state: the rule, scopes and end
+    /// pattern of every level. `enter` / `anchor` are left out, `tokenize_line` resets them
+    /// before it reads them. Two states that are [`same_state`](Self::same_state) hash alike.
+    pub fn fingerprint(&self) -> u64 {
+        let mix = |h: u64, v: u64| (h ^ v).wrapping_mul(0x100000001b3).rotate_left(23);
+        let mut h: u64 = 0xcbf29ce484222325;
+        let mut cur = Some(self);
+        while let Some(n) = cur {
+            h = mix(h, n.rule as u64);
+            h = mix(h, n.begin_eol as u64);
+            h = mix(h, n.name_scopes.as_ref().map_or(0, |s| s.hash));
+            h = mix(h, n.content_scopes.as_ref().map_or(0, |s| s.hash));
+            if let Some(e) = &n.end_rule {
+                for b in e.pat.bytes() {
+                    h = mix(h, b as u64 + 1);
+                }
+            }
+            cur = n.parent.as_deref();
+        }
+        h
+    }
+
+    /// True when tokenizing any line from `self` and from `other` gives the same tokens and the
+    /// same next state: the two stacks are the same object, or equal level by level.
+    pub fn same_state(&self, other: &Stack) -> bool {
+        let (mut a, mut b) = (Some(self), Some(other));
+        loop {
+            match (a, b) {
+                (None, None) => return true,
+                (Some(x), Some(y)) => {
+                    if std::ptr::eq(x, y) {
+                        return true;
+                    }
+                    let same_end = match (&x.end_rule, &y.end_rule) {
+                        (None, None) => true,
+                        (Some(p), Some(q)) => Arc::ptr_eq(p, q) || p.pat == q.pat,
+                        _ => false,
+                    };
+                    if x.rule != y.rule
+                        || x.begin_eol != y.begin_eol
+                        || !same_end
+                        || !same_scopes(&x.name_scopes, &y.name_scopes)
+                        || !same_scopes(&x.content_scopes, &y.content_scopes)
+                    {
+                        return false;
+                    }
+                    a = x.parent.as_deref();
+                    b = y.parent.as_deref();
+                }
+                _ => return false,
+            }
+        }
+    }
+}
+
+/// Two scope lists name the same scopes in the same order.
+fn same_scopes(a: &Scopes, b: &Scopes) -> bool {
+    let (mut a, mut b) = (a.as_ref(), b.as_ref());
+    loop {
+        match (a, b) {
+            (None, None) => return true,
+            (Some(x), Some(y)) => {
+                if Arc::ptr_eq(x, y) {
+                    return true;
+                }
+                if x.id != y.id {
+                    return false;
+                }
+                a = x.parent.as_ref();
+                b = y.parent.as_ref();
+            }
+            _ => return false,
+        }
+    }
 }
 
 pub struct Token {
@@ -1013,6 +1088,30 @@ mod tests {
         assert!(find("number").contains("support.type.primitive"), "number -> {}", find("number"));
         assert!(find("1").contains("constant.numeric"), "1 -> {}", find("1"));
         assert!(r[0].iter().any(|(_, sc)| sc.contains("comment.line")), "{:?}", r[0]);
+    }
+
+    #[test]
+    fn equal_states_compare_equal_without_being_the_same_object() {
+        let mut t = tk("typescript");
+        let st = t.initial_state();
+        let (_, a) = t.tokenize_line("function f() {\n", &st);
+        let (_, b) = t.tokenize_line("function f() {\n", &st);
+        assert!(a.same_state(&b), "the same text from the same state ends in an equal state");
+        assert_eq!(a.fingerprint(), b.fingerprint());
+        let (_, c) = t.tokenize_line("/* open\n", &st);
+        assert!(!a.same_state(&c) && !st.same_state(&c), "a block comment is another state");
+        assert_ne!(st.fingerprint(), c.fingerprint());
+        assert_ne!(a.fingerprint(), c.fingerprint());
+        // Tokens from equal states are equal too.
+        let line = "still */ const x = 1;\n";
+        let (_, c2) = t.tokenize_line("/* open\n", &st);
+        assert!(c.same_state(&c2));
+        let (ta, _) = t.tokenize_line(line, &c);
+        let (tb, _) = t.tokenize_line(line, &c2);
+        let flat = |v: &[Token]| -> Vec<(usize, usize, u64)> {
+            v.iter().map(|k| (k.start, k.end, k.scopes.as_ref().map_or(0, |s| s.hash))).collect()
+        };
+        assert_eq!(flat(&ta), flat(&tb));
     }
 
     #[test]

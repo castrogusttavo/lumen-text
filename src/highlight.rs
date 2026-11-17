@@ -12,6 +12,9 @@
 //! * The tokenizer mutex is held for ONE line at a time. The UI announces itself in `ui_waiting`;
 //!   the worker never queues on the mutex (it `try_lock`s and backs off while the UI waits or
 //!   holds it), so the UI waits for at most the line currently being tokenized (~0.1 ms).
+//! * Coloured spans are cached twice on the UI thread: per line number (dropped from the edited
+//!   line down on `invalidate`) and per (start state, line text), which survives edits, so after
+//!   a keystroke only the lines whose text or start state really changed are tokenized again.
 //! * `invalidate(line)` truncates the states and drops the snapshot. A job in flight is validated
 //!   when it publishes: entries at or before the lowest invalidated line are kept (they only depend
 //!   on unchanged text), the rest is discarded and the job ends; the next `advance` installs a
@@ -270,7 +273,15 @@ pub struct Highlighter {
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
     first: Arc<Stack>, // state at the start of line 0
+    /// Spans by line number: valid as they are (`invalidate` drops the edited line and all below).
     line_cache: HashMap<usize, Spans>,
+    /// Spans by (start state fingerprint, line text hash), with the state they were made from:
+    /// what a line looks like only depends on those two, so entries stay valid across edits and
+    /// are found again once the worker has recomputed the states below an edit.
+    reuse: HashMap<(u64, u64), (Arc<Stack>, Spans)>,
+    /// Lines tokenized by `spans` on the calling thread (tests check what the caches save).
+    #[cfg(test)]
+    colorized: usize,
     color_cache: HashMap<u64, (Rgba, u8)>,
     /// Provisional start states for a window far beyond the tokenized prefix (assumes the window
     /// starts at top level; replaced by real states as tokenization catches up). Built on the
@@ -288,6 +299,17 @@ struct Prov {
 
 /// A provisional window is rebuilt rather than grown past this many lines.
 const PROV_MAX: usize = 1500;
+/// Entries of the per-line span cache and of the (state, text) span cache: each is emptied when
+/// it grows past its bound.
+const LINE_CACHE_MAX: usize = 600;
+const REUSE_MAX: usize = 1200;
+
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
 
 /// Spans of one line and the state after it.
 fn colorize(
@@ -347,7 +369,18 @@ impl Highlighter {
             stop: AtomicBool::new(false),
             wake: Mutex::new(None),
         });
-        Self { tk, shared, worker: None, first, line_cache: HashMap::new(), color_cache: HashMap::new(), prov: None }
+        Self {
+            tk,
+            shared,
+            worker: None,
+            first,
+            line_cache: HashMap::new(),
+            reuse: HashMap::new(),
+            #[cfg(test)]
+            colorized: 0,
+            color_cache: HashMap::new(),
+            prov: None,
+        }
     }
 
     /// Optional: called from the worker (rate limited) whenever new states were published, so an
@@ -360,6 +393,7 @@ impl Highlighter {
     pub fn theme_changed(&mut self) {
         self.color_cache.clear();
         self.line_cache.clear();
+        self.reuse.clear();
         self.prov = None;
     }
 
@@ -376,7 +410,9 @@ impl Highlighter {
             }
             self.shared.ready.store(j.states.len(), Release);
         }
-        self.line_cache.clear();
+        // Lines above the edit keep their text and their start state, so their spans stay. The
+        // lines from the edit down are looked up again by (start state, text) in `reuse`.
+        self.line_cache.retain(|&l, _| l < line);
         // Provisional states before the edited line stay valid; later ones are recomputed lazily.
         match self.prov.as_mut() {
             Some(p) if line >= p.start => {
@@ -502,11 +538,28 @@ impl Highlighter {
         if let Some(s) = self.line_cache.get(&i) {
             return Some(s.clone());
         }
-        if self.line_cache.len() > 600 {
+        if self.line_cache.len() > LINE_CACHE_MAX {
             self.line_cache.clear();
         }
-        let (spans, _) = colorize(&self.tk, &mut self.color_cache, theme, buf.line(i), &start_state);
+        let text = buf.line(i);
+        let key = (start_state.fingerprint(), text_hash(&text));
+        if let Some((st, s)) = self.reuse.get(&key)
+            && st.same_state(&start_state)
+        {
+            let rc = s.clone();
+            self.line_cache.insert(i, rc.clone());
+            return Some(rc);
+        }
+        #[cfg(test)]
+        {
+            self.colorized += 1;
+        }
+        let (spans, _) = colorize(&self.tk, &mut self.color_cache, theme, text, &start_state);
         let rc = Rc::new(spans);
+        if self.reuse.len() > REUSE_MAX {
+            self.reuse.clear();
+        }
+        self.reuse.insert(key, (start_state, rc.clone()));
         self.line_cache.insert(i, rc.clone());
         Some(rc)
     }
@@ -880,6 +933,59 @@ mod tests {
         hl.advance(&buf, buf.line_count(), Duration::ZERO);
         wait_ready(&hl, buf.line_count() + 1, 120);
         check_all(&mut hl, &buf, &theme, "after late edit");
+    }
+
+    #[test]
+    fn an_edit_recolours_only_the_lines_it_changes() {
+        let mut buf = Buffer::from_str(&gen_text(900));
+        let theme = theme();
+        let mut hl = Highlighter::new(make_tokenizer(&assets(), "source.ts").unwrap());
+        hl.advance(&buf, buf.line_count(), Duration::ZERO);
+        wait_ready(&hl, buf.line_count() + 1, 120);
+        check_all(&mut hl, &buf, &theme, "first pass");
+        let first_pass = hl.colorized;
+        assert!(first_pass > 0);
+        // Nothing changed: every line comes from the per-line cache.
+        check_all(&mut hl, &buf, &theme, "second pass");
+        assert_eq!(hl.colorized, first_pass, "an unchanged line was tokenized again");
+
+        // Open a block comment on line 300: it runs to the `*/` of line 305, so the text of one
+        // line and the start state of five more change; everything else keeps both.
+        let p = buf.line_start(300);
+        buf.replace(p, p, "/* ", EditKind::Typing, Sel::caret(p));
+        hl.invalidate(buf.take_dirty_line().unwrap());
+        hl.advance(&buf, buf.line_count(), Duration::ZERO);
+        wait_ready(&hl, buf.line_count() + 1, 120);
+        check_all(&mut hl, &buf, &theme, "after the edit");
+        let redone = hl.colorized - first_pass;
+        assert!(redone >= 1, "the edited line must be tokenized again");
+        assert!(redone <= 40, "{redone} lines tokenized again after a one-line edit");
+
+        // Undo it by hand: the old spans are found again by (state, text), nothing is tokenized.
+        let before = hl.colorized;
+        let p = buf.line_start(300);
+        buf.replace(p, p + 3, "", EditKind::Typing, Sel::caret(p));
+        hl.invalidate(buf.take_dirty_line().unwrap());
+        hl.advance(&buf, buf.line_count(), Duration::ZERO);
+        wait_ready(&hl, buf.line_count() + 1, 120);
+        check_all(&mut hl, &buf, &theme, "after undoing the edit");
+        assert_eq!(hl.colorized, before, "text and states are back: every line is in the cache");
+
+        // A new line shifts every line below it: found by (state, text), not by line number.
+        let before = hl.colorized;
+        let p = buf.line_start(100);
+        buf.replace(p, p, "const added = 1;\n", EditKind::Typing, Sel::caret(p));
+        hl.invalidate(buf.take_dirty_line().unwrap());
+        hl.advance(&buf, buf.line_count(), Duration::ZERO);
+        wait_ready(&hl, buf.line_count() + 1, 120);
+        check_all(&mut hl, &buf, &theme, "after inserting a line");
+        assert!(hl.colorized - before <= 40, "{} lines tokenized after inserting one", hl.colorized - before);
+
+        // A theme change empties both caches.
+        let before = hl.colorized;
+        hl.theme_changed();
+        check_all(&mut hl, &buf, &theme, "after a theme change");
+        assert!(hl.colorized - before >= 100, "the caches survived a theme change");
     }
 
     #[test]
