@@ -528,6 +528,83 @@ mod hbar_tests {
     }
 }
 
+/// Rows of coloured code for [`TextCtx::draw_rows`]: all the text in one `String`, the pieces as
+/// ranges of it. Cleared and refilled every frame, so once it has grown to a screenful drawing
+/// allocates nothing for the text (a `Vec<(String, Rgba, u8)>` costs one `String` per token).
+#[derive(Default)]
+pub struct CodeRows {
+    text: String,
+    /// (start byte, end byte in `text`, colour, style flags) of every piece, row after row.
+    pieces: Vec<(usize, usize, Rgba, u8)>,
+    /// Index in `pieces` where each row ends.
+    rows: Vec<usize>,
+}
+
+impl CodeRows {
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.pieces.clear();
+        self.rows.clear();
+    }
+
+    /// Append a piece to the row being built (empty text adds nothing).
+    pub fn push(&mut self, text: &str, color: Rgba, flags: u8) {
+        let at = self.open();
+        self.text.push_str(text);
+        self.close(at, color, flags);
+    }
+
+    /// Append a formatted piece (`format_args!`) without building a `String` first.
+    pub fn push_fmt(&mut self, args: std::fmt::Arguments, color: Rgba, flags: u8) {
+        let at = self.open();
+        let _ = std::fmt::Write::write_fmt(&mut self.text, args);
+        self.close(at, color, flags);
+    }
+
+    /// Start a piece char by char: [`put`](Self::put) its chars, then [`close`](Self::close) it
+    /// with the value returned here.
+    pub fn open(&mut self) -> usize {
+        self.text.len()
+    }
+
+    pub fn put(&mut self, ch: char) {
+        self.text.push(ch);
+    }
+
+    /// End the piece started by [`open`](Self::open) (nothing is added when it got no chars).
+    pub fn close(&mut self, at: usize, color: Rgba, flags: u8) {
+        if self.text.len() > at {
+            self.pieces.push((at, self.text.len(), color, flags));
+        }
+    }
+
+    /// End the current row (a row without pieces is a blank line).
+    pub fn end_row(&mut self) {
+        self.rows.push(self.pieces.len());
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// The pieces of row `r` as (text, colour, flags).
+    pub fn row(&self, r: usize) -> impl Iterator<Item = (&str, Rgba, u8)> {
+        let from = if r == 0 { 0 } else { self.rows[r - 1] };
+        self.pieces[from..self.rows[r]].iter().map(|&(a, b, c, f)| (&self.text[a..b], c, f))
+    }
+}
+
+/// Buffers the editor's draw path refills every frame, kept here (one `TextCtx` serves every
+/// document) so their allocations are reused: taken with `std::mem::take` while a document
+/// draws and put back when it is done.
+#[derive(Default)]
+pub struct DrawScratch {
+    /// Text of the visible lines.
+    pub lines: Vec<String>,
+    /// Rows of the body text, then of the gutter.
+    pub rows: CodeRows,
+}
+
 pub struct TextCtx {
     pub fonts: FontSystem,
     pub swash: SwashCache,
@@ -537,7 +614,10 @@ pub struct TextCtx {
     ui_family: Option<String>,
     pub cell_w: f32,
     pub icons: crate::icons::Icons,
-    widths: std::collections::HashMap<(String, bool), f32>,
+    /// Measured UI text widths, regular and bold (indexed by `bold as usize`): probed by `&str`.
+    widths: [std::collections::HashMap<String, f32>; 2],
+    /// Buffers the editor's draw path fills every frame (see [`DrawScratch`]).
+    pub scratch: DrawScratch,
     /// Every font file already in the database (main, variants, UI, fallbacks), canonicalized.
     loaded: Vec<PathBuf>,
     fallbacks_loaded: bool,
@@ -876,6 +956,7 @@ impl TextCtx {
             ui_family,
             cell_w,
             widths: Default::default(),
+            scratch: DrawScratch::default(),
             icons: crate::icons::Icons::new(),
             loaded,
             fallbacks_loaded: false,
@@ -975,7 +1056,7 @@ impl TextCtx {
         let db = std::mem::take(self.fonts.db_mut());
         self.fonts = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
         self.swash = SwashCache::new();
-        self.widths.clear();
+        self.clear_widths();
         self.italic_ok = None;
         crate::fontcfg::bump();
     }
@@ -1168,7 +1249,7 @@ impl TextCtx {
     /// which is in logical pixels but was measured at the old device size. Returns the scale in use.
     pub fn set_scale(&mut self, s: f32) -> f32 {
         let s = store_scale(s);
-        self.widths.clear();
+        self.clear_widths();
         self.remeasure();
         crate::fontcfg::bump();
         s
@@ -1198,6 +1279,26 @@ impl TextCtx {
 
     fn draw_spans(&mut self, cv: &mut Canvas, x: i32, y: i32, pieces: &[(&str, Rgba, u8)], clip: Rect) {
         self.draw_spans_scaled(cv, x, y, pieces, clip, 1.0);
+    }
+
+    /// Draw rows of code, the first with its top-left at (x, y), clipped to `clip`. Same pixels
+    /// as [`draw_styled`](Self::draw_styled) with a "\n" piece after every row.
+    pub fn draw_rows(&mut self, cv: &mut Canvas, x: i32, y: i32, rows: &CodeRows, clip: Rect) {
+        if rows.row_count() == 0 {
+            return;
+        }
+        self.draw_rows_unshaped(cv, x, y, rows, clip);
+    }
+
+    /// [`draw_rows`](Self::draw_rows) through one rich text: every row is shaped again.
+    fn draw_rows_unshaped(&mut self, cv: &mut Canvas, x: i32, y: i32, rows: &CodeRows, clip: Rect) {
+        let mut spans: Vec<(&str, Rgba, u8)> = Vec::with_capacity(rows.pieces.len() + rows.rows.len());
+        for r in 0..rows.row_count() {
+            spans.extend(rows.row(r));
+            // The line break belongs to no line: its colour and style are never used.
+            spans.push(("\n", Rgba(0, 0, 0, 255), 0));
+        }
+        self.draw_spans(cv, x, y, &spans, clip);
     }
 
     fn draw_spans_scaled(
@@ -1364,7 +1465,7 @@ impl TextCtx {
 
     /// Width in px of `text` in the UI font.
     pub fn ui_width(&mut self, text: &str, bold: bool) -> i32 {
-        if let Some(w) = self.widths.get(&(text.to_string(), bold)) {
+        if let Some(w) = self.widths[bold as usize].get(text) {
             return w.round() as i32;
         }
         if !self.fallbacks_loaded && needs_fallback(text) {
@@ -1379,11 +1480,16 @@ impl TextCtx {
         b.set_text(text, &a, Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.fonts, false);
         let w = b.layout_runs().next().map_or(0.0, |r| r.line_w) / s;
-        if self.widths.len() > 4000 {
-            self.widths.clear();
+        if self.widths[0].len() + self.widths[1].len() > 4000 {
+            self.clear_widths();
         }
-        self.widths.insert((text.to_string(), bold), w);
+        self.widths[bold as usize].insert(text.to_string(), w);
         w.round() as i32
+    }
+
+    fn clear_widths(&mut self) {
+        self.widths[0].clear();
+        self.widths[1].clear();
     }
 
     /// X offset (px, unscaled) of every char boundary of `text` in the UI font: `n + 1` values, the
@@ -1465,6 +1571,21 @@ impl TextCtx {
         bold: bool,
         italic: bool,
     ) {
+        let spans: Vec<(&str, Rgba)> = pieces.iter().map(|(s, c)| (s.as_str(), *c)).collect();
+        self.draw_ui_spans(cv, x, y, &spans, clip, bold, italic);
+    }
+
+    /// [`draw_ui_pieces_i`](Self::draw_ui_pieces_i) over borrowed text: nothing is copied.
+    fn draw_ui_spans(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        pieces: &[(&str, Rgba)],
+        clip: Rect,
+        bold: bool,
+        italic: bool,
+    ) {
         if pieces.is_empty() || clip.w <= 0 || clip.h <= 0 {
             return;
         }
@@ -1483,8 +1604,7 @@ impl TextCtx {
             Some(ui_line() * 2.0 * s),
         );
         self.ui_buf.set_wrap(Wrap::None);
-        let spans: Vec<(&str, Attrs)> =
-            pieces.iter().map(|(s, c)| (s.as_str(), base.clone().color(to_color(*c)))).collect();
+        let spans = pieces.iter().map(|(s, c)| (*s, base.clone().color(to_color(*c))));
         self.ui_buf.set_rich_text(spans, &base, Shaping::Advanced, Some(Align::Left));
         let clip = cv.to_dev(clip.intersect(&cv.bounds())).intersect(&cv.dev_bounds());
         let (x, y) = (sc(x), sc(y));
@@ -1508,12 +1628,12 @@ impl TextCtx {
     }
 
     pub fn draw_ui(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool) {
-        self.draw_ui_pieces(cv, x, y, &[(text.to_string(), color)], clip, bold);
+        self.draw_ui_spans(cv, x, y, &[(text, color)], clip, bold, false);
     }
 
     /// [`draw_ui`](Self::draw_ui) in (synthetic) italic.
     pub fn draw_ui_italic(&mut self, cv: &mut Canvas, x: i32, y: i32, text: &str, color: Rgba, clip: Rect, bold: bool) {
-        self.draw_ui_pieces_i(cv, x, y, &[(text.to_string(), color)], clip, bold, true);
+        self.draw_ui_spans(cv, x, y, &[(text, color)], clip, bold, true);
     }
 
     /// True when italic UI text really renders slanted (the synthetic slant works). Measured once
@@ -1940,6 +2060,108 @@ mod tests {
             mb(m1.pss_kb, m3.pss_kb),
         );
         assert!(mb(m1.pss_kb, m3.pss_kb) < 6.0, "variants + fallbacks exceed the +6 MB budget");
+    }
+
+    #[test]
+    fn ui_width_cache_is_per_weight_and_dropped_with_the_fonts() {
+        let mut ctx = TextCtx::new(None);
+        let text = "Hello width";
+        let (regular, bold) = (ctx.ui_width(text, false), ctx.ui_width(text, true));
+        assert!(ctx.widths[0].contains_key(text) && ctx.widths[1].contains_key(text));
+        assert_eq!((ctx.ui_width(text, false), ctx.ui_width(text, true)), (regular, bold));
+        // The probe reads the cache (by `&str`): a planted value is what comes back, per weight.
+        ctx.widths[0].insert(text.to_string(), 1234.0);
+        assert_eq!(ctx.ui_width(text, false), 1234);
+        assert_eq!(ctx.ui_width(text, true), bold, "bold has its own entry");
+        // New fonts: nothing measured with the old ones survives.
+        ctx.rebuild_fonts();
+        assert!(ctx.widths[0].is_empty() && ctx.widths[1].is_empty());
+        assert_eq!(ctx.ui_width(text, false), regular, "measured again");
+    }
+
+    #[test]
+    fn draw_ui_draws_what_draw_ui_pieces_draws() {
+        let mut ctx = TextCtx::new(None);
+        let color = Rgba(240, 200, 120, 255);
+        let clip = Rect::new(0, 0, 200, 30);
+        let text = "Find é in files";
+        for italic in [false, true] {
+            let (mut a, mut b) = (vec![0u32; 200 * 30], vec![0u32; 200 * 30]);
+            let mut cv = Canvas { px: &mut a, w: 200, h: 30 };
+            if italic {
+                ctx.draw_ui_italic(&mut cv, 3, 4, text, color, clip, true);
+            } else {
+                ctx.draw_ui(&mut cv, 3, 4, text, color, clip, true);
+            }
+            let mut cv = Canvas { px: &mut b, w: 200, h: 30 };
+            ctx.draw_ui_pieces_i(&mut cv, 3, 4, &[(text.to_string(), color)], clip, true, italic);
+            assert!(a.iter().any(|p| *p != 0), "nothing drawn");
+            assert_eq!(a, b, "italic {italic}");
+        }
+    }
+
+    /// The same rows as a [`CodeRows`] and as the pieces `draw_styled` takes.
+    fn rows_and_pieces(lines: &[Vec<(&str, Rgba, u8)>]) -> (CodeRows, Vec<(String, Rgba, u8)>) {
+        let (mut rows, mut pieces) = (CodeRows::default(), Vec::new());
+        for line in lines {
+            for &(s, c, f) in line {
+                rows.push(s, c, f);
+                pieces.push((s.to_string(), c, f));
+            }
+            rows.end_row();
+            pieces.push(("\n".to_string(), Rgba(1, 2, 3, 255), 0));
+        }
+        (rows, pieces)
+    }
+
+    const ROWS_W: i32 = 360;
+    const ROWS_H: i32 = 150;
+
+    fn paint_rows(ctx: &mut TextCtx, rows: &CodeRows, x: i32, y: i32, clip: Rect) -> Vec<u32> {
+        let mut px = vec![0x101418u32; (ROWS_W * ROWS_H) as usize];
+        let mut cv = Canvas { px: &mut px, w: ROWS_W, h: ROWS_H };
+        ctx.draw_rows(&mut cv, x, y, rows, clip);
+        px
+    }
+
+    fn paint_styled(ctx: &mut TextCtx, pieces: &[(String, Rgba, u8)], x: i32, y: i32, clip: Rect) -> Vec<u32> {
+        let mut px = vec![0x101418u32; (ROWS_W * ROWS_H) as usize];
+        let mut cv = Canvas { px: &mut px, w: ROWS_W, h: ROWS_H };
+        ctx.draw_styled(&mut cv, x, y, pieces, clip);
+        px
+    }
+
+    fn sample_rows() -> Vec<Vec<(&'static str, Rgba, u8)>> {
+        let (fg, kw, st) = (Rgba(212, 212, 212, 255), Rgba(86, 156, 214, 255), Rgba(206, 145, 120, 200));
+        vec![
+            vec![("fn", kw, BOLD), (" main() {", fg, 0)],
+            vec![("    let s = ", fg, 0), ("\"text é\"", st, ITALIC), (";", fg, 0)],
+            vec![],
+            vec![("    // note", Rgba(106, 153, 85, 255), ITALIC | UNDERLINE)],
+            vec![("}", fg, 0)],
+            vec![("}", fg, 0)],
+        ]
+    }
+
+    #[test]
+    fn draw_rows_draws_what_draw_styled_draws() {
+        let mut ctx = TextCtx::new(None);
+        let (rows, pieces) = rows_and_pieces(&sample_rows());
+        assert_eq!(rows.row_count(), 6);
+        assert_eq!(rows.row(1).count(), 3);
+        assert_eq!(rows.row(2).count(), 0, "a blank row has no pieces");
+        for (x, y, clip) in [
+            (4, 3, Rect::new(0, 0, ROWS_W, ROWS_H)),
+            (-30, -9, Rect::new(0, 0, ROWS_W, ROWS_H)),
+            (20, 10, Rect::new(40, 20, 120, 70)),
+        ] {
+            let want = paint_styled(&mut ctx, &pieces, x, y, clip);
+            assert!(want.iter().any(|p| *p != 0x101418), "nothing drawn at {x},{y}");
+            assert_eq!(paint_rows(&mut ctx, &rows, x, y, clip), want, "at {x},{y} clip {clip:?}");
+        }
+        // No rows: nothing is drawn (as `draw_styled` with no pieces).
+        let blank = paint_rows(&mut ctx, &CodeRows::default(), 4, 3, Rect::new(0, 0, ROWS_W, ROWS_H));
+        assert!(blank.iter().all(|p| *p == 0x101418));
     }
 
     #[test]

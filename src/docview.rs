@@ -30,11 +30,26 @@ pub struct ViewMap {
     /// describe; merged over the indentation regions while that version is current.
     pub lsp_regions: Vec<(usize, usize)>,
     pub lsp_ver: i32,
+    /// What `Doc::is_foldable` answered by indentation, per line, for one version of the text.
+    foldable: std::cell::RefCell<FoldableCache>,
     wrap_rows: Vec<u32>,
     wrap_valid: bool,
     pub map: RowMap,
     lines: usize,
 }
+
+/// Answers of the indentation test of `Doc::is_foldable` (the gutter asks it for every visible
+/// row of every frame, and each answer reads the line and the next non-blank one). `key` is the
+/// text they were computed for; a different key empties the map.
+#[derive(Clone, Default)]
+struct FoldableCache {
+    /// (document version, buffer version, line count, char count, tab width).
+    key: Option<(i32, u64, usize, usize, usize)>,
+    lines: std::collections::HashMap<usize, bool>,
+}
+
+/// Lines remembered by a [`FoldableCache`] before it starts over.
+const FOLDABLE_MAX: usize = 4096;
 
 impl Default for ViewMap {
     fn default() -> Self {
@@ -47,6 +62,7 @@ impl Default for ViewMap {
             avail_ver: -1,
             lsp_regions: Vec::new(),
             lsp_ver: -1,
+            foldable: Default::default(),
             wrap_rows: Vec::new(),
             wrap_valid: false,
             map: RowMap::new(0),
@@ -592,6 +608,22 @@ impl Doc {
             return true;
         }
         let tab = self.ed.tab_w;
+        let key = Some((self.version, self.buf.version(), self.buf.line_count(), self.buf.len_chars(), tab));
+        let mut cache = self.view.foldable.borrow_mut();
+        if cache.key != key || cache.lines.len() > FOLDABLE_MAX {
+            cache.key = key;
+            cache.lines.clear();
+        }
+        if let Some(&known) = cache.lines.get(&line) {
+            return known;
+        }
+        let found = self.foldable_by_indent(line, tab);
+        cache.lines.insert(line, found);
+        found
+    }
+
+    /// Is `line` followed (blank lines aside) by a more indented line?
+    fn foldable_by_indent(&self, line: usize, tab: usize) -> bool {
         let Some(own) = indent_width(&self.buf.line(line), tab) else { return false };
         let n = self.buf.line_count();
         let mut l = line + 1;
@@ -1237,6 +1269,33 @@ mod tests {
         assert!(d.is_foldable(6));
         let r = d.fold_regions();
         assert!(r.contains(&(0, 4)) && r.contains(&(1, 2)) && r.contains(&(6, 7)));
+    }
+
+    #[test]
+    fn foldable_answers_are_cached_per_text_version() {
+        let mut d = doc("a\n    b\nc\nd\n");
+        assert!(d.is_foldable(0));
+        assert!(!d.is_foldable(2));
+        assert_eq!(d.view.foldable.borrow().lines.len(), 2, "both answers are remembered");
+        assert!(d.is_foldable(0) && !d.is_foldable(2), "and given again");
+        assert_eq!(d.view.foldable.borrow().lines.len(), 2);
+        // Indent line 3: line 2 becomes a block header. The edit changes the versions, so the
+        // remembered "not foldable" is dropped.
+        click(&mut d, 3, 0);
+        d.ed.paste(&mut d.buf, "    ");
+        assert!(d.sync_edits());
+        assert!(d.is_foldable(2), "a stale answer survived the edit");
+        assert!(d.is_foldable(0));
+        // Dedent line 1 by replacing the text behind the document's back (as a reload does):
+        // the buffer version alone must drop the answers too.
+        let p = d.buf.line_start(1);
+        d.buf.replace(p, p + 4, "", crate::buffer::EditKind::Other, d.ed.sel);
+        assert!(!d.is_foldable(0), "a stale answer survived a buffer change");
+        // Another tab width is another key.
+        let before = d.view.foldable.borrow().key;
+        d.ed.tab_w += 4;
+        d.is_foldable(0);
+        assert_ne!(d.view.foldable.borrow().key, before);
     }
 
     #[test]
