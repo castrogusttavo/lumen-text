@@ -319,13 +319,13 @@ impl App {
             return;
         }
         // A lean server that balloons is broken: restart it rather than let it eat the machine.
-        if let Some(mb) = self
+        let lean_mb = self
             .lsps
             .iter()
             .filter(|l| l.name == "tsgo" && l.mirror.is_some())
             .filter_map(|l| crate::mem::pss_of(l.pid()).map(|kb| kb / 1024))
-            .find(|mb| *mb > crate::lsp_guard::LEAN_HARD_MB)
-        {
+            .max();
+        if let Some(mb) = lean_mb.filter(|mb| self.lsp_guard.lean_over(*mb)) {
             self.restart_lsp();
             self.say(format!("tsgo (lean) used {mb} MB: restarted"));
             return;
