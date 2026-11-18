@@ -688,7 +688,8 @@ impl App {
                 if t <= now {
                     self.docs[i].symbols_due = None;
                     if let Some(uri) = self.docs[i].uri() {
-                        self.lsps[li].request(
+                        self.lsps[li].request_single(
+                            format!("outline:{uri}"),
                             "textDocument/documentSymbol",
                             json!({"textDocument": {"uri": uri}}),
                             Pending::SymbolsCache { uri: uri.clone() },
@@ -696,7 +697,8 @@ impl App {
                         if self.lsps[li].caps["foldingRangeProvider"].as_bool() != Some(false)
                             && !self.lsps[li].caps["foldingRangeProvider"].is_null()
                         {
-                            self.lsps[li].request(
+                            self.lsps[li].request_single(
+                                format!("folds:{uri}"),
                                 "textDocument/foldingRange",
                                 json!({"textDocument": {"uri": uri}}),
                                 Pending::Folding { uri },

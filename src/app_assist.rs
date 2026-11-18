@@ -108,12 +108,16 @@ impl App {
             for li in hl {
                 let order = if Some(li) == primary { 0 } else { 1 + li };
                 let what = Pending::Highlight { uri: real.clone(), serial, order };
-                self.lsps[li].request("textDocument/documentHighlight", params(uri_for(li)), what);
+                // Single-flight: while the server is still answering the previous cursor position,
+                // only the newest one waits (they used to queue up unanswered in tsgo).
+                let key = format!("hl:{real}");
+                self.lsps[li].request_single(key, "textDocument/documentHighlight", params(uri_for(li)), what);
             }
         }
         if let Some(li) = linked {
             let what = Pending::LinkedEditing { uri: real.clone(), serial, ver, at };
-            self.lsps[li].request("textDocument/linkedEditingRange", params(uri_for(li)), what);
+            let key = format!("linked:{real}");
+            self.lsps[li].request_single(key, "textDocument/linkedEditingRange", params(uri_for(li)), what);
         }
     }
 

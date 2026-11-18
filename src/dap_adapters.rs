@@ -755,6 +755,14 @@ not json
         let p = bin.join(name);
         std::fs::write(&p, format!("#!/bin/sh\n{script}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A test thread that forks while the script is still open for writing makes the first exec
+        // fail with ETXTBSY ("Text file busy", seen on CI): wait until the file can be run.
+        for _ in 0..100 {
+            match std::process::Command::new(&p).output() {
+                Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                _ => break,
+            }
+        }
     }
 
     #[cfg(unix)]
