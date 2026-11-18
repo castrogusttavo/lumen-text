@@ -164,6 +164,7 @@ mod snippet_syntax;
 mod snippets;
 mod startup;
 mod structural;
+mod tabnames;
 mod tasks;
 mod terminal;
 mod termlink;

@@ -206,7 +206,7 @@ impl App {
         let mut geo: Vec<(usize, i32, i32)> = Vec::with_capacity(order.len());
         let mut x = 6;
         for &i in &order {
-            let w = self.tx.ui_width(&self.docs[i].name, false).min(TAB_NAME_MAX)
+            let w = self.tx.ui_width(&self.tab_display_name(i), false).min(TAB_NAME_MAX)
                 + 34
                 + 34
                 + 11 * pane_docs.iter().filter(|p| p.0 == i).count() as i32;
@@ -315,14 +315,26 @@ impl App {
         }
     }
 
+    /// The name a tab shows: the file name, with the parent folders in front when another open
+    /// file has the same name (`workspace/route.ts` next to `project/route.ts`).
+    pub(crate) fn tab_display_name(&self, doc: usize) -> String {
+        let name = &self.docs[doc].name;
+        // Only a name shared with another tab needs the work.
+        if !self.docs.iter().enumerate().any(|(i, d)| i != doc && d.name == *name && d.path().is_some()) {
+            return name.clone();
+        }
+        let items: Vec<(&str, Option<&Path>)> = self.docs.iter().map(|d| (d.name.as_str(), d.path())).collect();
+        crate::tabnames::disambiguate(&items).swap_remove(doc)
+    }
+
     /// A tab's name as drawn (cut with "…" past `TAB_NAME_MAX`) and its width.
     pub(crate) fn tab_label(&mut self, doc: usize, bold: bool) -> (String, i32) {
-        let name = &self.docs[doc].name;
-        let full = self.tx.ui_width(name, bold);
+        let name = self.tab_display_name(doc);
+        let full = self.tx.ui_width(&name, bold);
         if full <= TAB_NAME_MAX {
-            return (name.clone(), full);
+            return (name, full);
         }
-        let label = crate::ui::fit_ellipsis(&mut self.tx, name, TAB_NAME_MAX, bold);
+        let label = crate::ui::fit_ellipsis(&mut self.tx, &name, TAB_NAME_MAX, bold);
         let w = self.tx.ui_width(&label, bold);
         (label, w)
     }
