@@ -2,17 +2,54 @@
   <img src="assets/brand/icon.svg" width="96" alt="Lumen logo">
 </p>
 
-# lumen-text
+<h1 align="center">lumen-text</h1>
 
-**A lean, CPU-rendered code editor for Linux, Windows and macOS, written 100% in Rust, with a first-class TypeScript workflow.**
+<p align="center"><b>A lean, CPU-rendered code editor for Linux, Windows and macOS, written 100% in Rust, with a first-class TypeScript workflow.</b></p>
 
-[![CI](https://github.com/castrogusttavo/lumen-text/actions/workflows/ci.yml/badge.svg)](https://github.com/castrogusttavo/lumen-text/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/castrogusttavo/lumen-text)](https://github.com/castrogusttavo/lumen-text/releases)
+<p align="center">
+  <a href="https://github.com/castrogusttavo/lumen-text/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/castrogusttavo/lumen-text/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/castrogusttavo/lumen-text/releases"><img alt="Release" src="https://img.shields.io/github/v/release/castrogusttavo/lumen-text?label=release"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="Rust 2024" src="https://img.shields.io/badge/Rust-edition_2024-CE412B?logo=rust&logoColor=white">
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-Linux_%C2%B7_Windows_%C2%B7_macOS-555">
+  <img alt="No GPU, no Electron" src="https://img.shields.io/badge/no_GPU-no_Electron-2F8A5B">
+</p>
+
+<p align="center">
+  <b><a href="https://castrogusttavo.github.io/lumen-text/docs/getting-started">Docs</a></b> ·
+  <b><a href="https://castrogusttavo.github.io/lumen-text/changelog">Changelog</a></b> ·
+  <b><a href="https://castrogusttavo.github.io/lumen-text/roadmap">Roadmap</a></b> ·
+  <b><a href="https://github.com/castrogusttavo/lumen-text/releases">Releases</a></b>
+</p>
 
 ![lumen-text, light theme, TypeScript project](docs/screenshots/light-editor.png)
 
-**[Changelog](https://castrogusttavo.github.io/lumen-text/changelog)** · **[Roadmap](https://castrogusttavo.github.io/lumen-text/roadmap)** · **[Docs](https://castrogusttavo.github.io/lumen-text/docs/getting-started)** · **[Releases](https://github.com/castrogusttavo/lumen-text/releases)**
+<table>
+<tr>
+<td align="center"><b>~20 MB</b><br>the editor itself</td>
+<td align="center"><b>~21 ms</b><br>to open a 100k-line file</td>
+<td align="center"><b>0 GPU</b><br>drivers, web views or Electron</td>
+<td align="center"><b>65</b><br>VS Code themes bundled</td>
+<td align="center"><b>30+</b><br>language servers built in</td>
+</tr>
+</table>
+
+**Jump to:** [Get started](#get-started) · [Why](#why) · [How it works](#how-it-works) · [Features](#features) · [Install](#install) · [Configuration](#configuration) · [Contributing](CONTRIBUTING.md)
+
+## Get started
+
+```sh
+# Linux, any distribution: grab the AppImage from the latest release
+chmod +x lumen-text-<v>-x86_64.AppImage && ./lumen-text-<v>-x86_64.AppImage
+
+# optional, for TypeScript projects: the native TypeScript server
+npm i --prefix ~/.local/share/lumen-text/tsgo @typescript/native-preview
+
+lumen-text my-project/            # open a folder
+```
+
+`Ctrl+P` opens files, `Ctrl+Shift+P` is the command palette, `Ctrl+,` the settings. Packages for Debian/Ubuntu, Fedora,
+Arch, Windows and macOS are in [Install](#install).
 
 ## Why
 
@@ -30,6 +67,18 @@ and no GPU driver:
   phpactor, Dockerfile, sourcekit-lsp, dart, elixir-ls, haskell, metals, svelte, astro, vue, Tailwind, deno...)
   starts a server **only when a matching file is opened and the program is installed**; add your own in `config.json`.
 - One process per window (several windows are fine), one font in memory, no web view, no Electron.
+
+### At a glance
+
+| | |
+|---|---|
+| **Lean** | One process per window, one font in memory, no web view. Memory numbers are measured and published ([below](#measured-numbers)). |
+| **Native rendering** | `softbuffer` + `tiny-skia` + `cosmic-text`: pixels are drawn on the CPU, so it runs wherever a window does. |
+| **TypeScript first** | `tsgo` with full project awareness, an import index of its own, Biome / Prettier / ESLint, Vitest / Jest with coverage in the gutter. |
+| **Any language** | A data-driven registry starts the right language server only when a matching file opens and the program is installed. |
+| **Git inside** | Panel, stashes, commit graph, line staging, interactive rebase, worktrees and a 3-way merge editor. |
+| **Agents beside you** | Claude Code, Gemini CLI or Codex CLI in a panel, several sessions at once, your own login (Lumen never handles API keys). |
+| **Nothing is lost** | Local history, hot exit, crash recovery and persistent undo. |
 
 ## What's new
 
@@ -536,6 +585,127 @@ highlights) and about 20 `tokenColors` examples:
 **Zed themes:** installed Zed themes (`~/.config/zed/themes` and the Zed extensions folder) are
 converted automatically to `~/.config/lumen-text/themes/zed-*.json` (Zed `style` keys are mapped to the
 VS Code keys; the mapping table is documented at the top of `src/zedtheme.rs`).
+
+## How it works
+
+The diagrams below are [Mermaid](https://mermaid.js.org), rendered by GitHub. The source map of the modules follows in [Architecture](#architecture).
+
+### Overview
+
+One window is one process. The UI thread only draws and reacts; everything slow lives on a worker thread or in a child process and wakes the UI when it has an answer.
+
+```mermaid
+flowchart LR
+  subgraph proc["lumen-text process (one per window)"]
+    direction TB
+    EV["winit event loop<br/>keys, mouse, IME, a11y"] --> KM["keymap + commands<br/>keybindings.json"]
+    KM --> APP["app state<br/>tabs, panes, panels"]
+    APP --> DOC["documents<br/>rope buffer, undo tree, cursors"]
+    DOC --> UI["render<br/>cosmic-text + tiny-skia"]
+    UI --> SB["softbuffer<br/>CPU surface"]
+    subgraph workers["worker threads"]
+      direction TB
+      TOK["TextMate tokenizer<br/>onig, incremental"]
+      GITW["git worker"]
+      IDX["import index"]
+      SRCH["project search"]
+      FSW["file watcher<br/>inotify / polling"]
+    end
+    APP <-->|"messages + wake"| workers
+  end
+  subgraph ext["child processes"]
+    direction TB
+    LSP["language servers<br/>tsgo, rust-analyzer, pyright..."]
+    DAP["debug adapters<br/>delve, js-debug, gdb"]
+    PTY["terminals and AI agents<br/>PTY + VT emulator"]
+    CLI["git, gh, ssh, curl"]
+  end
+  APP <-->|"JSON-RPC / DAP / PTY"| ext
+  SB --> WIN(["window<br/>Wayland, X11, Win32, Cocoa"])
+```
+
+### From a keystroke to pixels
+
+```mermaid
+flowchart LR
+  K(["key press"]) --> E["editor<br/>edit the rope, one undo step"]
+  E --> T["background tokenizer<br/>per-frame budget"]
+  E --> L["LSP didChange<br/>diagnostics, semantic tokens"]
+  T --> C["colored rows"]
+  L --> C
+  C --> S["shaped rows<br/>cached between frames"]
+  S --> G["glyphs clipped once,<br/>blended a row at a time"]
+  G --> P(["softbuffer present"])
+```
+
+Long jumps get an immediate color while the tokenizer catches up; files above 20k lines ask for semantic tokens of the visible window only.
+
+### A language server's life
+
+Servers are never started "just in case": one process per (server, workspace root), started when a matching file opens.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> Idle
+  Idle --> Starting: a matching file opens<br/>and the program is installed
+  Starting --> Running: initialize + registrations
+  Running --> Running: requests, merged answers<br/>(primary + companions)
+  Running --> Stopping: no file open for a grace period
+  Stopping --> Idle
+  Running --> Backoff: the process crashes
+  Backoff --> Starting: restarted with growing delay
+  Running --> Starting: memory guard restarts<br/>tsgo in lean mode
+```
+
+### Nothing is lost
+
+```mermaid
+flowchart TD
+  A(["you type"]) --> B["unsaved buffer"]
+  B -->|"~2 s after the last edit"| BK[("crash backup")]
+  B -->|"quit"| HE[("hot exit<br/>tabs, untitled included")]
+  B -->|"Ctrl+S"| SV["atomic save"]
+  SV --> LH[("local history<br/>snapshot per save")]
+  EXT["another program rewrites the file<br/>(formatter, git checkout, an agent)"] --> LH
+  EXT --> RL["buffer reloads"]
+  CL["close the file or restart"] --> UN[("persistent undo tree")]
+  BK -.->|"after a crash"| R(["restored on the next start"])
+  HE -.-> R
+  LH -.->|"File: Local history"| RS(["restore as one undoable edit"])
+```
+
+### One window per process, one command line
+
+```mermaid
+sequenceDiagram
+  participant U as lumen-text other-folder/
+  participant I as running windows
+  U->>I: is there a window with this folder?
+  alt a window has it open
+    I-->>U: raise that window
+  else a window's project contains the file
+    I-->>U: hand the file to it
+  else none
+    U->>U: open a new window (a new process)
+  end
+```
+
+### Updates
+
+```mermaid
+flowchart LR
+  A["20 s after start,<br/>then every 4 h"] --> B["fetch latest.json"]
+  B -->|"newer version"| C["download with curl or wget<br/>time and size limits"]
+  C --> D{"minisign signature<br/>valid for this exact file?"}
+  D -->|"no"| X(["discarded"])
+  D -->|"yes"| E{"how was Lumen installed?"}
+  E -->|"AppImage"| F["replace the file atomically"]
+  E -->|"user install"| G["new version dir,<br/>switch the current symlink"]
+  E -->|"deb / rpm / pacman"| H["notify with the<br/>distribution's command"]
+  F --> R(["Restart to update"])
+  G --> R
+```
 
 ## Architecture
 
