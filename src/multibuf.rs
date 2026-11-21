@@ -2,8 +2,11 @@
 //! references). This is the pure model: locations in, excerpts (merged context ranges) and a flat
 //! list of rows out, plus the selection and scroll state. Drawing and input are in `app_multibuf`.
 //!
-//! The tab is read-only navigation: the excerpts are snapshots of the text when the tab was
-//! opened (open unsaved buffers included); Enter or a click jumps to the real file.
+//! The excerpts are snapshots of the text when the tab was opened (open unsaved buffers included).
+//! They can be edited in place: every excerpt keeps the lines it was read with (`orig`, at line
+//! `orig_start` of the file) next to the lines as edited (`raw`), so a save can check the file still
+//! has the old lines and replace exactly that range, whatever other excerpts did to the line count.
+//! Ctrl+Enter or a click on a file header jumps to the real file.
 
 use crate::{theme::Rgba, ui::Rect};
 use std::path::{Path, PathBuf};
@@ -46,13 +49,188 @@ pub struct Mark {
 pub type Runs = Vec<Vec<(usize, usize, Rgba, u8)>>;
 
 pub struct Excerpt {
-    /// First line (0-based) of the excerpt.
+    /// First line (0-based) of the excerpt as edited (earlier excerpts of the file may have grown
+    /// or shrunk since it was read).
     pub start: usize,
-    /// The shown text of each line, tabs expanded.
+    /// The first line of the excerpt in the file as last read or saved.
+    pub orig_start: usize,
+    /// The lines as last read or saved.
+    pub orig: Vec<String>,
+    /// The lines as edited, whole.
+    pub raw: Vec<String>,
+    /// The shown text of each line (`raw`, tabs expanded and cut).
     pub lines: Vec<String>,
     pub marks: Vec<Mark>,
     /// Highlighting, computed when first drawn (keyed by the theme's text colour).
     pub runs: Option<(Rgba, Runs)>,
+}
+
+impl Excerpt {
+    pub fn is_dirty(&self) -> bool {
+        self.raw != self.orig
+    }
+
+    /// Refresh what is shown from `raw` after an edit.
+    fn refresh(&mut self) {
+        self.lines = self.raw.iter().map(|l| expand_tabs(l)).collect();
+        let start = self.start;
+        for m in &mut self.marks {
+            if let Some(raw) = m.line.checked_sub(start).and_then(|i| self.raw.get(i)) {
+                m.dcol = display_col(raw, m.col);
+            }
+        }
+        self.runs = None;
+    }
+
+    /// Insert `s` (no line break) at char `col` of line `i`; the new column.
+    pub fn insert_at(&mut self, i: usize, col: usize, s: &str) -> usize {
+        let line = &mut self.raw[i];
+        let at = byte_at(line, col);
+        line.insert_str(at, s);
+        self.refresh();
+        col + s.chars().count()
+    }
+
+    /// Break line `i` at char `col`: the rest becomes a new line `i + 1`. Marks after the break move down.
+    pub fn split_at(&mut self, i: usize, col: usize) {
+        let abs = self.start + i;
+        let at = byte_at(&self.raw[i], col);
+        let rest = self.raw[i].split_off(at);
+        self.raw.insert(i + 1, rest);
+        for m in &mut self.marks {
+            if m.line > abs {
+                m.line += 1;
+            } else if m.line == abs && m.col >= col {
+                m.line += 1;
+                m.col -= col;
+            }
+        }
+        self.refresh();
+    }
+
+    /// Join line `i` to the end of the line before it; the new position (line, col). `None` on the first line.
+    pub fn join_prev(&mut self, i: usize) -> Option<(usize, usize)> {
+        if i == 0 || i >= self.raw.len() {
+            return None;
+        }
+        let abs = self.start + i;
+        let line = self.raw.remove(i);
+        let prev_len = self.raw[i - 1].chars().count();
+        self.raw[i - 1].push_str(&line);
+        for m in &mut self.marks {
+            if m.line == abs {
+                m.line -= 1;
+                m.col += prev_len;
+            } else if m.line > abs {
+                m.line -= 1;
+            }
+        }
+        self.refresh();
+        Some((i - 1, prev_len))
+    }
+
+    /// Remove the char before `col` of line `i` (joining lines at column 0); the new position.
+    pub fn backspace(&mut self, i: usize, col: usize) -> Option<(usize, usize)> {
+        if col == 0 {
+            return self.join_prev(i);
+        }
+        let line = &mut self.raw[i];
+        let (a, b) = (byte_at(line, col - 1), byte_at(line, col));
+        line.replace_range(a..b, "");
+        self.refresh();
+        Some((i, col - 1))
+    }
+
+    /// Remove the char at `col` of line `i` (joining the next line at the end of this one).
+    pub fn delete(&mut self, i: usize, col: usize) -> Option<(usize, usize)> {
+        if col < self.raw[i].chars().count() {
+            let line = &mut self.raw[i];
+            let (a, b) = (byte_at(line, col), byte_at(line, col + 1));
+            line.replace_range(a..b, "");
+            self.refresh();
+            return Some((i, col));
+        }
+        self.join_prev(i + 1).map(|_| (i, col))
+    }
+}
+
+/// Byte offset of char `col` in `s` (the end when past it).
+pub fn byte_at(s: &str, col: usize) -> usize {
+    s.char_indices().nth(col).map_or(s.len(), |(b, _)| b)
+}
+
+/// The char column of `line` under shown column `dcol` (the char whose cells hold it; the end of
+/// the line when past it).
+pub fn raw_col(line: &str, dcol: usize) -> usize {
+    let mut w = 0;
+    for (n, ch) in line.chars().enumerate() {
+        w += if ch == '\t' { TAB - w % TAB } else { 1 };
+        if w > dcol {
+            return n;
+        }
+    }
+    line.chars().count()
+}
+
+/// A change of a file: the lines `old` at `start` become `new`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Edit {
+    pub start: usize,
+    pub old: Vec<String>,
+    pub new: Vec<String>,
+}
+
+/// Do `lines` still hold the `old` lines of every edit? `Err(i)` names the first edit that does not.
+pub fn check_edits(lines: &[String], edits: &[Edit]) -> Result<(), usize> {
+    for (n, e) in edits.iter().enumerate() {
+        if lines.get(e.start..e.start + e.old.len()) != Some(e.old.as_slice()) {
+            return Err(n);
+        }
+    }
+    Ok(())
+}
+
+/// `edits` (ascending, not overlapping) applied to `text`, keeping the BOM, the line breaks and
+/// whether the file ends with one. `Err(i)` when edit `i` no longer matches the text.
+pub fn apply_text(text: &str, edits: &[Edit]) -> Result<String, usize> {
+    let (bom, body) = match text.strip_prefix('\u{feff}') {
+        Some(b) => ("\u{feff}", b),
+        None => ("", text),
+    };
+    let lines: Vec<(&str, &str)> = body
+        .split_inclusive('\n')
+        .map(|l| match l.strip_suffix("\r\n") {
+            Some(b) => (b, "\r\n"),
+            None => l.strip_suffix('\n').map_or((l, ""), |b| (b, "\n")),
+        })
+        .collect();
+    let eol = lines.iter().map(|l| l.1).find(|e| !e.is_empty()).unwrap_or("\n");
+    let mut out = String::from(bom);
+    let mut at = 0;
+    for (n, e) in edits.iter().enumerate() {
+        let end = e.start + e.old.len();
+        if e.start < at
+            || end > lines.len()
+            || lines[e.start..end].iter().map(|l| l.0).ne(e.old.iter().map(String::as_str))
+        {
+            return Err(n);
+        }
+        for (b, t) in &lines[at..e.start] {
+            out.push_str(b);
+            out.push_str(t);
+        }
+        let last = lines.get(end.wrapping_sub(1)).filter(|_| end > 0 && !e.old.is_empty()).map_or(eol, |l| l.1);
+        for (j, l) in e.new.iter().enumerate() {
+            out.push_str(l);
+            out.push_str(if j + 1 == e.new.len() { last } else { eol });
+        }
+        at = end;
+    }
+    for (b, t) in &lines[at..] {
+        out.push_str(b);
+        out.push_str(t);
+    }
+    Ok(out)
 }
 
 pub struct FileGroup {
@@ -65,6 +243,30 @@ pub struct FileGroup {
 impl FileGroup {
     pub fn match_count(&self) -> usize {
         self.excerpts.iter().map(|e| e.marks.len()).sum()
+    }
+
+    /// The edited excerpts as changes of the file, ascending.
+    pub fn edits(&self) -> Vec<Edit> {
+        let mut v: Vec<Edit> = self
+            .excerpts
+            .iter()
+            .filter(|e| e.is_dirty())
+            .map(|e| Edit { start: e.orig_start, old: e.orig.clone(), new: e.raw.clone() })
+            .collect();
+        v.sort_by_key(|e| e.start);
+        v
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.excerpts.iter().any(Excerpt::is_dirty)
+    }
+
+    /// The file now holds the edited lines: they are the new baseline.
+    pub fn mark_saved(&mut self) {
+        for e in &mut self.excerpts {
+            e.orig = e.raw.clone();
+            e.orig_start = e.start;
+        }
     }
 }
 
@@ -167,7 +369,8 @@ pub fn build(
                 })
                 .collect();
             let lines = text[s..e].iter().map(|l| expand_tabs(l)).collect();
-            excerpts.push(Excerpt { start: s, lines, marks, runs: None });
+            let raw = text[s..e].to_vec();
+            excerpts.push(Excerpt { start: s, orig_start: s, orig: raw.clone(), raw, lines, marks, runs: None });
         }
         if !excerpts.is_empty() {
             groups.push(FileGroup { path: path.clone(), label: label(path), excerpts });
@@ -178,6 +381,19 @@ pub fn build(
 
 // ── the tab's state ──
 
+/// An excerpt as it was before an edit, for undo and redo.
+struct Snap {
+    g: usize,
+    e: usize,
+    raw: Vec<String>,
+    marks: Vec<Mark>,
+    /// Line in the excerpt and char column of the caret.
+    at: (usize, usize),
+}
+
+/// How many edits undo remembers.
+const UNDO_MAX: usize = 500;
+
 pub struct MultiBuf {
     pub kind: Kind,
     pub title: String,
@@ -186,43 +402,60 @@ pub struct MultiBuf {
     /// Rows of lines with a match, and the first one of every excerpt (both ascending).
     pub hits: Vec<usize>,
     pub ex_first: Vec<usize>,
-    /// The selected row.
+    /// The selected row (the caret is on it, at char column `col`, when it is a line).
     pub sel: usize,
+    pub col: usize,
     /// Scroll offset in logical px.
     pub scroll: f64,
     /// The selection must be scrolled into view on the next draw.
     pub follow: bool,
     /// Where it was drawn last frame.
     pub rect: Rect,
+    /// Where the code starts (px) and the width of a cell, as drawn last frame.
+    pub code_x: i32,
+    pub cell: f32,
     /// The highest line number shown (1-based), for the gutter width.
     pub max_line: usize,
+    undo: Vec<Snap>,
+    redo: Vec<Snap>,
+    /// The line the last edit typed on (typing in one place is one undo step).
+    typing: Option<(usize, usize, usize)>,
+}
+
+type Layout = (Vec<Row>, Vec<usize>, Vec<usize>, usize);
+
+/// The flat rows of `groups`, the rows of matches, the first match row of every excerpt and the
+/// highest line number.
+fn layout(groups: &[FileGroup]) -> Layout {
+    let mut rows = Vec::new();
+    let (mut hits, mut ex_first, mut max_line) = (Vec::new(), Vec::new(), 0);
+    for (g, grp) in groups.iter().enumerate() {
+        rows.push(Row::File(g));
+        for (e, ex) in grp.excerpts.iter().enumerate() {
+            if e > 0 {
+                rows.push(Row::Gap);
+            }
+            let first_hit = hits.len();
+            for i in 0..ex.lines.len() {
+                if ex.marks.iter().any(|m| m.line == ex.start + i) {
+                    hits.push(rows.len());
+                }
+                rows.push(Row::Line { g, e, i });
+            }
+            if hits.len() > first_hit {
+                ex_first.push(hits[first_hit]);
+            }
+            max_line = max_line.max(ex.start + ex.lines.len());
+        }
+    }
+    (rows, hits, ex_first, max_line)
 }
 
 impl MultiBuf {
     pub fn new(kind: Kind, title: String, groups: Vec<FileGroup>) -> Self {
-        let mut rows = Vec::new();
-        let (mut hits, mut ex_first, mut max_line) = (Vec::new(), Vec::new(), 0);
-        for (g, grp) in groups.iter().enumerate() {
-            rows.push(Row::File(g));
-            for (e, ex) in grp.excerpts.iter().enumerate() {
-                if e > 0 {
-                    rows.push(Row::Gap);
-                }
-                let first_hit = hits.len();
-                for i in 0..ex.lines.len() {
-                    if ex.marks.iter().any(|m| m.line == ex.start + i) {
-                        hits.push(rows.len());
-                    }
-                    rows.push(Row::Line { g, e, i });
-                }
-                if hits.len() > first_hit {
-                    ex_first.push(hits[first_hit]);
-                }
-                max_line = max_line.max(ex.start + ex.lines.len());
-            }
-        }
+        let (rows, hits, ex_first, max_line) = layout(&groups);
         let sel = hits.first().copied().unwrap_or(0);
-        MultiBuf {
+        let mut mb = MultiBuf {
             kind,
             title,
             groups,
@@ -230,11 +463,218 @@ impl MultiBuf {
             hits,
             ex_first,
             sel,
+            col: 0,
             scroll: 0.0,
             follow: true,
             rect: Rect::new(0, 0, 0, 0),
+            code_x: 0,
+            cell: 0.0,
             max_line,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            typing: None,
+        };
+        mb.col = mb.mark_at(sel).map_or(0, |m| m.col).min(mb.line_len(sel));
+        mb
+    }
+
+    fn reindex(&mut self) {
+        (self.rows, self.hits, self.ex_first, self.max_line) = layout(&self.groups);
+    }
+
+    /// Any excerpt with edits that are not in its file yet.
+    pub fn is_dirty(&self) -> bool {
+        self.groups.iter().any(FileGroup::is_dirty)
+    }
+
+    /// Chars of the line a row shows (0 for other rows).
+    pub fn line_len(&self, row: usize) -> usize {
+        match self.rows.get(row) {
+            Some(Row::Line { g, e, i }) => self.groups[*g].excerpts[*e].raw[*i].chars().count(),
+            _ => 0,
         }
+    }
+
+    fn row_of(&self, g: usize, e: usize, i: usize) -> Option<usize> {
+        self.rows.iter().position(|r| *r == Row::Line { g, e, i })
+    }
+
+    // ── editing ──
+
+    /// The caret: group, excerpt, line in the excerpt, char column. `None` unless a line is selected.
+    pub fn caret(&self) -> Option<(usize, usize, usize, usize)> {
+        match self.rows.get(self.sel)? {
+            Row::Line { g, e, i } => Some((*g, *e, *i, self.col.min(self.line_len(self.sel)))),
+            _ => None,
+        }
+    }
+
+    fn snap(&self, g: usize, e: usize, at: (usize, usize)) -> Snap {
+        let ex = &self.groups[g].excerpts[e];
+        Snap { g, e, raw: ex.raw.clone(), marks: ex.marks.clone(), at }
+    }
+
+    /// Put an excerpt back to `s`, moving the later excerpts of its file by the change in lines.
+    fn restore(&mut self, s: &Snap) {
+        let ex = &mut self.groups[s.g].excerpts[s.e];
+        let delta = s.raw.len() as isize - ex.raw.len() as isize;
+        ex.raw = s.raw.clone();
+        ex.marks = s.marks.clone();
+        ex.refresh();
+        self.shift_after(s.g, s.e, delta);
+        self.reindex();
+        if let Some(r) = self.row_of(s.g, s.e, s.at.0) {
+            self.sel = r;
+            self.col = s.at.1;
+            self.follow = true;
+        }
+        self.typing = None;
+    }
+
+    /// The excerpts after excerpt `e` of group `g` start `delta` lines further down.
+    fn shift_after(&mut self, g: usize, e: usize, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        for ex in &mut self.groups[g].excerpts[e + 1..] {
+            ex.start = ex.start.saturating_add_signed(delta);
+            for m in &mut ex.marks {
+                m.line = m.line.saturating_add_signed(delta);
+            }
+        }
+    }
+
+    /// Run an edit `f` (line, col -> the caret after it, `None` when nothing changed) on the caret's
+    /// excerpt: the lines below it move, the rows are rebuilt and the edit can be undone. Typing
+    /// (`typing`) on one line is one undo step.
+    fn edit(&mut self, typing: bool, f: impl FnOnce(&mut Excerpt, usize, usize) -> Option<(usize, usize)>) -> bool {
+        let Some((g, e, i, col)) = self.caret() else { return false };
+        let before = self.snap(g, e, (i, col));
+        let old_len = self.groups[g].excerpts[e].raw.len();
+        let Some((ni, ncol)) = f(&mut self.groups[g].excerpts[e], i, col) else { return false };
+        let delta = self.groups[g].excerpts[e].raw.len() as isize - old_len as isize;
+        let joined = typing && self.typing == Some((g, e, i));
+        if !joined {
+            self.undo.push(before);
+            if self.undo.len() > UNDO_MAX {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.typing = typing.then_some((g, e, ni));
+        self.shift_after(g, e, delta);
+        self.reindex();
+        if let Some(r) = self.row_of(g, e, ni) {
+            self.sel = r;
+            self.col = ncol;
+            self.follow = true;
+        }
+        true
+    }
+
+    /// Type `s` (one line) at the caret.
+    pub fn type_str(&mut self, s: &str) -> bool {
+        if s.is_empty() {
+            return false;
+        }
+        self.edit(true, |ex, i, col| Some((i, ex.insert_at(i, col, s))))
+    }
+
+    /// Enter: break the line at the caret.
+    pub fn newline(&mut self) -> bool {
+        self.edit(false, |ex, i, col| {
+            ex.split_at(i, col);
+            Some((i + 1, 0))
+        })
+    }
+
+    pub fn backspace(&mut self) -> bool {
+        self.edit(true, |ex, i, col| ex.backspace(i, col))
+    }
+
+    pub fn delete(&mut self) -> bool {
+        self.edit(true, |ex, i, col| ex.delete(i, col))
+    }
+
+    /// The caret as (line in its excerpt, col).
+    fn caret_pos(&self) -> (usize, usize) {
+        self.caret().map_or((0, 0), |c| (c.2, c.3))
+    }
+
+    /// Undo the last edit. False when there is nothing to undo.
+    pub fn undo(&mut self) -> bool {
+        let Some(s) = self.undo.pop() else { return false };
+        let now = self.snap(s.g, s.e, self.caret_pos());
+        self.restore(&s);
+        self.redo.push(now);
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let Some(s) = self.redo.pop() else { return false };
+        let now = self.snap(s.g, s.e, self.caret_pos());
+        self.restore(&s);
+        self.undo.push(now);
+        true
+    }
+
+    // ── caret movement ──
+
+    fn put(&mut self, row: usize, col: usize) {
+        self.select(row);
+        self.col = col.min(self.line_len(self.sel));
+        self.typing = None;
+    }
+
+    /// Left / Right by one char, across the line breaks of an excerpt.
+    pub fn step_col(&mut self, dir: i32) {
+        let col = self.col.min(self.line_len(self.sel));
+        if !matches!(self.rows.get(self.sel), Some(Row::Line { .. })) {
+            return;
+        }
+        if dir < 0 {
+            if col > 0 {
+                self.put(self.sel, col - 1);
+            } else if self.sel > 0 && matches!(self.rows[self.sel - 1], Row::Line { .. }) {
+                self.put(self.sel - 1, usize::MAX);
+            }
+        } else if col < self.line_len(self.sel) {
+            self.put(self.sel, col + 1);
+        } else if matches!(self.rows.get(self.sel + 1), Some(Row::Line { .. })) {
+            self.put(self.sel + 1, 0);
+        }
+    }
+
+    /// Up / Down one row (skipping the gaps), keeping the column.
+    pub fn step_row(&mut self, dir: i32) {
+        let to = if dir > 0 {
+            (self.sel + 1..self.rows.len()).find(|r| self.rows[*r] != Row::Gap)
+        } else {
+            (0..self.sel).rev().find(|r| self.rows[*r] != Row::Gap)
+        };
+        if let Some(r) = to {
+            self.put(r, self.col);
+        }
+    }
+
+    pub fn line_home(&mut self) {
+        self.put(self.sel, 0);
+    }
+
+    pub fn line_end(&mut self) {
+        self.put(self.sel, usize::MAX);
+    }
+
+    /// Put the caret on `row` under the shown column `dcol`.
+    pub fn click_at(&mut self, row: usize, dcol: usize) {
+        if !matches!(self.rows.get(row), Some(Row::File(_) | Row::Line { .. })) {
+            return;
+        }
+        let col = match self.rows[row] {
+            Row::Line { g, e, i } => raw_col(&self.groups[g].excerpts[e].raw[i], dcol),
+            _ => 0,
+        };
+        self.put(row, col);
     }
 
     pub fn match_count(&self) -> usize {
@@ -318,13 +758,6 @@ impl MultiBuf {
     pub fn select_last(&mut self) {
         if let Some(r) = self.hits.last().copied() {
             self.select(r);
-        }
-    }
-
-    /// Select a row by a click (a gap cannot be selected).
-    pub fn click_row(&mut self, row: usize) {
-        if matches!(self.rows.get(row), Some(Row::File(_) | Row::Line { .. })) {
-            self.select(row);
         }
     }
 
@@ -521,9 +954,183 @@ mod tests {
         mb.scroll = 0.0;
         assert_eq!(mb.row_at(45.0, lh), Some(2));
         assert_eq!(mb.row_at(-1.0, lh), None);
-        mb.click_row(6);
+        mb.click_at(6, 0);
         assert_ne!(mb.sel, 6, "a gap is not selectable");
-        mb.click_row(2);
+        mb.click_at(2, 0);
         assert_eq!(mb.sel, 2);
+    }
+
+    fn lines(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// One file of 100 lines with matches on line 2 and line 30 (two excerpts).
+    fn two_excerpts() -> MultiBuf {
+        MultiBuf::new(Kind::Search, "t".into(), groups(&[loc("a.rs", 2, 0), loc("a.rs", 30, 0)], 100))
+    }
+
+    #[test]
+    fn typing_edits_the_raw_line_and_the_shown_one() {
+        let mut mb = two_excerpts();
+        assert_eq!(mb.caret(), Some((0, 0, 2, 0)));
+        assert!(mb.type_str("\tab"));
+        let ex = &mb.groups[0].excerpts[0];
+        assert_eq!(ex.raw[2], "\tabline 2");
+        assert_eq!(ex.lines[2], "    abline 2", "tabs shown as spaces");
+        assert_eq!(mb.col, 3);
+        assert!(ex.is_dirty() && mb.is_dirty());
+        assert_eq!(mb.groups[0].edits().len(), 1);
+        assert!(!mb.groups[0].excerpts[1].is_dirty());
+    }
+
+    #[test]
+    fn breaking_and_joining_lines_moves_the_later_excerpts() {
+        let mut mb = two_excerpts();
+        let (s0, s1) = (mb.groups[0].excerpts[0].start, mb.groups[0].excerpts[1].start);
+        mb.step_col(1);
+        mb.step_col(1);
+        assert!(mb.newline());
+        let g = &mb.groups[0];
+        assert_eq!(g.excerpts[0].raw[2], "li");
+        assert_eq!(g.excerpts[0].raw[3], "ne 2");
+        assert_eq!(g.excerpts[0].start, s0);
+        assert_eq!(g.excerpts[1].start, s1 + 1, "the next excerpt is one line further down");
+        assert_eq!(g.excerpts[1].marks[0].line, 30 + 1);
+        assert_eq!(g.excerpts[1].orig_start, s1, "the file still has it where it was read");
+        assert_eq!(mb.caret(), Some((0, 0, 3, 0)));
+        assert_eq!(mb.rows.len(), 1 + 6 + 1 + 5);
+        // Backspace at the start of the new line joins it back.
+        assert!(mb.backspace());
+        assert_eq!(mb.groups[0].excerpts[0].raw[2], "line 2");
+        assert_eq!(mb.groups[0].excerpts[1].start, s1);
+        assert_eq!(mb.caret(), Some((0, 0, 2, 2)));
+        assert!(!mb.groups[0].is_dirty(), "back to the original lines");
+    }
+
+    #[test]
+    fn nothing_happens_at_the_edges_of_an_excerpt_or_on_a_header() {
+        let mut mb = two_excerpts();
+        mb.click_at(1, 0);
+        assert_eq!(mb.caret(), Some((0, 0, 0, 0)));
+        assert!(!mb.backspace(), "no line before the first one");
+        assert!(!mb.undo());
+        mb.click_at(0, 0);
+        assert_eq!(mb.caret(), None);
+        assert!(!mb.type_str("x"));
+        assert!(!mb.newline());
+        let last = mb.rows.len() - 1;
+        mb.click_at(last, 99);
+        assert!(!mb.delete(), "no line after the last one");
+    }
+
+    #[test]
+    fn undo_and_redo_restore_the_lines_and_the_starts_below() {
+        let mut mb = two_excerpts();
+        let s1 = mb.groups[0].excerpts[1].start;
+        mb.type_str("a");
+        mb.type_str("b");
+        mb.newline();
+        assert_eq!(mb.groups[0].excerpts[1].start, s1 + 1);
+        assert!(mb.undo(), "the line break");
+        assert_eq!(mb.groups[0].excerpts[1].start, s1);
+        assert_eq!(mb.groups[0].excerpts[0].raw[2], "abline 2");
+        assert!(mb.undo(), "typing on one line is one step");
+        assert_eq!(mb.groups[0].excerpts[0].raw[2], "line 2");
+        assert!(!mb.is_dirty());
+        assert!(!mb.undo());
+        assert!(mb.redo());
+        assert_eq!(mb.groups[0].excerpts[0].raw[2], "abline 2");
+        assert!(mb.redo());
+        assert_eq!(mb.groups[0].excerpts[1].start, s1 + 1);
+        assert!(!mb.redo());
+        mb.undo();
+        mb.type_str("z");
+        assert!(!mb.redo(), "a new edit drops the redo steps");
+    }
+
+    #[test]
+    fn the_caret_walks_lines_and_clicks_land_on_chars() {
+        let mut mb = two_excerpts();
+        mb.line_end();
+        assert_eq!(mb.col, 6);
+        mb.step_col(1);
+        assert_eq!(mb.line_no(mb.sel), Some(3), "past the end goes to the next line");
+        assert_eq!(mb.col, 0);
+        mb.step_col(-1);
+        assert_eq!((mb.line_no(mb.sel), mb.col), (Some(2), 6));
+        mb.line_home();
+        mb.step_row(-1);
+        assert_eq!(mb.line_no(mb.sel), Some(1));
+        let last = mb.rows.len() - 1;
+        mb.click_at(last, 3);
+        mb.step_row(-1);
+        assert_ne!(mb.rows[mb.sel], Row::Gap);
+        assert_eq!(raw_col("\tfoo", 4), 1);
+        assert_eq!(raw_col("\tfoo", 1), 0, "inside the tab: the tab");
+        assert_eq!(raw_col("abc", 99), 3);
+    }
+
+    #[test]
+    fn an_edit_is_checked_against_the_old_lines_and_applied_to_the_text() {
+        let e = Edit { start: 1, old: lines(&["b", "c"]), new: lines(&["B", "x", "y", "C"]) };
+        let file = lines(&["a", "b", "c", "d"]);
+        assert_eq!(check_edits(&file, std::slice::from_ref(&e)), Ok(()));
+        assert_eq!(check_edits(&lines(&["a", "b", "z", "d"]), std::slice::from_ref(&e)), Err(0));
+        assert_eq!(check_edits(&lines(&["a", "b"]), std::slice::from_ref(&e)), Err(0), "past the end");
+        assert_eq!(apply_text("a\nb\nc\nd\n", std::slice::from_ref(&e)).unwrap(), "a\nB\nx\ny\nC\nd\n");
+        assert_eq!(apply_text("a\r\nb\r\nc\r\nd", std::slice::from_ref(&e)).unwrap(), "a\r\nB\r\nx\r\ny\r\nC\r\nd");
+        assert_eq!(
+            apply_text("\u{feff}a\nb\nc", std::slice::from_ref(&e)).unwrap(),
+            "\u{feff}a\nB\nx\ny\nC",
+            "BOM and a missing last break stay"
+        );
+        assert_eq!(apply_text("a\nb\nq\n", std::slice::from_ref(&e)), Err(0));
+    }
+
+    #[test]
+    fn several_edits_apply_in_order_and_overlaps_are_refused() {
+        let es = [
+            Edit { start: 0, old: lines(&["a"]), new: lines(&["a", "a2"]) },
+            Edit { start: 3, old: lines(&["d"]), new: lines(&["D"]) },
+        ];
+        assert_eq!(apply_text("a\nb\nc\nd\ne", &es).unwrap(), "a\na2\nb\nc\nD\ne");
+        let bad = [
+            Edit { start: 1, old: lines(&["b", "c"]), new: lines(&["x"]) },
+            Edit { start: 2, old: lines(&["c"]), new: lines(&["y"]) },
+        ];
+        assert_eq!(apply_text("a\nb\nc\n", &bad), Err(1));
+    }
+
+    #[test]
+    fn saved_excerpts_become_the_new_baseline() {
+        let mut mb = two_excerpts();
+        mb.newline();
+        let g = &mb.groups[0];
+        let edits = g.edits();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].start, 0);
+        assert_eq!(edits[0].old.len(), 5);
+        assert_eq!(edits[0].new.len(), 6);
+        mb.groups[0].mark_saved();
+        assert!(!mb.is_dirty());
+        assert_eq!(mb.groups[0].excerpts[1].orig_start, mb.groups[0].excerpts[1].start);
+        // Undo after a save is an edit against the saved text.
+        assert!(mb.undo());
+        assert!(mb.is_dirty());
+        assert_eq!(mb.groups[0].edits()[0].new.len(), 5);
+    }
+
+    #[test]
+    fn marks_follow_their_line_when_a_line_is_broken() {
+        let mut mb = MultiBuf::new(Kind::Search, "t".into(), groups(&[loc("a.rs", 2, 3), loc("a.rs", 3, 1)], 100));
+        // One excerpt; the caret starts on the first match (line 2, col 3): break the line there.
+        assert_eq!(mb.caret(), Some((0, 0, 2, 3)));
+        mb.newline();
+        let m = &mb.groups[0].excerpts[0].marks;
+        assert_eq!((m[0].line, m[0].col), (3, 0), "the match went down with the rest of its line");
+        assert_eq!((m[1].line, m[1].col), (4, 1));
+        assert!(mb.backspace());
+        let m = &mb.groups[0].excerpts[0].marks;
+        assert_eq!((m[0].line, m[0].col, m[1].line), (2, 3, 3));
     }
 }

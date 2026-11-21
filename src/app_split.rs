@@ -969,6 +969,11 @@ impl App {
                 } else {
                     cv.fill(r, self.theme.background);
                 }
+                // A multibuffer is painted by the app (it needs the tokenizers): over the blank
+                // `Doc::draw` left in this pane.
+                if self.docs.get(di).is_some_and(|d| d.mb.is_some()) {
+                    busy |= self.draw_mb_doc(cv, di, r, false);
+                }
             }
             for dv in &sp.divs {
                 cv.fill(dv.rect, self.theme.chrome.border);

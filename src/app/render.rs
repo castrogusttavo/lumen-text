@@ -265,7 +265,7 @@ impl App {
                 }
                 let ic = if over_close { c.tab_active_fg } else { c.tab_inactive_fg };
                 self.tx.icon(cv, "ui/close", close.x + 8, r.y + (bar.h - 12) / 2, 12, ic, strip);
-            } else if d.buf.is_dirty() {
+            } else if d.buf.is_dirty() || d.mb.as_ref().is_some_and(|m| m.is_dirty()) {
                 // Like Zed: the unsaved dot takes the close button's place.
                 cv.fill_round_clip(Rect::new(close.x + 10, r.y + bar.h / 2 - 4, 8, 8), 4, c.accent, strip);
             } else if d.pinned {
@@ -602,7 +602,11 @@ impl App {
     pub(super) fn update_title(&mut self, window: &Window, _ms: f32) {
         // No frame time here: it changed the title (a compositor round trip) on almost every frame.
         let title = match self.docs.get(self.active) {
-            Some(d) => format!("{}{} — lumen-text", if d.buf.is_dirty() { "● " } else { "" }, d.name),
+            Some(d) => format!(
+                "{}{} — lumen-text",
+                if d.buf.is_dirty() || d.mb.as_ref().is_some_and(|m| m.is_dirty()) { "● " } else { "" },
+                d.name
+            ),
             None => "lumen-text".to_string(),
         };
         if title != self.last_title {

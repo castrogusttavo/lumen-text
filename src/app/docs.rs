@@ -225,7 +225,8 @@ impl App {
 
     pub fn close_tab(&mut self, idx: usize, force: bool) {
         let Some(d) = self.docs.get(idx) else { return };
-        if d.buf.is_dirty() && !force && self.close_armed != Some(idx) {
+        if (d.buf.is_dirty() || d.mb.as_ref().is_some_and(|m| m.is_dirty())) && !force && self.close_armed != Some(idx)
+        {
             self.close_armed = Some(idx);
             let n = d.name.clone();
             self.say(format!("{n} has unsaved changes — close again to discard"));
@@ -252,7 +253,7 @@ impl App {
 
     pub fn save_active(&mut self) {
         if self.docs.get(self.active).is_some_and(|d| d.mb.is_some()) {
-            return self.say("A multibuffer is not saved: open a result to edit its file");
+            return self.mb_save();
         }
         if self.docs.get(self.active).is_some_and(|d| d.buf.no_write) {
             return self.say("An image is not saved from its tab");
