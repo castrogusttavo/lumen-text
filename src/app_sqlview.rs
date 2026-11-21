@@ -8,6 +8,7 @@ use crate::{
     field::TextField,
     lsp::Wake,
     sqlview::{self, CellKind, Rows, Table},
+    textarea::KeyAct,
     theme::{Rgba, Theme},
     ui::{Canvas, HBar, Rect, TextCtx, VBar},
 };
@@ -64,6 +65,13 @@ pub struct SqlView {
     list_scroll: f64,
     input: TextField,
     input_focus: bool,
+    /// Pixels the query text is scrolled left (long queries follow the caret).
+    in_scroll: i32,
+    /// X of every char boundary of the query text and where the text starts, last frame (clicks).
+    in_xs: Vec<f32>,
+    in_x0: i32,
+    /// Where the last successful page came from: an invalid query puts it back.
+    good: Option<(Option<Source>, Option<usize>, usize)>,
     // Hit areas of the last frame.
     pub rect: Rect,
     list: Rect,
@@ -97,6 +105,10 @@ impl SqlView {
             list_scroll: 0.0,
             input: TextField::default(),
             input_focus: false,
+            in_scroll: 0,
+            in_xs: Vec::new(),
+            in_x0: 0,
+            good: None,
             rect: Rect::default(),
             list: Rect::default(),
             grid: Rect::default(),
@@ -147,7 +159,10 @@ impl SqlView {
         };
         let (db, tx, wake, g) = (self.path.clone(), self.tx.clone(), self.wake.clone(), self.gen_id);
         std::thread::spawn(move || {
-            let r = sqlview::run(&db, &sql).and_then(|o| sqlview::parse_rows(&o, skip).map_err(Some));
+            let plan = sqlview::is_plan(&sql);
+            let r = sqlview::run(&db, &sql).and_then(|o| {
+                if plan { Ok(sqlview::parse_plan(&o, skip)) } else { sqlview::parse_rows(&o, skip).map_err(Some) }
+            });
             let _ = tx.send(Msg::Page(g, r));
             wake();
         });
@@ -205,13 +220,20 @@ impl SqlView {
                     self.busy = false;
                     match r {
                         Ok(rows) => {
+                            self.good = Some((self.cur.clone(), self.sel, self.offset));
                             self.result = Some(rows);
                             self.error = None;
                             self.col_px = None;
                             self.scroll = (0.0, 0.0);
                         }
                         Err(None) => self.no_sqlite = true,
-                        Err(Some(e)) => self.error = Some(e),
+                        Err(Some(e)) => {
+                            // The grid still shows the last good page: keep its source and offset.
+                            if let Some((c, s, o)) = self.good.clone() {
+                                (self.cur, self.sel, self.offset) = (c, s, o);
+                            }
+                            self.error = Some(e);
+                        }
                     }
                 }
                 Msg::Page(..) => {}
@@ -305,13 +327,32 @@ impl SqlView {
         let tr = self.input_r.inset(1);
         let ty = tr.y + (tr.h - 18) / 2;
         if self.input.text.is_empty() {
+            self.in_xs = vec![0.0];
+            self.in_x0 = tr.x + 8;
             tx.draw_ui(cv, tr.x + 8, ty, "SELECT … (Enter runs it; read-only)", c.tab_inactive_fg, tr, false);
         } else {
-            tx.draw_ui(cv, tr.x + 8, ty, &self.input.text, c.tab_active_fg, tr, false);
+            let xs = tx.ui_char_xs(&self.input.text, false, None);
+            let at = |i: usize| xs.get(i).or(xs.last()).copied().unwrap_or(0.0) as i32;
+            // Keep the caret inside the box: long queries scroll sideways.
+            let avail = (tr.w - 16).max(1);
+            let (total, cx) = (at(usize::MAX), at(self.input.cursor));
+            if total <= avail {
+                self.in_scroll = 0;
+            } else {
+                self.in_scroll = self.in_scroll.clamp(cx - avail, cx).min(total - avail + 4).max(0);
+            }
+            let x0 = tr.x + 8 - self.in_scroll;
+            if let Some((a, b)) = self.input.range() {
+                let r = Rect::new(x0 + at(a), tr.y + 3, at(b) - at(a), tr.h - 6);
+                cv.fill(r.intersect(&tr), c.accent.with_alpha(0x50));
+            }
+            tx.draw_ui(cv, x0, ty, &self.input.text, c.tab_active_fg, tr, false);
+            self.in_x0 = x0;
+            self.in_xs = xs;
         }
         if self.input_focus {
-            let before: String = self.input.text.chars().take(self.input.cursor).collect();
-            let cx = tr.x + 8 + tx.ui_width(&before, false);
+            let cx =
+                self.in_x0 + self.in_xs.get(self.input.cursor).or(self.in_xs.last()).copied().unwrap_or(0.0) as i32;
             cv.fill_clip(Rect::new(cx, tr.y + 4, 1, tr.h - 8), c.tab_active_fg, tr);
         }
         cv.fill(Rect::new(main.x, bar.bottom() - 1, main.w, 1), c.border.with_alpha(0x50));
@@ -469,14 +510,21 @@ impl SqlView {
         true
     }
 
-    pub fn mouse_down(&mut self, x: f64, y: f64) -> bool {
+    pub fn mouse_down(&mut self, x: f64, y: f64, shift: bool) -> bool {
         if !self.rect.contains(x, y) {
             return false;
         }
         self.input_focus = self.input_r.contains(x, y);
         if self.input_focus {
-            self.input.end();
-            self.input.sel_all = false;
+            // The caret goes to the nearest char boundary (Shift extends the selection).
+            let rel = x as f32 - self.in_x0 as f32;
+            let at = self
+                .in_xs
+                .iter()
+                .enumerate()
+                .min_by(|a, b| (a.1 - rel).abs().total_cmp(&(b.1 - rel).abs()))
+                .map_or(self.input.len(), |(i, _)| i);
+            self.input.move_to(at, shift);
         } else if let Some(&(_, i)) = self.rows_r.iter().find(|(r, _)| r.contains(x, y)) {
             self.open_table(i);
         } else if self.prev_r.contains(x, y)
@@ -491,22 +539,50 @@ impl SqlView {
         true
     }
 
-    /// A key for the viewer. `cmd` = Ctrl / Alt / Super held (never typed text).
+    /// The editing keys of the query box (Ctrl+A / C / X / V / Z / Y, Shift and Ctrl motions,
+    /// Home / End, Backspace / Delete). Runs before the global shortcuts, which would otherwise
+    /// take Ctrl+Z (undo of the hidden text buffer) and friends. `None`: not an editing key.
+    pub fn edit_key(&mut self, key: &Key, ctrl: bool, shift: bool, alt: bool) -> Option<KeyAct> {
+        let clip_key = ctrl
+            && !alt
+            && matches!(key, Key::Character(c) if matches!(c.to_lowercase().as_str(), "a" | "c" | "x" | "v" | "z" | "y"));
+        let motion = matches!(
+            key,
+            Key::Named(
+                NamedKey::Backspace
+                    | NamedKey::Delete
+                    | NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight
+                    | NamedKey::Home
+                    | NamedKey::End
+                    | NamedKey::Insert
+            )
+        );
+        if !(clip_key || (motion && self.input_focus)) {
+            return None;
+        }
+        if clip_key {
+            // Ctrl+A / V with the focus on the grid still go to the box.
+            self.input_focus = true;
+        }
+        match self.input.key(key, ctrl, shift, alt) {
+            KeyAct::Ignored => None,
+            a => Some(a),
+        }
+    }
+
+    /// The clipboard answer of [`edit_key`](Self::edit_key): the text to paste.
+    pub fn paste(&mut self, text: &str) {
+        self.input.paste(text);
+    }
+
+    /// A key for the viewer. `cmd` = Ctrl / Alt / Super held (never typed text). The editing keys
+    /// of the box went through [`edit_key`](Self::edit_key) before.
     pub fn key(&mut self, ev: &KeyIn, cmd: bool) -> bool {
         let page = self.grid.h as f64 - HEAD_H as f64;
         match &ev.key {
             Key::Named(NamedKey::Enter) if self.input_focus => self.submit(),
             Key::Named(NamedKey::Escape) => self.input_focus = false,
-            Key::Named(NamedKey::Backspace) if self.input_focus => {
-                self.input.backspace();
-            }
-            Key::Named(NamedKey::Delete) if self.input_focus => {
-                self.input.delete();
-            }
-            Key::Named(NamedKey::ArrowLeft) if self.input_focus => self.input.left(),
-            Key::Named(NamedKey::ArrowRight) if self.input_focus => self.input.right(),
-            Key::Named(NamedKey::Home) if self.input_focus => self.input.home(),
-            Key::Named(NamedKey::End) if self.input_focus => self.input.end(),
             Key::Named(NamedKey::ArrowLeft) => self.scroll.0 = (self.scroll.0 - SCROLL_STEP).max(0.0),
             Key::Named(NamedKey::ArrowRight) => self.scroll.0 += SCROLL_STEP,
             Key::Named(NamedKey::ArrowUp) => self.scroll.1 = (self.scroll.1 - SCROLL_STEP).max(0.0),
@@ -569,16 +645,93 @@ impl App {
     }
 
     pub fn sql_mouse_down(&mut self, x: f64, y: f64) -> bool {
-        let taken = self.sql_active().is_some_and(|v| v.mouse_down(x, y));
+        let shift = self.mods.shift_key();
+        let taken = self.sql_active().is_some_and(|v| v.mouse_down(x, y, shift));
         if taken {
             self.focus = Focus::Editor;
         }
         taken
     }
 
+    /// Pointer shape over the viewer: hand on table rows and the enabled page buttons, I-beam on
+    /// the query box, arrow elsewhere (the grid has nothing to click). `None` outside the viewer.
+    pub fn cursor_at(&self, x: f64, y: f64) -> Option<winit::window::CursorIcon> {
+        use winit::window::CursorIcon as C;
+        if !self.rect.contains(x, y) || self.no_sqlite {
+            return None;
+        }
+        Some(if self.input_r.contains(x, y) {
+            C::Text
+        } else if self.clickable(x, y) {
+            C::Pointer
+        } else {
+            C::Default
+        })
+    }
+
+    /// A table row or an enabled page button is under the pointer.
+    fn clickable(&self, x: f64, y: f64) -> bool {
+        let more = self.result.as_ref().is_some_and(|r| r.more);
+        self.rows_r.iter().any(|(r, _)| r.contains(x, y))
+            || (self.prev_r.contains(x, y) && sqlview::prev_offset(self.offset).is_some())
+            || (self.next_r.contains(x, y) && more)
+    }
+
+    /// The clickable thing under the pointer (rect, corner radius) for the hover tint.
+    pub fn hover_rect(&self, x: f64, y: f64) -> Option<(Rect, i32)> {
+        if !self.rect.contains(x, y) || self.no_sqlite {
+            return None;
+        }
+        if let Some(&(r, i)) = self.rows_r.iter().find(|(r, _)| r.contains(x, y)) {
+            return (self.sel != Some(i)).then(|| (Rect::new(r.x + 4, r.y + 1, r.w - 8, r.h - 2), 6));
+        }
+        let more = self.result.as_ref().is_some_and(|r| r.more);
+        if self.prev_r.contains(x, y) && sqlview::prev_offset(self.offset).is_some() {
+            return Some((self.prev_r, 5));
+        }
+        if self.next_r.contains(x, y) && more {
+            return Some((self.next_r, 5));
+        }
+        None
+    }
+
+    pub fn sql_cursor(&self, x: f64, y: f64) -> Option<winit::window::CursorIcon> {
+        self.docs.get(self.active)?.sql.as_deref()?.cursor_at(x, y)
+    }
+
+    pub fn sql_hover_target(&self) -> Option<(Rect, i32)> {
+        let (x, y) = self.mouse;
+        self.docs.get(self.active)?.sql.as_deref()?.hover_rect(x, y)
+    }
+
     /// The pointer is over the viewer: no text hover there.
     pub fn sql_mouse_move(&mut self, x: f64, y: f64) -> bool {
         self.sql_active().is_some_and(|v| v.rect.contains(x, y))
+    }
+
+    /// The query box's editing keys, before the global shortcuts (Ctrl+A, C, X, V, Z, Y, Shift /
+    /// Ctrl motions...). True when the key was taken. Clipboard requests are served here.
+    pub fn sql_edit_key(&mut self, ev: &KeyIn) -> bool {
+        if self.focus != Focus::Editor {
+            return false;
+        }
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        let Some(v) = self.docs.get_mut(self.active).and_then(|d| d.sql.as_deref_mut()) else { return false };
+        match v.edit_key(&ev.key, ctrl, shift, alt) {
+            None => false,
+            Some(KeyAct::Copy(t)) => {
+                self.clip.set(&t);
+                true
+            }
+            Some(KeyAct::Paste) => {
+                let t = self.clip.get();
+                if let Some(v) = self.docs.get_mut(self.active).and_then(|d| d.sql.as_deref_mut()) {
+                    v.paste(&t);
+                }
+                true
+            }
+            Some(_) => true,
+        }
     }
 
     /// Keys on a database tab (it has no text to edit).

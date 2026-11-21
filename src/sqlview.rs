@@ -47,55 +47,173 @@ pub fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-/// True when `sql` has a `;` outside of a string or quoted name (a second statement).
-fn has_inner_semicolon(sql: &str) -> bool {
-    let mut quote: Option<char> = None;
-    for c in sql.chars() {
-        match (quote, c) {
-            (Some(q), c) if c == q => quote = None,
-            (Some(_), _) => {}
-            (None, '\'' | '"' | '`') => quote = Some(c),
-            (None, '[') => quote = Some(']'),
-            (None, ';') => return true,
-            _ => {}
-        }
-    }
-    false
+/// A piece of a statement, comments dropped.
+#[derive(Debug, PartialEq)]
+enum Tok {
+    /// A bare word (lower-cased): keyword, name or number.
+    Word(String),
+    /// A `"name"`, `` `name` `` or `[name]` (lower-cased, quotes off).
+    Quoted(String),
+    /// A `'string'`.
+    Str,
+    Punct(char),
 }
 
+/// The tokens of `sql` with the byte offset each starts at. Strings, quoted names and comments
+/// (`-- ...`, `/* ... */`) are opaque, so a `;` or a keyword inside them means nothing.
+fn tokens(sql: &str) -> Vec<(Tok, usize)> {
+    let b: Vec<(usize, char)> = sql.char_indices().collect();
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let (at, c) = b[i];
+        let next = b.get(i + 1).map(|x| x.1);
+        if c.is_whitespace() {
+            i += 1;
+        } else if c == '-' && next == Some('-') {
+            while i < b.len() && b[i].1 != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            i += 2;
+            while i < b.len() && !(b[i].1 == '*' && b.get(i + 1).map(|x| x.1) == Some('/')) {
+                i += 1;
+            }
+            i += 2;
+        } else if matches!(c, '\'' | '"' | '`' | '[') {
+            let close = if c == '[' { ']' } else { c };
+            let mut j = i + 1;
+            let mut name = String::new();
+            while j < b.len() && b[j].1 != close {
+                name.push(b[j].1);
+                j += 1;
+            }
+            i = j + 1;
+            out.push((if c == '\'' { Tok::Str } else { Tok::Quoted(name.to_lowercase()) }, at));
+        } else if word(c) {
+            let mut w = String::new();
+            while i < b.len() && word(b[i].1) {
+                w.push(b[i].1);
+                i += 1;
+            }
+            out.push((Tok::Word(w.to_lowercase()), at));
+        } else {
+            out.push((Tok::Punct(c), at));
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Functions of the `sqlite3` shell that reach outside the database (write a file, run native
+/// code): `-readonly` does not stop them, so the guard does.
+const BLOCKED_FNS: [&str; 3] = ["writefile", "edit", "load_extension"];
+
+/// PRAGMAs that take an argument and only read.
+const READ_PRAGMAS: [&str; 12] = [
+    "table_info",
+    "table_xinfo",
+    "table_list",
+    "index_list",
+    "index_info",
+    "index_xinfo",
+    "foreign_key_list",
+    "foreign_key_check",
+    "integrity_check",
+    "quick_check",
+    "collation_list",
+    "function_list",
+];
+
 /// The statement to run for what the user typed, or why it is refused. Only one read-only
-/// statement passes: `SELECT`, `PRAGMA` (without `=`: no setting) or `EXPLAIN`. (`WITH` is out:
-/// SQLite allows `WITH ... DELETE`.) The CLI runs with `-readonly` as well: two locks.
+/// statement passes: `SELECT`, `VALUES`, `WITH ... SELECT`, `PRAGMA` (without `=`: no setting) or
+/// `EXPLAIN`. A trailing `;` and comments are fine. The CLI runs with `-readonly` as well: two
+/// locks.
 pub fn guard(input: &str) -> Result<String, String> {
-    let sql = input.trim().trim_end_matches(';').trim();
-    if sql.is_empty() {
+    let input = input.trim();
+    let toks = tokens(input);
+    let semi = toks.iter().position(|(t, _)| *t == Tok::Punct(';'));
+    let (stmt, rest) = match semi {
+        Some(i) => (&toks[..i], &toks[i + 1..]),
+        None => (&toks[..], &toks[..0]),
+    };
+    if stmt.is_empty() {
         return Err("Type a SELECT query".into());
     }
+    if rest.iter().any(|(t, _)| *t != Tok::Punct(';')) {
+        return Err("One statement at a time".into());
+    }
+    let sql = match semi {
+        Some(i) => input[..toks[i].1].trim(),
+        None => input,
+    };
     if sql.contains(['\n', '\r', '\0']) {
         return Err("One line only".into());
     }
-    if has_inner_semicolon(sql) {
-        return Err("One statement at a time".into());
+    let words: Vec<&Tok> = stmt.iter().map(|(t, _)| t).collect();
+    // A function of the shell that touches files or loads code.
+    for (k, t) in words.iter().enumerate() {
+        if let Tok::Word(n) | Tok::Quoted(n) = t
+            && BLOCKED_FNS.contains(&n.as_str())
+            && words.get(k + 1) == Some(&&Tok::Punct('('))
+        {
+            return Err(format!("{n}() is not allowed in a read-only viewer"));
+        }
     }
-    let first: String = sql.chars().take_while(|c| c.is_ascii_alphabetic()).collect::<String>().to_ascii_uppercase();
+    let Tok::Word(first) = words[0] else {
+        return Err("Read-only viewer: only SELECT, PRAGMA and EXPLAIN run".into());
+    };
     match first.as_str() {
-        "SELECT" | "EXPLAIN" => Ok(sql.to_string()),
-        "PRAGMA" if !sql.contains('=') => Ok(sql.to_string()),
-        "PRAGMA" => Err("PRAGMA can only read here".into()),
+        "select" | "explain" | "values" => Ok(sql.to_string()),
+        // SQLite allows `WITH ... DELETE` / `INSERT` / `UPDATE`: let a WITH through only without them.
+        "with" => {
+            let writes = words.iter().enumerate().any(|(k, t)| match t {
+                Tok::Word(w) => match w.as_str() {
+                    "delete" | "insert" | "update" => true,
+                    "replace" => words.get(k + 1) != Some(&&Tok::Punct('(')),
+                    _ => false,
+                },
+                _ => false,
+            });
+            if writes { Err("Read-only viewer: that WITH writes".into()) } else { Ok(sql.to_string()) }
+        }
+        "pragma" => {
+            if words.iter().any(|t| **t == Tok::Punct('=')) {
+                return Err("PRAGMA can only read here".into());
+            }
+            // `PRAGMA name(value)` sets as well; only the reading ones take an argument.
+            if let Some(p) = words.iter().position(|t| **t == Tok::Punct('(')) {
+                let ok = p > 0
+                    && matches!(words[p - 1], Tok::Word(n) | Tok::Quoted(n) if READ_PRAGMAS.contains(&n.as_str()));
+                if !ok {
+                    return Err("PRAGMA can only read here".into());
+                }
+            }
+            Ok(sql.to_string())
+        }
         _ => Err("Read-only viewer: only SELECT, PRAGMA and EXPLAIN run".into()),
     }
 }
 
 /// True when `sql` can be wrapped as a sub-select (so LIMIT / OFFSET apply to it).
 pub fn wrappable(sql: &str) -> bool {
-    sql.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("select"))
+    matches!(tokens(sql).first(), Some((Tok::Word(w), _)) if matches!(w.as_str(), "select" | "with" | "values"))
+}
+
+/// `EXPLAIN QUERY PLAN ...`: the CLI prints a tree for it, not JSON.
+pub fn is_plan(sql: &str) -> bool {
+    let t = tokens(sql);
+    let w = |i: usize, s: &str| matches!(t.get(i), Some((Tok::Word(x), _)) if x == s);
+    w(0, "explain") && w(1, "query") && w(2, "plan")
 }
 
 /// The statement for page `offset` of a guarded query. A `SELECT` is wrapped with LIMIT/OFFSET
 /// (one extra row tells whether a next page exists); PRAGMA / EXPLAIN run as they are and are
-/// cut on this side ([`parse_rows`] keeps `skip` / `PAGE` of them).
+/// cut on this side ([`parse_rows`] keeps `skip` / `PAGE` of them). The line break before the
+/// closing parenthesis keeps a trailing `-- comment` from swallowing it.
 pub fn page_sql(sql: &str, offset: usize) -> String {
-    if wrappable(sql) { format!("SELECT * FROM ({sql}) LIMIT {} OFFSET {offset}", PAGE + 1) } else { sql.to_string() }
+    if wrappable(sql) { format!("SELECT * FROM ({sql}\n) LIMIT {} OFFSET {offset}", PAGE + 1) } else { sql.to_string() }
 }
 
 /// The statement showing page `offset` of a table or view.
@@ -192,12 +310,35 @@ pub fn parse_rows(out: &str, skip: usize) -> Result<Rows, String> {
     if out.is_empty() {
         return Ok(Rows::default());
     }
-    let Table0(all) = serde_json::from_str(out).map_err(|e| format!("Unreadable output: {e}"))?;
+    // The CLI prints an infinite float as `9e+999`, which a JSON reader refuses: show it as text.
+    let parsed = serde_json::from_str::<Table0>(out).or_else(|e| {
+        if out.contains("e+999") {
+            serde_json::from_str(&out.replace(":-9e+999", ":\"-Inf\"").replace(":9e+999", ":\"Inf\""))
+        } else {
+            Err(e)
+        }
+    });
+    let Table0(all) = parsed.map_err(|e| format!("Unreadable output: {e}"))?;
     let cols = all.first().map(|r| r.0.iter().map(|(k, _)| k.clone()).collect()).unwrap_or_default();
     let total = all.len();
     let rows: Vec<Vec<Cell>> =
         all.into_iter().skip(skip).take(PAGE).map(|r| r.0.iter().map(|(_, v)| cell_of(v)).collect()).collect();
     Ok(Rows { cols, rows, more: total > skip + PAGE })
+}
+
+/// The tree `EXPLAIN QUERY PLAN` prints (`QUERY PLAN` then `|--SCAN t` lines): one column named
+/// after the first line, one row per line. Same paging as [`parse_rows`].
+pub fn parse_plan(out: &str, skip: usize) -> Rows {
+    let mut lines = out.lines().filter(|l| !l.trim().is_empty());
+    let Some(head) = lines.next() else { return Rows::default() };
+    let all: Vec<&str> = lines.collect();
+    let rows = all
+        .iter()
+        .skip(skip)
+        .take(PAGE)
+        .map(|l| vec![Cell { text: l.trim_end().to_string(), kind: CellKind::Text }])
+        .collect();
+    Rows { cols: vec![head.trim().to_string()], rows, more: all.len() > skip + PAGE }
 }
 
 /// The tables listed by [`LIST_SQL`].
@@ -240,6 +381,8 @@ pub fn run(db: &Path, sql: &str) -> Result<String, Option<String>> {
     }
     let err = String::from_utf8_lossy(&out.stderr);
     let line = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("sqlite3 failed");
+    // "Parse error in 4th command line argument: near ...": the argument position is noise here.
+    let line = line.split_once("command line argument: ").map_or(line, |(_, m)| m);
     Err(Some(line.trim().trim_start_matches("Error: ").to_string()))
 }
 
@@ -335,8 +478,206 @@ mod tests {
 
     #[test]
     fn selects_are_wrapped_and_others_run_as_they_are() {
-        assert_eq!(page_sql("SELECT 1", 100), "SELECT * FROM (SELECT 1) LIMIT 101 OFFSET 100");
+        assert_eq!(page_sql("SELECT 1", 100), "SELECT * FROM (SELECT 1\n) LIMIT 101 OFFSET 100");
         assert_eq!(page_sql("PRAGMA table_info(t)", 0), "PRAGMA table_info(t)");
+        assert_eq!(page_sql("EXPLAIN SELECT 1", 0), "EXPLAIN SELECT 1");
+        assert!(page_sql("WITH a AS (SELECT 1) SELECT * FROM a", 0).starts_with("SELECT * FROM (WITH "));
+        assert!(wrappable("values (1)") && wrappable("select 1") && !wrappable("pragma x"));
+        assert!(!wrappable("selection"), "only the word SELECT");
+    }
+
+    #[test]
+    fn guard_ignores_comments_and_literals_and_trailing_semicolons() {
+        assert_eq!(guard("SELECT 1;;").unwrap(), "SELECT 1");
+        assert_eq!(guard("SELECT 1; -- done").unwrap(), "SELECT 1");
+        assert_eq!(guard("SELECT 1 /* a; b */").unwrap(), "SELECT 1 /* a; b */");
+        assert_eq!(guard("SELECT 1 -- a; b").unwrap(), "SELECT 1 -- a; b");
+        assert!(guard("SELECT 'it''s; fine' AS x").is_ok());
+        assert!(guard("SELECT [a;b] FROM t").is_ok());
+        assert!(guard("SELECT 1; SELECT 2").is_err(), "two statements");
+        assert!(guard("SELECT 1; /* x */ DROP TABLE t").is_err());
+        assert!(guard("SELECT 1 /* ; */; DROP TABLE t").is_err());
+        assert_eq!(guard("select * from \"my table\"").unwrap(), "select * from \"my table\"");
+        assert_eq!(guard("  SeLeCt 1  ").unwrap(), "SeLeCt 1");
+        assert_eq!(guard("SELECT 1\nFROM t").unwrap_err(), "One line only");
+    }
+
+    #[test]
+    fn guard_lets_reading_with_pragma_and_values_through_and_refuses_writes() {
+        assert!(guard("WITH a AS (SELECT 1 x) SELECT * FROM a").is_ok());
+        assert!(guard("with a as (select replace('x','x','y') r) select * from a").is_ok(), "replace() is a function");
+        for bad in [
+            "WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a",
+            "WITH a AS (SELECT 1) UPDATE t SET x = 1",
+            "WITH a AS (SELECT 1) REPLACE INTO t VALUES (1)",
+            "PRAGMA user_version = 5",
+            "PRAGMA user_version(5)",
+            "PRAGMA journal_mode(wal)",
+            "VACUUM",
+            "REINDEX",
+            "CREATE TABLE x (a)",
+            "REPLACE INTO t VALUES (1)",
+            "BEGIN",
+            "(SELECT 1)",
+            "-- hi",
+        ] {
+            assert!(guard(bad).is_err(), "{bad:?} must be refused");
+        }
+        for good in [
+            "VALUES (1), (2)",
+            "PRAGMA table_info('a b')",
+            "PRAGMA main.table_info(users)",
+            "PRAGMA foreign_key_list(t)",
+        ] {
+            assert!(guard(good).is_ok(), "{good:?}");
+        }
+        assert!(guard("PRAGMA table_info('a=b')").is_ok(), "an = inside a string is not a setting");
+        assert!(guard("PRAGMA page_size").is_ok());
+    }
+
+    #[test]
+    fn guard_blocks_shell_functions_that_reach_outside_the_database() {
+        for bad in [
+            "SELECT writefile('/tmp/x', 'hi')",
+            "SELECT WriteFile ('/tmp/x', 'hi')",
+            "SELECT writefile/**/('/tmp/x', 'hi')",
+            "SELECT \"writefile\"('/tmp/x', 'hi')",
+            "SELECT load_extension('/tmp/x.so')",
+            "SELECT edit('a', 'vim')",
+            "EXPLAIN SELECT writefile('a', 'b')",
+        ] {
+            assert!(guard(bad).is_err(), "{bad:?} must be refused");
+        }
+        // Names that merely look like them are fine.
+        assert!(guard("SELECT 'writefile(x)' AS s, edit FROM t").is_ok());
+        assert!(guard("SELECT readfile FROM t").is_ok());
+    }
+
+    #[test]
+    fn plan_output_is_a_tree_not_json() {
+        assert!(is_plan("EXPLAIN QUERY PLAN SELECT * FROM t") && is_plan("explain  query plan select 1"));
+        assert!(!is_plan("EXPLAIN SELECT 1") && !is_plan("SELECT 1"));
+        let r = parse_plan("QUERY PLAN\n|--SCAN users\n`--SEARCH orders USING INDEX i (u=?)\n", 0);
+        assert_eq!(r.cols, ["QUERY PLAN"]);
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[1][0].text, "`--SEARCH orders USING INDEX i (u=?)");
+        assert!(!r.more);
+        assert_eq!(parse_plan("", 0), Rows::default());
+    }
+
+    #[test]
+    fn infinity_prints_as_text_instead_of_failing_the_page() {
+        let r = parse_rows("[{\"a\":1,\"b\":9e+999,\"c\":-9e+999}]", 0).unwrap();
+        assert_eq!(r.rows[0][1].text, "Inf");
+        assert_eq!(r.rows[0][2].text, "-Inf");
+        assert!(parse_rows("[{\"a\":}]", 0).is_err());
+    }
+
+    #[test]
+    fn odd_cells_are_shown_flat() {
+        // NUL / control chars of a blob, unicode and the 64-bit edge stay readable and short.
+        let r = parse_rows("[{\"b\":\"\\u0000\\u00ff\\u0041\",\"u\":\"é😀\",\"big\":9223372036854775807}]", 0).unwrap();
+        assert_eq!(r.rows[0][0].text, " \u{ff}A");
+        assert_eq!(r.rows[0][1].text, "é😀");
+        assert_eq!(r.rows[0][2], Cell { text: "9223372036854775807".into(), kind: CellKind::Num });
+        let long = cell_of(&Value::String("ç".repeat(500)));
+        assert_eq!(long.text.chars().count(), CELL_MAX + 1);
+        assert!(long.text.ends_with('…'));
+        // Repeated column names keep both columns.
+        let r = parse_rows("[{\"a\":1,\"a\":2}]", 0).unwrap();
+        assert_eq!(r.cols, ["a", "a"]);
+    }
+
+    /// Runs against the real `sqlite3` CLI (skipped where it is not installed).
+    #[test]
+    fn real_sqlite_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("lumen-sqlview-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let db = dir.join("t.db");
+        let _ = std::fs::remove_file(&db);
+        let setup = "CREATE TABLE \"my table\" (id INTEGER PRIMARY KEY, name TEXT, data BLOB, n REAL);\
+            INSERT INTO \"my table\" (name, data, n) VALUES ('Zoë 😀', x'00ff41', NULL), (NULL, NULL, 1.5), ('long ' || hex(randomblob(300)), x'', 1e999);\
+            WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 250) INSERT INTO \"my table\" (name) SELECT 'row' || x FROM c;\
+            CREATE VIEW v AS SELECT id FROM \"my table\" WHERE id < 4;";
+        match Command::new("sqlite3").arg(&db).arg(setup).output() {
+            Ok(o) if o.status.success() => {}
+            _ => return, // no sqlite3 here
+        }
+        let q = |sql: &str, skip: usize| -> Result<Rows, String> {
+            let g = guard(sql)?;
+            let o = run(&db, &page_sql(&g, 0)).map_err(|e| e.unwrap_or_default())?;
+            if is_plan(&g) { Ok(parse_plan(&o, skip)) } else { parse_rows(&o, skip) }
+        };
+        // Tables and views, with a name that has a space.
+        let tables = parse_tables(&run(&db, LIST_SQL).unwrap()).unwrap();
+        assert_eq!(
+            tables.iter().map(|t| (t.name.as_str(), t.view)).collect::<Vec<_>>(),
+            [("v", true), ("my table", false)]
+        );
+        let mut tables = tables;
+        apply_counts(&mut tables, &run(&db, &counts_sql(&tables).unwrap()).unwrap());
+        assert_eq!(tables[1].rows, Some(253));
+        assert_eq!(tables[0].rows, Some(3));
+        let first = parse_rows(&run(&db, &table_sql("my table", 0)).unwrap(), 0).unwrap();
+        assert_eq!(first.rows.len(), PAGE);
+        assert!(first.more);
+        let last = parse_rows(&run(&db, &table_sql("my table", 200)).unwrap(), 0).unwrap();
+        assert_eq!(last.rows.len(), 53);
+        assert!(!last.more);
+        // NULL, unicode, long text, an infinite float, an empty and a binary blob.
+        let r = q("SELECT name, n, data FROM \"my table\" WHERE id <= 3 ORDER BY id", 0).unwrap();
+        assert_eq!(r.rows[0][0].text, "Zoë 😀");
+        assert_eq!(r.rows[1][0].kind, CellKind::Null);
+        assert_eq!(r.rows[0][1].kind, CellKind::Null);
+        assert_eq!(r.rows[1][1].text, "1.5");
+        assert_eq!(r.rows[2][1].text, "Inf");
+        assert_eq!(r.rows[2][0].text.chars().count(), CELL_MAX + 1);
+        // WHERE / JOIN / ORDER / LIMIT, aliases and a trailing comment (which used to break paging).
+        let r = q("SELECT a.id AS a_id, b.id AS b_id FROM v a JOIN v b ON b.id = a.id + 1 WHERE a.id > 0 ORDER BY a.id DESC LIMIT 5; -- tail", 0).unwrap();
+        assert_eq!(r.cols, ["a_id", "b_id"]);
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0][0].text, "2");
+        let r = q("SELECT id FROM v -- trailing comment", 0).unwrap();
+        assert_eq!(r.rows.len(), 3);
+        // Paging a query (the extra row says there is more).
+        let r = q("SELECT id FROM \"my table\"", 0).unwrap();
+        assert_eq!((r.rows.len(), r.more), (PAGE, true));
+        let o = run(&db, &page_sql("SELECT id FROM \"my table\"", 200)).unwrap();
+        let r = parse_rows(&o, 0).unwrap();
+        assert_eq!((r.rows.len(), r.more), (53, false));
+        // Empty result, no columns to show.
+        assert_eq!(q("SELECT * FROM v WHERE id < 0", 0).unwrap(), Rows::default());
+        // WITH, VALUES, PRAGMA (paged on this side) and EXPLAIN.
+        assert_eq!(q("WITH a AS (SELECT 7 AS x) SELECT x FROM a", 0).unwrap().rows[0][0].text, "7");
+        assert_eq!(q("VALUES (1), (2)", 0).unwrap().rows.len(), 2);
+        let r = q("PRAGMA table_info('my table')", 0).unwrap();
+        assert_eq!(r.rows.len(), 4);
+        assert_eq!(r.rows[1][1].text, "name");
+        assert!(q("EXPLAIN SELECT * FROM v", 0).unwrap().rows.len() > 3);
+        let r = q("EXPLAIN QUERY PLAN SELECT * FROM v", 0).unwrap();
+        assert_eq!(r.cols, ["QUERY PLAN"]);
+        assert!(r.rows.iter().any(|row| row[0].text.contains("SCAN")));
+        // Errors come back as one readable line.
+        let e = q("SELECT * FROM nope", 0).unwrap_err();
+        assert!(e.contains("no such table"), "{e}");
+        let e = q("SELECT 1 +", 0).unwrap_err();
+        assert!(e.contains("syntax error"), "{e}");
+        // Writes never get to the CLI, and the file really is untouched.
+        for w in [
+            "INSERT INTO v VALUES (1)",
+            "UPDATE \"my table\" SET name = 'x'",
+            "DROP TABLE \"my table\"",
+            "DELETE FROM \"my table\"",
+        ] {
+            assert!(q(w, 0).is_err(), "{w}");
+        }
+        assert_eq!(
+            parse_rows(&run(&db, "SELECT COUNT(*) AS c FROM \"my table\"").unwrap(), 0).unwrap().rows[0][0].text,
+            "253"
+        );
+        // Even if one slipped past the guard, the CLI itself is read-only.
+        assert!(run(&db, "DELETE FROM \"my table\"").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
