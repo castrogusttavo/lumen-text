@@ -17,6 +17,7 @@ enum After {
     Copy(String),
     Open(String, Option<usize>),
     Link(String),
+    Edit(String),
 }
 
 /// Where a link from the transcript points: a web address, or a file with an optional line.
@@ -40,7 +41,7 @@ pub(super) fn link_target(url: &str) -> LinkTarget {
 
 impl App {
     /// The session shown is a native chat.
-    pub(super) fn ai_is_chat(&self) -> bool {
+    pub(crate) fn ai_is_chat(&self) -> bool {
         self.ai.cur().is_some_and(|s| s.chat.is_some())
     }
 
@@ -55,7 +56,15 @@ impl App {
         let Some(c0) = s.chat.as_mut() else { return };
         let cs: &mut ChatSession = c0;
         let clock = cs.started.elapsed().as_secs_f32();
-        let foot = usage_line(&cs.chat.usage());
+        let mut foot = usage_line(&cs.chat.usage());
+        if cs.chat.context_window > 0 && cs.chat.context_used > 0 {
+            let ctx = format!(
+                "{:.0}% of {} context",
+                cs.chat.context_fraction() * 100.0,
+                chat::format_tokens(cs.chat.context_window)
+            );
+            foot = if foot.is_empty() { ctx } else { format!("{foot} · {ctx}") };
+        }
         let view_body =
             if foot.is_empty() { body } else { Rect::new(body.x, body.y, body.w, (body.h - FOOT_H).max(0)) };
         cs.view.draw(cv, &mut self.tx, &self.theme, view_body, &cs.chat, (name, icon), &cwd, mouse, clock);
@@ -113,6 +122,7 @@ impl App {
                 After::Nothing
             }
             ChatHit::CopyMsg(mi) => After::Copy(chat_view::message_text(&cs.chat, mi)),
+            ChatHit::Edit(mi) => After::Edit(chat_view::message_text(&cs.chat, mi)),
             ChatHit::File(p, line) => After::Open(p, line),
             ChatHit::Md(key) => match cs.view.md_press(&mut self.tx, key, x, y) {
                 MdPress::Link(u) => After::Link(u),
@@ -126,6 +136,7 @@ impl App {
                 self.clip.set(&t);
                 self.say("Copied");
             }
+            After::Edit(t) => self.ai_edit_message(&t),
             After::Open(p, line) => self.chat_open_file(&p, &cwd, line),
             After::Link(u) => match link_target(&u) {
                 LinkTarget::Web(w) => crate::paths::open_url(&w),

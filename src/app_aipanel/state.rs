@@ -129,6 +129,26 @@ pub enum AiHit {
     AttachSel,
     /// Header menu: the sessions, the filter, rename, worktree sessions.
     Menu,
+    /// Row `n` of the autocomplete menu above the composer (slash commands, `@` files).
+    MenuRow(usize),
+    /// Composer chip: the permission mode (a click picks one, Shift+Tab cycles).
+    Mode,
+    /// Composer chip: the model.
+    Model,
+    /// The remove button of attachment `n`.
+    Unattach(usize),
+}
+
+/// Something attached to the message being written: a file (mentioned by its path) or an image
+/// (pasted, or a picture file).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Attachment {
+    /// What the chip shows.
+    pub name: String,
+    /// The file (an image pasted from the clipboard is saved to a temporary one).
+    pub path: PathBuf,
+    /// Media type when it is an image the agent can look at.
+    pub image: Option<&'static str>,
 }
 
 /// What one session's process looked like at a moment (taken from its terminal).
@@ -448,6 +468,18 @@ pub struct AiState {
     pub composer_area: i32,
     /// Last click in the composer: when, where, and how many in a row (double / triple click).
     pub composer_click: Option<(Instant, (i32, i32), u32)>,
+    /// The autocomplete menu above the composer (slash commands or files), when one is open.
+    pub menu: Option<super::menu::Menu>,
+    /// What the menu was last built for (text, caret): it is rebuilt only when that changes.
+    pub menu_for: (String, usize),
+    /// Esc closed the menu for this text: it stays closed until the text changes.
+    pub menu_closed: Option<String>,
+    /// Files and images attached to the message being written.
+    pub attachments: Vec<Attachment>,
+    /// The project's files for `@` mentions (root, when listed, relative paths).
+    pub files: Option<(PathBuf, Instant, Vec<String>)>,
+    /// Custom commands and skills found on disk (folder, commands).
+    pub found_cmds: Option<(PathBuf, Instant, Vec<super::slash::Cmd>)>,
     /// The IDE bridge (Claude Code's diffs, selection, diagnostics, hooks).
     pub bridge: super::bridge::Bridge,
     /// The Enter that submits a message sent from the composer: (session, when).
@@ -488,6 +520,12 @@ impl Default for AiState {
             composer_box: Rect::default(),
             composer_area: super::COMPOSER_AREA_GUESS,
             composer_click: None,
+            menu: None,
+            menu_for: (String::new(), 0),
+            menu_closed: None,
+            attachments: Vec::new(),
+            files: None,
+            found_cmds: None,
             bridge: Default::default(),
             pending_enter: None,
             pending_prompt: None,

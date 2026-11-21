@@ -52,6 +52,8 @@ pub enum Action {
     AiSession(u64),
     /// AI panel: open the session filter row.
     AiFilter,
+    /// AI panel chat: a row of one of its pickers (`resume:<id>`, `model:<name>`, `mode:<id>`, ...).
+    AiPick(String),
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),

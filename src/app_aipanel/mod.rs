@@ -42,6 +42,7 @@ pub mod bridge;
 #[cfg(test)]
 mod bridge_tests;
 pub mod chat;
+mod chat_cmds;
 mod chat_input;
 #[cfg(all(test, unix))]
 mod chat_tests;
@@ -51,9 +52,13 @@ mod composer_ui;
 mod draw;
 mod explain;
 mod input;
+mod mention;
+mod menu;
 mod proto_claude;
 mod proto_codex;
 mod proto_gemini;
+mod resume;
+mod slash;
 mod state;
 #[cfg(test)]
 mod tests;
