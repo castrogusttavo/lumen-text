@@ -159,7 +159,7 @@ impl App {
         if button == MouseButton::Left && self.mb_mouse_down(x, y) {
             return self.request_redraw();
         }
-        if self.img_mouse_down(x, y) || self.sql_mouse_down(x, y) {
+        if self.img_mouse_down(x, y) || self.sql_mouse_down(x, y) || self.api_mouse_down(x, y) {
             return self.request_redraw();
         }
         if button == MouseButton::Middle {
@@ -365,6 +365,9 @@ impl App {
             return c;
         }
         if let Some(c) = self.mb_cursor(x, y) {
+            return c;
+        }
+        if let Some(c) = self.api_cursor(x, y) {
             return c;
         }
         if l.top_btns.iter().any(|(r, _)| r.contains(x, y))
@@ -626,7 +629,7 @@ impl App {
         if self.md_mouse_move(x, y) {
             return;
         }
-        if self.img_mouse_move(x, y) || self.sql_mouse_move(x, y) {
+        if self.img_mouse_move(x, y) || self.sql_mouse_move(x, y) || self.api_mouse_move(x, y) {
             return;
         }
         if self.dragging_minimap {

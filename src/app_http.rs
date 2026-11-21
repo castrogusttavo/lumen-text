@@ -59,7 +59,7 @@ pub struct HttpState {
     pub last: Option<Last>,
 }
 
-fn status_color(code: u16) -> Rgba {
+pub(crate) fn status_color(code: u16) -> Rgba {
     match code / 100 {
         2 => PALETTE[2],
         3 => PALETTE[4],
@@ -69,7 +69,7 @@ fn status_color(code: u16) -> Rgba {
 }
 
 /// One JSON line split into colored pieces: keys, strings, numbers, literals, punctuation.
-fn json_segs(line: &str, fg: Rgba, dim: Rgba) -> Segs {
+pub(crate) fn json_segs(line: &str, fg: Rgba, dim: Rgba) -> Segs {
     let ch: Vec<char> = line.chars().collect();
     let (mut out, mut i): (Segs, usize) = (Vec::new(), 0);
     while i < ch.len() {
@@ -113,7 +113,7 @@ fn json_segs(line: &str, fg: Rgba, dim: Rgba) -> Segs {
 }
 
 /// The body as shown: pretty JSON when it is JSON, the text otherwise.
-fn body_text(r: &Resp) -> String {
+pub(crate) fn body_text(r: &Resp) -> String {
     if r.body.contains(&0) {
         return format!("(binary, {})", httpfile::human_size(r.body.len()));
     }

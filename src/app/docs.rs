@@ -82,6 +82,15 @@ impl App {
             if sql {
                 doc.sql = Some(Box::new(crate::app_sqlview::SqlView::new(&path, self.wake())));
             }
+            // An OpenAPI / Swagger document opens as the API explorer (see `app_openapi`).
+            if !blob && is_spec_file(&path) && doc.buf.len_chars() < (32 << 20) {
+                let head = doc.buf.slice(0, doc.buf.len_chars().min(4000));
+                if crate::openapi::spec::sniff(&head) {
+                    let text = doc.buf.slice(0, doc.buf.len_chars());
+                    doc.api = Some(Box::new(crate::app_openapi::ApiView::new(text, self.wake())));
+                    doc.buf.read_only = true;
+                }
+            }
             self.docs.push(doc);
             if !blob {
                 // The HEAD text (the gutter's base) is read on a worker: the gutter follows.
@@ -376,4 +385,11 @@ impl App {
             self.split_restore(&v["split"], &opened);
         }
     }
+}
+
+/// `.json` / `.yaml` / `.yml`: the files that can hold an OpenAPI document.
+fn is_spec_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "json" | "yaml" | "yml"))
 }

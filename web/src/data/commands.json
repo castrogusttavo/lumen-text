@@ -1405,6 +1405,16 @@
   "id": "DatabaseOpen"
  },
  {
+  "label": "OpenAPI: Open as API explorer",
+  "shortcut": "",
+  "id": "OpenApiExplorer"
+ },
+ {
+  "label": "OpenAPI: Show source",
+  "shortcut": "",
+  "id": "OpenApiSource"
+ },
+ {
   "label": "Remote: Reconnect",
   "shortcut": "",
   "id": "RemoteReconnect"

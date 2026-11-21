@@ -204,6 +204,8 @@ pub struct Doc {
     pub img: Option<Box<crate::imgview::ImgView>>,
     /// SQLite database tab: the read-only table viewer shown instead of the text (see `app_sqlview`).
     pub sql: Option<Box<crate::app_sqlview::SqlView>>,
+    /// OpenAPI / Swagger document: the API explorer shown instead of the text while `preview` (see `app_openapi`).
+    pub api: Option<Box<crate::app_openapi::ApiView>>,
     /// Multibuffer tab: excerpts of many files shown as one virtual document (see `multibuf`).
     pub mb: Option<Box<crate::multibuf::MultiBuf>>,
     /// LSP inlay hints for the lines around the viewport (empty = no cost anywhere).
@@ -344,6 +346,7 @@ impl Doc {
             md: None,
             img: None,
             sql: None,
+            api: None,
             mb: None,
             inlay: Default::default(),
             pinned: false,
@@ -610,6 +613,12 @@ impl Doc {
         self.disk_mtime = self.stat_mtime();
         self.conflict = false;
         self.caret_snap = true;
+        if self.api.as_ref().is_some_and(|v| v.preview) {
+            let text = self.buf.slice(0, self.buf.len_chars());
+            if let Some(v) = self.api.as_mut() {
+                v.load(text);
+            }
+        }
         self.target = self.target.clamp(0.0, self.max_top());
         self.top = self.top.clamp(0.0, self.max_top());
         Ok(())
