@@ -264,6 +264,8 @@ pub struct App {
     pub dragging_minimap: bool,
     pub cursor_icon: CursorIcon,
     pub hover_rect: Option<(Rect, i32)>,
+    /// Welcome row under the pointer (redraws when it changes).
+    pub welcome_hot: Option<usize>,
     /// Tooltip of the button under the pointer (shown after a short delay).
     pub tooltip: Option<crate::app_tooltip::Tooltip>,
     /// Scrollbar being dragged: (0 = editor, 1 = sidebar, pointer offset inside the thumb).
@@ -435,6 +437,7 @@ impl App {
             dragging_minimap: false,
             cursor_icon: CursorIcon::Default,
             hover_rect: None,
+            welcome_hot: None,
             tooltip: None,
             drag_bar: None,
             regions: Default::default(),

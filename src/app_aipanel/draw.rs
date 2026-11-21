@@ -27,6 +27,10 @@ impl App {
     /// 28 px icon button (hover tint comes from the app's hover system).
     fn ai_icon_btn(&mut self, cv: &mut Canvas, r: Rect, icon: &str, hit: Option<AiHit>) {
         let c = self.theme.chrome;
+        let (mx, my) = self.mouse;
+        if hit.is_some() && self.overlay.is_none() && r.contains(mx, my) {
+            cv.fill_round(r, 8, c.tab_active_fg.with_alpha(0x18));
+        }
         let tint = if hit.is_some() { c.tab_inactive_fg } else { c.tab_inactive_fg.with_alpha(0x60) };
         self.tx.icon(cv, icon, r.x + (r.w - 16) / 2, r.y + (r.h - 16) / 2, 16, tint, r);
         if let Some(h) = hit {
@@ -137,14 +141,17 @@ impl App {
             let active = i == self.ai.active;
             let s = &self.ai.sessions[i];
             let (status, unseen, icon, name) = (s.status(), s.track.unseen, s.agent.icon, s.name.clone());
+            let hovered = tr.contains(mx, my) && self.overlay.is_none();
             if active {
-                cv.fill_round(tr, 7, strong.with_alpha(0x1e));
+                cv.fill_round(tr, 8, strong.with_alpha(0x1e));
+                cv.fill_round(Rect::new(tr.x + 10, tr.bottom() - 2, (tr.w - 20).max(0), 2), 1, c.accent);
+            } else if hovered {
+                cv.fill_round(tr, 8, strong.with_alpha(0x0c));
             }
             let dot = self.ai_status_color(status);
             cv.fill_round(Rect::new(tr.x + 9, tr.y + 11, 6, 6), 3, dot);
             let col = if active || unseen { strong } else { dim };
             self.tx.icon(cv, icon, tr.x + 21, tr.y + 7, 14, col, tr);
-            let hovered = tr.contains(mx, my);
             let show_close = active || hovered;
             let name_w = w - 41 - if show_close { 24 } else { 8 };
             if name_w > 8 {
@@ -170,7 +177,10 @@ impl App {
         let (icon, name) = self.ai.agent().map_or(("ui/sparkle", "Choose agent"), |a| (a.icon, a.name));
         let nw = self.tx.ui_width(name, true);
         let pill = Rect::new(h.x + 11, h.y + 8, 10 + 16 + 8 + nw + 8 + 12 + 10, 28);
-        cv.fill_round(pill, 8, strong.with_alpha(0x0e));
+        let (mx, my) = self.mouse;
+        let hot = self.overlay.is_none() && pill.contains(mx, my);
+        cv.fill_round(pill, 8, strong.with_alpha(if hot { 0x1c } else { 0x0e }));
+        cv.ring(pill, 8, c.border);
         self.tx.icon(cv, icon, pill.x + 10, pill.y + 6, 16, strong, pill);
         self.tx.draw_ui(cv, pill.x + 34, pill.y + 5, name, strong, pill, true);
         self.tx.icon(cv, "ui/chevron_down", pill.right() - 22, pill.y + 8, 12, dim, pill);
@@ -260,6 +270,10 @@ impl App {
         let (fg, bg) = (self.theme.foreground, self.theme.background);
         let look = self.term_look(Which::Ai, focused, (inner.x, inner.y));
         let clip = Rect::new(body.x, body.y + 1, body.w, body.h - 1);
+        // The terminal sits on a rounded surface inset from the panel edges.
+        let card = Rect::new(inner.x - 6, inner.y - 6, inner.w + 12, inner.h + 12);
+        cv.fill(Rect::new(body.x, body.y + 1, body.w, (body.h - 1).max(0)), c.sidebar_bg);
+        cv.card(card, 10, self.theme.background, c.border);
         let Some(t) = self.ai.term_mut() else { return };
         t.resize(rows, cols);
         t.grid.colors = (fg, bg);
@@ -267,7 +281,7 @@ impl App {
         crate::termview::draw(&mut self.tx, cv, t, inner.x, inner.y, clip, &look);
         let exited = !t.alive;
         if focused {
-            cv.ring(body.inset(4), 8, c.accent.with_alpha(0x60));
+            cv.ring(card, 10, c.accent.with_alpha(0x70));
         }
         if exited {
             self.ai_draw_exited(cv, body);
@@ -321,30 +335,42 @@ impl App {
         let w = (body.w - 48).clamp(120, 380);
         let x = body.x + (body.w - w) / 2;
         let rows_h = AGENTS.len() as i32 * 58;
-        let total = 48 + 16 + 24 + 40 + rows_h + 12 + 30;
+        let total = 48 + 16 + 24 + 80 + rows_h + 12 + 30;
         let mut y = body.y + ((body.h - total) / 2).max(24);
         // Icon in a soft accent disc.
         let disc = Rect::new(body.x + (body.w - 48) / 2, y, 48, 48);
         cv.fill_round(disc, 24, c.accent.with_alpha(0x1c));
         self.tx.icon(cv, "ui/sparkle", disc.x + 14, disc.y + 14, 20, c.accent_text, disc);
         y += 48 + 16;
-        let title = if any { "Start an agent" } else { "No agent CLI found" };
+        let title = if any { "No agents yet" } else { "No agent CLI found" };
         let tw = self.tx.ui_width(title, true);
         self.tx.draw_ui(cv, body.x + (body.w - tw) / 2, y, title, strong, body, true);
         y += 24;
         let sub = if any {
-            "Runs in this project with your own login."
+            "Start an agent to work on this workspace with you."
         } else {
             "Install one, then Refresh. It runs here with your own login."
         };
         let sub = crate::ui::fit_ellipsis(&mut self.tx, sub, w, false);
         let sw = self.tx.ui_width_sized(&sub, false, SMALL);
         self.tx.draw_ui_sized(cv, body.x + (body.w - sw) / 2, y, &sub, dim, body, false, SMALL);
-        y += 40;
+        y += 32;
+        if any {
+            let label = "New Agent";
+            let bw = 14 + 16 + 6 + self.tx.ui_width(label, true) + 16;
+            let b = Rect::new(body.x + (body.w - bw) / 2, y, bw, 32);
+            cv.fill_round(b, 10, c.accent);
+            self.tx.icon(cv, "ui/plus", b.x + 14, b.y + 8, 16, c.on_accent, b);
+            self.tx.draw_ui(cv, b.x + 36, b.y + 7, label, c.on_accent, b, true);
+            self.ai.hits.push((b, AiHit::New));
+        }
+        y += 48;
         for (i, a) in AGENTS.iter().enumerate() {
             let r = Rect::new(x, y, w, 50);
             let installed = self.ai.path_of(a).is_some();
-            cv.card(r, 8, c.sidebar_bg, c.border);
+            let (mx, my) = self.mouse;
+            let hot = self.overlay.is_none() && r.contains(mx, my);
+            cv.card(r, 10, if hot { c.widget_bg } else { c.sidebar_bg }, c.border);
             let tint = if installed { strong } else { dim };
             self.tx.icon(cv, a.icon, r.x + 14, r.y + 17, 16, tint, r);
             self.tx.draw_ui(cv, r.x + 42, r.y + 7, a.name, tint, r, true);
