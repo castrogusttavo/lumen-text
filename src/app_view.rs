@@ -205,9 +205,9 @@ impl App {
                 let on = !self.config.view.show_status_bar;
                 self.apply_setting("show_status_bar", &json!(on));
                 if on {
-                    self.say("status bar: on");
+                    self.say("info readouts: on");
                 } else {
-                    self.toast("Status bar hidden: View: Toggle status bar shows it again", true);
+                    self.toast("Info readouts hidden: View: Toggle info readouts shows them again", true);
                 }
             }
             Cmd::ExplorerSortName => self.apply_setting("explorer_sort", &json!("name")),
@@ -294,8 +294,8 @@ pub fn defs() -> Vec<SettingDef> {
         d(
             "show_status_bar",
             "Editor display",
-            "Status bar",
-            "Shows the bottom bar (position, language, Git, problems...). Off gives the editor that row.",
+            "Info readouts",
+            "Shows line/column, indentation, language, encoding and problems at the right of the breadcrumb row. Off hides them all.",
             Bool,
         ),
         d(

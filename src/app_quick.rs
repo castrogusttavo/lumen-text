@@ -20,6 +20,21 @@ fn on_off(b: bool) -> String {
     if b { "on".into() } else { "off".into() }
 }
 
+/// Tooltip of each button: (title, command id of its shortcut, detail).
+pub const TIPS: [(&str, Option<&str>, &str); 3] = [
+    ("Find in file", Some("Find"), "Search the open file"),
+    ("All settings", Some("OpenSettings"), "Every option, grouped in pages"),
+    ("Editor settings", None, "Wrap, minimap, line numbers, whitespace, zoom, zen"),
+];
+
+/// Index of the strip button under `(x, y)` and its rect.
+pub fn button_at(strip: Rect, x: f64, y: f64) -> Option<(usize, Rect)> {
+    if strip.w <= 0 {
+        return None;
+    }
+    (0..ICONS.len()).map(|i| (i, button_rect(strip, i))).find(|(_, r)| r.contains(x, y))
+}
+
 fn button_rect(strip: Rect, i: usize) -> Rect {
     Rect::new(strip.x + PAD + i as i32 * BTN, strip.y + (strip.h - BTN + 2) / 2, BTN - 2, BTN - 2)
 }

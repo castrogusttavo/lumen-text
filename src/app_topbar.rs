@@ -1049,6 +1049,9 @@ impl App {
     fn draw_top_ram(&mut self, cv: &mut Canvas) -> i32 {
         let c = self.theme.chrome;
         let bar = self.layout.topbar;
+        if !self.config.status_visible("ram") {
+            return bar.right() - 10;
+        }
         let dim = c.tab_inactive_fg;
         let short = self.config.ram_display == "short";
         let memtxt = self.memory_text();
@@ -1096,6 +1099,13 @@ impl App {
             items.push((StatusBtn::Language, d.lang.unwrap_or("text").to_string()));
             items.push((StatusBtn::Encoding, d.buf.encoding.short()));
         }
+        if !self.config.view.show_status_bar {
+            return r.right() - 10;
+        }
+        items.retain(|(k, _)| self.config.status_visible(readout_id(k)));
+        items.sort_by_key(|(k, _)| {
+            self.config.status_order.iter().position(|s| s == readout_id(k)).unwrap_or(usize::MAX)
+        });
         let floor = r.x + r.w / 3;
         let mut x = r.right() - 10;
         for (kind, text) in items.iter().rev() {
@@ -1112,6 +1122,9 @@ impl App {
             x = b.x - 2;
         }
         // Problems chip, leftmost of the group.
+        if !self.config.status_visible("problems") {
+            return x;
+        }
         let (e, w) = self.diag_counts();
         let (et, wt) = (e.to_string(), w.to_string());
         let body = if e == 0 && w == 0 {
@@ -1580,6 +1593,16 @@ pub fn browse_menu(anchor: Rect, dir: PathBuf) -> TopMenu {
     }
     entries.extend(subdirs(&dir).into_iter().map(Entry::Dir));
     TopMenu::new(MenuKind::Browse, anchor, entries, dir)
+}
+
+/// Config id of a readout in the breadcrumb row (for `status_visible` / `status_order`).
+fn readout_id(k: &StatusBtn) -> &'static str {
+    match k {
+        StatusBtn::Position => "position",
+        StatusBtn::Indent => "indent",
+        StatusBtn::Language => "language",
+        _ => "encoding",
+    }
 }
 
 #[cfg(test)]

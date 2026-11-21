@@ -542,7 +542,7 @@ pub const COMMANDS: &[(&str, &str, Cmd)] = &[
     ("Keymap: Vim preset", "", Cmd::KeymapPresetVim),
     ("View: Toggle zen mode", "Ctrl+K Z", Cmd::ToggleZen),
     ("View: Toggle tab bar", "", Cmd::ToggleTabBar),
-    ("View: Toggle status bar", "", Cmd::ToggleStatusBar),
+    ("View: Toggle info readouts", "", Cmd::ToggleStatusBar),
     ("Explorer: Sort by name", "", Cmd::ExplorerSortName),
     ("Explorer: Sort by type", "", Cmd::ExplorerSortType),
     ("Explorer: Sort by date modified", "", Cmd::ExplorerSortModified),

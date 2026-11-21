@@ -31,21 +31,17 @@ impl App {
             "minimap": c.minimap, "minimap_style": c.minimap_style, "word_wrap": c.word_wrap, "sticky_scroll": c.sticky_scroll, "indent_guides": c.indent_guides,
             "ui_scale": c.ui_scale, "scroll_speed": c.scroll_speed,
             "breadcrumbs": c.breadcrumbs, "git_blame": c.git_blame, "ram_display": c.ram_display,
-            "status_search": c.status_visible("search"), "status_problems": c.status_visible("problems"),
+            "status_problems": c.status_visible("problems"),
             "status_position": c.status_visible("position"), "status_indent": c.status_visible("indent"),
-            "status_language": c.status_visible("language"), "status_terminal": c.status_visible("terminal"),
-            "status_debug": c.status_visible("debug"), "status_git": c.status_visible("git"), "status_ram": c.status_visible("ram"),
+            "status_language": c.status_visible("language"), "status_ram": c.status_visible("ram"),
             "tab_width": c.tab_width.to_string(),
             "git_pull_strategy": if c.git_pull_strategy.is_empty() { "ask" } else { c.git_pull_strategy.as_str() },
             "explorer_hide_gitignored": c.explorer_hide_gitignored,
         });
         // Split in two: one `json!` this long hits the macro recursion limit.
         let pos = json!({
-            "status_pos_sidebar": c.status_rank("sidebar"), "status_pos_search": c.status_rank("search"), "status_pos_problems": c.status_rank("problems"),
             "status_pos_position": c.status_rank("position"), "status_pos_indent": c.status_rank("indent"),
-            "status_pos_language": c.status_rank("language"), "status_pos_terminal": c.status_rank("terminal"),
-            "status_pos_debug": c.status_rank("debug"), "status_pos_git": c.status_rank("git"),
-            "status_pos_ram": c.status_rank("ram"), "status_pos_encoding": c.status_rank("encoding"),
+            "status_pos_language": c.status_rank("language"), "status_pos_encoding": c.status_rank("encoding"),
             "status_encoding": c.status_visible("encoding"),
         });
         if let (Some(dst), Some(src)) = (v.as_object_mut(), pos.as_object()) {

@@ -42,6 +42,8 @@ pub enum TipKey {
     Top(MenuKind),
     Status(StatusBtn),
     Rail(crate::app_rail::RailBtn),
+    /// A button of the editor strip at the right end of the tab bar.
+    Quick(usize),
     /// A document tab (index into `App::docs`) and its close button.
     Tab(usize),
     TabClose(usize),
@@ -360,6 +362,9 @@ impl App {
         if let Some((r, k)) = l.rail_btns.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((TipKey::Rail(*k), *r, false));
         }
+        if let Some((i, r)) = crate::app_quick::button_at(l.quick, x, y) {
+            return Some((TipKey::Quick(i), r, true));
+        }
         if let Some((r, k)) = l.status_btns.iter().chain(l.status_info.iter()).find(|(r, _)| r.contains(x, y)) {
             // Top bar badges open their tip below; the breadcrumb row's above.
             return Some((TipKey::Status(*k), *r, r.y < crate::app::TOP_H));
@@ -520,6 +525,10 @@ impl App {
                 Some("Build and run the project, jump to the compiler's problems".into()),
             ),
             TipKey::Git(h) => self.git_tip_text(h),
+            TipKey::Quick(i) => {
+                let (title, cmd, detail) = crate::app_quick::TIPS[i.min(2)];
+                t(title, cmd.and_then(|c| self.shortcut_text(c)), Some(detail.to_string()))
+            }
             TipKey::Rail(k) => {
                 // The Git button also tells the changed-file count and how far the branch is from its upstream.
                 let detail = (k == crate::app_rail::RailBtn::Git).then(|| {

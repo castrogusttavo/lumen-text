@@ -1225,7 +1225,7 @@
   "id": "ToggleTabBar"
  },
  {
-  "label": "View: Toggle status bar",
+  "label": "View: Toggle info readouts",
   "shortcut": "",
   "id": "ToggleStatusBar"
  },

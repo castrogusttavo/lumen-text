@@ -128,20 +128,18 @@ fn default_settings_have_unique_real_keys() {
 }
 
 #[test]
-fn bottom_bar_has_one_toggle_per_optional_item_and_none_for_the_mandatory_one() {
+fn info_bar_has_one_toggle_per_readout() {
     let defs = default_settings();
     let vals = default_values();
-    for (id, _, required) in crate::config::STATUS_ITEMS {
+    for id in ["problems", "position", "indent", "language", "encoding", "ram"] {
         let key = format!("status_{id}");
-        let def = defs.iter().find(|d| d.key == key);
-        if *required {
-            assert!(def.is_none(), "{id} is mandatory: no switch");
-        } else {
-            let def = def.unwrap_or_else(|| panic!("missing switch {key}"));
-            assert_eq!(def.section, "Status bar");
-            assert_eq!(def.kind, SettingKind::Bool);
-            assert_eq!(vals[&key], json!(true), "{key} defaults to visible");
-        }
+        let def = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("missing switch {key}"));
+        assert_eq!(def.section, "Info bar");
+        assert_eq!(def.kind, SettingKind::Bool);
+        assert_eq!(vals[&key], json!(true), "{key} defaults to visible");
+    }
+    for id in ["search", "terminal", "debug", "git"] {
+        assert!(!defs.iter().any(|d| d.key == format!("status_{id}")), "{id} lives on the rail now");
     }
     for k in ["breadcrumbs", "git_blame", "ram_display"] {
         assert!(defs.iter().any(|d| d.key == k), "{k}");
@@ -153,24 +151,23 @@ fn bottom_bar_has_one_toggle_per_optional_item_and_none_for_the_mandatory_one() 
 }
 
 #[test]
-fn bottom_bar_order_has_one_stepper_per_right_hand_item() {
+fn info_bar_order_has_one_stepper_per_readout() {
     let defs = default_settings();
     let vals = default_values();
-    assert_eq!(crate::config::STATUS_RIGHT.len(), 8);
-    for (slot, id) in crate::config::STATUS_RIGHT.iter().enumerate() {
+    for (slot, id) in ["position", "indent", "encoding", "language"].iter().enumerate() {
         let key = format!("status_pos_{id}");
         let def = defs.iter().find(|d| d.key == key).unwrap_or_else(|| panic!("missing {key}"));
-        assert!(matches!(def.kind, SettingKind::Number { min, max, step } if min == 1.0 && max == 8.0 && step == 1.0));
+        assert!(matches!(def.kind, SettingKind::Number { min, max, step } if min == 1.0 && max == 4.0 && step == 1.0));
         assert_eq!(vals[&key], json!(slot + 1), "{key} default slot");
     }
 }
 
 #[test]
 fn set_values_replaces_what_the_rows_show() {
-    let mut p = page_with(json!({"status_pos_git": 6}));
-    let def = p.defs.iter().position(|d| d.key == "status_pos_git").unwrap();
-    assert_eq!(p.current(def), json!(6));
-    p.set_values(json!({"status_pos_git": 2}));
+    let mut p = page_with(json!({"status_pos_language": 4}));
+    let def = p.defs.iter().position(|d| d.key == "status_pos_language").unwrap();
+    assert_eq!(p.current(def), json!(4));
+    p.set_values(json!({"status_pos_language": 2}));
     assert_eq!(p.current(def), json!(2));
 }
 
@@ -189,7 +186,7 @@ fn sections_in_order_and_visible_by_section() {
             "Languages",
             "Git",
             "Build",
-            "Status bar",
+            "Info bar",
             "AI"
         ]
     );
