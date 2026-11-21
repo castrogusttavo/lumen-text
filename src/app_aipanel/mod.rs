@@ -37,19 +37,29 @@ use std::{
 use winit::{event::MouseScrollDelta, keyboard::Key, window::CursorIcon};
 
 mod agents;
+mod backend;
 pub mod bridge;
 #[cfg(test)]
 mod bridge_tests;
+pub mod chat;
+mod chat_input;
+#[cfg(all(test, unix))]
+mod chat_tests;
+mod chat_view;
 pub mod composer;
 mod composer_ui;
 mod draw;
 mod explain;
 mod input;
+mod proto_claude;
+mod proto_codex;
+mod proto_gemini;
 mod state;
 #[cfg(test)]
 mod tests;
 
 pub use agents::*;
+pub use chat_view::{ChatSession, Cur};
 pub use explain::Mode as AskMode;
 pub use state::*;
 
@@ -226,6 +236,35 @@ impl App {
         }
     }
 
+    /// The structured adapter for `a`, when the panel runs it as a native chat.
+    fn ai_chat_kind(&self, a: &Agent) -> Option<backend::Kind> {
+        if self.ai.structured { backend::Kind::of(a.id) } else { None }
+    }
+
+    /// A native chat session of `a` in `cwd` (its process starts with the first message).
+    fn ai_chat_spawn(&mut self, kind: backend::Kind, a: &'static Agent, cwd: &Path) -> Option<Box<ChatSession>> {
+        let exe = self.ai.path_of(a)?;
+        let (program, prefix) = command_for(&exe);
+        let mut env: Vec<(String, Option<String>)> = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"]
+            .iter()
+            .map(|k| (k.to_string(), None))
+            .collect();
+        env.push(("TERM_PROGRAM".to_string(), Some("lumen-text".to_string())));
+        if let Some(p) = path_with(exe.parent(), std::env::var_os("PATH").as_deref()) {
+            env.push(("PATH".to_string(), Some(p)));
+        }
+        let sp = backend::Spawn { program, prefix, cwd: cwd.to_path_buf(), env };
+        Some(Box::new(ChatSession::new(backend::Backend::new(kind, sp, self.wake()))))
+    }
+
+    /// What runs session `id`: a native chat or the agent's terminal.
+    fn ai_body(&mut self, a: &'static Agent, id: u64, cwd: &Path) -> Option<(Option<Term>, Option<Box<ChatSession>>)> {
+        match self.ai_chat_kind(a) {
+            Some(k) => self.ai_chat_spawn(k, a, cwd).map(|c| (None, Some(c))),
+            None => self.ai_spawn(a, id, cwd).map(|t| (Some(t), None)),
+        }
+    }
+
     /// Start agent `a` on a terminal of its own in `cwd` for session `id`: the IDE bridge for
     /// Claude Code (hook URLs naming the session), a clean environment, the agent's folder on PATH.
     fn ai_spawn(&mut self, a: &'static Agent, id: u64, cwd: &Path) -> Option<Term> {
@@ -286,13 +325,13 @@ impl App {
         }
         let cwd = cwd.unwrap_or_else(|| self.root.clone());
         let id = self.ai.new_id();
-        let Some(term) = self.ai_spawn(a, id, &cwd) else { return false };
+        let Some((term, chat)) = self.ai_body(a, id, &cwd) else { return false };
         let taken: Vec<&str> = self.ai.sessions.iter().map(|s| s.name.as_str()).collect();
         let name = session_name(a, &cwd, &self.root, &taken);
         if let Some(t) = self.ai.term_mut() {
             t.set_focus(false);
         }
-        self.ai.sessions.push(Session { id, agent: a, name, cwd, term, track: Track::default() });
+        self.ai.sessions.push(Session { id, agent: a, name, cwd, term, chat, track: Track::default() });
         self.ai.active = self.ai.sessions.len() - 1;
         self.ai.composer_focus = true;
         self.ai.root = self.root.clone();
@@ -333,7 +372,7 @@ impl App {
             t.hangup();
         }
         self.ai.bridge.forget_session(id);
-        let Some(term) = self.ai_spawn(a, id, &cwd) else { return };
+        let Some((term, chat)) = self.ai_body(a, id, &cwd) else { return };
         self.ai.last_agent = Some(a);
         if let Some(p) = state_path(&self.root) {
             save_choice(&p, a.id);
@@ -344,6 +383,7 @@ impl App {
         }
         s.agent = a;
         s.term = term;
+        s.chat = chat;
         s.track = Track::default();
         self.request_redraw();
     }
@@ -362,6 +402,13 @@ impl App {
 
     /// Stop: hang up the agent's process group (the last screen stays, with a Restart button).
     pub fn ai_stop(&mut self) {
+        if let Some(c) = self.ai.cur_mut().and_then(|s| s.chat.as_mut()) {
+            // Asks the agent to stop; a second press ends its process.
+            let cs: &mut ChatSession = c;
+            cs.be.interrupt(&mut cs.chat);
+            self.request_redraw();
+            return;
+        }
         if let Some(t) = self.ai.term_mut()
             && t.alive
         {
@@ -372,7 +419,7 @@ impl App {
     /// Close session `i`, asking first when its agent still runs.
     pub fn ai_close_request(&mut self, i: usize) {
         match self.ai.sessions.get(i) {
-            Some(s) if s.term.alive => {
+            Some(s) if s.busy() => {
                 let q = crate::app_ask::procs_question(
                     std::slice::from_ref(&s.name),
                     crate::app_ask::AskAction::CloseAiSession(s.id),
@@ -529,7 +576,7 @@ impl App {
         if self.ai.path_of(a).is_none() {
             return self.ai_not_installed(a);
         }
-        let running_same = self.ai.cur().map(|s| s.agent.id == a.id && s.term.alive);
+        let running_same = self.ai.cur().map(|s| s.agent.id == a.id && (s.chat.is_some() || s.busy()));
         match running_same {
             Some(true) => {}
             Some(false) => self.ai_restart(Some(a)),
@@ -564,8 +611,9 @@ impl App {
     /// Clipboard writes (OSC 52) and notifications (OSC 9 / 777) of session `i`'s agent.
     fn ai_effects(&mut self, i: usize) {
         let Some(s) = self.ai.sessions.get_mut(i) else { return };
-        let clip = s.term.grid.clipboard.take();
-        let notices = std::mem::take(&mut s.term.grid.notices);
+        let Some(t) = s.term.as_mut() else { return };
+        let clip = t.grid.clipboard.take();
+        let notices = std::mem::take(&mut t.grid.notices);
         if !notices.is_empty() {
             s.track.attention = true;
         }
@@ -603,7 +651,7 @@ impl App {
             Status::Done => "Done",
             _ => return,
         };
-        let task = title_task(&s.term.grid.title);
+        let task = s.task();
         let body = if task.is_empty() { what.to_string() } else { format!("{what} — {task}") };
         s.track.notified = true;
         let title = s.name.clone();
@@ -618,7 +666,10 @@ impl App {
         let now = Instant::now();
         let mut redraw = false;
         for i in 0..self.ai.sessions.len() {
-            let changed = self.ai.sessions[i].term.pump();
+            let changed = match self.ai.sessions[i].chat.as_mut() {
+                Some(c) => c.pump(),
+                None => self.ai.sessions[i].term.as_mut().is_some_and(Term::pump),
+            };
             self.ai_effects(i);
             // A hidden panel (or a session in the background) costs nothing: only a status
             // change (its dot, the badge) is drawn.
@@ -638,12 +689,31 @@ impl App {
         let mut redraw = false;
         for i in 0..self.ai.sessions.len() {
             redraw |= self.ai_refresh(i, now);
+            let shown = self.ai.open && i == self.ai.active;
+            if let Some(c) = self.ai.sessions[i].chat.as_mut() {
+                let cs: &mut ChatSession = c;
+                if let Some(at) = cs.be.tick(&mut cs.chat, now) {
+                    want(at);
+                }
+                if shown && cs.chat.working() {
+                    // Spinners and the elapsed time: a frame about every 100 ms while it works.
+                    if cs.view.anim.is_none_or(|l| now.saturating_duration_since(l) >= ms(90)) {
+                        cs.view.anim = Some(now);
+                        redraw = true;
+                    }
+                    want(cs.view.anim.unwrap_or(now) + ms(100));
+                }
+            }
             let s = &self.ai.sessions[i];
             match (s.status(), s.track.last_activity) {
                 (Status::Working | Status::Starting, Some(a)) => {
                     want(a + ms(if s.track.attention { ATTENTION_MS } else { IDLE_MS }));
                 }
-                (Status::Starting, None) => want(s.term.started + ms(STARTUP_MS)),
+                (Status::Starting, None) => {
+                    if let Some(t) = &s.term {
+                        want(t.started + ms(STARTUP_MS));
+                    }
+                }
                 _ => {}
             }
         }

@@ -16,6 +16,8 @@ pub enum Status {
     Done,
     /// The process ended (exit code; 128 + n for a signal).
     Exited(i32),
+    /// A structured chat session between turns, nothing asked yet.
+    Ready,
 }
 
 impl Status {
@@ -26,6 +28,7 @@ impl Status {
             Status::Waiting => "Waiting for you".into(),
             Status::Done => "Done".into(),
             Status::Exited(c) => format!("Exited ({c})"),
+            Status::Ready => "Ready".into(),
         }
     }
 }
@@ -228,6 +231,20 @@ impl Track {
         c.alert && matches!(self.status, Status::Waiting | Status::Done) && !self.notified
     }
 
+    /// A structured session's status, straight from its conversation.
+    pub fn set_chat(&mut self, s: Status, watching: bool) -> Change {
+        let was = self.status;
+        self.status = s;
+        let alert = was == Status::Working && s != Status::Working;
+        if alert {
+            self.unseen = !watching;
+        }
+        if s == Status::Working {
+            self.worked = true;
+        }
+        Change { changed: was != s, alert }
+    }
+
     /// The user typed: whatever it asked for is being answered, a new turn begins.
     pub fn on_input(&mut self) {
         self.attention = false;
@@ -248,7 +265,10 @@ pub struct Session {
     pub name: String,
     /// Where the agent runs: the project, or another folder such as a worktree of it.
     pub cwd: PathBuf,
-    pub term: Term,
+    /// The agent's terminal (agents without a structured mode, or terminal mode).
+    pub term: Option<Term>,
+    /// The structured conversation (Claude Code, Codex, Gemini), instead of a terminal.
+    pub chat: Option<Box<ChatSession>>,
     pub track: Track,
 }
 
@@ -257,9 +277,45 @@ impl Session {
         self.track.status
     }
 
-    /// Fold the terminal's latest state into the status.
+    /// Something runs for it: the terminal's process, or a turn in progress.
+    pub fn busy(&self) -> bool {
+        match (&self.term, &self.chat) {
+            (Some(t), _) => t.alive,
+            (_, Some(c)) => c.chat.working(),
+            _ => false,
+        }
+    }
+
+    /// The process id of what runs (resource monitor).
+    pub fn pid(&self) -> Option<u32> {
+        match (&self.term, &self.chat) {
+            (Some(t), _) if t.alive => t.pid(),
+            (_, Some(c)) => c.be.pid(),
+            _ => None,
+        }
+    }
+
+    /// What the agent is working on, for a notification.
+    pub fn task(&self) -> String {
+        match (&self.term, &self.chat) {
+            (Some(t), _) => title_task(&t.grid.title).to_string(),
+            (_, Some(c)) => c.last_prompt().chars().take(80).collect(),
+            _ => String::new(),
+        }
+    }
+
+    /// Fold the latest state (terminal or chat) into the status.
     pub fn refresh(&mut self, now: Instant, watching: bool) -> Change {
-        let t = &self.term;
+        if let Some(c) = &self.chat {
+            let s = match c.chat.phase {
+                super::chat::Phase::Working => Status::Working,
+                super::chat::Phase::Waiting => Status::Waiting,
+                super::chat::Phase::Idle if c.chat.turns > 0 => Status::Done,
+                super::chat::Phase::Idle => Status::Ready,
+            };
+            return self.track.set_chat(s, watching);
+        }
+        let Some(t) = &self.term else { return Change::default() };
         let o = Obs {
             alive: t.alive,
             exit: t.exit_code,
@@ -398,6 +454,9 @@ pub struct AiState {
     pub pending_enter: Option<(u64, Instant)>,
     /// A prompt ("Explain" / "Fix with AI") waiting for its session to finish starting.
     pub pending_prompt: Option<(u64, String)>,
+    /// Claude Code, Codex and Gemini run in their structured mode with a native chat instead of a
+    /// terminal (off in tests, which drive stub agents in a terminal, and with LUMEN_AI_TERMINAL).
+    pub structured: bool,
     /// Desktop notifications "sent" (title, body): tests look here, nothing pops up.
     #[cfg(test)]
     pub sent: Vec<(String, String)>,
@@ -432,6 +491,7 @@ impl Default for AiState {
             bridge: Default::default(),
             pending_enter: None,
             pending_prompt: None,
+            structured: !cfg!(test) && std::env::var_os("LUMEN_AI_TERMINAL").is_none(),
             #[cfg(test)]
             sent: Vec::new(),
         }
@@ -473,11 +533,11 @@ impl AiState {
 
     /// The terminal of the session shown.
     pub fn term(&self) -> Option<&Term> {
-        self.cur().map(|s| &s.term)
+        self.cur().and_then(|s| s.term.as_ref())
     }
 
     pub fn term_mut(&mut self) -> Option<&mut Term> {
-        self.cur_mut().map(|s| &mut s.term)
+        self.cur_mut().and_then(|s| s.term.as_mut())
     }
 
     /// The agent of the session shown, else the one picked last.
