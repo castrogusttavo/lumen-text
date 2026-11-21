@@ -8,10 +8,13 @@
 use super::chat::{Block, Event, ToolCall, Usage};
 use serde_json::{Value, json};
 
-/// Command line of one turn (`thread`: the thread of an earlier turn to continue).
-pub fn args(thread: Option<&str>) -> Vec<String> {
+/// Command line of one turn (`thread`: the thread of an earlier turn to continue; `model`: the one chosen).
+pub fn args(thread: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut a: Vec<String> =
         ["exec", "--json", "--skip-git-repo-check", "-s", "workspace-write"].iter().map(|s| s.to_string()).collect();
+    if let Some(m) = model.filter(|m| !m.is_empty()) {
+        a.extend(["-m".to_string(), m.to_string()]);
+    }
     if let Some(t) = thread {
         a.extend(["resume".to_string(), t.to_string()]);
     }
@@ -195,8 +198,8 @@ mod tests {
 
     #[test]
     fn later_turns_resume_the_thread() {
-        assert!(args(None).iter().all(|a| a != "resume"));
-        let a = args(Some("abc"));
+        assert!(args(None, None).iter().all(|a| a != "resume"));
+        let a = args(Some("abc"), None);
         assert_eq!(&a[a.len() - 2..], &["resume".to_string(), "abc".to_string()]);
         assert_eq!(a[0], "exec");
     }

@@ -45,6 +45,8 @@ pub enum Block {
     Thinking(String),
     Tool(ToolCall),
     Error(String),
+    /// Something Lumen says itself (a slash command's answer, "compacted"): Markdown, not the agent's.
+    Note(String),
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -61,6 +63,77 @@ pub enum Phase {
     Working,
     /// The agent asks for a permission.
     Waiting,
+}
+
+/// What the agent may do without asking (Claude Code's permission modes).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PermMode {
+    /// Asks before edits and commands.
+    Ask,
+    /// Edits files without asking, asks for the rest.
+    #[default]
+    AcceptEdits,
+    /// Reads and plans, changes nothing until the plan is approved.
+    Plan,
+    /// Never asks.
+    Bypass,
+}
+
+impl PermMode {
+    pub const ALL: [PermMode; 4] = [PermMode::Ask, PermMode::AcceptEdits, PermMode::Plan, PermMode::Bypass];
+
+    /// The name Claude Code uses (`--permission-mode`, `set_permission_mode`).
+    pub fn id(self) -> &'static str {
+        match self {
+            PermMode::Ask => "default",
+            PermMode::AcceptEdits => "acceptEdits",
+            PermMode::Plan => "plan",
+            PermMode::Bypass => "bypassPermissions",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<PermMode> {
+        PermMode::ALL.into_iter().find(|m| m.id() == id).or(match id {
+            "auto" | "dontAsk" => Some(PermMode::AcceptEdits),
+            _ => None,
+        })
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PermMode::Ask => "Ask",
+            PermMode::AcceptEdits => "Auto-edit",
+            PermMode::Plan => "Plan",
+            PermMode::Bypass => "Bypass",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            PermMode::Ask => "Asks before it edits a file or runs a command",
+            PermMode::AcceptEdits => "Edits files on its own, asks before running commands",
+            PermMode::Plan => "Only reads and plans: changes nothing until you approve the plan",
+            PermMode::Bypass => "Never asks: edits and runs everything. Use in a sandbox only",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            PermMode::Ask => "ui/circle_help",
+            PermMode::AcceptEdits => "ui/tool_pencil",
+            PermMode::Plan => "ui/list_todo",
+            PermMode::Bypass => "ui/bolt_filled",
+        }
+    }
+
+    /// Shift+Tab: the next mode (Bypass is left out of the cycle: it is picked on purpose).
+    pub fn next(self) -> PermMode {
+        match self {
+            PermMode::Ask => PermMode::AcceptEdits,
+            PermMode::AcceptEdits => PermMode::Plan,
+            PermMode::Plan | PermMode::Bypass => PermMode::Ask,
+        }
+    }
 }
 
 #[derive(Clone, Default, PartialEq, Debug)]
@@ -143,6 +216,26 @@ pub enum Event {
     },
     /// The CLI could not run (or died): the turn ends with this error.
     Fatal(String),
+    /// What the agent says it has: slash commands (and which ones only work in its own terminal),
+    /// sub-agents, memory files, its permission mode.
+    Meta {
+        commands: Vec<String>,
+        terminal_only: Vec<String>,
+        agents: Vec<String>,
+        memory: Vec<String>,
+        mode: Option<String>,
+    },
+    /// The permission mode changed (by us, or by the agent after an approved plan).
+    Mode(String),
+    /// The agent is (or no longer is) compacting the conversation.
+    Compacting(bool),
+    /// A line the agent reports about itself ("Conversation compacted").
+    Note(String),
+    /// Context in use (tokens of the last request) and the model's window, when known.
+    Context {
+        used: Option<u64>,
+        window: Option<u64>,
+    },
 }
 
 /// One conversation with one agent.
@@ -155,6 +248,17 @@ pub struct Chat {
     pub session_id: Option<String>,
     pub model: Option<String>,
     pub perms: Vec<Perm>,
+    /// What the agent offered when it started (see [`Event::Meta`]).
+    pub commands: Vec<String>,
+    pub terminal_only: Vec<String>,
+    pub agents: Vec<String>,
+    pub memory: Vec<String>,
+    /// The permission mode the agent reports it is in.
+    pub mode: Option<PermMode>,
+    pub compacting: bool,
+    /// Tokens in the context of the last request, and the model's window.
+    pub context_used: u64,
+    pub context_window: u64,
     /// Usage of finished processes plus the running one.
     base: Usage,
     proc: Usage,
@@ -315,7 +419,70 @@ impl Chat {
                 self.push(Block::Error(e));
                 self.end_turn();
             }
+            Event::Meta { commands, terminal_only, agents, memory, mode } => {
+                self.commands = commands;
+                self.terminal_only = terminal_only;
+                self.agents = agents;
+                self.memory = memory;
+                if let Some(m) = mode.as_deref().and_then(PermMode::from_id) {
+                    self.mode = Some(m);
+                }
+            }
+            Event::Mode(m) => {
+                if let Some(m) = PermMode::from_id(&m) {
+                    self.mode = Some(m);
+                }
+            }
+            Event::Compacting(on) => self.compacting = on,
+            Event::Note(t) => {
+                self.push(Block::Note(t));
+            }
+            Event::Context { used, window } => {
+                if let Some(u) = used {
+                    self.context_used = u;
+                }
+                if let Some(w) = window {
+                    self.context_window = w;
+                }
+            }
         }
+    }
+
+    /// Say something in the transcript on Lumen's behalf (not the agent's text).
+    pub fn note(&mut self, text: &str) {
+        self.rev += 1;
+        self.push(Block::Note(text.to_string()));
+    }
+
+    /// An empty conversation again (`/clear`): the session, the transcript and the context go;
+    /// the usage and the agent's offers stay.
+    pub fn clear(&mut self) {
+        let p = std::mem::take(&mut self.proc);
+        self.base.add(&p);
+        self.messages.clear();
+        self.perms.clear();
+        self.session_id = None;
+        self.phase = Phase::Idle;
+        self.turn_started = None;
+        self.compacting = false;
+        self.context_used = 0;
+        self.streams.clear();
+        self.json.clear();
+        self.ordinals.clear();
+        self.rev += 1;
+    }
+
+    /// Show an earlier conversation (`/resume`): its transcript replaces the current one and the
+    /// next message continues it.
+    pub fn load(&mut self, messages: Vec<Message>, session_id: &str) {
+        self.clear();
+        self.messages = messages;
+        self.session_id = Some(session_id.to_string());
+    }
+
+    /// Fraction of the context window in use (0 when unknown).
+    pub fn context_fraction(&self) -> f32 {
+        if self.context_window == 0 { 0.0 } else { (self.context_used as f32 / self.context_window as f32).min(1.0) }
     }
 
     fn snapshot(&mut self, msg: String, block: Block) {
@@ -354,6 +521,7 @@ impl Chat {
 
     fn end_turn(&mut self) {
         self.phase = Phase::Idle;
+        self.compacting = false;
         self.perms.clear();
         self.streams.clear();
         self.json.clear();
@@ -651,6 +819,150 @@ pub fn tail_lines(text: &str, max: usize) -> (Vec<&str>, usize) {
     (lines[skip..].to_vec(), skip)
 }
 
+/// A model id short enough for a chip: `claude-sonnet-5-5` is `sonnet-5-5`, a trailing date goes.
+pub fn short_model(id: &str) -> String {
+    let id = id.strip_prefix("claude-").unwrap_or(id);
+    let id = match id.rsplit_once('-') {
+        Some((head, tail)) if tail.len() == 8 && tail.chars().all(|c| c.is_ascii_digit()) => head,
+        _ => id,
+    };
+    if id.chars().count() > 22 { format!("{}…", id.chars().take(21).collect::<String>()) } else { id.to_string() }
+}
+
+/// What a tool call does, as far as its row reads: a verb in the tense of its state ("Reading" /
+/// "Read") before its target.
+pub fn tool_verb(name: &str, running: bool) -> &'static str {
+    let (now, done) = match name {
+        "Read" => ("Reading", "Read"),
+        "Edit" | "MultiEdit" | "NotebookEdit" => ("Editing", "Edited"),
+        "Write" => ("Writing", "Wrote"),
+        "Bash" | "BashOutput" => ("Running", "Ran"),
+        "KillShell" => ("Stopping", "Stopped"),
+        "Grep" | "Glob" | "LS" => ("Searching", "Searched"),
+        "WebFetch" => ("Fetching", "Fetched"),
+        "WebSearch" => ("Searching the web", "Searched the web"),
+        "Task" | "Agent" => ("Delegating", "Delegated"),
+        "TodoWrite" => ("Updating tasks", "Updated tasks"),
+        "ExitPlanMode" => ("Proposing a plan", "Proposed a plan"),
+        _ => ("Calling", "Called"),
+    };
+    if running { now } else { done }
+}
+
+/// Lines added and removed by an edit call (all of them, not just the ones shown).
+pub fn diff_counts(name: &str, input: &Value) -> (usize, usize) {
+    let mut n = (0, 0);
+    let mut edit = |old: &str, new: &str| {
+        n.0 += new.lines().count();
+        n.1 += old.lines().count();
+    };
+    match name {
+        "Edit" => edit(str_of(input, "old_string"), str_of(input, "new_string")),
+        "Write" => edit("", str_of(input, "content")),
+        "MultiEdit" => {
+            for e in input.get("edits").and_then(Value::as_array).into_iter().flatten() {
+                edit(str_of(e, "old_string"), str_of(e, "new_string"));
+            }
+        }
+        _ => {}
+    }
+    n
+}
+
+/// How many results a search or listing found (a line each), when its output says.
+pub fn result_count(name: &str, result: Option<&str>) -> Option<usize> {
+    if !matches!(name, "Grep" | "Glob" | "LS") {
+        return None;
+    }
+    let r = result?.trim();
+    Some(if r.is_empty() || r.starts_with("No ") { 0 } else { r.lines().count() })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TodoState {
+    Pending,
+    Active,
+    Done,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Todo {
+    pub text: String,
+    pub state: TodoState,
+}
+
+/// The list a `TodoWrite` call carries: what the agent is doing now reads in its active form.
+pub fn todos(input: &Value) -> Vec<Todo> {
+    input
+        .get("todos")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|t| {
+            let state = match str_of(t, "status") {
+                "completed" => TodoState::Done,
+                "in_progress" => TodoState::Active,
+                _ => TodoState::Pending,
+            };
+            let active = str_of(t, "activeForm");
+            let text = if state == TodoState::Active && !active.is_empty() { active } else { str_of(t, "content") };
+            Todo { text: text.to_string(), state }
+        })
+        .filter(|t| !t.text.is_empty())
+        .collect()
+}
+
+/// The plan an `ExitPlanMode` call asks the user to approve (Markdown).
+pub fn plan_of(name: &str, input: &Value) -> Option<String> {
+    (name == "ExitPlanMode").then(|| str_of(input, "plan").trim().to_string()).filter(|p| !p.is_empty())
+}
+
+/// One run of one kind of call, for [`group_label`]: verb, singular, plural, distinct files, other calls.
+type Kind = (&'static str, &'static str, &'static str, std::collections::HashSet<String>, usize);
+
+/// One line for a run of calls: "Read 4 files, edited 2 files, ran 1 command".
+pub fn group_label(calls: &[&ToolCall]) -> String {
+    let mut kinds: Vec<Kind> = Vec::new();
+    for c in calls {
+        let (verb, one, many, key) = match c.name.as_str() {
+            "Read" => ("read", "file", "files", tool_file(&c.name, &c.input)),
+            "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
+                ("edited", "file", "files", tool_file(&c.name, &c.input))
+            }
+            "Grep" | "Glob" | "LS" => ("ran", "search", "searches", None),
+            "Bash" | "BashOutput" | "KillShell" => ("ran", "command", "commands", None),
+            "WebFetch" | "WebSearch" => ("fetched", "page", "pages", None),
+            "TodoWrite" | "ExitPlanMode" => continue,
+            _ => ("called", "tool", "tools", None),
+        };
+        let at = match kinds.iter().position(|k| k.0 == verb && k.1 == one) {
+            Some(i) => i,
+            None => {
+                kinds.push((verb, one, many, Default::default(), 0));
+                kinds.len() - 1
+            }
+        };
+        match key {
+            Some(f) => {
+                kinds[at].3.insert(f);
+            }
+            None => kinds[at].4 += 1,
+        }
+    }
+    let parts: Vec<String> = kinds
+        .iter()
+        .map(|(verb, one, many, files, n)| {
+            let n = files.len() + n;
+            format!("{verb} {n} {}", if n == 1 { one } else { many })
+        })
+        .collect();
+    let mut s = parts.join(", ");
+    if let Some(c) = s.get(..1) {
+        s = c.to_uppercase() + &s[1..];
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,5 +1146,106 @@ mod tests {
         let (l, skipped) = tail_lines("1\n2\n3\n4", 2);
         assert_eq!((l, skipped), (vec!["3", "4"], 2));
         assert_eq!(tail_lines("1\n2", 5), (vec!["1", "2"], 0));
+    }
+
+    #[test]
+    fn modes_cycle_and_map_to_claudes_names() {
+        assert_eq!(PermMode::default(), PermMode::AcceptEdits);
+        assert_eq!(PermMode::Ask.next(), PermMode::AcceptEdits);
+        assert_eq!(PermMode::AcceptEdits.next(), PermMode::Plan);
+        assert_eq!(PermMode::Plan.next(), PermMode::Ask);
+        assert_eq!(PermMode::Bypass.next(), PermMode::Ask, "bypass is not in the cycle");
+        for m in PermMode::ALL {
+            assert_eq!(PermMode::from_id(m.id()), Some(m));
+        }
+        assert_eq!(PermMode::from_id("default"), Some(PermMode::Ask));
+        assert_eq!(PermMode::from_id("nonsense"), None);
+    }
+
+    #[test]
+    fn meta_mode_note_and_context_events_fold_in() {
+        let mut c = Chat::new();
+        c.apply(Event::Meta {
+            commands: vec!["clear".into(), "init".into()],
+            terminal_only: vec!["doctor".into()],
+            agents: vec!["Explore".into()],
+            memory: vec!["/p/CLAUDE.md".into()],
+            mode: Some("plan".into()),
+        });
+        assert_eq!((c.commands.len(), c.mode), (2, Some(PermMode::Plan)));
+        c.apply(Event::Mode("acceptEdits".into()));
+        assert_eq!(c.mode, Some(PermMode::AcceptEdits));
+        c.apply(Event::Compacting(true));
+        assert!(c.compacting);
+        c.apply(Event::Note("Conversation compacted".into()));
+        assert_eq!(c.messages[0].blocks, vec![Block::Note("Conversation compacted".into())]);
+        c.apply(Event::Done { usage: Usage::default(), cumulative: true, session: None, error: None });
+        assert!(!c.compacting, "the turn's end ends it");
+        c.apply(Event::Context { used: Some(50_000), window: Some(200_000) });
+        assert!((c.context_fraction() - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clearing_and_loading_replace_the_conversation_but_keep_the_cost() {
+        let mut c = Chat::new();
+        c.user_says("hi");
+        c.apply(Event::Done {
+            usage: Usage { input: 10, output: 5, cost_usd: 0.5, duration_ms: 1, turns: 0 },
+            cumulative: true,
+            session: Some("S".into()),
+            error: None,
+        });
+        c.clear();
+        assert!(c.messages.is_empty() && c.session_id.is_none() && c.phase == Phase::Idle);
+        assert!((c.usage().cost_usd - 0.5).abs() < 1e-9, "what was spent stays spent");
+        let m = vec![Message { role: Role::User, blocks: vec![Block::Text("old".into())] }];
+        c.load(m, "OLD");
+        assert_eq!((c.messages.len(), c.session_id.as_deref()), (1, Some("OLD")));
+        c.note("hello");
+        assert!(matches!(c.messages.last().and_then(|m| m.blocks.last()), Some(Block::Note(t)) if t == "hello"));
+    }
+
+    #[test]
+    fn rows_read_like_athas_does() {
+        assert_eq!((tool_verb("Read", true), tool_verb("Read", false)), ("Reading", "Read"));
+        assert_eq!(tool_verb("Bash", false), "Ran");
+        assert_eq!(diff_counts("Edit", &json!({"old_string": "a\nb", "new_string": "c"})), (1, 2));
+        assert_eq!(diff_counts("Write", &json!({"content": "x\ny\nz"})), (3, 0));
+        assert_eq!(diff_counts("Bash", &json!({})), (0, 0));
+        assert_eq!(result_count("Grep", Some("a.rs\nb.rs")), Some(2));
+        assert_eq!(result_count("Grep", Some("No matches found")), Some(0));
+        assert_eq!(result_count("Bash", Some("x")), None);
+        let a = ToolCall::new("1", "Read", json!({"file_path": "/p/a.rs"}));
+        let b = ToolCall::new("2", "Read", json!({"file_path": "/p/b.rs"}));
+        let a2 = ToolCall::new("3", "Read", json!({"file_path": "/p/a.rs"}));
+        let e = ToolCall::new("4", "Edit", json!({"file_path": "/p/a.rs"}));
+        let r = ToolCall::new("5", "Bash", json!({"command": "ls"}));
+        let t = ToolCall::new("6", "TodoWrite", json!({}));
+        assert_eq!(group_label(&[&a, &b, &a2, &e, &r, &t]), "Read 2 files, edited 1 file, ran 1 command");
+    }
+
+    #[test]
+    fn todos_and_plans_come_out_of_their_calls() {
+        let input = json!({"todos": [
+            {"content": "Write tests", "status": "completed", "activeForm": "Writing tests"},
+            {"content": "Fix bug", "status": "in_progress", "activeForm": "Fixing the bug"},
+            {"content": "Ship", "status": "pending"}
+        ]});
+        let t = todos(&input);
+        assert_eq!(t.len(), 3);
+        assert_eq!((t[0].state, t[0].text.as_str()), (TodoState::Done, "Write tests"));
+        assert_eq!((t[1].state, t[1].text.as_str()), (TodoState::Active, "Fixing the bug"));
+        assert_eq!(t[2].state, TodoState::Pending);
+        assert_eq!(plan_of("ExitPlanMode", &json!({"plan": " 1. a\n2. b "})).as_deref(), Some("1. a\n2. b"));
+        assert_eq!(plan_of("ExitPlanMode", &json!({})), None);
+        assert_eq!(plan_of("Bash", &json!({"plan": "x"})), None);
+    }
+
+    #[test]
+    fn model_ids_are_shortened_for_chips() {
+        assert_eq!(short_model("claude-sonnet-5-5"), "sonnet-5-5");
+        assert_eq!(short_model("claude-3-5-haiku-20241022"), "3-5-haiku");
+        assert_eq!(short_model("gemini-2.5-pro"), "gemini-2.5-pro");
+        assert_eq!(short_model("a-very-long-model-name-indeed"), "a-very-long-model-nam…");
     }
 }

@@ -210,6 +210,21 @@ impl App {
             Some(AiHit::Interrupt) => self.ai_interrupt(),
             Some(AiHit::AttachFile) => self.ai_attach_file(),
             Some(AiHit::AttachSel) => self.ai_attach_selection(),
+            Some(AiHit::MenuRow(i)) => {
+                if let Some(m) = self.ai.menu.as_mut() {
+                    m.sel = i;
+                }
+                self.ai.composer_focus = true;
+                self.ai_menu_accept(true);
+            }
+            Some(AiHit::Mode) => self.ai_mode_menu(),
+            Some(AiHit::Model) => self.ai_model_menu(),
+            Some(AiHit::Unattach(i)) => {
+                if i < self.ai.attachments.len() {
+                    self.ai.attachments.remove(i);
+                }
+                self.ai.composer_focus = true;
+            }
             Some(AiHit::New) => self.ai_new_session_menu(),
             Some(AiHit::Restart) => self.ai_respawn(),
             Some(AiHit::Filter) => self.ai.filter_focus = true,
@@ -371,13 +386,24 @@ impl App {
             AiHit::Session(_) => 7,
             _ => 8,
         };
-        (!active_tab && !matches!(h, AiHit::Status | AiHit::Composer | AiHit::Send | AiHit::Interrupt | AiHit::Agent))
-            .then_some((r, radius))
+        let own = matches!(
+            h,
+            AiHit::Status
+                | AiHit::Composer
+                | AiHit::Send
+                | AiHit::Interrupt
+                | AiHit::Agent
+                | AiHit::Mode
+                | AiHit::Model
+                | AiHit::MenuRow(_)
+                | AiHit::Unattach(_)
+        );
+        (!active_tab && !own).then_some((r, radius))
     }
 
     /// The button under the pointer, for a tooltip.
     pub fn aipanel_tip_target(&self, x: f64, y: f64) -> Option<(Rect, AiHit)> {
-        self.ai.hit_at(x, y).filter(|(_, h)| !matches!(h, AiHit::Install(_) | AiHit::Composer))
+        self.ai.hit_at(x, y).filter(|(_, h)| !matches!(h, AiHit::Install(_) | AiHit::Composer | AiHit::MenuRow(_)))
     }
 
     pub fn aipanel_tip(&self, h: AiHit) -> TipText {
@@ -445,9 +471,22 @@ impl App {
             }
             AiHit::Send => ("Send message".into(), None, Some("Enter · Shift+Enter adds a line".into())),
             AiHit::Interrupt => ("Interrupt".into(), None, Some(format!("Esc · stops what {name} is doing"))),
+            AiHit::AttachFile if self.ai_is_chat() => (
+                "Attach a file".into(),
+                None,
+                Some("Type @ and pick a file from the project, or paste / drop one".into()),
+            ),
             AiHit::AttachFile => {
                 ("Attach file".into(), None, Some("Mention the file open in the editor (@path)".into()))
             }
+            AiHit::Mode => (
+                format!("Mode: {}", self.ai_mode().label()),
+                Some("Shift+Tab".into()),
+                Some(self.ai_mode().detail().to_string()),
+            ),
+            AiHit::Model => ("Model".into(), None, Some("Pick the model, or type /model <name>".into())),
+            AiHit::Unattach(_) => ("Remove attachment".into(), None, None),
+            AiHit::MenuRow(_) => (String::new(), None, None),
             AiHit::AttachSel => (
                 "Attach selection".into(),
                 keys("AiSendSelection"),

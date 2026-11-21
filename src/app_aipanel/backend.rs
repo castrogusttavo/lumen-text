@@ -5,7 +5,7 @@
 //! the terminal does: nothing here blocks the interface.
 
 use super::{
-    chat::{Chat, Event},
+    chat::{Chat, Event, PermMode},
     proto_claude, proto_codex, proto_gemini,
 };
 use std::{
@@ -250,6 +250,10 @@ pub struct Backend {
     err_tail: Vec<String>,
     /// An interrupt was asked for at this moment and the turn is still running.
     pub interrupting: Option<Instant>,
+    /// The permission mode the process runs in (or starts in); Claude Code only.
+    pub mode: PermMode,
+    /// The model picked (`None`: the CLI's own default).
+    pub model: Option<String>,
     wake: Wake,
     next_req: u64,
 }
@@ -263,6 +267,8 @@ impl Backend {
             gem: proto_gemini::Parser::new(),
             err_tail: Vec::new(),
             interrupting: None,
+            mode: PermMode::default(),
+            model: None,
             wake,
             next_req: 0,
         }
@@ -283,9 +289,9 @@ impl Backend {
         self.gem = proto_gemini::Parser::new();
         let sid = chat.session_id.clone();
         let (args, pipe) = match self.kind {
-            Kind::Claude => (proto_claude::args(sid.as_deref()), true),
-            Kind::Codex => (proto_codex::args(sid.as_deref()), true),
-            Kind::Gemini => (proto_gemini::args(prompt, sid.as_deref()), false),
+            Kind::Claude => (proto_claude::args(sid.as_deref(), self.mode, self.model.as_deref()), true),
+            Kind::Codex => (proto_codex::args(sid.as_deref(), self.model.as_deref()), true),
+            Kind::Gemini => (proto_gemini::args(prompt, sid.as_deref(), self.model.as_deref()), false),
         };
         chat.new_process();
         let r = Runner::spawn(&self.sp, &args, pipe, self.wake.clone())
@@ -296,17 +302,28 @@ impl Backend {
 
     /// Send a user message: it joins the transcript and the CLI starts working on it.
     pub fn send(&mut self, chat: &mut Chat, text: &str) {
+        self.send_with(chat, text, &[]);
+    }
+
+    /// [`send`](Self::send) with images (media type, bytes) that go along. Only Claude Code takes
+    /// them inline; the caller gives the other CLIs a path in the text instead.
+    pub fn send_with(&mut self, chat: &mut Chat, text: &str, images: &[(String, Vec<u8>)]) {
         chat.user_says(text);
         self.interrupting = None;
-        if let Err(e) = self.deliver(chat, text) {
+        if let Err(e) = self.deliver(chat, text, images) {
             chat.apply(Event::Fatal(e));
         }
     }
 
-    fn deliver(&mut self, chat: &mut Chat, text: &str) -> Result<(), String> {
+    fn deliver(&mut self, chat: &mut Chat, text: &str, images: &[(String, Vec<u8>)]) -> Result<(), String> {
         match self.kind {
             Kind::Claude => {
-                let line = format!("{}\n", proto_claude::user_message(text));
+                let msg = if images.is_empty() {
+                    proto_claude::user_message(text)
+                } else {
+                    proto_claude::user_message_with(text, images)
+                };
+                let line = format!("{msg}\n");
                 if self.runner.as_ref().is_some_and(|r| r.write(&line)) {
                     return Ok(());
                 }
@@ -397,11 +414,55 @@ impl Backend {
         changed
     }
 
+    /// Change the permission mode: at once in a running Claude Code, or from its next start.
+    pub fn set_mode(&mut self, chat: &mut Chat, mode: PermMode) {
+        self.mode = mode;
+        chat.mode = Some(mode);
+        chat.rev += 1;
+        if self.kind == Kind::Claude
+            && let Some(r) = &self.runner
+        {
+            self.next_req += 1;
+            r.write(&format!("{}\n", proto_claude::set_mode_request(&format!("lumen-mode-{}", self.next_req), mode)));
+        }
+    }
+
+    /// Change the model: at once in a running Claude Code (its answer names the full id), or from
+    /// the next turn / start of the others.
+    pub fn set_model(&mut self, chat: &mut Chat, model: &str) {
+        self.model = Some(model.to_string());
+        chat.rev += 1;
+        match (self.kind, &self.runner) {
+            (Kind::Claude, Some(r)) => {
+                self.next_req += 1;
+                r.write(&format!(
+                    "{}\n",
+                    proto_claude::set_model_request(&format!("lumen-model-{}", self.next_req), model)
+                ));
+            }
+            _ => chat.model = Some(model.to_string()),
+        }
+    }
+
+    /// Start over: the process ends and the conversation is empty (`/clear`).
+    pub fn reset(&mut self, chat: &mut Chat) {
+        self.runner = None;
+        self.interrupting = None;
+        chat.clear();
+    }
+
+    /// Show an earlier conversation and continue it with the next message (`/resume`).
+    pub fn resume(&mut self, chat: &mut Chat, session: &str, messages: Vec<super::chat::Message>) {
+        self.runner = None;
+        self.interrupting = None;
+        chat.load(messages, session);
+    }
+
     /// The user answers a permission the agent asked for.
     pub fn answer(&mut self, chat: &mut Chat, request_id: &str, allow: bool) {
         let Some(p) = chat.resolve_perm(request_id, allow) else { return };
         if let Some(r) = &self.runner {
-            r.write(&format!("{}\n", proto_claude::permission_reply(&p.request_id, allow, &p.input)));
+            r.write(&format!("{}\n", proto_claude::permission_reply_for(&p.request_id, allow, &p.input, &p.name)));
         }
     }
 
@@ -496,6 +557,35 @@ done"#;
         assert_eq!(chat.messages.len(), 4, "the same process serves the second message");
         assert_eq!(be.pid(), pid);
         assert_eq!(chat.usage().turns, 2);
+    }
+
+    #[test]
+    fn mode_and_model_changes_reach_a_running_claude_and_reset_and_resume_start_over() {
+        // Prints what it reads to a file, answers each line with a finished turn.
+        let out = std::env::temp_dir().join(format!("lumen-be-lines-{}", std::process::id()));
+        let script = format!(
+            r#"while read -r line; do printf '%s\n' "$line" >> {}; printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"result":"x","total_cost_usd":0,"usage":{{}},"session_id":"S","duration_ms":1}}'; done"#,
+            out.display()
+        );
+        let mut chat = Chat::new();
+        let mut be = Backend::new(Kind::Claude, stub(&script), Arc::new(|| {}));
+        be.send(&mut chat, "hi");
+        wait(&mut be, &mut chat, |c| c.phase == Phase::Idle);
+        be.set_mode(&mut chat, PermMode::Plan);
+        be.set_model(&mut chat, "opus");
+        assert_eq!(chat.mode, Some(PermMode::Plan));
+        thread::sleep(Duration::from_millis(300));
+        let got = std::fs::read_to_string(&out).unwrap_or_default();
+        assert!(got.contains("set_permission_mode") && got.contains("\"plan\""), "{got}");
+        assert!(got.contains("set_model") && got.contains("opus"), "{got}");
+        // Without a process the change is kept for its start.
+        be.reset(&mut chat);
+        assert!(chat.messages.is_empty() && !be.ready());
+        be.set_mode(&mut chat, PermMode::Bypass);
+        assert_eq!(be.mode, PermMode::Bypass);
+        be.resume(&mut chat, "OLD", vec![]);
+        assert_eq!(chat.session_id.as_deref(), Some("OLD"));
+        let _ = std::fs::remove_file(&out);
     }
 
     #[test]

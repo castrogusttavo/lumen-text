@@ -322,6 +322,7 @@ impl App {
             Action::AiNew(id) => self.ai_pick_new(&id),
             Action::AiSession(id) => self.ai_pick_session(id),
             Action::AiFilter => self.ai_open_filter(),
+            Action::AiPick(spec) => self.ai_pick_chat(&spec),
             Action::Run(cmd) => {
                 let title = cmd.clone();
                 self.run_task(&cmd, &title)

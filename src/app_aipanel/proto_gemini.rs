@@ -8,11 +8,14 @@ use super::chat::{Block, DeltaKind, Event, ToolCall, Usage};
 use serde_json::{Value, json};
 
 /// Command line of one turn (`session`: an earlier turn's session to continue).
-pub fn args(prompt: &str, session: Option<&str>) -> Vec<String> {
+pub fn args(prompt: &str, session: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut a: Vec<String> = ["-p", prompt, "--output-format", "stream-json", "--approval-mode", "auto_edit"]
         .iter()
         .map(|s| s.to_string())
         .collect();
+    if let Some(m) = model.filter(|m| !m.is_empty()) {
+        a.extend(["-m".to_string(), m.to_string()]);
+    }
     if let Some(s) = session {
         a.extend(["--resume".to_string(), s.to_string()]);
     }
@@ -191,9 +194,9 @@ mod tests {
 
     #[test]
     fn the_prompt_is_one_argument_and_turns_resume() {
-        let a = args("a b\nc", Some("sid"));
+        let a = args("a b\nc", Some("sid"), None);
         assert_eq!(a[1], "a b\nc");
         assert_eq!(&a[a.len() - 2..], &["--resume".to_string(), "sid".to_string()]);
-        assert!(!args("x", None).contains(&"--resume".to_string()));
+        assert!(!args("x", None, None).contains(&"--resume".to_string()));
     }
 }

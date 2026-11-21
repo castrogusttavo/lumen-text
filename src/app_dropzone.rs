@@ -163,6 +163,11 @@ impl App {
         if !path.is_file() {
             return;
         }
+        // A file dropped on the AI chat is attached to the message being written.
+        if self.ai.open && self.aipanel_rect().contains(self.mouse.0, self.mouse.1) && self.ai_is_chat() {
+            self.ai_attach_path(path);
+            return;
+        }
         match self.drop_spot(self.mouse.0, self.mouse.1) {
             Some(spot) => self.drop_file(path, spot),
             None => {
