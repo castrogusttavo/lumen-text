@@ -67,7 +67,70 @@ const EDITOR_LANGS: &[&str] = &[
     "nix",
     "graphql",
     "prisma",
+    "nginx",
+    "hcl",
+    "docker-compose",
+    "helm",
+    "ansible",
 ];
+
+/// Infrastructure flavours of YAML the editor highlights as plain `yaml` but that have their own
+/// language servers: see [`infra_kind`].
+pub const INFRA_KINDS: &[&str] = &["docker-compose", "helm", "ansible"];
+
+fn is_yaml(lang: Option<&str>, ext: &str) -> bool {
+    lang == Some("yaml") || ext == "yaml" || ext == "yml"
+}
+
+/// `compose.yaml`, `docker-compose.yml`, `docker-compose.override.yml`, `compose.prod.yaml`...
+fn is_compose_name(name: &str) -> bool {
+    (name.ends_with(".yaml") || name.ends_with(".yml"))
+        && (name.starts_with("compose.") || name.starts_with("docker-compose"))
+}
+
+/// A template of a Helm chart: below a `templates` folder whose parent has a `Chart.yaml`.
+fn in_helm_chart(path: &Path) -> bool {
+    path.ancestors().skip(1).take(6).any(|a| {
+        a.file_name().is_some_and(|n| n == "templates") && a.parent().is_some_and(|c| c.join("Chart.yaml").is_file())
+    })
+}
+
+/// An Ansible playbook or role file, recognised by where it lives or what it is called.
+fn is_ansible_path(name: &str, path: &Path) -> bool {
+    if name.starts_with("playbook") || name == "site.yml" || name == "site.yaml" {
+        return true;
+    }
+    let comps: Vec<String> = path
+        .parent()
+        .map(|p| p.components().map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase()).collect())
+        .unwrap_or_default();
+    let has = |n: &str| comps.iter().any(|c| c == n);
+    has("playbooks")
+        || has("group_vars")
+        || has("host_vars")
+        || comps.iter().position(|c| c == "roles").is_some_and(|i| {
+            comps[i + 1..].iter().any(|c| matches!(c.as_str(), "tasks" | "handlers" | "defaults" | "vars" | "meta"))
+        })
+}
+
+/// The infrastructure flavour of a YAML (or Helm `.tpl`) file, when it has one: `docker-compose`,
+/// `helm` (a chart template) or `ansible`. Those documents are served by their own servers
+/// (and the generic YAML server only where it helps: compose and Ansible, never Helm templates,
+/// whose `{{ }}` it would flag as errors).
+pub fn infra_kind(lang: Option<&str>, path: &Path) -> Option<&'static str> {
+    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let yaml = is_yaml(lang, &ext);
+    if yaml && is_compose_name(&name) {
+        Some("docker-compose")
+    } else if (yaml || ext == "tpl") && in_helm_chart(path) {
+        Some("helm")
+    } else if yaml && is_ansible_path(&name, path) {
+        Some("ansible")
+    } else {
+        None
+    }
+}
 
 /// Built-in spell checkers (companions for prose in comments, strings, Markdown, plain text and
 /// commit messages). They are off unless the `spell_check` setting is on (see [`Registry::with_options`]).
@@ -272,7 +335,12 @@ fn marker_in(dir: &Path, marker: &str) -> bool {
 /// file extension for languages the editor has no id for (`.astro`).
 pub fn language_id(lang: Option<&str>, path: Option<&Path>) -> String {
     let ext = path.and_then(|p| p.extension()).and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if let Some(kind) = path.and_then(|p| infra_kind(lang, p)) {
+        // The ids the compose, Helm and Ansible servers look for.
+        return if kind == "docker-compose" { "dockercompose".into() } else { kind.into() };
+    }
     match lang {
+        Some("terraform") if ext == "tfvars" => "terraform-vars".into(),
         Some("tsx") => "typescriptreact".into(),
         Some("jsx") => "javascriptreact".into(),
         Some("json") if ext == "jsonc" => "jsonc".into(),
@@ -499,8 +567,14 @@ impl Registry {
     /// Enabled servers of a document, in priority order (primaries first, then companions).
     /// `dir` is the directory of the file: servers whose `requires` is not met are skipped.
     pub fn for_doc(&self, lang: Option<&str>, path: &Path) -> Vec<&ServerSpec> {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let mut ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let dir = path.parent().unwrap_or(Path::new("/"));
+        // A compose file, Helm template or Ansible file is matched by that kind, not by `.yaml`.
+        let kind = infra_kind(lang, path);
+        let lang = kind.or(lang);
+        if kind.is_some() {
+            ext = "";
+        }
         let mut v: Vec<&ServerSpec> =
             self.servers.iter().filter(|s| s.enabled && s.applies(lang, ext) && s.requirement_met(dir)).collect();
         v.sort_by_key(|s| s.role == Role::Companion); // stable: table order inside each role
@@ -714,6 +788,13 @@ mod tests {
             "vue",
             "tailwindcss",
             "deno",
+            "dockerfile-language-server",
+            "docker-compose-language-service",
+            "prisma-language-server",
+            "terraform-ls",
+            "helm-ls",
+            "ansible-language-server",
+            "nginx-language-server",
         ] {
             let s = r.get(id).unwrap_or_else(|| panic!("{id} missing"));
             assert!(!s.command.is_empty() && !s.languages.is_empty(), "{id}");
@@ -746,6 +827,46 @@ mod tests {
         assert_eq!(ids(Some("ghp"), "/x/pages/home.ghp"), vec!["ghp-lsp"]);
         assert_eq!(crate::highlight::language_for("/x/pages/home.ghp"), Some("ghp"));
         assert!(ids(Some("typescript"), "/nonexistent-project/a.ts").is_empty(), "tailwind/deno need their files");
+    }
+
+    #[test]
+    fn infrastructure_files_find_their_servers() {
+        let dir = std::env::temp_dir().join(format!("lumen-reg-infra-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("chart/templates")).unwrap();
+        std::fs::write(dir.join("chart/Chart.yaml"), "name: c\n").unwrap();
+        let r = Registry::builtin();
+        let ids = |p: &Path| {
+            let lang = crate::highlight::language_for(&p.to_string_lossy());
+            r.for_doc(lang, p).iter().map(|s| s.id.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(Path::new("/p/Dockerfile")), vec!["dockerfile-language-server"]);
+        assert_eq!(ids(Path::new("/p/db/schema.prisma")), vec!["prisma-language-server"]);
+        assert_eq!(ids(Path::new("/p/infra/main.tf")), vec!["terraform-ls"]);
+        assert_eq!(ids(Path::new("/p/infra/prod.tfvars")), vec!["terraform-ls"]);
+        assert_eq!(ids(Path::new("/etc/nginx/nginx.conf")), vec!["nginx-language-server"]);
+        assert_eq!(ids(Path::new("/p/k8s/deploy.yaml")), vec!["yaml-language-server"]);
+        // compose and Ansible: the YAML server (schema store) plus their own service as a companion
+        let compose = vec!["yaml-language-server", "docker-compose-language-service"];
+        assert_eq!(ids(Path::new("/p/docker-compose.yml")), compose);
+        assert_eq!(ids(Path::new("/p/compose.override.yaml")), compose);
+        assert_eq!(
+            ids(Path::new("/p/roles/web/tasks/main.yml")),
+            vec!["yaml-language-server", "ansible-language-server"]
+        );
+        // a chart template: helm-ls only (the YAML server would flag `{{ }}`)
+        assert_eq!(ids(&dir.join("chart/templates/deploy.yaml")), vec!["helm-ls"]);
+        assert_eq!(ids(&dir.join("chart/templates/_helpers.tpl")), vec!["helm-ls"]);
+        // the chart's values stay plain YAML; a `templates` folder without a chart too
+        assert_eq!(ids(&dir.join("chart/values.yaml")), vec!["yaml-language-server"]);
+        assert_eq!(ids(Path::new("/p/templates/page.yaml")), vec!["yaml-language-server"]);
+        assert_eq!(language_id(Some("yaml"), Some(Path::new("/p/docker-compose.yml"))), "dockercompose");
+        assert_eq!(language_id(Some("yaml"), Some(&dir.join("chart/templates/deploy.yaml"))), "helm");
+        assert_eq!(language_id(Some("yaml"), Some(Path::new("/p/playbook.yml"))), "ansible");
+        assert_eq!(language_id(Some("terraform"), Some(Path::new("/p/a.tfvars"))), "terraform-vars");
+        assert_eq!(language_id(Some("terraform"), Some(Path::new("/p/a.tf"))), "terraform");
+        assert_eq!(language_id(Some("yaml"), Some(Path::new("/p/a.yaml"))), "yaml");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -997,9 +1118,12 @@ mod tests {
             "a.astro",
             "a.ghp",
             "Dockerfile",
+            "a.prisma",
+            "nginx.conf",
         ]
         .iter()
         .filter_map(|f| crate::highlight::language_for(f))
+        .chain(INFRA_KINDS.iter().copied())
         .collect();
         for s in &Registry::builtin().servers {
             assert!(

@@ -23,14 +23,20 @@ Lumen speaks the Language Server Protocol to as many servers as you like. TypeSc
 | Elixir | `elixir-ls` | `mix.exs` |
 | Haskell | `haskell-language-server-wrapper --lsp` | `stack.yaml`, `cabal.project`, `*.cabal` |
 | Scala | `metals` | `build.sbt`, `build.sc`, `build.mill` |
-| Terraform | `terraform-ls serve` | `.terraform` |
-| Dockerfile | `docker-langserver --stdio` | `.git` |
+| Terraform (`.tf`, `.tfvars`) | `terraform-ls serve` | `.terraform`, `.git` |
+| Dockerfile (`Dockerfile`, `Dockerfile.*`, `*.dockerfile`, `Containerfile`) | `docker-langserver --stdio` | `.git` |
+| docker-compose (`compose.y(a)ml`, `docker-compose*.y(a)ml`) | `yaml-language-server` (compose-spec schema) plus the companion `docker-compose-langserver --stdio` | `compose.y(a)ml`, `.git` |
+| Prisma (`.prisma`) | `prisma-language-server --stdio` (`@prisma/language-server`) | `schema.prisma`, `prisma`, `package.json` |
+| Helm chart templates (`templates/*.yaml`, `*.tpl` next to a `Chart.yaml`) | `helm_ls serve` (it drives `yaml-language-server` itself; the plain YAML server is not used on templates, `{{ }}` would be flagged) | `Chart.yaml` |
+| Ansible (playbooks, `roles/*/tasks`, `group_vars`, ...) | `yaml-language-server` plus the companion `ansible-language-server --stdio` (module docs and linting need `ansible` and `ansible-lint`) | `ansible.cfg`, `.ansible-lint`, `.git` |
+| nginx (`nginx.conf`, `*.conf` in `nginx/`, `conf.d/`, `sites-enabled/`) | `nginx-language-server` | `nginx.conf`, `.git` |
+| `.env` files | syntax highlighting only (no language server worth starting) | |
 | Lua | `lua-language-server` | `.luarc.json`, `.git` |
 | TOML | `taplo lsp stdio` (schemas for `Cargo.toml`, `pyproject.toml`, `rustfmt.toml`...) | `taplo.toml`, `.git` |
 | JSON | `vscode-json-language-server` (schemas for `package.json`, `tsconfig.json`, `composer.json`...) | `package.json`, `.git` |
 | CSS, SCSS, Less | `vscode-css-language-server` (unknown at-rules such as Tailwind's `@apply` are not flagged) | `package.json`, `.git` |
 | HTML | `vscode-html-language-server` | `package.json`, `.git` |
-| YAML | `yaml-language-server` (SchemaStore: GitHub workflows, docker-compose, pnpm-workspace...) | `.git` |
+| YAML | `yaml-language-server` (SchemaStore: GitHub workflows, docker-compose, OpenAPI, pnpm-workspace...; the Kubernetes schema for files in `k8s/`, `kube/`, `kubernetes/`, `manifests/` and `*.k8s.yaml`; any other file with a `# yaml-language-server: $schema=...` first line) | `.git` |
 | Shell | `bash-language-server start` | `.git` |
 | Markdown | `marksman server` | `.marksman.toml`, `.git` |
 | Zig | `zls` | `build.zig`, `.git` |
@@ -48,6 +54,8 @@ For a language the **first installed** server of the list is the *primary* one; 
 Executables are looked for in `<project>/node_modules/.bin` (and its parents), `PATH`, `~/.local/share/lumen-text/lsp/bin`, `~/.cargo/bin`, `~/.local/bin`, `~/go/bin`, `~/.dotnet/tools` and the Ruby user-gem folders (`~/.local/share/gem/ruby/*/bin`). A server runs with those folders, and the folder of its own executable, at the front of its `PATH`, so the helpers it calls (`bundle`, `zig`, `go`, `dotnet`, `node`) are found even when Lumen was started from the desktop menu. A file whose language has no installed server shows a one-time message with the install command.
 
 The home folder is never a workspace root for a file below it (a stray `~/package.json` or `~/.git` would otherwise make a server index the whole home). Python servers are given the project's virtualenv so installed dependencies resolve: `.venv`, `venv`, `env` or any folder holding a `pyvenv.cfg` in the project or a parent folder (uv and `python -m venv` layouts), `$UV_PROJECT_ENVIRONMENT`, `$VIRTUAL_ENV`, then Poetry's cache folder (matched by project name). pyright and basedpyright get `python.pythonPath`, `python.venvPath` and `python.venv` (in `workspace/configuration` and the initialization options), every Python server runs with `VIRTUAL_ENV` set and the venv's `bin` first on its `PATH`, and a ruff or basedpyright installed in the venv is used instead of the one on the `PATH`. *Python: Select interpreter…* lists the venvs found and the system pythons and pins one per project (remembered in the state folder); the tooltip of the language item in the status bar shows the active interpreter. Your own `settings.python.pythonPath` always wins.
+
+Lumen finds out what a YAML file is (compose, Helm template, Ansible) from its name and folder, tells the server the id it expects (`dockercompose`, `helm`, `ansible`, `terraform-vars` for `.tfvars`) and picks the servers from that. Nothing is installed by Lumen itself: the message for a missing server carries the command, and `tools/install-lsp-servers.sh` (used by the CI job "Language servers", which opens a real project per language and checks diagnostics, hover and, for Dockerfile, Prisma and Kubernetes YAML, completion) installs pinned versions of all of them into `~/.local/share/lumen-text/lsp/bin`.
 
 The table is data, not code: it is `src/lsp_servers.json` in the repository, embedded in the program.
 
