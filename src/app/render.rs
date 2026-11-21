@@ -249,6 +249,17 @@ impl App {
             let lead = 34;
             if active {
                 cv.fill_round_clip(Rect::new(r.x + 2, r.y + 5, r.w - 4, bar.h - 10), 8, c.tab_active_bg, strip);
+            } else if self.overlay.is_none()
+                && !dragging
+                && strip.contains(self.mouse.0, self.mouse.1)
+                && r.contains(self.mouse.0, self.mouse.1)
+            {
+                cv.fill_round_clip(
+                    Rect::new(r.x + 2, r.y + 5, r.w - 4, bar.h - 10),
+                    8,
+                    c.list_hover_bg.with_alpha(0xa0),
+                    strip,
+                );
             }
             let fname = self.tx.icons.file_icon(&d.name);
             self.tx.icon(cv, &fname, r.x + 12, r.y + (bar.h - 16) / 2, 16, fg, strip);
@@ -387,6 +398,11 @@ impl App {
             } else if is_active {
                 let clip = body.intersect(&rr);
                 cv.fill_round(clip, 7, c.list_hover_bg);
+            } else if self.overlay.is_none()
+                && body.contains(self.mouse.0, self.mouse.1)
+                && rr.contains(self.mouse.0, self.mouse.1)
+            {
+                cv.fill_round(body.intersect(&rr), 7, c.list_hover_bg.with_alpha(0xa0));
             }
             let indent = 18 + row.depth as i32 * 14;
             // Zed-style: a chevron for folders, a type icon for files (tinted, so it follows the theme).

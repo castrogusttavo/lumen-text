@@ -989,6 +989,8 @@ impl App {
         let b = Rect::new(x, r.y + 3, w, r.h - 6);
         if active {
             cv.fill_round(b, 6, c.list_active_bg);
+        } else if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
+            cv.fill_round(b, 6, c.list_hover_bg);
         }
         self.tx.icon(cv, icon, b.x + 8, r.y + (r.h - 14) / 2, 14, tint, r);
         if !label.is_empty() {
