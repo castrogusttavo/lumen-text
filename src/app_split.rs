@@ -44,6 +44,50 @@ const GRAB: i32 = 3;
 
 // ── geometry (pure) ──
 
+/// Where a dragged file or tab lands on a pane: one of its four halves (a new pane on that side)
+/// or the whole pane (open as a tab in it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Zone {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
+/// Share of a pane's width / height, from each edge, that counts as that edge's zone.
+const EDGE_ZONE: f64 = 0.25;
+
+/// Zone of `r` under (x, y): the nearest edge when the point is within a quarter of the pane's size
+/// from it, else the center. `allowed` rules edges out (no room for another pane there); a point in
+/// such an edge falls back to the center.
+pub fn zone_at(r: Rect, x: f64, y: f64, allowed: impl Fn(Zone) -> bool) -> Zone {
+    if r.w <= 0 || r.h <= 0 {
+        return Zone::Center;
+    }
+    let (dx, dy) = ((x - r.x as f64) / r.w as f64, (y - r.y as f64) / r.h as f64);
+    let cands = [(Zone::Left, dx), (Zone::Right, 1.0 - dx), (Zone::Top, dy), (Zone::Bottom, 1.0 - dy)];
+    let mut best: Option<(Zone, f64)> = None;
+    for (z, d) in cands {
+        if d < EDGE_ZONE && allowed(z) && best.is_none_or(|(_, b)| d < b) {
+            best = Some((z, d));
+        }
+    }
+    best.map_or(Zone::Center, |(z, _)| z)
+}
+
+/// The part of `r` that the drop overlay paints for `zone`: the half the new pane would take, or all.
+pub fn zone_rect(r: Rect, zone: Zone) -> Rect {
+    let (hw, hh) = (r.w / 2, r.h / 2);
+    match zone {
+        Zone::Center => r,
+        Zone::Left => Rect::new(r.x, r.y, hw, r.h),
+        Zone::Right => Rect::new(r.x + r.w - hw, r.y, hw, r.h),
+        Zone::Top => Rect::new(r.x, r.y, r.w, hh),
+        Zone::Bottom => Rect::new(r.x, r.y + r.h - hh, r.w, hh),
+    }
+}
+
 /// One column of the grid: one pane, or two stacked (`vratio` = share of the height of the top one).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Col {
@@ -163,6 +207,52 @@ impl Grid {
         let (c, _) = self.locate(pane);
         self.cols[c] = Col { n: 2, vratio: 0.5 };
         pane + 1
+    }
+
+    /// New column left of `pane`'s, taking half of that column's width. Returns the new pane's index.
+    pub fn split_left(&mut self, pane: usize) -> usize {
+        let (c, _) = self.locate(pane);
+        let w = self.widths[c] / 2.0;
+        self.widths[c] = w;
+        self.widths.insert(c, w);
+        self.cols.insert(c, Col { n: 1, vratio: 0.5 });
+        self.first_of(c)
+    }
+
+    /// Stack a new pane above `pane` (which must be alone in its column). Returns its index.
+    pub fn split_above(&mut self, pane: usize) -> usize {
+        let (c, _) = self.locate(pane);
+        self.cols[c] = Col { n: 2, vratio: 0.5 };
+        pane
+    }
+
+    /// Could a pane be added on `zone`'s side of `pane` (the grid limits, not the room)?
+    pub fn can_drop(&self, pane: usize, zone: Zone) -> bool {
+        match zone {
+            Zone::Center => true,
+            Zone::Left | Zone::Right => self.can_split_right(),
+            Zone::Top | Zone::Bottom => self.can_split_below(pane),
+        }
+    }
+
+    /// Add a pane on `zone`'s side of `pane`. Returns the new pane's index (the panes from it on
+    /// shift by one); `None` for the center or when the grid has no place for it.
+    pub fn drop_split(&mut self, pane: usize, zone: Zone) -> Option<usize> {
+        if zone == Zone::Center || pane >= self.panes() || !self.can_drop(pane, zone) {
+            return None;
+        }
+        Some(match zone {
+            Zone::Left => self.split_left(pane),
+            Zone::Right => self.split_right(pane),
+            Zone::Top => self.split_above(pane),
+            _ => self.split_below(pane),
+        })
+    }
+
+    /// Does the drop fit in `card` (pane minimums included)?
+    pub fn fits_drop(&self, pane: usize, zone: Zone, card: Rect) -> bool {
+        let mut g = self.clone();
+        zone == Zone::Center || (g.drop_split(pane, zone).is_some() && g.layout(card).is_some())
     }
 
     /// Take pane `pane` out: its column shrinks to the other pane, or disappears (the neighbor
@@ -461,7 +551,7 @@ pub struct Split {
 
 impl Split {
     /// A split of one pane on `doc` (the caller adds the second one).
-    fn new(doc: usize, view: PaneView) -> Split {
+    pub(crate) fn new(doc: usize, view: PaneView) -> Split {
         Split {
             panes: vec![Pane { doc, view }],
             focus: 0,
@@ -503,7 +593,7 @@ pub fn focus_to(docs: &mut [Doc], active: &mut usize, sp: &mut Split, new: usize
 }
 
 /// Take pane `i` out of the split (it must not be the focused one: move the focus first).
-fn remove_pane(sp: &mut Split, i: usize) {
+pub(crate) fn remove_pane(sp: &mut Split, i: usize) {
     sp.grid.remove(i);
     sp.panes.remove(i);
     if sp.focus > i {
@@ -1082,6 +1172,63 @@ mod tests {
     }
 
     // ── grid geometry ──
+
+    #[test]
+    fn zones_follow_the_nearest_edge() {
+        let r = Rect::new(100, 50, 400, 200);
+        let any = |_| true;
+        assert_eq!(zone_at(r, 300.0, 150.0, any), Zone::Center);
+        assert_eq!(zone_at(r, 110.0, 150.0, any), Zone::Left);
+        assert_eq!(zone_at(r, 490.0, 150.0, any), Zone::Right);
+        assert_eq!(zone_at(r, 300.0, 55.0, any), Zone::Top);
+        assert_eq!(zone_at(r, 300.0, 245.0, any), Zone::Bottom);
+        // A corner goes to the edge it is nearest to (relative to the pane's size).
+        assert_eq!(zone_at(r, 105.0, 60.0, any), Zone::Left);
+        assert_eq!(zone_at(r, 150.0, 52.0, any), Zone::Top);
+        // Forbidden edges fall back to the center.
+        assert_eq!(zone_at(r, 110.0, 150.0, |z| z != Zone::Left), Zone::Center);
+        assert_eq!(zone_at(Rect::default(), 0.0, 0.0, any), Zone::Center);
+    }
+
+    #[test]
+    fn zone_rects_are_the_half_the_new_pane_takes() {
+        let r = Rect::new(10, 20, 300, 100);
+        assert_eq!(zone_rect(r, Zone::Center), r);
+        assert_eq!(zone_rect(r, Zone::Left), Rect::new(10, 20, 150, 100));
+        assert_eq!(zone_rect(r, Zone::Right), Rect::new(160, 20, 150, 100));
+        assert_eq!(zone_rect(r, Zone::Top), Rect::new(10, 20, 300, 50));
+        assert_eq!(zone_rect(r, Zone::Bottom), Rect::new(10, 70, 300, 50));
+    }
+
+    #[test]
+    fn dropping_on_edges_builds_the_grid_in_pane_order() {
+        let mut g = Grid::single();
+        assert_eq!(g.drop_split(0, Zone::Right), Some(1));
+        assert_eq!(g.cols.len(), 2);
+        // Left of pane 1 (second column): the new pane takes index 1, the old one moves to 2.
+        assert_eq!(g.drop_split(1, Zone::Left), Some(1));
+        assert_eq!(g.cols.len(), 3);
+        assert!((g.widths.iter().sum::<f32>() - 1.0).abs() < 1e-4);
+        // Above the last pane: a stack in the last column, the new pane first.
+        assert_eq!(g.drop_split(2, Zone::Top), Some(2));
+        assert_eq!(g.panes(), 4);
+        assert_eq!(g.locate(2), (2, 0));
+        // That pane is stacked now: no more top / bottom there, and 3 columns is the limit.
+        assert_eq!(g.drop_split(2, Zone::Bottom), None);
+        assert_eq!(g.drop_split(2, Zone::Right), None);
+        assert_eq!(g.drop_split(0, Zone::Center), None);
+        assert_eq!(g.drop_split(9, Zone::Left), None);
+    }
+
+    #[test]
+    fn a_drop_needs_room_for_the_new_pane() {
+        let mut g = Grid::single();
+        g.drop_split(0, Zone::Right);
+        assert!(g.fits_drop(0, Zone::Right, Rect::new(0, 0, 900, 600)));
+        assert!(!g.fits_drop(0, Zone::Right, Rect::new(0, 0, 400, 600)));
+        assert!(g.fits_drop(0, Zone::Center, Rect::new(0, 0, 10, 10)));
+        assert!(!g.fits_drop(0, Zone::Top, Rect::new(0, 0, 900, 100)));
+    }
 
     #[test]
     fn rows_of_up_to_four_panes_tile_the_area() {

@@ -339,7 +339,7 @@ impl App {
         if let Some(c) = self.gitpanel_cursor(x, y) {
             return c;
         }
-        if self.tab_dragging() {
+        if self.drop_dragging() {
             return CursorIcon::Grabbing;
         }
         if self.sidebar_resizing() || self.sidebar_on_edge(x, y) {

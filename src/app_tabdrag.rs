@@ -150,7 +150,11 @@ impl App {
         let d = self.inp.tabs.drag.filter(|d| d.active)?;
         let bar = self.layout.tabbar;
         let y = self.mouse.1 as i32;
-        if y < bar.y - DROP_BAND || y > bar.bottom() + DROP_BAND || d.doc >= self.docs.len() {
+        if y < bar.y - DROP_BAND
+            || y > bar.bottom() + DROP_BAND
+            || d.doc >= self.docs.len()
+            || self.drop_spot(self.mouse.0, self.mouse.1).is_some()
+        {
             return None;
         }
         let (_, w) = self.tab_screen_x(d.doc)?;
@@ -179,6 +183,9 @@ impl App {
         if self.outside_window() {
             // Dropped outside the window: the tab opens in a new one.
             self.move_tab_to_new_window(d.doc, Some(self.mouse));
+        } else if let Some(spot) = self.drop_spot(self.mouse.0, self.mouse.1) {
+            // Over the editor: a new pane on that side, or the tab opens in that pane.
+            self.drop_doc(d.doc, spot, true);
         } else if let Some((_, Some(to))) = drop {
             self.move_tab(d.doc, to);
         }
@@ -254,6 +261,10 @@ impl App {
                 let m = Rect::new(mx - 1, bar.y + 8, 3, bar.h - 16);
                 cv.fill_round_clip(m, 1, c.accent, strip);
             }
+        }
+        // Over the editor the zone overlay and a ghost of the file replace the floating tab.
+        if self.draw_drop_overlay(cv) {
+            return;
         }
         // Floating tab: follows the pointer along the strip, lifted with a soft shadow.
         let fx = (self.mouse.0 - d.grab).round() as i32;

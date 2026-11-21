@@ -15,6 +15,7 @@ mod app_ctxmenu;
 mod app_debug;
 mod app_display;
 mod app_docker;
+mod app_dropzone;
 mod app_elevated;
 mod app_explorer;
 mod app_filefmt;
