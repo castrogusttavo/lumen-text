@@ -361,7 +361,8 @@ impl App {
             return Some((TipKey::Rail(*k), *r, false));
         }
         if let Some((r, k)) = l.status_btns.iter().chain(l.status_info.iter()).find(|(r, _)| r.contains(x, y)) {
-            return Some((TipKey::Status(*k), *r, false));
+            // Top bar badges open their tip below; the breadcrumb row's above.
+            return Some((TipKey::Status(*k), *r, r.y < crate::app::TOP_H));
         }
         if let Some((tab, close, i)) = l.tabs.iter().find(|(r, _, _)| r.contains(x, y)).copied() {
             return Some(if close.contains(x, y) {
@@ -477,7 +478,6 @@ impl App {
                 ),
                 None => t("Switch branch", None, self.branch.clone()),
             },
-            TipKey::Top(MenuKind::Settings) => t("Settings", Some("Ctrl+,".to_string()), None),
             TipKey::Top(_) => t("Switch project", None, Some(crate::app_topbar::tilde(&self.root))),
             TipKey::Tab(i) => match self.docs.get(i) {
                 Some(d) => {
@@ -519,10 +519,20 @@ impl App {
                 Some("Build and run the project, jump to the compiler's problems".into()),
             ),
             TipKey::Git(h) => self.git_tip_text(h),
-            TipKey::Rail(k) => t(k.title(), k.command().and_then(|c| self.shortcut_text(c)), None),
+            TipKey::Rail(k) => {
+                // The Git button also tells the changed-file count and how far the branch is from its upstream.
+                let detail = (k == crate::app_rail::RailBtn::Git).then(|| {
+                    let n = self.git_status.len();
+                    let mut d =
+                        if n == 0 { "No changes".to_string() } else { plural(n, "changed file", "changed files") };
+                    if let Some(i) = self.git_counts().filter(|i| i.upstream.is_some()) {
+                        d = format!("{d} · {}: ↑{} ↓{}", i.upstream.unwrap_or_default(), i.ahead, i.behind);
+                    }
+                    d
+                });
+                t(k.title(), k.command().and_then(|c| self.shortcut_text(c)), detail)
+            }
             TipKey::Status(k) => match k {
-                StatusBtn::Sidebar => t("Toggle sidebar", self.shortcut_text("ToggleSidebar"), None),
-                StatusBtn::Search => t("Search in project", self.shortcut_text("ProjectSearch"), None),
                 StatusBtn::Problems => {
                     let (e, w) = self.diag_counts();
                     let detail = if e + w == 0 {
@@ -531,22 +541,6 @@ impl App {
                         format!("{} · {}", plural(e, "error", "errors"), plural(w, "warning", "warnings"))
                     };
                     t("Problems", None, Some(detail))
-                }
-                StatusBtn::Terminal => t("Terminal", self.shortcut_text("OpenTerminal"), None),
-                StatusBtn::Debug => t("Debugger", None, Some("Stack, variables and output".into())),
-                StatusBtn::Git => {
-                    let n = self.git_status.len();
-                    let title = if n == 0 {
-                        "No changes · Git panel".to_string()
-                    } else {
-                        format!("{} · Git panel", plural(n, "changed file", "changed files"))
-                    };
-                    // Ahead / behind of the branch, from the panel or the background refresh.
-                    let detail = self
-                        .git_counts()
-                        .filter(|i| i.upstream.is_some())
-                        .map(|i| format!("{}: ↑{} ↓{}", i.upstream.unwrap_or_default(), i.ahead, i.behind));
-                    TipText { title, keys: self.shortcut_text("GitPanel"), detail, more: Vec::new() }
                 }
                 StatusBtn::Ram => {
                     self.mem_cache.0 = Instant::now() - Duration::from_secs(10); // fresh numbers

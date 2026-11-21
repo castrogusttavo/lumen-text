@@ -18,17 +18,17 @@ impl App {
     pub(crate) fn compute_layout(&mut self) {
         let (w, h) = (self.size.0 as i32, self.size.1 as i32);
         let sb = if self.sidebar_open { self.sidebar_w() } else { 0 };
-        // Zen mode and the View toggles can hide the top bar, tab bar, breadcrumbs and status bar.
-        let (top_h, tab_h, bread_h, status_h) = self.chrome_heights();
+        // Zen mode and the View toggles can hide the top bar, tab bar and breadcrumbs.
+        let (top_h, tab_h, bread_h) = self.chrome_heights();
         self.layout.topbar = Rect::new(0, 0, w, top_h);
         let lx = self.rail_w();
-        self.layout.rail = Rect::new(0, top_h, lx, h - status_h - top_h);
-        self.layout.sidebar = Rect::new(lx, top_h, sb, h - status_h - top_h);
+        self.layout.rail = Rect::new(0, top_h, lx, h - top_h);
+        self.layout.sidebar = Rect::new(lx, top_h, sb, h - top_h);
         let sb = sb + lx;
         let rw = self.gitpanel_w();
         self.layout.tabbar = Rect::new(sb, top_h, w - sb - rw, tab_h);
         self.layout.bread = Rect::new(sb, top_h + tab_h, (w - sb - rw).max(0), bread_h);
-        let avail = (h - top_h - tab_h - bread_h - status_h).max(0);
+        let avail = (h - top_h - tab_h - bread_h).max(0);
         let panel_h = if self.panel.open { self.panel.height.min(avail / 2).max(0) } else { 0 };
         let gap = if panel_h > 0 { CARD_M } else { 0 };
         let card_h = (avail - CARD_M - panel_h - gap).max(0);
@@ -37,7 +37,8 @@ impl App {
         self.layout.editor = self.layout.card;
         self.layout.panel =
             Rect::new(sb + CARD_M, top_h + tab_h + bread_h + card_h + gap, (w - sb - 2 * CARD_M - rw).max(0), panel_h);
-        self.layout.status = Rect::new(0, h - status_h, w, status_h);
+        // No bottom bar: a zero-height edge keeps what is anchored above it (cards, panels) in place.
+        self.layout.status = Rect::new(0, h, w, 0);
         self.split_layout();
     }
 
@@ -132,6 +133,8 @@ impl App {
         self.draw_merge(cv);
         crate::perf::lap!("md");
         // Hidden bars (zen mode, View toggles) draw nothing and keep no stale hit rects.
+        self.layout.status_btns.clear();
+        self.layout.status_info.clear();
         if self.layout.topbar.h > 0 {
             self.draw_topbar(cv);
         } else {
@@ -163,13 +166,6 @@ impl App {
         self.draw_tree_drag(cv);
         self.draw_tab_drag(cv);
         crate::perf::lap!("panels");
-        if self.layout.status.h > 0 {
-            self.draw_status(cv);
-        } else {
-            self.layout.status_btns.clear();
-            self.layout.status_info.clear();
-        }
-        crate::perf::lap!("status");
         // Re-aim the hover tint at what is under the pointer in this frame's layout: a closed or
         // switched tab, a deleted row or a toggled panel must not leave the old tint behind (a
         // "shadow") until the mouse moves again.
@@ -505,9 +501,16 @@ impl App {
         let r = self.layout.bread;
         self.layout.crumbs.clear();
         if r.h == 0 {
-            return; // breadcrumbs switched off
+            return; // zen mode, or no file and breadcrumbs switched off
+        }
+        // Problems, cursor, indentation, language and encoding at the right end; the crumbs
+        // (when switched on) get the room to their left.
+        let edge = self.draw_bread_readouts(cv, r);
+        if !self.config.breadcrumbs {
+            return;
         }
         let Some(d) = self.docs.get(self.active) else { return };
+        let r = Rect::new(r.x, r.y, (edge - 8 - r.x).max(0), r.h);
         let (dim, fg) = (c.tab_inactive_fg, c.tab_active_fg);
         let rel = d.path().map(|p| self.rel(p)).unwrap_or_else(|| d.name.clone());
         let (line, _) = d.buf.line_col(d.ed.head());

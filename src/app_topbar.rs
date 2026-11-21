@@ -40,8 +40,6 @@ pub enum MenuKind {
     Branch,
     /// Folder browser behind "Open folder…".
     Browse,
-    /// Gear at the right end of the bar: a shortcut to the Settings page.
-    Settings,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -380,13 +378,12 @@ impl App {
             self.tx.draw_ui(cv, r.x + 10 + 14 + 8, ty, &b, c.tab_inactive_fg, bar, false);
             self.tx.icon(cv, "ui/chevron_down", r.right() - 22, bar.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, bar);
             self.layout.top_btns.push((r, MenuKind::Branch));
+            x = r.right() + 6;
         }
 
-        // Settings gear, pinned to the right end; the same page as Ctrl+, / "Preferences: Settings".
-        let side = bar.h - 9;
-        let r = Rect::new(bar.right() - 10 - side, bar.y + 4, side, side);
-        self.tx.icon(cv, "ui/settings", r.x + (side - 16) / 2, iy, 16, c.tab_inactive_fg, bar);
-        self.layout.top_btns.push((r, MenuKind::Settings));
+        // Memory read-out at the right end (Settings: activity rail, Ctrl+,), badges in between.
+        let ram_x = self.draw_top_ram(cv);
+        self.draw_top_badges(cv, x + 8, ram_x - 8);
     }
 
     /// Mouse press on the bar. Returns true when it was inside the bar.
@@ -395,11 +392,12 @@ impl App {
             return false;
         }
         if let Some((r, kind)) = self.layout.top_btns.iter().find(|(r, _)| r.contains(x, y)).copied() {
-            if kind == MenuKind::Settings {
-                self.open_settings(crate::settingsui::Page::Settings);
-            } else {
-                self.open_topmenu(kind, r);
-            }
+            self.open_topmenu(kind, r);
+            return true;
+        }
+        // Badges and the memory read-out live in the bar too.
+        if !self.status_click(x, y) {
+            self.fswatch_click(x, y);
         }
         true
     }
@@ -451,7 +449,6 @@ impl App {
 
     pub fn open_topmenu(&mut self, kind: MenuKind, anchor: Rect) {
         match kind {
-            MenuKind::Settings => self.open_settings(crate::settingsui::Page::Settings),
             MenuKind::Project => {
                 let recents: Vec<PathBuf> = load_recents().into_iter().filter(|p| *p != self.root).collect();
                 let mut entries: Vec<Entry> = recents.iter().cloned().map(|p| Entry::Project(p, true)).collect();
@@ -521,7 +518,7 @@ impl App {
         let hint = match m.kind {
             MenuKind::Project => "Search projects…",
             MenuKind::Branch => "Search branches…",
-            MenuKind::Browse | MenuKind::Settings => "Search folders…",
+            MenuKind::Browse => "Search folders…",
         };
         let (txt, col) = if m.field.text.is_empty() { (hint, dim) } else { (m.field.text.as_str(), fg) };
         if m.field.sel_all {
@@ -924,16 +921,13 @@ pub fn memory_mb(text: &str) -> f64 {
     total
 }
 
-/// Buttons of the bottom bar.
+/// What the old bottom bar carried, now spread over the top bar (badges, memory), the breadcrumb
+/// row (problems, cursor, indentation, language, encoding) and the activity rail.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StatusBtn {
-    Sidebar,
-    Search,
+    /// Error and warning counts of the open documents (breadcrumb row).
     Problems,
-    Terminal,
-    Debug,
-    Git,
-    /// Memory read-out (tooltip only).
+    /// Memory read-out at the right end of the top bar: opens the resources view.
     Ram,
     /// Cursor position, indentation and language: clickable (go to line, pickers).
     Position,
@@ -941,149 +935,61 @@ pub enum StatusBtn {
     Language,
     /// The file's encoding: picker to reopen or save it in another one.
     Encoding,
-    /// An update is ready or available (left group, only then).
+    /// An update is ready or available (top bar, only then).
     Update,
-    /// A build is running, or the last one failed (left group, only then).
+    /// A build is running, or the last one failed (top bar, only then).
     Build,
-    /// The agent of the hidden AI panel finished or wants an answer (left group, only then).
+    /// The agent of the hidden AI panel finished or wants an answer (top bar, only then).
     Ai,
-    /// Project settings (`.lumen/config.json`) are in effect (left group, only then).
+    /// Project settings (`.lumen/config.json`) are in effect (top bar, only then).
     Project,
-    /// Inline completions (left group, while the setting is on): on / off / signed out / loading.
+    /// Inline completions (top bar, while the setting is on): on / off / signed out / loading.
     Inline,
-    /// The checked-out branch's pull request (left group, only when `gh` knows one).
+    /// The checked-out branch's pull request (top bar, only when `gh` knows one).
     Pr,
 }
 
-/// Is it drawn as an icon button (as opposed to a text read-out)?
-fn is_status_button(k: StatusBtn) -> bool {
-    matches!(k, StatusBtn::Terminal | StatusBtn::Debug | StatusBtn::Git)
-}
-
-/// Space between two neighbouring right-hand items: the buttons carry their own padding, the
-/// read-outs are separated by a wider gap, the memory figure sits a bit closer to the buttons.
-fn status_gap(a: StatusBtn, b: StatusBtn) -> i32 {
-    match (is_status_button(a), is_status_button(b)) {
-        (true, true) => 0,
-        _ if (a == StatusBtn::Ram && is_status_button(b)) || (b == StatusBtn::Ram && is_status_button(a)) => 12,
-        _ => 20,
-    }
-}
-
 impl App {
-    /// One button of the bottom bar at `x`; returns the x after it.
+    /// One icon badge of the top bar at `x`; returns the x after it.
     fn status_btn(
         &mut self,
         cv: &mut Canvas,
         x: i32,
         icon: &str,
-        label: &str,
         tint: crate::theme::Rgba,
         active: bool,
         kind: StatusBtn,
     ) -> i32 {
         let c = self.theme.chrome;
         let r = self.layout.status;
-        let lw = if label.is_empty() { 0 } else { self.tx.ui_width(label, false) + 6 };
-        let w = 8 + 14 + lw + 8;
-        let b = Rect::new(x, r.y + 3, w, r.h - 6);
+        let b = Rect::new(x, r.y + 3, 8 + 14 + 8, r.h - 6);
         if active {
             cv.fill_round(b, 6, c.list_active_bg);
         } else if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
             cv.fill_round(b, 6, c.list_hover_bg);
         }
         self.tx.icon(cv, icon, b.x + 8, r.y + (r.h - 14) / 2, 14, tint, r);
-        if !label.is_empty() {
-            self.tx.draw_ui(cv, b.x + 8 + 14 + 6, r.y + (r.h - 18) / 2, label, tint, r, false);
-        }
         self.layout.status_btns.push((b, kind));
         b.right() + 2
     }
 
-    fn status_btn_width(&mut self, label: &str) -> i32 {
-        8 + 14 + if label.is_empty() { 0 } else { self.tx.ui_width(label, false) + 6 } + 8 + 2
-    }
-
-    /// Bottom bar. Left corner: sidebar toggle (mandatory), project search, project diagnostics
-    /// (and the transient message). Right corner: cursor position / indentation / language,
-    /// terminal, debug, git, then the memory readout. Every item but the sidebar toggle can be
-    /// hidden with `config.status_items`.
-    pub fn draw_status(&mut self, cv: &mut Canvas) {
+    /// Badges and transient messages between the top bar's buttons and its right end, from `x0`
+    /// to `limit`: the "LSP off" / remote note, a pending chord, macro and vim state, update,
+    /// build, AI, project-settings, inline-completion and pull-request badges, a git command
+    /// left running, and the last status message. The badge painters draw into `layout.status`,
+    /// which is pointed at this strip while they run.
+    fn draw_top_badges(&mut self, cv: &mut Canvas, x0: i32, limit: i32) {
+        let bar = self.layout.topbar;
+        let saved = self.layout.status;
+        let r = Rect::new(x0, bar.y, (limit - x0).max(0), bar.h - 1);
+        if r.w < 24 {
+            return;
+        }
+        self.layout.status = r;
         let c = self.theme.chrome;
-        let r = self.layout.status;
-        cv.fill(r, c.status_bg);
-        cv.fill(Rect::new(r.x, r.y, r.w, 1), c.border);
-        self.layout.status_btns.clear();
-        self.layout.status_info.clear();
         let y = r.y + (r.h - 18) / 2;
         let dim = c.tab_inactive_fg;
-        let vis = |id: &str| self.config.status_visible(id);
-        // The activity rail carries search, terminal and debug (and the sidebar switch).
-        let railed = self.rail_w() > 0;
-        let (v_search, v_problems, v_term, v_dbg, v_git, v_ram) = (
-            vis("search") && !railed,
-            vis("problems"),
-            vis("terminal") && !railed,
-            vis("debug") && !railed,
-            vis("git"),
-            vis("ram"),
-        );
-        let (v_pos, v_indent, v_lang) = (vis("position"), vis("indent"), vis("language"));
-        let v_enc = vis("encoding");
-
-        // Left group, in `config.status_left_order` (the sidebar toggle is always shown).
-        let mut x = r.x + 6;
-        for id in self.config.status_left_order.clone() {
-            match id.as_str() {
-                "sidebar" if !railed => {
-                    let side_icon = if self.sidebar_open {
-                        "ui/threads_sidebar_left_open"
-                    } else {
-                        "ui/threads_sidebar_left_closed"
-                    };
-                    x = self.status_btn(cv, x, side_icon, "", dim, self.sidebar_open, StatusBtn::Sidebar);
-                }
-                "search" if v_search => {
-                    x = self.status_btn(cv, x, "hugeicons/search", "", dim, false, StatusBtn::Search);
-                }
-                "problems" if v_problems => {
-                    let (e, w) = self.diag_counts();
-                    if e == 0 && w == 0 {
-                        // Nothing to report: a single calm check instead of two zero counters.
-                        x = self.status_btn(cv, x, "ui/check", "", dim, false, StatusBtn::Problems);
-                        x += 8;
-                    } else {
-                        x = self.status_btn(
-                            cv,
-                            x,
-                            "ui/x_circle",
-                            &e.to_string(),
-                            if e > 0 { c.error } else { dim },
-                            false,
-                            StatusBtn::Problems,
-                        );
-                        // The warning count is part of the same button (same hit target).
-                        let warn_label = w.to_string();
-                        let ww = self.tx.ui_width(&warn_label, false);
-                        self.tx.icon(
-                            cv,
-                            "ui/warning",
-                            x,
-                            r.y + (r.h - 14) / 2,
-                            14,
-                            if w > 0 { c.warning } else { dim },
-                            r,
-                        );
-                        self.tx.draw_ui(cv, x + 20, y, &warn_label, if w > 0 { c.warning } else { dim }, r, false);
-                        if let Some((b, _)) = self.layout.status_btns.last_mut() {
-                            b.w = (x + 20 + ww + 8) - b.x;
-                        }
-                        x += 20 + ww + 16;
-                    }
-                }
-                _ => {}
-            }
-        }
+        let mut x = x0;
         if let Some((text, link)) = crate::remote::badge(&self.root) {
             // Remote folder: link state, and what is not available there.
             let tint = if link == crate::remote::Link::Online { dim } else { c.warning };
@@ -1111,7 +1017,7 @@ impl App {
         x = self.draw_vim_status(cv, x);
         if self.upd.indicator().is_some() {
             let tint = if self.upd.ready() { c.accent_text } else { dim };
-            x = self.status_btn(cv, x, "ui/download", "", tint, self.upd.card.is_some(), StatusBtn::Update);
+            x = self.status_btn(cv, x, "ui/download", tint, self.upd.card.is_some(), StatusBtn::Update);
         }
         x = self.draw_build_status(cv, x);
         x = self.draw_ai_status(cv, x);
@@ -1121,157 +1027,121 @@ impl App {
         x = self.draw_inline_status(cv, x);
         x = self.draw_cov_status(cv, x);
         x = self.draw_pr_status(cv, x);
-
-        // Right group, laid out from the right edge in `config.status_order`: buttons, read-outs
-        // (cursor position, indentation, language: clickable) and the memory figure, in any order.
-        let changed = self.git_status.len();
-        let git_label = if changed > 0 { changed.to_string() } else { String::new() };
-        let short = self.config.ram_display == "short";
-        let memtxt = if v_ram { self.memory_text() } else { String::new() };
-        // An image tab has no caret, indentation, language or encoding to show (its read-out is on the left).
-        let doc_texts: Option<(String, String, String)> =
-            self.docs.get(self.active).filter(|d| !d.showing_image()).map(|d| {
-                let (l, col) = d.buf.line_col(d.ed.head());
-                let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
-                let sel =
-                    if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
-                (
-                    format!("{sel}Ln {}, Col {}", l + 1, vc),
-                    if d.ed.indent.contains('\t') {
-                        "Tab".to_string()
-                    } else {
-                        format!("Spaces: {}", d.ed.indent.len())
-                    },
-                    d.lang.unwrap_or("text").to_string(),
-                )
-            });
-        let enc_text: Option<String> =
-            self.docs.get(self.active).filter(|d| !d.showing_image()).map(|d| d.buf.encoding.short());
-        let mut items: Vec<(StatusBtn, i32)> = Vec::new();
-        for id in self.config.status_order.clone() {
-            let item = match id.as_str() {
-                "position" if v_pos => doc_texts.as_ref().map(|t| (StatusBtn::Position, self.tx.ui_width(&t.0, false))),
-                "indent" if v_indent => doc_texts.as_ref().map(|t| (StatusBtn::Indent, self.tx.ui_width(&t.1, false))),
-                "language" if v_lang => {
-                    doc_texts.as_ref().map(|t| (StatusBtn::Language, self.tx.ui_width(&t.2, false)))
-                }
-                "encoding" if v_enc => enc_text.as_ref().map(|t| (StatusBtn::Encoding, self.tx.ui_width(t, false))),
-                "terminal" if v_term => Some((StatusBtn::Terminal, self.status_btn_width(""))),
-                "debug" if v_dbg => Some((StatusBtn::Debug, self.status_btn_width(""))),
-                "git" if v_git => Some((StatusBtn::Git, self.status_btn_width(&git_label))),
-                "ram" if v_ram => {
-                    Some((StatusBtn::Ram, if short { RAM_ICON_W } else { self.tx.ui_width(&memtxt, false) }))
-                }
-                _ => None,
-            };
-            items.extend(item);
-        }
-        let kinds: Vec<StatusBtn> = items.iter().map(|i| i.0).collect();
-        let total: i32 = items.iter().map(|i| i.1).sum::<i32>()
-            + (1..kinds.len()).map(|k| status_gap(kinds[k - 1], kinds[k])).sum::<i32>();
-        let mut right_min = r.right() - 10;
-        if let Some(&last) = kinds.last() {
-            let mut ix = r.right() - if is_status_button(last) { 10 } else { 16 } - total;
-            right_min = ix;
-            let term_on = self.panel.open && self.panel.tab == crate::app_panel::PanelTab::Terminal;
-            let dbg_on = self.panel.open && self.panel.tab == crate::app_panel::PanelTab::Debug;
-            for (k, &(kind, w)) in items.iter().enumerate() {
-                match kind {
-                    StatusBtn::Terminal => {
-                        self.status_btn(
-                            cv,
-                            ix,
-                            "ui/terminal",
-                            "",
-                            if term_on { c.accent_text } else { dim },
-                            term_on,
-                            kind,
-                        );
-                    }
-                    StatusBtn::Debug => {
-                        self.status_btn(
-                            cv,
-                            ix,
-                            "ui/debug",
-                            "",
-                            if dbg_on || self.dbg.is_some() { c.accent_text } else { dim },
-                            dbg_on,
-                            kind,
-                        );
-                    }
-                    StatusBtn::Git => {
-                        let git_on = self.gitpanel.is_some();
-                        self.status_btn(
-                            cv,
-                            ix,
-                            "ui/git_graph",
-                            &git_label,
-                            if changed > 0 || git_on { c.accent_text } else { dim },
-                            git_on,
-                            kind,
-                        );
-                    }
-                    StatusBtn::Ram => {
-                        if short {
-                            self.tx.icon(cv, "hugeicons/cpu", ix, r.y + (r.h - 14) / 2, 14, dim, r);
-                            let mb = memory_mb(&memtxt);
-                            let dot = if mb < 400.0 {
-                                c.git_added
-                            } else if mb < 900.0 {
-                                c.warning
-                            } else {
-                                c.error
-                            };
-                            cv.fill_round(Rect::new(ix + 14 + 4, r.y + (r.h - 5) / 2, 5, 5), 2, dot.with_alpha(0xc8));
-                        } else {
-                            self.tx.draw_ui(cv, ix, y, &memtxt, dim, r, false);
-                        }
-                        self.layout.status_info.push((Rect::new(ix - 4, r.y + 3, w + 8, r.h - 6), kind));
-                    }
-                    StatusBtn::Position | StatusBtn::Indent | StatusBtn::Language | StatusBtn::Encoding => {
-                        let t = match kind {
-                            StatusBtn::Encoding => enc_text.as_ref(),
-                            _ => doc_texts.as_ref().map(|t| match kind {
-                                StatusBtn::Position => &t.0,
-                                StatusBtn::Indent => &t.1,
-                                _ => &t.2,
-                            }),
-                        };
-                        let b = Rect::new(ix - 4, r.y + 3, w + 8, r.h - 6);
-                        if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
-                            cv.fill_round(b, 6, c.list_hover_bg);
-                        }
-                        if let Some(t) = t {
-                            self.tx.draw_ui(cv, ix, y, t, dim, r, false);
-                        }
-                        self.layout.status_btns.push((b, kind));
-                    }
-                    StatusBtn::Sidebar
-                    | StatusBtn::Search
-                    | StatusBtn::Problems
-                    | StatusBtn::Update
-                    | StatusBtn::Build
-                    | StatusBtn::Ai
-                    | StatusBtn::Project
-                    | StatusBtn::Pr
-                    | StatusBtn::Inline => {}
-                }
-                ix += w + kinds.get(k + 1).map_or(0, |&n| status_gap(kind, n));
-            }
-        }
-
+        // A badge that runs past the room is clipped away: it must not stay clickable either.
+        self.layout.status_btns.retain(|(b, _)| b.right() <= limit);
         // A git command left running by a closed panel: spinner first, then the message.
-        let x = x + self.draw_git_bg(cv, x, r, right_min - 16 - x);
-        // Transient message gets whatever room is left between the corners, ellipsized.
+        let x = x + self.draw_git_bg(cv, x, r, limit - 8 - x);
+        // Transient message gets whatever room is left, ellipsized.
         if let Some((m, t)) = &self.status
             && t.elapsed() < std::time::Duration::from_secs(6)
         {
-            let room = right_min - 16 - x;
+            let room = limit - 8 - x;
             let msg = fit(&mut self.tx, m, room);
             if room > 40 {
                 self.tx.draw_ui(cv, x, y, &msg, c.status_fg, Rect::new(x, r.y, room.max(0), r.h), false);
             }
         }
+        self.layout.status = saved;
+    }
+
+    /// Memory read-out at the right end of the top bar (long or short per `config.ram_display`);
+    /// a click opens the resources view. Returns the x where it starts.
+    fn draw_top_ram(&mut self, cv: &mut Canvas) -> i32 {
+        let c = self.theme.chrome;
+        let bar = self.layout.topbar;
+        let dim = c.tab_inactive_fg;
+        let short = self.config.ram_display == "short";
+        let memtxt = self.memory_text();
+        let w = if short { RAM_ICON_W } else { self.tx.ui_width(&memtxt, false) };
+        let b = Rect::new(bar.right() - 10 - w - 16, bar.y + 4, w + 16, bar.h - 9);
+        if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
+            cv.fill_round(b, 6, c.list_hover_bg);
+        }
+        let ix = b.x + 8;
+        if short {
+            self.tx.icon(cv, "hugeicons/cpu", ix, bar.y + (bar.h - 14) / 2, 14, dim, bar);
+            let mb = memory_mb(&memtxt);
+            let dot = if mb < 400.0 {
+                c.git_added
+            } else if mb < 900.0 {
+                c.warning
+            } else {
+                c.error
+            };
+            cv.fill_round(Rect::new(ix + 14 + 4, bar.y + (bar.h - 5) / 2, 5, 5), 2, dot.with_alpha(0xc8));
+        } else {
+            self.tx.draw_ui(cv, ix, bar.y + (bar.h - 18) / 2, &memtxt, dim, bar, false);
+        }
+        self.layout.status_btns.push((b, StatusBtn::Ram));
+        b.x
+    }
+
+    /// Right end of the breadcrumb row: error / warning counts, then cursor position, indentation,
+    /// language and encoding of the active file, each one clickable. Returns the x where they
+    /// start (the crumbs get the room to its left).
+    pub fn draw_bread_readouts(&mut self, cv: &mut Canvas, r: Rect) -> i32 {
+        let c = self.theme.chrome;
+        let dim = c.tab_inactive_fg;
+        let y = r.y + (r.h - 18) / 2;
+        let mut items: Vec<(StatusBtn, String)> = Vec::new();
+        if let Some(d) = self.docs.get(self.active).filter(|d| !d.showing_image()) {
+            let (l, col) = d.buf.line_col(d.ed.head());
+            let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
+            let sel =
+                if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
+            items.push((StatusBtn::Position, format!("{sel}Ln {}, Col {}", l + 1, vc)));
+            let indent =
+                if d.ed.indent.contains('\t') { "Tab".to_string() } else { format!("Spaces: {}", d.ed.indent.len()) };
+            items.push((StatusBtn::Indent, indent));
+            items.push((StatusBtn::Language, d.lang.unwrap_or("text").to_string()));
+            items.push((StatusBtn::Encoding, d.buf.encoding.short()));
+        }
+        let floor = r.x + r.w / 3;
+        let mut x = r.right() - 10;
+        for (kind, text) in items.iter().rev() {
+            let w = self.tx.ui_width(text, false);
+            let b = Rect::new(x - w - 12, r.y + 2, w + 12, r.h - 4);
+            if b.x < floor {
+                return x;
+            }
+            if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
+                cv.fill_round(b, 5, c.list_hover_bg);
+            }
+            self.tx.draw_ui(cv, b.x + 6, y, text, dim, b, false);
+            self.layout.status_btns.push((b, *kind));
+            x = b.x - 2;
+        }
+        // Problems chip, leftmost of the group.
+        let (e, w) = self.diag_counts();
+        let (et, wt) = (e.to_string(), w.to_string());
+        let body = if e == 0 && w == 0 {
+            14
+        } else {
+            12 + 3 + self.tx.ui_width(&et, false) + 8 + 12 + 3 + self.tx.ui_width(&wt, false)
+        };
+        let b = Rect::new(x - body - 12, r.y + 2, body + 12, r.h - 4);
+        if b.x < floor {
+            return x;
+        }
+        if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
+            cv.fill_round(b, 5, c.list_hover_bg);
+        }
+        let iy = r.y + (r.h - 12) / 2;
+        if e == 0 && w == 0 {
+            self.tx.icon(cv, "ui/check", b.x + 6, r.y + (r.h - 14) / 2, 14, dim, r);
+        } else {
+            let (ec, wc) = (if e > 0 { c.error } else { dim }, if w > 0 { c.warning } else { dim });
+            let mut px = b.x + 6;
+            self.tx.icon(cv, "ui/x_circle", px, iy, 12, ec, r);
+            px += 15;
+            self.tx.draw_ui(cv, px, y, &et, ec, r, false);
+            px += self.tx.ui_width(&et, false) + 8;
+            self.tx.icon(cv, "ui/warning", px, iy, 12, wc, r);
+            px += 15;
+            self.tx.draw_ui(cv, px, y, &wt, wc, r, false);
+        }
+        self.layout.status_btns.push((b, StatusBtn::Problems));
+        b.x
     }
 
     /// (errors, warnings) over every open document.
@@ -1289,40 +1159,13 @@ impl App {
         (e, w)
     }
 
-    /// Mouse press on a bottom bar button.
+    /// Mouse press on a top bar badge, the memory read-out or a breadcrumb-row read-out.
     pub fn status_click(&mut self, x: f64, y: f64) -> bool {
-        if !self.layout.status.contains(x, y) {
-            return false;
-        }
         let Some((_, kind)) = self.layout.status_btns.iter().find(|(r, _)| r.contains(x, y)).copied() else {
-            return true;
+            return false;
         };
-        use crate::app_panel::PanelTab;
         match kind {
-            StatusBtn::Sidebar => {
-                self.sidebar_open = !self.sidebar_open;
-                if !self.sidebar_open {
-                    self.focus = crate::app::Focus::Editor;
-                }
-            }
-            StatusBtn::Search => self.open_project_search(),
             StatusBtn::Problems => self.open_problems(),
-            StatusBtn::Terminal => {
-                if self.panel.open && self.panel.tab == PanelTab::Terminal {
-                    self.toggle_panel();
-                } else {
-                    self.open_terminal();
-                }
-            }
-            StatusBtn::Debug => {
-                if self.panel.open && self.panel.tab == PanelTab::Debug {
-                    self.toggle_panel();
-                } else {
-                    self.panel.open = true;
-                    self.panel.tab = PanelTab::Debug;
-                }
-            }
-            StatusBtn::Git => self.git_button(),
             StatusBtn::Position => self.open_goto_line(),
             StatusBtn::Indent => self.open_indent_picker(),
             StatusBtn::Language => self.open_language_picker(),
@@ -1916,15 +1759,6 @@ mod tests {
         let b = static_lang("some-lang");
         assert!(std::ptr::eq(a, b));
         assert_eq!(a, "some-lang");
-    }
-
-    #[test]
-    fn right_group_gaps() {
-        assert_eq!(status_gap(StatusBtn::Terminal, StatusBtn::Git), 0, "buttons carry their own padding");
-        assert_eq!(status_gap(StatusBtn::Position, StatusBtn::Indent), 20);
-        assert_eq!(status_gap(StatusBtn::Git, StatusBtn::Ram), 12);
-        assert_eq!(status_gap(StatusBtn::Ram, StatusBtn::Language), 20);
-        assert_eq!(status_gap(StatusBtn::Language, StatusBtn::Terminal), 20);
     }
 
     #[test]

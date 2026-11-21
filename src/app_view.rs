@@ -7,7 +7,7 @@
 //! in [`App::run_view_cmd`] and the settings rows in [`App::apply_view_setting`].
 
 use crate::{
-    app::{App, BREAD_H, Focus, STATUS_H, TAB_H, TOP_H},
+    app::{App, BREAD_H, Focus, TAB_H, TOP_H},
     app_overlay::Cmd,
     config::{EXPLORER_SORTS, ZEN_WIDTH_RANGE, normalize_explorer_sort},
     fontcfg,
@@ -61,16 +61,16 @@ pub fn zen_column(card: Rect, gutter: i32, cols: usize, cell_w: f32) -> Rect {
 }
 
 impl App {
-    /// Heights of the top bar, tab bar, breadcrumbs and status bar for the current layout: zero
-    /// for what zen mode or the View switches hide.
-    pub fn chrome_heights(&self) -> (i32, i32, i32, i32) {
+    /// Heights of the top bar, tab bar and breadcrumb row for the current layout: zero for what
+    /// zen mode or the View switches hide. The breadcrumb row also carries the cursor, indentation,
+    /// language and encoding read-outs, so it stays while a file is open even with breadcrumbs off.
+    pub fn chrome_heights(&self) -> (i32, i32, i32) {
         let zen = self.zen.active();
         let v = &self.config.view;
         (
             if zen { 0 } else { TOP_H },
             if zen || !v.show_tabs { 0 } else { TAB_H },
-            if zen || !self.config.breadcrumbs { 0 } else { BREAD_H },
-            if zen || !v.show_status_bar { 0 } else { STATUS_H },
+            if zen || !(self.config.breadcrumbs || !self.docs.is_empty()) { 0 } else { BREAD_H },
         )
     }
 
@@ -392,7 +392,7 @@ mod tests {
         app.focus = Focus::Sidebar;
         frame(&mut app);
         let before = (app.layout.topbar, app.layout.tabbar, app.layout.status, app.layout.panel, app.layout.editor);
-        assert!(before.0.h > 0 && before.1.h > 0 && before.2.h > 0 && before.3.h > 0);
+        assert!(before.0.h > 0 && before.1.h > 0 && before.3.h > 0);
         let minimap = app.docs[0].minimap;
 
         app.run_bound("ToggleZen");
@@ -447,8 +447,8 @@ mod tests {
         frame(&mut app);
         assert_eq!((app.layout.tabbar.h, app.layout.status.h), (0, 0));
         assert!(app.layout.topbar.h > 0, "the top bar stays");
-        assert_eq!(app.layout.editor.h, ed.h + TAB_H + STATUS_H, "the editor takes both rows");
-        assert!(app.layout.tabs.is_empty() && app.layout.status_btns.is_empty());
+        assert_eq!(app.layout.editor.h, ed.h + TAB_H, "the editor takes the tab bar's row; there is no status bar");
+        assert!(app.layout.tabs.is_empty());
         // Saved like any setting.
         let saved = crate::config::Config::load_from(&dir.join(".config/lumen-text/config.json"));
         assert!(!saved.view.show_tabs && !saved.view.show_status_bar);

@@ -39,7 +39,6 @@ mod tick;
 
 pub const TAB_H: i32 = 40;
 pub use crate::app_topbar::TOP_H;
-pub const STATUS_H: i32 = 28;
 pub const SIDEBAR_W: i32 = 256;
 /// Widest a tab's file name is drawn; longer names end in "…" (the tooltip shows the full name).
 pub const TAB_NAME_MAX: i32 = 200;

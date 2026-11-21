@@ -214,7 +214,7 @@ impl App {
         let guard = self.config.lsp_auto_lean && self.lsps.iter().any(|l| l.name == "tsgo");
         let (pss, resident) = resmon::sampling(
             self.gitbg.focused,
-            self.config.status_visible("ram"),
+            true, // the memory read-out is always in the top bar
             guard,
             self.config.mem_budget_mb > 0,
         );
