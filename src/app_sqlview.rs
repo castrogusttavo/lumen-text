@@ -159,10 +159,7 @@ impl SqlView {
         };
         let (db, tx, wake, g) = (self.path.clone(), self.tx.clone(), self.wake.clone(), self.gen_id);
         std::thread::spawn(move || {
-            let plan = sqlview::is_plan(&sql);
-            let r = sqlview::run(&db, &sql).and_then(|o| {
-                if plan { Ok(sqlview::parse_plan(&o, skip)) } else { sqlview::parse_rows(&o, skip).map_err(Some) }
-            });
+            let r = sqlview::run(&db, &sql).and_then(|o| sqlview::parse_result(&sql, &o, skip).map_err(Some));
             let _ = tx.send(Msg::Page(g, r));
             wake();
         });

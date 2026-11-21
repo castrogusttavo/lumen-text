@@ -348,10 +348,6 @@ pub fn parse_rows(out: &str, skip: usize) -> Result<Rows, String> {
     if out.is_empty() {
         return Ok(Rows::default());
     }
-    // Older `sqlite3` builds print a bare EXPLAIN as text, not JSON: show it like a plan.
-    if !out.starts_with('[') {
-        return Ok(parse_plan(out, skip));
-    }
     // The CLI prints an infinite float as `9e+999`, which a JSON reader refuses: show it as text.
     let parsed = serde_json::from_str::<Table0>(out).or_else(|e| {
         if out.contains("e+") || out.contains("e-") || out.contains('E') {
@@ -371,6 +367,9 @@ pub fn parse_rows(out: &str, skip: usize) -> Result<Rows, String> {
 /// The tree `EXPLAIN QUERY PLAN` prints (`QUERY PLAN` then `|--SCAN t` lines): one column named
 /// after the first line, one row per line. Same paging as [`parse_rows`].
 pub fn parse_plan(out: &str, skip: usize) -> Rows {
+    if let Some(r) = parse_plan_json(out, skip) {
+        return r;
+    }
     let mut lines = out.lines().filter(|l| !l.trim().is_empty());
     let Some(head) = lines.next() else { return Rows::default() };
     let all: Vec<&str> = lines.collect();
@@ -381,6 +380,35 @@ pub fn parse_plan(out: &str, skip: usize) -> Rows {
         .map(|l| vec![Cell { text: l.trim_end().to_string(), kind: CellKind::Text }])
         .collect();
     Rows { cols: vec![head.trim().to_string()], rows, more: all.len() > skip + PAGE }
+}
+
+/// Newer `sqlite3` builds print the plan as JSON rows (`id`, `parent`, `detail`): the same tree as
+/// text, indented by depth. `None` when `out` is not that.
+fn parse_plan_json(out: &str, skip: usize) -> Option<Rows> {
+    let v: Value = serde_json::from_str(out.trim()).ok()?;
+    let arr = v.as_array()?;
+    let mut depth: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    let mut all: Vec<String> = Vec::new();
+    for r in arr {
+        let detail = r.get("detail")?.as_str()?;
+        let id = r.get("id").and_then(Value::as_i64).unwrap_or(0);
+        let d = r.get("parent").and_then(Value::as_i64).and_then(|p| depth.get(&p)).map_or(0, |d| d + 1);
+        depth.insert(id, d);
+        all.push(format!("{}{}", "  ".repeat(d), detail));
+    }
+    let rows = all.iter().skip(skip).take(PAGE).map(|l| vec![Cell { text: l.clone(), kind: CellKind::Text }]).collect();
+    Some(Rows { cols: vec!["QUERY PLAN".to_string()], rows, more: all.len() > skip + PAGE })
+}
+
+/// Parse a result for `sql`: plans as plan, a bare EXPLAIN that an older `sqlite3` printed as text
+/// like a plan too, anything else as JSON rows.
+pub fn parse_result(sql: &str, out: &str, skip: usize) -> Result<Rows, String> {
+    let explain = sql.trim_start().get(..7).is_some_and(|s| s.eq_ignore_ascii_case("explain"));
+    if is_plan(sql) || (explain && !out.trim_start().starts_with('[')) {
+        Ok(parse_plan(out, skip))
+    } else {
+        parse_rows(out, skip)
+    }
 }
 
 /// The tables listed by [`LIST_SQL`].
@@ -648,7 +676,7 @@ mod tests {
         let q = |sql: &str, skip: usize| -> Result<Rows, String> {
             let g = guard(sql)?;
             let o = run(&db, &page_sql(&g, 0)).map_err(|e| e.unwrap_or_default())?;
-            if is_plan(&g) { Ok(parse_plan(&o, skip)) } else { parse_rows(&o, skip) }
+            parse_result(&g, &o, skip)
         };
         // Tables and views, with a name that has a space.
         let tables = parse_tables(&run(&db, LIST_SQL).unwrap()).unwrap();
