@@ -41,11 +41,11 @@ impl App {
                 return None;
             }
             // Images open as a picture: a raster file is never read as text (see `imgview`).
-            let img = crate::imgview::kind_for(&path);
-            let buf = match img {
-                Some(crate::imgview::Kind::Raster) => Ok(crate::imgview::placeholder_buffer(&path)),
-                _ => Buffer::open(&path),
-            };
+            // A SQLite file opens as a read-only table viewer (see `app_sqlview`).
+            let sql = crate::sqlview::is_sqlite_file(&path);
+            let img = if sql { None } else { crate::imgview::kind_for(&path) };
+            let blob = sql || img == Some(crate::imgview::Kind::Raster);
+            let buf = if blob { Ok(crate::imgview::placeholder_buffer(&path)) } else { Buffer::open(&path) };
             let mut buf = match buf {
                 Ok(b) => b,
                 Err(e) => {
@@ -53,7 +53,7 @@ impl App {
                     return None;
                 }
             };
-            if img != Some(crate::imgview::Kind::Raster) {
+            if !blob {
                 self.undo_restore(&path, &mut buf);
             }
             let lang = language_for(&path.to_string_lossy());
@@ -79,8 +79,11 @@ impl App {
                 doc.img = Some(Box::new(crate::imgview::ImgView::new(k, &path, self.wake())));
                 doc.buf.read_only = true; // an SVG opens on its picture
             }
+            if sql {
+                doc.sql = Some(Box::new(crate::app_sqlview::SqlView::new(&path, self.wake())));
+            }
             self.docs.push(doc);
-            if img != Some(crate::imgview::Kind::Raster) {
+            if !blob {
                 // The HEAD text (the gutter's base) is read on a worker: the gutter follows.
                 self.git_base_fetch(vec![path.clone()]);
             }

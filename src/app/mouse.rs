@@ -153,7 +153,7 @@ impl App {
             return;
         }
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
-        if self.img_mouse_down(x, y) {
+        if self.img_mouse_down(x, y) || self.sql_mouse_down(x, y) {
             return self.request_redraw();
         }
         if button == MouseButton::Middle {
@@ -614,7 +614,7 @@ impl App {
         if self.md_mouse_move(x, y) {
             return;
         }
-        if self.img_mouse_move(x, y) {
+        if self.img_mouse_move(x, y) || self.sql_mouse_move(x, y) {
             return;
         }
         if self.dragging_minimap {
