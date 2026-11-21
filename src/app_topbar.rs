@@ -28,7 +28,6 @@ use winit::{
 };
 
 pub const TOP_H: i32 = 38;
-const TOP_LOGO_H: i32 = 22;
 const ROW: i32 = 30;
 const INPUT: i32 = 42;
 const MAX_ROWS: usize = 10;
@@ -348,10 +347,6 @@ impl App {
         let mut x = bar.x + 10;
         let ty = bar.y + (bar.h - 18) / 2;
         let iy = bar.y + (bar.h - 16) / 2;
-        // The brand mark sits in the far top-left corner, ahead of the project picker.
-        let lw = crate::brand::width_for(TOP_LOGO_H);
-        crate::brand::draw_mark(cv, x, bar.y + (bar.h - TOP_LOGO_H) / 2, TOP_LOGO_H, bar);
-        x += lw + 12;
 
         let name = project_name(&self.root);
         let nw = self.tx.ui_width(&name, true);
