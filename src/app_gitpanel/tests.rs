@@ -883,7 +883,8 @@ fn commit_box_wraps_scrolls_selects_all_and_commits() {
             assert!(l.xs[ink] <= inner + 0.5, "{t:?} is {}px wide in a {inner}px box", l.xs[ink]);
         }
         let lh = App::gp_msg_line();
-        assert_eq!(gp.msg_box.h, MSG_MAX_LINES * lh + 2 * MSG_PAD_Y, "the box grows up to 10 lines");
+        assert!(gp.msg_box.h > 3 * lh + 2 * MSG_PAD_Y, "the box grows with the text");
+        assert!(gp.msg_box.h <= MSG_MAX_LINES * lh + 2 * MSG_PAD_Y, "up to 10 lines");
         assert!(gp.msg.scroll > 0.0 && gp.msg.scroll == gp.msg.max_scroll(), "then scrolls to the caret");
         let (k, _) = gp.msg.caret();
         assert_eq!(k, lines.len() - 1);

@@ -348,6 +348,10 @@ pub fn parse_rows(out: &str, skip: usize) -> Result<Rows, String> {
     if out.is_empty() {
         return Ok(Rows::default());
     }
+    // Older `sqlite3` builds print a bare EXPLAIN as text, not JSON: show it like a plan.
+    if !out.starts_with('[') {
+        return Ok(parse_plan(out, skip));
+    }
     // The CLI prints an infinite float as `9e+999`, which a JSON reader refuses: show it as text.
     let parsed = serde_json::from_str::<Table0>(out).or_else(|e| {
         if out.contains("e+") || out.contains("e-") || out.contains('E') {
