@@ -357,6 +357,9 @@ impl App {
         }
         if l.top_btns.iter().any(|(r, _)| r.contains(x, y))
             || l.status_btns.iter().any(|(r, _)| r.contains(x, y))
+            || l.rail_btns.iter().any(|(r, _)| r.contains(x, y))
+            || l.quick.contains(x, y)
+            || l.welcome.iter().any(|(r, _)| r.contains(x, y))
             || l.tabs.iter().any(|(r, _, _)| r.contains(x, y))
             || l.sidebar_tabs.iter().any(|(r, _)| r.contains(x, y))
             || l.crumbs.iter().any(|(r, _)| r.contains(x, y))
@@ -522,6 +525,11 @@ impl App {
             .map(|(_, close, i)| (*i, close.contains(mx, my)));
         if th != self.tab_hover {
             self.tab_hover = th;
+            self.request_redraw();
+        }
+        let wh = self.layout.welcome.iter().position(|(r, _)| r.contains(mx, my));
+        if wh != self.welcome_hot {
+            self.welcome_hot = wh;
             self.request_redraw();
         }
         let hv = self.hover_target();
