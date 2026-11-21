@@ -95,7 +95,7 @@ impl SettingsPage {
         self.scroll = 0.0;
     }
 
-    fn shown(&self, def: usize) -> bool {
+    pub(super) fn shown(&self, def: usize) -> bool {
         !self.hidden.iter().any(|k| k == self.defs[def].key)
     }
 

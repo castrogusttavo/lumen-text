@@ -167,6 +167,12 @@ pub(super) fn draw_settings(
                 let w = tx.ui_width(&t, false);
                 tx.draw_ui(cv, r.right() - w - 10, r.y + 7, &t, c.accent_text, r, false);
             }
+        } else {
+            // How many rows the page has, so the size of each page is clear before opening it.
+            let n = (0..p.defs.len()).filter(|&d| p.defs[d].section == *s && p.shown(d)).count();
+            let t = n.to_string();
+            let w = tx.ui_width(&t, false);
+            tx.draw_ui(cv, r.right() - w - 10, r.y + 7, &t, dim.with_alpha(150), r, false);
         }
         hits.push((r, Hit::Section(i)));
     }

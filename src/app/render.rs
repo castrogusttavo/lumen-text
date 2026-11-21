@@ -152,8 +152,10 @@ impl App {
         crate::perf::lap!("topbar");
         if self.layout.tabbar.h > 0 {
             self.draw_tabs(cv);
+            self.draw_quick(cv);
         } else {
             self.layout.tabs.clear();
+            self.layout.quick = Rect::default();
         }
         crate::perf::lap!("tabs");
         self.draw_breadcrumbs(cv);
@@ -217,7 +219,7 @@ impl App {
             geo.push((i, x, w));
             x += w;
         }
-        let view = (bar.w - 12).max(1) as f64;
+        let view = (bar.w - 12 - crate::app_quick::QUICK_W).max(1) as f64;
         self.tabs_max = ((x - 6) as f64 - view).max(0.0);
         self.inp.tabs.geo.clone_from(&geo);
         let dragging = self.tab_dragging();
@@ -449,16 +451,12 @@ impl App {
         let body = Rect::new(r.x, top, r.w - 1, r.h - TAB_H);
         let Some(d) = self.docs.get(self.active) else { return };
         if d.symbols.is_empty() {
-            self.tx.draw_ui(
-                cv,
-                r.x + 18,
-                top + 10,
-                "No outline (needs the TS/JS server)",
-                c.tab_inactive_fg,
-                body,
-                false,
-            );
-            return;
+            let dim = c.tab_inactive_fg;
+            let lines = [
+                ("Functions, classes and types of the open file".to_string(), dim),
+                ("show up here once its language server is ready".to_string(), dim),
+            ];
+            return self.b_empty_state(cv, body, "ui/list_tree", dim, "No outline", &lines);
         }
         let (cur_line, _) = d.buf.line_col(d.ed.head());
         let chain: Vec<usize> = d.symbol_chain(cur_line).iter().map(|s| s.sel_l).collect();

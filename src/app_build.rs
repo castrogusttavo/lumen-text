@@ -1330,7 +1330,7 @@ impl App {
     }
 
     /// Centered empty state: an icon, a title and a few dim lines, like an onboarding card.
-    fn b_empty_state(
+    pub(crate) fn b_empty_state(
         &mut self,
         cv: &mut Canvas,
         area: Rect,

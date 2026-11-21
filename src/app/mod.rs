@@ -91,6 +91,8 @@ pub struct Layout {
     pub status_btns: Vec<(Rect, crate::app_topbar::StatusBtn)>,
     /// Activity rail: its column and its buttons.
     pub rail: Rect,
+    /// Quick-settings button at the right end of the tab bar.
+    pub quick: Rect,
     pub rail_btns: Vec<(Rect, crate::app_rail::RailBtn)>,
     /// Non-clickable bottom bar readouts (memory, position, indentation, language): tooltips only.
     pub status_info: Vec<(Rect, crate::app_topbar::StatusBtn)>,
