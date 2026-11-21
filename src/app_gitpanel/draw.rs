@@ -45,7 +45,7 @@ impl App {
         gp.hits.clear();
         let p = self.gitpanel_rect();
         let c = self.theme.chrome;
-        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
+        let dim = c.tab_inactive_fg;
         cv.fill(p, c.sidebar_bg);
         cv.fill(Rect::new(p.x, p.y, 1, p.h), c.border);
         // Resize handle: the left edge lights up under the pointer and while dragging.
@@ -54,74 +54,10 @@ impl App {
             cv.fill(Rect::new(p.x - 1, p.y, 3, p.h), c.accent.with_alpha(if gp.resizing { 0xc0 } else { 0x70 }));
         }
 
-        // Header: tabs on the left, refresh / close on the right.
-        let mut x = p.x + 12;
-        for (tab, label) in [(Tab::Changes, "Changes"), (Tab::History, "History")] {
-            let n = gp.changes.len();
-            let badge = if tab == Tab::Changes && n > 0 { n.to_string() } else { String::new() };
-            let active = gp.tab == tab;
-            let lw = self.tx.ui_width(label, active);
-            let bw = if badge.is_empty() { 0 } else { (self.tx.ui_width(&badge, true) + 12).max(20) + 7 };
-            let w = lw + bw + 24;
-            let r = Rect::new(x, p.y + 8, w, 28);
-            if active {
-                cv.fill_round(r, 8, strong.with_alpha(0x1e));
-            } else if self.hv(r) {
-                cv.fill_round(r, 8, strong.with_alpha(0x12));
-            }
-            let col = if active || self.hv(r) { strong } else { dim };
-            self.tx.draw_ui(cv, r.x + 12, r.y + 5, label, col, r, active);
-            if !badge.is_empty() {
-                let pw = bw - 7;
-                let pill = Rect::new(r.x + 12 + lw + 7, r.y + 6, pw, 16);
-                cv.fill_round(pill, 8, if active { c.accent } else { strong.with_alpha(0x22) });
-                let tw = self.tx.ui_width(&badge, true);
-                let tc = if active { c.on_accent } else { dim };
-                self.tx.draw_ui_sized(cv, pill.x + (pw - tw) / 2, pill.y + 1, &badge, tc, pill, true, 12.0);
-            }
-            gp.hits.push((r, Hit::Tab(tab)));
-            x += w + 4;
-        }
-        self.gp_icon_btn(cv, &mut gp, Rect::new(p.right() - 12 - 28, p.y + 8, 28, 28), "ui/close", Hit::Close);
-        self.gp_icon_btn(
-            cv,
-            &mut gp,
-            Rect::new(p.right() - 12 - 28 - 32, p.y + 8, 28, 28),
-            "ui/rotate_cw",
-            Hit::Refresh,
-        );
-
-        // Branch line: name on the left, fetch / pull / push on the right.
+        // Header (section switcher, refresh, actions, close) and the branch row (branch, sync).
+        self.gp_draw_header(cv, &mut gp, p);
         let by = p.y + HEAD_H;
-        let mut right = p.right() - 10;
-        if gp.top.is_some() {
-            let busy = gp.job.is_some();
-            let (ahead, behind, has_up) = (gp.sync.ahead, gp.sync.behind, gp.sync.upstream.is_some());
-            let count = |n: usize| if n > 0 { format!(" {n}") } else { String::new() };
-            let push = format!("Push{}", if has_up { count(ahead) } else { String::new() });
-            right -= self.gp_sync_btn(
-                cv,
-                &mut gp,
-                right,
-                by + 5,
-                "ui/arrow_up",
-                &push,
-                Hit::Push,
-                !busy && (ahead > 0 || !has_up),
-            ) + 4;
-            let pull = format!("Pull{}", count(behind));
-            right -=
-                self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/arrow_down", &pull, Hit::Pull, !busy && behind > 0)
-                    + 4;
-            right -= self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/cloud_download", "", Hit::Fetch, !busy) + 4;
-        }
-        let branch = self.branch.clone().unwrap_or_else(|| "no branch".into());
-        let branch = fit(&mut self.tx, &branch, right - (p.x + 38) - 14, false);
-        let bw = self.tx.ui_width(&branch, true);
-        let chip = Rect::new(p.x + 10, by + 4, (bw + 38).min(right - (p.x + 10) - 4).max(0), 28);
-        cv.fill_round(chip, 8, c.input_bg);
-        self.tx.icon(cv, "ui/git_branch", chip.x + 8, chip.y + 7, 14, c.accent_text, chip);
-        self.tx.draw_ui(cv, chip.x + 28, chip.y + 5, &branch, strong, chip, true);
+        self.gp_draw_identity(cv, &mut gp, p, by);
 
         // Strip: set-upstream prompt, progress of the running command, or the last result.
         self.gp_measure_prompt(&mut gp, p.w);
@@ -136,55 +72,23 @@ impl App {
         } else {
             0
         };
+        // The composer sits right under the branch row, the lists fill what is left.
+        let comp_y = by + BRANCH_H + strip_h;
         let body =
-            Rect::new(p.x + 1, by + BRANCH_H + strip_h, p.w - 1, (p.h - HEAD_H - BRANCH_H - strip_h - commit_h).max(0));
+            Rect::new(p.x + 1, comp_y + commit_h, p.w - 1, (p.h - HEAD_H - BRANCH_H - strip_h - commit_h).max(0));
         if gp.top.is_none() {
             let msg = "This folder is not a git repository";
             let w = self.tx.ui_width(msg, false);
             self.tx.draw_ui(cv, p.x + (p.w - w) / 2, body.y + 40, msg, dim, body, false);
         } else if gp.tab == Tab::Changes {
+            self.gp_draw_commit_area(cv, &mut gp, Rect::new(p.x + 1, comp_y, p.w - 1, commit_h));
             self.gp_draw_changes(cv, &mut gp, body);
-            self.gp_draw_commit_area(cv, &mut gp, Rect::new(p.x + 1, body.bottom(), p.w - 1, commit_h));
         } else {
             self.gp_draw_history(cv, &mut gp, body);
         }
+        self.gp_draw_menu(cv, &mut gp, p);
         gp.hover = if p.contains(self.mouse.0, self.mouse.1) { gp.hit_at(self.mouse.0, self.mouse.1) } else { None };
         self.gitpanel = Some(gp);
-    }
-
-    /// Pill with an icon and an optional label (fetch / pull / push); returns its width.
-    pub(super) fn gp_sync_btn(
-        &mut self,
-        cv: &mut Canvas,
-        gp: &mut GitPanel,
-        right: i32,
-        y: i32,
-        icon: &str,
-        label: &str,
-        hit: Hit,
-        active: bool,
-    ) -> i32 {
-        let c = self.theme.chrome;
-        let lw = if label.is_empty() { 0 } else { self.tx.ui_width(label, false) + 5 };
-        let w = 12 + 14 + lw + if label.is_empty() { 0 } else { 6 };
-        let r = Rect::new(right - w, y, w, 26);
-        let hov = self.hv(r);
-        if hov {
-            cv.fill_round(r, 8, c.tab_active_fg.with_alpha(0x1c));
-        }
-        let tint = if active {
-            c.accent_text
-        } else if hov {
-            c.tab_active_fg
-        } else {
-            c.tab_inactive_fg
-        };
-        self.tx.icon(cv, icon, r.x + 6, r.y + 6, 14, tint, r);
-        if !label.is_empty() {
-            self.tx.draw_ui(cv, r.x + 6 + 14 + 5, r.y + 4, label, tint, r, false);
-        }
-        gp.hits.push((r, hit));
-        w
     }
 
     /// Buttons of the force-push / strategy cards: (label, hit, colored as a warning).
@@ -336,178 +240,6 @@ impl App {
         }
     }
 
-    pub(super) fn gp_draw_changes(&mut self, cv: &mut Canvas, gp: &mut GitPanel, body: Rect) {
-        let c = self.theme.chrome;
-        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
-        let rows = gp.rows();
-        if rows.is_empty() {
-            let cx = body.x + body.w / 2;
-            let badge = Rect::new(cx - 22, body.y + 36, 44, 44);
-            cv.fill_round(badge, 22, c.git_added.with_alpha(0x22));
-            self.tx.icon(cv, "ui/check", badge.x + 10, badge.y + 10, 24, c.git_added, body);
-            let msg = "No changes";
-            let w = self.tx.ui_width(msg, true);
-            self.tx.draw_ui(cv, cx - w / 2, body.y + 92, msg, strong, body, true);
-            let sub = "Your working tree is clean";
-            let sw = self.tx.ui_width(sub, false);
-            self.tx.draw_ui(cv, cx - sw / 2, body.y + 114, sub, dim, body, false);
-            return;
-        }
-        let total: i32 = rows.iter().map(|r| GitPanel::row_h(*r)).sum::<i32>() + 16;
-        gp.max_scroll[0] = (total - body.h).max(0) as f64;
-        gp.scroll[0] = gp.scroll[0].clamp(0.0, gp.max_scroll[0]);
-        let mut y = body.y - gp.scroll[0] as i32;
-        for (k, row) in rows.iter().enumerate() {
-            let h = GitPanel::row_h(*row);
-            if y + h < body.y || y > body.bottom() {
-                y += h;
-                continue;
-            }
-            let clip = body;
-            let vis = Rect::new(body.x, y.max(body.y), body.w, (y + h).min(body.bottom()) - y.max(body.y));
-            match *row {
-                Row::Header(g) => {
-                    let n = gp.changes.iter().filter(|c| c.group == g).count();
-                    let tint = match g {
-                        Group::Staged => c.git_added,
-                        Group::Changes => c.git_modified,
-                        Group::Untracked => c.info,
-                    };
-                    let hrow = Rect::new(body.x, y, body.w, h);
-                    if self.hv(hrow) && self.hv(vis) {
-                        cv.fill_round_clip(Rect::new(body.x + 6, y, body.w - 12, h), 8, strong.with_alpha(0x0c), clip);
-                    }
-                    gp.hits.push((hrow.intersect(&vis), Hit::Toggle(g)));
-                    let chev = if gp.collapsed.contains(&g) { "ui/chevron_right" } else { "ui/chevron_down" };
-                    self.tx.icon(cv, chev, body.x + 10, y + 9, 16, dim, vis);
-                    cv.fill_round_clip(Rect::new(body.x + 32, y + 14, 6, 6), 3, tint, clip);
-                    self.tx.draw_ui(cv, body.x + 44, y + 9, g.title(), strong, clip, true);
-                    let tw = self.tx.ui_width(g.title(), true);
-                    let cnt = n.to_string();
-                    let cw = (self.tx.ui_width(&cnt, true) + 12).max(20);
-                    let pill = Rect::new(body.x + 44 + tw + 8, y + 9, cw, 16);
-                    cv.fill_round_clip(pill, 8, strong.with_alpha(0x1c), clip);
-                    let nw = self.tx.ui_width(&cnt, true);
-                    self.tx.draw_ui_sized(cv, pill.x + (cw - nw) / 2, pill.y + 1, &cnt, dim, clip, true, 12.0);
-                    let label = if g == Group::Staged { "Remove all" } else { "Add all" };
-                    let before = gp.hits.len();
-                    self.gp_text_btn(cv, gp, body.right() - 10, y + 5, label, Hit::Section(g), c.accent_text);
-                    if let Some(last) = gp.hits.get_mut(before) {
-                        last.0 = last.0.intersect(&vis);
-                    }
-                }
-                Row::File(i) => {
-                    let ch = gp.changes[i].clone();
-                    let r = Rect::new(body.x + 6, y, body.w - 12, h);
-                    let hov = self.hv(r) && self.hv(vis);
-                    let cur = gp.focused && !gp.msg_focus && gp.cursor == k;
-                    if gp.selected.contains(&ch.path) {
-                        cv.fill_round_clip(r, 8, c.accent.with_alpha(if cur || hov { 0x48 } else { 0x30 }), clip);
-                    } else if cur {
-                        cv.fill_round_clip(r, 8, strong.with_alpha(0x1e), clip);
-                    } else if hov {
-                        cv.fill_round_clip(r, 8, strong.with_alpha(0x12), clip);
-                    }
-                    let cb = Rect::new(r.x + 8, y + 7, 16, 16);
-                    let cbhit = Rect::new(r.x, y, 34, h);
-                    self.gp_checkbox(cv, cb, ch.check_state(), self.hv(cbhit) && self.hv(vis));
-                    let (name, dir) = split_name(&ch.path);
-                    let icon = self.tx.icons.file_icon(name);
-                    self.tx.icon(cv, &icon, r.x + 34, y + 7, 16, dim, clip);
-                    let conflicted = ch.code == 'U';
-                    let reserved = if ch.discardable() { 66 } else { 36 } + if conflicted { 28 } else { 0 };
-                    // Line counts sit dim left of the buttons; the stage / unstage button of a hovered
-                    // row takes the slot before them.
-                    let hover_btn = !conflicted;
-                    let slot = if hover_btn { 28 } else { 0 };
-                    let stat = gp.stats.as_ref().and_then(|s| s.of(&ch));
-                    let (stat_w, stat_parts) = match stat {
-                        Some(s) => {
-                            let fmt = |v: Option<u32>, sign: char| v.map_or("-".to_string(), |n| format!("{sign}{n}"));
-                            let (a, d) = (fmt(s.add, '+'), fmt(s.del, '-'));
-                            let w =
-                                self.tx.ui_width_sized(&a, false, 11.0) + 6 + self.tx.ui_width_sized(&d, false, 11.0);
-                            (w + 8, Some((a, d)))
-                        }
-                        None => (0, None),
-                    };
-                    let avail = r.w - 58 - reserved - slot - stat_w;
-                    let nm = fit(&mut self.tx, name, avail, false);
-                    let nw = self.tx.ui_width(&nm, false);
-                    let deleted = ch.code == 'D';
-                    self.tx.draw_ui(cv, r.x + 58, y + 6, &nm, if deleted { dim } else { strong }, clip, false);
-                    if !dir.is_empty() && avail - nw > 40 {
-                        let d = fit(&mut self.tx, dir, avail - nw - 10, false);
-                        self.tx.draw_ui_sized(cv, r.x + 58 + nw + 8, y + 8, &d, dim, clip, false, 12.0);
-                    }
-                    let letter = ch.code.to_string();
-                    let lw = self.tx.ui_width(&letter, true);
-                    let tint = code_color(&c, ch.code);
-                    let chip = Rect::new(r.right() - 30, y + (h - 18) / 2, 18, 18);
-                    cv.fill_round_clip(chip, 6, tint.with_alpha(0x26), clip);
-                    self.tx.draw_ui(cv, chip.x + (18 - lw) / 2, y + 6, &letter, tint, chip.intersect(&vis), true);
-                    gp.hits.push((Rect::new(r.x + 34, vis.y, r.w - 34, vis.h).intersect(&vis), Hit::Row(i)));
-                    gp.hits.push((cbhit.intersect(&vis), Hit::Check(i)));
-                    let btns_x = r.right() - reserved - slot;
-                    if let Some((a, d)) = stat_parts {
-                        let aw = self.tx.ui_width_sized(&a, false, 11.0);
-                        let sx = btns_x - stat_w;
-                        self.tx.draw_ui_sized(cv, sx, y + 8, &a, c.git_added.with_alpha(0x99), clip, false, 11.0);
-                        self.tx.draw_ui_sized(cv, sx + aw + 6, y + 8, &d, c.error.with_alpha(0x99), clip, false, 11.0);
-                    }
-                    if hover_btn && (hov || cur) {
-                        // Same actions as the checkbox: stage / unstage this file.
-                        let staged = ch.check_state() == CheckState::On;
-                        let sr = Rect::new(btns_x + 2, y + 3, 24, 24);
-                        let sh = self.hv(sr) && self.hv(vis);
-                        if sh {
-                            cv.fill_round_clip(sr, 8, strong.with_alpha(0x22), clip);
-                        }
-                        let icon = if staged { "ui/minus" } else { "ui/plus" };
-                        self.tx.icon(cv, icon, sr.x + 4, sr.y + 4, 16, if sh { strong } else { dim }, vis);
-                        gp.hits.push((sr.intersect(&vis), Hit::Check(i)));
-                    }
-                    if conflicted {
-                        // Conflicted file: the merge editor is one click away (always shown).
-                        let br = Rect::new(r.right() - if ch.discardable() { 86 } else { 58 }, y + 3, 24, 24);
-                        let bh = self.hv(br) && self.hv(vis);
-                        if bh {
-                            cv.fill_round_clip(br, 8, strong.with_alpha(0x22), clip);
-                        }
-                        let tint = if bh { c.warning } else { c.warning.with_alpha(0xc0) };
-                        self.tx.icon(cv, "ui/git_merge_conflict", br.x + 4, br.y + 4, 16, tint, vis);
-                        gp.hits.push((br.intersect(&vis), Hit::Merge(i)));
-                    }
-                    if ch.discardable() {
-                        if gp.confirm == Some(i) {
-                            let label = "Discard?";
-                            let w = self.tx.ui_width(label, false) + 16;
-                            let br = Rect::new(r.right() - 34 - w, y + 3, w, 24);
-                            let bh = self.hv(br);
-                            cv.fill_round_clip(br, 8, c.error.with_alpha(if bh { 0x55 } else { 0x33 }), clip);
-                            self.tx.draw_ui(cv, br.x + 8, br.y + 3, label, c.error, br.intersect(&vis), false);
-                            gp.hits.push((br.intersect(&vis), Hit::ConfirmDiscard(i)));
-                        } else {
-                            let br = Rect::new(r.right() - 58, y + 3, 24, 24);
-                            if hov || cur {
-                                let bh = self.hv(br);
-                                if bh {
-                                    cv.fill_round_clip(br, 8, strong.with_alpha(0x22), clip);
-                                }
-                                self.tx.icon(cv, "ui/undo", br.x + 4, br.y + 4, 16, if bh { strong } else { dim }, vis);
-                            }
-                            gp.hits.push((br.intersect(&vis), Hit::Discard(i)));
-                        }
-                    }
-                }
-                r => self.gp_draw_stash_row(cv, gp, r, k, y, body),
-            }
-            y += h;
-        }
-        let (pos, visible) = (gp.scroll[0], body.h as f64);
-        self.region_bar(cv, crate::scrollreg::Reg::GitChanges, body, total as f64, visible, pos, 1.0, false);
-    }
-
     /// Row height of the message box (the UI line, at least `LINE`).
     pub(super) fn gp_msg_line() -> i32 {
         (crate::ui::ui_line().ceil() as i32).max(LINE)
@@ -517,7 +249,7 @@ impl App {
     /// to 10 (less when the panel is short, so the changes list keeps room), then it scrolls.
     pub(super) fn gp_msg_layout(&mut self, gp: &mut GitPanel, p: Rect, strip_h: i32) {
         let lh = Self::gp_msg_line();
-        let inner_w = (p.w - 1) - 24 - 2 * MSG_PAD_X;
+        let inner_w = (p.w - 1) - 2 * COMPOSER_MARGIN - 2 * MSG_PAD_X;
         let tx = &mut self.tx;
         gp.msg.layout(inner_w.max(1) as f32, &mut |s: &str| tx.ui_char_xs(s, false, None));
         let room = p.h - HEAD_H - BRANCH_H - strip_h - COMMIT_CHROME_H - MSG_LIST_ROOM - 2 * MSG_PAD_Y;
@@ -529,15 +261,9 @@ impl App {
 
     /// The message box: wrapped lines (never a horizontal scroll), selection, caret, placeholder,
     /// and soft fades at the edges while there is more text above / below.
-    fn gp_draw_msg(&mut self, cv: &mut Canvas, gp: &mut GitPanel, b: Rect) {
+    pub(super) fn gp_draw_msg(&mut self, cv: &mut Canvas, gp: &mut GitPanel, b: Rect) {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
-        cv.fill_round(b, 10, c.input_bg);
-        if gp.msg_focus {
-            cv.ring(b, 10, c.accent.with_alpha(0xa0));
-        } else if self.hv(b) {
-            cv.ring(b, 10, strong.with_alpha(0x30));
-        }
         gp.hits.push((b, Hit::Msg));
         let lh = Self::gp_msg_line();
         let (ox, oy) = (b.x + MSG_PAD_X, b.y + MSG_PAD_Y);
@@ -547,7 +273,7 @@ impl App {
         // Text centred in its row.
         let ty = ((lh as f32 - crate::ui::ui_line()) / 2.0).max(0.0).round() as i32;
         if gp.msg.text().is_empty() {
-            let ph = fit(&mut self.tx, "Commit message (Ctrl+Enter to commit)", inner_w, false);
+            let ph = fit(&mut self.tx, "Message", inner_w, false);
             self.tx.draw_ui(cv, ox, oy + ty, &ph, dim, clip, false);
         }
         let scroll = gp.msg.scroll.round() as i32;
@@ -584,99 +310,5 @@ impl App {
         if gp.msg.scroll < gp.msg.max_scroll() - 0.5 {
             fade(cv, b.bottom() - 4, false);
         }
-    }
-
-    /// Message box + options + Commit button, pinned to the bottom of the panel.
-    pub(super) fn gp_draw_commit_area(&mut self, cv: &mut Canvas, gp: &mut GitPanel, area: Rect) {
-        let c = self.theme.chrome;
-        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
-        cv.fill(Rect::new(area.x, area.y, area.w, 1), c.border);
-        let mut y = area.y + 10;
-        // Notice (success / error), fades after a while.
-        if let Some((m, ok, t)) = gp.notice.clone()
-            && t.elapsed().as_secs() < 12
-        {
-            let txt = fit(&mut self.tx, &m, area.w - 32, false);
-            self.tx.draw_ui(cv, area.x + 16, y + 1, &txt, if ok { c.git_added } else { c.error }, area, false);
-        }
-        y += 22;
-        // Message box (sized by `gp_msg_layout`).
-        let b = Rect::new(area.x + 12, y, area.w - 24, gp.msg_h());
-        gp.msg_box = b;
-        self.gp_draw_msg(cv, gp, b);
-        y += b.h + 8;
-
-        // "Undo last commit" on the right of the Amend row (only the last one, never during a
-        // merge / rebase / cherry-pick).
-        let mut undo_w = 0;
-        if gp.can_undo && !gp.amend && gp.state == RepoState::Clean {
-            let label = "Undo last commit";
-            let lw = self.tx.ui_width(label, false) + 18 + 20;
-            if area.w - 24 - lw > 150 {
-                let r = Rect::new(area.right() - 12 - lw, y + 2, lw, 24);
-                let hov = self.hv(r);
-                if hov {
-                    cv.fill_round(r, 8, strong.with_alpha(0x1c));
-                }
-                let tint = if hov { strong } else { dim };
-                self.tx.icon(cv, "ui/undo", r.x + 8, r.y + 4, 16, tint, r);
-                self.tx.draw_ui(cv, r.x + 28, r.y + 3, label, tint, r, false);
-                gp.hits.push((r, Hit::UndoLast));
-                undo_w = lw + 6;
-            }
-        }
-        // Amend checkbox.
-        let am = Rect::new(area.x + 12, y, area.w - 24 - undo_w, AMEND_H);
-        let ah = self.hv(am);
-        if ah {
-            cv.fill_round(am, 8, strong.with_alpha(0x12));
-        }
-        self.gp_checkbox(
-            cv,
-            Rect::new(am.x + 6, y + 6, 16, 16),
-            if gp.amend { CheckState::On } else { CheckState::Off },
-            ah,
-        );
-        let txt = fit(&mut self.tx, "Amend last commit", am.w - 36, false);
-        self.tx.draw_ui(cv, am.x + 30, y + 5, &txt, if ah || gp.amend { strong } else { dim }, am, false);
-        gp.hits.push((am, Hit::Amend));
-        y += AMEND_H;
-
-        // Option + Commit button.
-        let staged = gp.staged();
-        let ready =
-            !gp.msg.text().trim().is_empty() && (gp.amend || staged > 0 || (gp.include_all && !gp.changes.is_empty()));
-        let label = if gp.amend { "Amend" } else { "Commit" };
-        let bw = self.tx.ui_width(label, true) + 36 + 22;
-        let btn = Rect::new(area.right() - 12 - bw, y, bw, 34);
-        let bh = self.hv(btn);
-        let fill = if ready {
-            if bh { c.accent.shift(22) } else { c.accent }
-        } else if bh {
-            c.accent.with_alpha(0x70)
-        } else {
-            c.accent.with_alpha(0x48)
-        };
-        cv.fill_round(btn, 10, fill);
-        let text_col = if ready { c.on_accent } else { strong.with_alpha(0xc0) };
-        self.tx.icon(cv, "ui/git_commit", btn.x + 14, btn.y + 9, 16, text_col, btn);
-        self.tx.draw_ui(cv, btn.x + 36, btn.y + 8, label, text_col, btn, true);
-        gp.hits.push((btn, Hit::CommitBtn));
-
-        let opt = Rect::new(area.x + 12, y, btn.x - area.x - 20, 34);
-        let oh = self.hv(opt);
-        if oh {
-            cv.fill_round(opt, 8, strong.with_alpha(0x12));
-        }
-        self.gp_checkbox(
-            cv,
-            Rect::new(opt.x + 6, y + 9, 16, 16),
-            if gp.include_all { CheckState::On } else { CheckState::Off },
-            oh,
-        );
-        let txt = "Include everything if nothing is staged".to_string();
-        let txt = fit(&mut self.tx, &txt, opt.w - 36, false);
-        self.tx.draw_ui(cv, opt.x + 30, y + 8, &txt, if oh { strong } else { dim }, opt, false);
-        gp.hits.push((opt, Hit::Opt));
     }
 }

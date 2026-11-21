@@ -335,6 +335,53 @@ pub fn commit(top: &Path, msg: &str) -> Result<String, String> {
         .map(|o| o.lines().next().unwrap_or("commit created").to_string())
 }
 
+/// Directory of a repository-relative path ("" for a file at the top).
+fn dir_of(path: &str) -> &str {
+    path.rfind('/').map_or("", |i| &path[..i])
+}
+
+/// Group the changes at `idx` (indices into `changes`) by folder: the top-level files first, then
+/// one entry per folder in alphabetical order; files keep their order inside each.
+pub fn group_by_dir(changes: &[Change], idx: &[usize]) -> Vec<(String, Vec<usize>)> {
+    let mut map: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
+    for &i in idx {
+        map.entry(dir_of(&changes[i].path).to_string()).or_default().push(i);
+    }
+    // The empty key sorts first: files at the top come before every folder.
+    map.into_iter().collect()
+}
+
+/// A commit message written from the files in scope: a subject line saying what happened, and
+/// one line per file (up to eight) after it.
+pub fn suggest_message(changes: &[Change]) -> String {
+    let name = |c: &Change| c.path.rsplit('/').next().unwrap_or(&c.path).to_string();
+    let verb = |c: &Change| match c.code {
+        'A' | '?' => "Add",
+        'D' => "Remove",
+        'R' | 'C' => "Rename",
+        _ => "Update",
+    };
+    let Some(first) = changes.first() else { return String::new() };
+    if changes.len() == 1 {
+        return format!("{} {}", verb(first), name(first));
+    }
+    let all_same = changes.iter().all(|c| verb(c) == verb(first));
+    let v = if all_same { verb(first) } else { "Update" };
+    let dirs: std::collections::BTreeSet<&str> = changes.iter().map(|c| dir_of(&c.path)).collect();
+    let mut out = match (dirs.len(), dirs.iter().next()) {
+        (1, Some(d)) if !d.is_empty() => format!("{v} {} files in {d}", changes.len()),
+        _ => format!("{v} {} files", changes.len()),
+    };
+    out.push('\n');
+    for c in changes.iter().take(8) {
+        out.push_str(&format!("\n- {} {}", verb(c), c.path));
+    }
+    if changes.len() > 8 {
+        out.push_str(&format!("\n- and {} more", changes.len() - 8));
+    }
+    out
+}
+
 /// One page of the log, newest first.
 #[cfg(test)]
 pub fn log_page(top: &Path, skip: usize, n: usize) -> Vec<LogEntry> {

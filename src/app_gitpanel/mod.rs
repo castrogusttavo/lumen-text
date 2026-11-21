@@ -41,6 +41,8 @@ use winit::{
 mod actions;
 mod draw;
 mod draw_graph;
+mod draw_list;
+mod draw_top;
 mod graph;
 mod history;
 mod input;

@@ -103,6 +103,14 @@ pub enum GitAct {
     RevertAbort,
     /// Continue / abort a rebase in progress (see `rebase`).
     Rebase(RebaseAct),
+    /// Ask before throwing away every change of a group.
+    DiscardAllAsk {
+        group: Group,
+    },
+    /// Throw away every unstaged / untracked change of the group.
+    DiscardAll {
+        group: Group,
+    },
 }
 
 /// Text prompts of the git features (`PromptKind::Git`).
@@ -873,6 +881,26 @@ impl App {
                 Err(e) => self.git_report(format!("Revert --abort: {e}"), false),
             },
             GitAct::Rebase(a) => self.rebase_act(a),
+            GitAct::DiscardAllAsk { group } => {
+                let n = self.gitpanel.as_ref().map_or(0, |gp| {
+                    gp.changes.iter().filter(|c| c.group == group && c.discardable()).count()
+                });
+                if n == 0 {
+                    return;
+                }
+                let what = if group == Group::Untracked { "untracked files (they are deleted)" } else { "unstaged changes" };
+                self.git_ask(Ask {
+                    text: format!("Discard all {n} {what}? This cannot be undone."),
+                    warn: true,
+                    buttons: vec![btn("Discard all", GitAct::DiscardAll { group }, Tone::Danger), cancel()],
+                });
+            }
+            GitAct::DiscardAll { group } => {
+                if let Some(mut gp) = self.gitpanel.take() {
+                    self.gp_discard_group(&mut gp, group);
+                    self.gitpanel = Some(gp);
+                }
+            }
         }
     }
 }

@@ -512,7 +512,52 @@ impl App {
             Row::Stash(i) => self.gp_toggle_stash(gp, i),
             Row::SFile(j) => self.gp_open_diff_stash(gp, j),
             Row::Header(g) => self.gp_toggle_group(gp, g),
+            Row::Folder(g, i) => self.gp_toggle_dir(gp, g, i),
             Row::StashHead | Row::NoChanges => {}
         }
+    }
+
+    /// Fold / unfold the folder of the change at `i`.
+    pub(super) fn gp_toggle_dir(&mut self, gp: &mut GitPanel, g: Group, i: usize) {
+        if let Some(c) = gp.changes.get(i) {
+            let dir = split_name(&c.path).1.to_string();
+            gp.toggle_dir(g, &dir);
+        }
+    }
+
+    /// "Commit & push": commit, and push right after when the commit went through.
+    pub(super) fn gp_commit_push(&mut self, gp: &mut GitPanel) {
+        if gp.amend {
+            return self.gp_commit(gp);
+        }
+        let had_message = !gp.msg.text().trim().is_empty();
+        self.gp_commit(gp);
+        if had_message && gp.msg.text().is_empty() {
+            self.gp_push(gp);
+        }
+    }
+
+    /// Throw away every unstaged / untracked change of a group (already confirmed).
+    pub(super) fn gp_discard_group(&mut self, gp: &mut GitPanel, g: Group) {
+        let Some(top) = gp.top.clone() else { return };
+        let list: Vec<Change> = gp.changes.iter().filter(|c| c.group == g && c.discardable()).cloned().collect();
+        let mut failed = 0;
+        for c in &list {
+            if discard(&top, c).is_err() {
+                failed += 1;
+                continue;
+            }
+            let abs = top.join(&c.path);
+            if let Some(k) = self.docs.iter().position(|d| d.path() == Some(abs.as_path())) {
+                self.hist_snapshot(k, crate::localhist::Source::Reload);
+                let _ = self.docs[k].reload_from_disk();
+                self.docs[k].git_stale = true;
+            }
+        }
+        let done = list.len() - failed;
+        let extra = if failed > 0 { format!(", {failed} failed") } else { String::new() };
+        gp.say(format!("{done} file(s) discarded{extra}"), failed == 0);
+        self.diff = None;
+        self.gp_after_change(gp);
     }
 }

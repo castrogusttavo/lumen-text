@@ -58,6 +58,93 @@ pub enum Hit {
     SFile(usize),
     /// Open the merge editor on conflicted file `i`.
     Merge(usize),
+    /// A folder row of a group (the change index of its first file): fold / unfold it.
+    Folder(Group, usize),
+    /// Discard every unstaged / untracked change of the group (asks first).
+    DiscardAll(Group),
+    /// A dropdown button of the header, the sync button or the Commit button.
+    Menu(GpMenu),
+    /// Item `n` of the open dropdown.
+    MenuItem(usize),
+    /// The branch / repository chip: opens the branch switcher.
+    Branches,
+    /// The sparkle button of the composer: write a message from the diff.
+    Generate,
+    /// "Commit & push" of the Commit dropdown.
+    CommitPush,
+    /// "Pull strategy..." of the sync dropdown.
+    PullChoose,
+}
+
+/// The dropdowns of the panel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GpMenu {
+    /// The section switcher of the header (Changes / History).
+    Sections,
+    /// The "..." button of the header.
+    Actions,
+    /// The chevron of the sync button (fetch / pull / push).
+    Sync,
+    /// The chevron of the Commit button (amend, commit & push, ...).
+    Commit,
+}
+
+/// One entry of a dropdown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuItem {
+    pub label: String,
+    pub icon: &'static str,
+    /// What a click does (handled like the same hit on the panel itself).
+    pub hit: Hit,
+    /// Drawn with a tick box (None: no box).
+    pub checked: Option<bool>,
+    /// Right-aligned dim text (a count).
+    pub trailing: String,
+}
+
+impl MenuItem {
+    fn new(label: impl Into<String>, icon: &'static str, hit: Hit) -> Self {
+        MenuItem { label: label.into(), icon, hit, checked: None, trailing: String::new() }
+    }
+}
+
+/// What the sync button next to the branch does now, and how it reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncPlan {
+    pub hit: Hit,
+    pub icon: &'static str,
+    /// Commits to pull / push (0 for a fetch or a first publish).
+    pub count: usize,
+    pub title: String,
+}
+
+fn plural(n: usize, what: &str) -> String {
+    if n == 1 { format!("{n} {what}") } else { format!("{n} {what}s") }
+}
+
+/// The one remote operation worth suggesting: pull when the remote is ahead, push when the branch
+/// is, publish when it has no upstream, otherwise fetch.
+pub fn sync_plan(ahead: usize, behind: usize, has_upstream: bool) -> SyncPlan {
+    if !has_upstream {
+        return SyncPlan { hit: Hit::Push, icon: "ui/arrow_up", count: 0, title: "Publish branch".into() };
+    }
+    if behind > 0 {
+        return SyncPlan {
+            hit: Hit::Pull,
+            icon: "ui/arrow_down",
+            count: behind,
+            title: format!("Pull {}", plural(behind, "commit")),
+        };
+    }
+    if ahead > 0 {
+        return SyncPlan {
+            hit: Hit::Push,
+            icon: "ui/arrow_up",
+            count: ahead,
+            title: format!("Push {}", plural(ahead, "commit")),
+        };
+    }
+    SyncPlan { hit: Hit::Fetch, icon: "ui/rotate_cw", count: 0, title: "Fetch from remote".into() }
 }
 
 /// Why the force-push card is showing.
@@ -108,7 +195,9 @@ pub enum Row {
     File(usize),
     Commit(usize),
     CFile(usize),
-    /// "No changes" line above the stashes of a clean tree.
+    /// A folder of a group (the change index of its first file): folds its files.
+    Folder(Group, usize),
+    /// "Working tree clean" line above the stashes of a clean tree.
     NoChanges,
     /// "Stashes" header (with the "Stash…" button).
     StashHead,
@@ -117,25 +206,29 @@ pub enum Row {
     SFile(usize),
 }
 
-pub(super) const HEAD_H: i32 = 44;
-pub(super) const BRANCH_H: i32 = 36;
+pub(super) const HEAD_H: i32 = 40;
+pub(super) const BRANCH_H: i32 = 34;
 /// One line of the result / progress strip under the branch row.
 pub(super) const STRIP_LINE: i32 = 17;
 /// Height of the "publish this branch?" prompt.
 pub(super) const PROMPT_H: i32 = 58;
-pub(super) const FILE_H: i32 = 30;
-pub(super) const SEC_H: i32 = 34;
+pub(super) const FILE_H: i32 = 28;
+pub(super) const FOLDER_H: i32 = 26;
+pub(super) const SEC_H: i32 = 30;
 pub(super) const COMMIT_H: i32 = 44;
 pub(super) const STASH_H: i32 = 42;
 pub(super) const CFILE_H: i32 = 28;
-pub(super) const AMEND_H: i32 = 28;
-/// Commit area around the message box: notice row, gaps, Amend row, Commit button.
-pub(super) const COMMIT_CHROME_H: i32 = 12 + 22 + 8 + AMEND_H + 34 + 12;
+/// Height of the composer's button row (sparkle, scope, Commit) under the message.
+pub(super) const COMPOSER_ROW_H: i32 = 34;
+/// Composer around the message box: gap above, the button row, gap below.
+pub(super) const COMMIT_CHROME_H: i32 = 6 + COMPOSER_ROW_H + 8;
+/// Margin between the panel edge and the composer box.
+pub(super) const COMPOSER_MARGIN: i32 = 8;
 /// Smallest row height of the message box.
 pub(super) const LINE: i32 = 18;
 /// Message box padding (horizontal / vertical).
-pub(super) const MSG_PAD_X: i32 = 12;
-pub(super) const MSG_PAD_Y: i32 = 10;
+pub(super) const MSG_PAD_X: i32 = 10;
+pub(super) const MSG_PAD_Y: i32 = 8;
 /// The message box shows 3 to 10 visual lines, then scrolls.
 pub(super) const MSG_MIN_LINES: i32 = 3;
 pub(super) const MSG_MAX_LINES: i32 = 10;
@@ -233,6 +326,10 @@ pub struct GitPanel {
     pub refresh_again: bool,
     /// Groups whose files are folded away under their header.
     pub collapsed: std::collections::HashSet<Group>,
+    /// Folders (group, directory) whose files are folded away under their row.
+    pub collapsed_dirs: std::collections::HashSet<(Group, String)>,
+    /// The open dropdown.
+    pub menu: Option<GpMenu>,
     /// Line counts per file; `None` until the first read arrives (nothing is drawn meanwhile).
     pub stats: Option<NumStats>,
 }
@@ -348,6 +445,8 @@ impl GitPanel {
             refresh_busy: false,
             refresh_again: false,
             collapsed: std::collections::HashSet::new(),
+            collapsed_dirs: std::collections::HashSet::new(),
+            menu: None,
             stats: None,
         };
         p.refresh();
@@ -482,6 +581,114 @@ impl GitPanel {
         COMMIT_CHROME_H + self.msg_h()
     }
 
+    /// Fold / unfold one folder of a group.
+    pub fn toggle_dir(&mut self, g: Group, dir: &str) {
+        let key = (g, dir.to_string());
+        if !self.collapsed_dirs.remove(&key) {
+            self.collapsed_dirs.insert(key);
+        }
+        let n = self.row_count();
+        self.cursor = self.cursor.min(n.saturating_sub(1));
+    }
+
+    /// What a commit would take, for the composer: (label, added, removed) lines. The staged
+    /// files when there are any, otherwise everything when "include everything" is on.
+    pub fn composer_scope(&self) -> (String, u32, u32) {
+        let staged = self.staged();
+        let (label, groups): (String, Vec<Group>) = if staged > 0 {
+            (format!("{staged} staged"), vec![Group::Staged])
+        } else if self.include_all && !self.changes.is_empty() {
+            (format!("All {} changes", self.changes.len()), vec![Group::Changes, Group::Untracked])
+        } else {
+            ("Nothing staged".to_string(), Vec::new())
+        };
+        let (mut add, mut del) = (0, 0);
+        if let Some(st) = &self.stats {
+            for c in self.changes.iter().filter(|c| groups.contains(&c.group)) {
+                if let Some(s) = st.of(c) {
+                    add += s.add.unwrap_or(0);
+                    del += s.del.unwrap_or(0);
+                }
+            }
+        }
+        (label, add, del)
+    }
+
+    /// Tooltip title of the Fetch / Pull / Push button: what the sync button says when it is the
+    /// suggested step ("Pull 2 commits"), `plain` otherwise.
+    pub fn sync_title(&self, hit: Hit, plain: &str) -> String {
+        let plan = sync_plan(self.sync.ahead, self.sync.behind, self.sync.upstream.is_some());
+        if plan.hit == hit { plan.title } else { plain.to_string() }
+    }
+
+    /// Fill the message box with a suggestion written from the files in scope.
+    pub fn generate_message(&mut self) {
+        let staged = self.staged() > 0;
+        let scope: Vec<Change> = self
+            .changes
+            .iter()
+            .filter(|c| if staged { c.group == Group::Staged } else { c.group != Group::Staged })
+            .cloned()
+            .collect();
+        if scope.is_empty() {
+            return self.say("Nothing to describe: no changes", false);
+        }
+        let text = suggest_message(&scope);
+        self.msg.set_text(&text);
+        self.msg_focus = true;
+    }
+
+    /// Entries of dropdown `m`.
+    pub fn menu_items(&self, m: GpMenu) -> Vec<MenuItem> {
+        let mut v = Vec::new();
+        let (ahead, behind, up) = (self.sync.ahead, self.sync.behind, self.sync.upstream.is_some());
+        match m {
+            GpMenu::Sections => {
+                let mut ch = MenuItem::new("Changes", "ui/git_commit", Hit::Tab(Tab::Changes));
+                ch.checked = Some(self.tab == Tab::Changes);
+                if !self.changes.is_empty() {
+                    ch.trailing = self.changes.len().to_string();
+                }
+                let mut hi = MenuItem::new("History", "ui/git_graph", Hit::Tab(Tab::History));
+                hi.checked = Some(self.tab == Tab::History);
+                v.extend([ch, hi]);
+            }
+            GpMenu::Actions => {
+                v.push(MenuItem::new("Refresh", "ui/rotate_cw", Hit::Refresh));
+                if !self.changes.is_empty() {
+                    v.push(MenuItem::new("Stash changes...", "ui/archive", Hit::StashNew));
+                }
+                if self.can_undo && self.state == RepoState::Clean {
+                    v.push(MenuItem::new("Undo last commit", "ui/undo", Hit::UndoLast));
+                }
+            }
+            GpMenu::Sync => {
+                v.push(MenuItem::new("Fetch", "ui/cloud_download", Hit::Fetch));
+                let mut pull = MenuItem::new("Pull", "ui/arrow_down", Hit::Pull);
+                if behind > 0 {
+                    pull.trailing = behind.to_string();
+                }
+                let mut push = MenuItem::new(if up { "Push" } else { "Publish branch" }, "ui/arrow_up", Hit::Push);
+                if up && ahead > 0 {
+                    push.trailing = ahead.to_string();
+                }
+                v.extend([pull, push, MenuItem::new("Pull strategy...", "ui/git_branch", Hit::PullChoose)]);
+            }
+            GpMenu::Commit => {
+                v.push(MenuItem::new("Commit & push", "ui/arrow_up", Hit::CommitPush));
+                let mut am = MenuItem::new("Amend last commit", "ui/git_commit", Hit::Amend);
+                am.checked = Some(self.amend);
+                let mut all = MenuItem::new("Include everything if nothing is staged", "ui/plus", Hit::Opt);
+                all.checked = Some(self.include_all);
+                v.extend([am, all]);
+                if self.can_undo && !self.amend && self.state == RepoState::Clean {
+                    v.push(MenuItem::new("Undo last commit", "ui/undo", Hit::UndoLast));
+                }
+            }
+        }
+        v
+    }
+
     /// Top-left corner of the message text (view coordinates of the text area).
     pub fn msg_origin(&self) -> (f64, f64) {
         ((self.msg_box.x + MSG_PAD_X) as f64, (self.msg_box.y + MSG_PAD_Y) as f64)
@@ -549,7 +756,16 @@ impl GitPanel {
                     }
                     v.push(Row::Header(g));
                     if !self.collapsed.contains(&g) {
-                        v.extend(idx.into_iter().map(Row::File));
+                        for (dir, files) in group_by_dir(&self.changes, &idx) {
+                            if dir.is_empty() {
+                                v.extend(files.into_iter().map(Row::File));
+                                continue;
+                            }
+                            v.push(Row::Folder(g, files[0]));
+                            if !self.collapsed_dirs.contains(&(g, dir)) {
+                                v.extend(files.into_iter().map(Row::File));
+                            }
+                        }
                     }
                 }
                 // Stashes after the changes; the header also offers "Stash…" when there is
@@ -577,6 +793,7 @@ impl GitPanel {
     pub fn row_h(r: Row) -> i32 {
         match r {
             Row::Header(_) | Row::StashHead => SEC_H,
+            Row::Folder(..) => FOLDER_H,
             Row::File(_) | Row::NoChanges => FILE_H,
             Row::Commit(_) => COMMIT_H,
             Row::CFile(_) | Row::SFile(_) => CFILE_H,
@@ -639,7 +856,10 @@ impl GitPanel {
             if i < 0 || i >= n {
                 return;
             }
-            if !matches!(self.row_at(i as usize), Some(Row::Header(_) | Row::StashHead | Row::NoChanges) | None) {
+            if !matches!(
+                self.row_at(i as usize),
+                Some(Row::Header(_) | Row::Folder(..) | Row::StashHead | Row::NoChanges) | None
+            ) {
                 self.cursor = i as usize;
                 return;
             }

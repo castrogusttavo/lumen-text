@@ -608,6 +608,7 @@ impl App {
             more: Vec::new(),
         };
         let change = |i: usize| self.gitpanel.as_ref().and_then(|gp| gp.changes.get(i));
+        let sync_title = |h: Hit, d: &str| self.gitpanel.as_ref().map_or(d.to_string(), |g| g.sync_title(h, d));
         match h {
             Hit::Refresh => t("Refresh", None, Some("Re-reads the git status and history".into())),
             Hit::Close => t("Close Git panel", self.shortcut_text("GitPanel"), None),
@@ -641,7 +642,11 @@ impl App {
                 None,
                 Some("With nothing staged, the commit takes all changes".into()),
             ),
-            Hit::Fetch => t("Fetch", None, Some("Downloads news from the remote without touching your files".into())),
+            Hit::Fetch => t(
+                &sync_title(Hit::Fetch, "Fetch"),
+                None,
+                Some("Downloads news from the remote without touching your files".into()),
+            ),
             Hit::Pull => {
                 let n = self.gitpanel.as_ref().map_or(0, |g| g.sync.behind);
                 let how = match crate::gitsync::PullStrategy::from_name(&self.config.git_pull_strategy) {
@@ -649,7 +654,7 @@ impl App {
                     None => "Right-click to choose merge, rebase or fast-forward only".to_string(),
                 };
                 TipText {
-                    title: "Pull".into(),
+                    title: sync_title(Hit::Pull, "Pull"),
                     keys: None,
                     detail: Some(if n > 0 {
                         format!("{n} new commit(s) on the remote")
@@ -662,7 +667,7 @@ impl App {
             Hit::Push => {
                 let g = self.gitpanel.as_ref().map(|g| (g.sync.upstream.clone(), g.sync.ahead));
                 t(
-                    "Push",
+                    &sync_title(Hit::Push, "Push"),
                     None,
                     Some(match g {
                         Some((None, _)) => "Branch has no upstream: asks before publishing".to_string(),
