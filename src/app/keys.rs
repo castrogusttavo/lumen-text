@@ -29,6 +29,10 @@ impl App {
         }
         let key = ev.key.clone();
 
+        if self.onboarding_key(&ev.key) {
+            self.request_redraw();
+            return false;
+        }
         if !self.overlay.is_none() {
             return self.overlay_key(ev);
         }

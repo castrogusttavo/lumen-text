@@ -33,6 +33,9 @@ impl App {
         if self.regions_press(x, y) {
             return self.request_redraw();
         }
+        if self.onboarding_mouse(x, y) {
+            return self.request_redraw();
+        }
         if self.overlay_mouse(x, y) {
             return self.request_redraw();
         }
@@ -297,6 +300,9 @@ impl App {
             return CursorIcon::Text;
         }
         // The update / about card floats above everything: arrow on it, hand on its buttons and link.
+        if let Some(hand) = self.onboarding_cursor_hand() {
+            return if hand { CursorIcon::Pointer } else { CursorIcon::Default };
+        }
         if self.upd.card.is_some() && self.upd.card_rect.contains(x, y) {
             return if self.upd.rects.iter().any(|(r, _)| r.contains(x, y)) {
                 CursorIcon::Pointer

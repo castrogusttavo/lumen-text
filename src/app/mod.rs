@@ -284,6 +284,8 @@ pub struct App {
     pub last_trim: Instant,
     pub minimap_default: bool,
     pub theme_orig: Option<String>,
+    /// First-run / "Help: Welcome tour" card (see `app_onboarding`).
+    pub onboarding: Option<Box<crate::app_onboarding::Onboarding>>,
     pub last_tree_refresh: Instant,
     pub keymap: crate::keymap::Keymap,
     pub preedit: String,
@@ -451,6 +453,7 @@ impl App {
             last_trim: Instant::now(),
             minimap_default: true,
             theme_orig: None,
+            onboarding: None,
             last_tree_refresh: Instant::now(),
             keymap: crate::keymap::Keymap::load(),
             preedit: String::new(),
