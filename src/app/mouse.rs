@@ -346,7 +346,7 @@ impl App {
         if self.page_blocks(x, y) {
             return CursorIcon::Default;
         }
-        if self.tab_dragging() {
+        if self.drop_dragging() {
             return CursorIcon::Grabbing;
         }
         if self.sidebar_resizing() || self.sidebar_on_edge(x, y) {

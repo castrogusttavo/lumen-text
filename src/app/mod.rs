@@ -680,6 +680,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ModifiersChanged(m) => self.mods = map_mods(m.state()),
             WindowEvent::CursorLeft { .. } => self.tooltip_leave(),
+            WindowEvent::DroppedFile(path) => self.drop_os_file(&path),
             WindowEvent::CursorMoved { position, .. } => {
                 // winit reports device pixels; everything inside the app is logical.
                 let s = crate::ui::scale() as f64;

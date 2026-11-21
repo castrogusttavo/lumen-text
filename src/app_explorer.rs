@@ -158,6 +158,19 @@ impl App {
         }
         if let Some(dir) = d.over {
             self.transfer(&d.paths, &dir, !d.copy);
+        } else if let [path] = d.paths.as_slice()
+            && !self.tree.rows.iter().any(|r| &r.path == path && r.is_dir)
+        {
+            // Dropped on the editor: a new pane on that side, or a tab in that pane.
+            let (x, y) = self.mouse;
+            match self.drop_spot(x, y) {
+                Some(spot) => self.drop_file(path, spot),
+                None if self.docs.is_empty() && self.layout.card.contains(x, y) => {
+                    self.open_path(path, None);
+                    self.focus = Focus::Editor;
+                }
+                None => {}
+            }
         }
         self.request_redraw();
         true
@@ -291,6 +304,10 @@ impl App {
                 }
                 None => cv.ring(body.inset(2), 8, c.accent.with_alpha(0xc0)),
             }
+        }
+        // Over the editor: drop zones and the file's ghost instead of the label.
+        if d.over.is_none() && self.draw_drop_overlay(cv) {
+            return;
         }
         let verb = if d.copy { "Copy" } else { "Move" };
         let label = match &d.over {
