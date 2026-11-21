@@ -58,9 +58,11 @@ impl App {
         let mut x = p.x + 12;
         for (tab, label) in [(Tab::Changes, "Changes"), (Tab::History, "History")] {
             let n = gp.changes.len();
-            let text = if tab == Tab::Changes && n > 0 { format!("{label}  {n}") } else { label.to_string() };
+            let badge = if tab == Tab::Changes && n > 0 { n.to_string() } else { String::new() };
             let active = gp.tab == tab;
-            let w = self.tx.ui_width(&text, active) + 24;
+            let lw = self.tx.ui_width(label, active);
+            let bw = if badge.is_empty() { 0 } else { (self.tx.ui_width(&badge, true) + 12).max(20) + 7 };
+            let w = lw + bw + 24;
             let r = Rect::new(x, p.y + 8, w, 28);
             if active {
                 cv.fill_round(r, 8, strong.with_alpha(0x1e));
@@ -68,7 +70,15 @@ impl App {
                 cv.fill_round(r, 8, strong.with_alpha(0x12));
             }
             let col = if active || self.hv(r) { strong } else { dim };
-            self.tx.draw_ui(cv, r.x + 12, r.y + 5, &text, col, r, active);
+            self.tx.draw_ui(cv, r.x + 12, r.y + 5, label, col, r, active);
+            if !badge.is_empty() {
+                let pw = bw - 7;
+                let pill = Rect::new(r.x + 12 + lw + 7, r.y + 6, pw, 16);
+                cv.fill_round(pill, 8, if active { c.accent } else { strong.with_alpha(0x22) });
+                let tw = self.tx.ui_width(&badge, true);
+                let tc = if active { c.on_accent } else { dim };
+                self.tx.draw_ui_sized(cv, pill.x + (pw - tw) / 2, pill.y + 1, &badge, tc, pill, true, 12.0);
+            }
             gp.hits.push((r, Hit::Tab(tab)));
             x += w + 4;
         }
@@ -105,10 +115,13 @@ impl App {
                     + 4;
             right -= self.gp_sync_btn(cv, &mut gp, right, by + 5, "ui/cloud_download", "", Hit::Fetch, !busy) + 4;
         }
-        self.tx.icon(cv, "ui/git_branch", p.x + 16, by + 10, 14, dim, p);
         let branch = self.branch.clone().unwrap_or_else(|| "no branch".into());
-        let branch = fit(&mut self.tx, &branch, right - (p.x + 36) - 4, false);
-        self.tx.draw_ui(cv, p.x + 36, by + 8, &branch, dim, p, false);
+        let branch = fit(&mut self.tx, &branch, right - (p.x + 38) - 14, false);
+        let bw = self.tx.ui_width(&branch, true);
+        let chip = Rect::new(p.x + 10, by + 4, (bw + 38).min(right - (p.x + 10) - 4).max(0), 28);
+        cv.fill_round(chip, 8, c.input_bg);
+        self.tx.icon(cv, "ui/git_branch", chip.x + 8, chip.y + 7, 14, c.accent_text, chip);
+        self.tx.draw_ui(cv, chip.x + 28, chip.y + 5, &branch, strong, chip, true);
 
         // Strip: set-upstream prompt, progress of the running command, or the last result.
         self.gp_measure_prompt(&mut gp, p.w);
@@ -328,9 +341,16 @@ impl App {
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
         let rows = gp.rows();
         if rows.is_empty() {
+            let cx = body.x + body.w / 2;
+            let badge = Rect::new(cx - 22, body.y + 36, 44, 44);
+            cv.fill_round(badge, 22, c.git_added.with_alpha(0x22));
+            self.tx.icon(cv, "ui/check", badge.x + 10, badge.y + 10, 24, c.git_added, body);
             let msg = "No changes";
-            let w = self.tx.ui_width(msg, false);
-            self.tx.draw_ui(cv, body.x + (body.w - w) / 2, body.y + 40, msg, dim, body, false);
+            let w = self.tx.ui_width(msg, true);
+            self.tx.draw_ui(cv, cx - w / 2, body.y + 92, msg, strong, body, true);
+            let sub = "Your working tree is clean";
+            let sw = self.tx.ui_width(sub, false);
+            self.tx.draw_ui(cv, cx - sw / 2, body.y + 114, sub, dim, body, false);
             return;
         }
         let total: i32 = rows.iter().map(|r| GitPanel::row_h(*r)).sum::<i32>() + 16;
@@ -348,7 +368,20 @@ impl App {
             match *row {
                 Row::Header(g) => {
                     let n = gp.changes.iter().filter(|c| c.group == g).count();
-                    self.tx.draw_ui(cv, body.x + 16, y + 9, &format!("{}  {n}", g.title()), dim, clip, true);
+                    let tint = match g {
+                        Group::Staged => c.git_added,
+                        Group::Changes => c.git_modified,
+                        Group::Untracked => c.info,
+                    };
+                    cv.fill_round_clip(Rect::new(body.x + 16, y + 14, 6, 6), 3, tint, clip);
+                    self.tx.draw_ui(cv, body.x + 28, y + 9, g.title(), strong, clip, true);
+                    let tw = self.tx.ui_width(g.title(), true);
+                    let cnt = n.to_string();
+                    let cw = (self.tx.ui_width(&cnt, true) + 12).max(20);
+                    let pill = Rect::new(body.x + 28 + tw + 8, y + 9, cw, 16);
+                    cv.fill_round_clip(pill, 8, strong.with_alpha(0x1c), clip);
+                    let nw = self.tx.ui_width(&cnt, true);
+                    self.tx.draw_ui_sized(cv, pill.x + (cw - nw) / 2, pill.y + 1, &cnt, dim, clip, true, 12.0);
                     let label = if g == Group::Staged { "Remove all" } else { "Add all" };
                     let before = gp.hits.len();
                     self.gp_text_btn(cv, gp, body.right() - 10, y + 5, label, Hit::Section(g), c.accent_text);
@@ -387,8 +420,10 @@ impl App {
                     }
                     let letter = ch.code.to_string();
                     let lw = self.tx.ui_width(&letter, true);
-                    let lx = r.right() - 14 - lw / 2 - 4;
-                    self.tx.draw_ui(cv, lx, y + 6, &letter, code_color(&c, ch.code), clip, true);
+                    let tint = code_color(&c, ch.code);
+                    let chip = Rect::new(r.right() - 30, y + (h - 18) / 2, 18, 18);
+                    cv.fill_round_clip(chip, 6, tint.with_alpha(0x26), clip);
+                    self.tx.draw_ui(cv, chip.x + (18 - lw) / 2, y + 6, &letter, tint, chip.intersect(&vis), true);
                     gp.hits.push((Rect::new(r.x + 34, vis.y, r.w - 34, vis.h).intersect(&vis), Hit::Row(i)));
                     gp.hits.push((cbhit.intersect(&vis), Hit::Check(i)));
                     if conflicted {
@@ -571,7 +606,7 @@ impl App {
         let ready =
             !gp.msg.text().trim().is_empty() && (gp.amend || staged > 0 || (gp.include_all && !gp.changes.is_empty()));
         let label = if gp.amend { "Amend" } else { "Commit" };
-        let bw = self.tx.ui_width(label, true) + 36;
+        let bw = self.tx.ui_width(label, true) + 36 + 22;
         let btn = Rect::new(area.right() - 12 - bw, y, bw, 34);
         let bh = self.hv(btn);
         let fill = if ready {
@@ -583,7 +618,8 @@ impl App {
         };
         cv.fill_round(btn, 10, fill);
         let text_col = if ready { c.on_accent } else { strong.with_alpha(0xc0) };
-        self.tx.draw_ui(cv, btn.x + 18, btn.y + 8, label, text_col, btn, true);
+        self.tx.icon(cv, "ui/git_commit", btn.x + 14, btn.y + 9, 16, text_col, btn);
+        self.tx.draw_ui(cv, btn.x + 36, btn.y + 8, label, text_col, btn, true);
         gp.hits.push((btn, Hit::CommitBtn));
 
         let opt = Rect::new(area.x + 12, y, btn.x - area.x - 20, 34);
