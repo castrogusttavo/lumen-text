@@ -357,6 +357,7 @@ impl App {
         }
         if self.img_wheel(delta)
             || self.sql_wheel(delta)
+            || self.api_wheel(delta)
             || self.mb_wheel(delta)
             || self.md_wheel(delta)
             || self.split_wheel(delta)
@@ -722,6 +723,7 @@ impl App {
         }
         self.split_release();
         self.img_release();
+        self.api_release();
         if self.dragging {
             if let Some(ds) = self.inp.drag.take() {
                 if ds.middle && ds.pending {

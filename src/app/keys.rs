@@ -187,7 +187,7 @@ impl App {
             self.request_redraw();
             return false;
         }
-        if self.focus == Focus::Editor && (self.img_key(ev) || self.sql_key(ev)) {
+        if self.focus == Focus::Editor && (self.img_key(ev) || self.sql_key(ev) || self.api_key(ev)) {
             self.request_redraw();
             return false;
         }
