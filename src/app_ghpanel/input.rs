@@ -82,9 +82,18 @@ impl App {
         let root = self.git_root();
         let Some(mut g) = self.gh.take() else { return };
         // The project changed under a hidden page: forget everything (the next show reloads).
-        if g.root != root && !g.open {
-            self.gh = None;
-            return;
+        if g.root != root {
+            if !g.open {
+                self.gh = None;
+                return;
+            }
+            // Open while the project changed: the lists belong to the old repository.
+            let (wake, focused) = (g.wake.clone(), g.focused);
+            *g = GhPanel::new(&root);
+            g.wake = wake;
+            g.open = true;
+            g.focused = focused;
+            g.check_env();
         }
         let (changed, done) = g.pump();
         if changed {
