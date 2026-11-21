@@ -39,10 +39,10 @@ const ACTIONS: [(&str, &str, &str, Cmd); 6] = [
 fn recents() -> Vec<PathBuf> {
     static CACHE: Mutex<Option<(Instant, Vec<PathBuf>)>> = Mutex::new(None);
     let Ok(mut g) = CACHE.lock() else { return Vec::new() };
-    if let Some((t, v)) = g.as_ref() {
-        if t.elapsed() < Duration::from_secs(5) {
-            return v.clone();
-        }
+    if let Some((t, v)) = g.as_ref()
+        && t.elapsed() < Duration::from_secs(5)
+    {
+        return v.clone();
     }
     let v = crate::app_topbar::load_recents();
     *g = Some((Instant::now(), v.clone()));
