@@ -49,7 +49,7 @@ impl App {
         if button == MouseButton::Left && self.sidebar_edge_press(x, y) {
             return self.request_redraw();
         }
-        if self.topbar_click(x, y) || self.fswatch_click(x, y) || self.status_click(x, y) {
+        if self.rail_click(x, y) || self.topbar_click(x, y) || self.fswatch_click(x, y) || self.status_click(x, y) {
             return self.request_redraw();
         }
         if self.completion_click(x, y) {

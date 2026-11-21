@@ -89,6 +89,9 @@ pub struct Layout {
     pub topbar: Rect,
     pub top_btns: Vec<(Rect, crate::app_topbar::MenuKind)>,
     pub status_btns: Vec<(Rect, crate::app_topbar::StatusBtn)>,
+    /// Activity rail: its column and its buttons.
+    pub rail: Rect,
+    pub rail_btns: Vec<(Rect, crate::app_rail::RailBtn)>,
     /// Non-clickable bottom bar readouts (memory, position, indentation, language): tooltips only.
     pub status_info: Vec<(Rect, crate::app_topbar::StatusBtn)>,
     pub tabbar: Rect,

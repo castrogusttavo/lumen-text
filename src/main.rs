@@ -45,6 +45,7 @@ mod app_overlay;
 mod app_panel;
 mod app_problems;
 mod app_projcfg;
+mod app_rail;
 mod app_remote;
 mod app_reopen;
 mod app_resmon;

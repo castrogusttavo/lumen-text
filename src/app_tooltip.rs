@@ -41,6 +41,7 @@ const MAX_W: i32 = 460;
 pub enum TipKey {
     Top(MenuKind),
     Status(StatusBtn),
+    Rail(crate::app_rail::RailBtn),
     /// A document tab (index into `App::docs`) and its close button.
     Tab(usize),
     TabClose(usize),
@@ -356,6 +357,9 @@ impl App {
         if let Some((r, k)) = l.top_btns.iter().find(|(r, k)| r.contains(x, y) && *k != MenuKind::Browse) {
             return Some((TipKey::Top(*k), *r, true));
         }
+        if let Some((r, k)) = l.rail_btns.iter().find(|(r, _)| r.contains(x, y)) {
+            return Some((TipKey::Rail(*k), *r, false));
+        }
         if let Some((r, k)) = l.status_btns.iter().chain(l.status_info.iter()).find(|(r, _)| r.contains(x, y)) {
             return Some((TipKey::Status(*k), *r, false));
         }
@@ -515,6 +519,7 @@ impl App {
                 Some("Build and run the project, jump to the compiler's problems".into()),
             ),
             TipKey::Git(h) => self.git_tip_text(h),
+            TipKey::Rail(k) => t(k.title(), k.command().and_then(|c| self.shortcut_text(c)), None),
             TipKey::Status(k) => match k {
                 StatusBtn::Sidebar => t("Toggle sidebar", self.shortcut_text("ToggleSidebar"), None),
                 StatusBtn::Search => t("Search in project", self.shortcut_text("ProjectSearch"), None),

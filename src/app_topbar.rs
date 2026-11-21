@@ -1016,8 +1016,16 @@ impl App {
         let y = r.y + (r.h - 18) / 2;
         let dim = c.tab_inactive_fg;
         let vis = |id: &str| self.config.status_visible(id);
-        let (v_search, v_problems, v_term, v_dbg, v_git, v_ram) =
-            (vis("search"), vis("problems"), vis("terminal"), vis("debug"), vis("git"), vis("ram"));
+        // The activity rail carries search, terminal and debug (and the sidebar switch).
+        let railed = self.rail_w() > 0;
+        let (v_search, v_problems, v_term, v_dbg, v_git, v_ram) = (
+            vis("search") && !railed,
+            vis("problems"),
+            vis("terminal") && !railed,
+            vis("debug") && !railed,
+            vis("git"),
+            vis("ram"),
+        );
         let (v_pos, v_indent, v_lang) = (vis("position"), vis("indent"), vis("language"));
         let v_enc = vis("encoding");
 
@@ -1025,7 +1033,7 @@ impl App {
         let mut x = r.x + 6;
         for id in self.config.status_left_order.clone() {
             match id.as_str() {
-                "sidebar" => {
+                "sidebar" if !railed => {
                     let side_icon = if self.sidebar_open {
                         "ui/threads_sidebar_left_open"
                     } else {

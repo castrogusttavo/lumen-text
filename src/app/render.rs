@@ -21,7 +21,10 @@ impl App {
         // Zen mode and the View toggles can hide the top bar, tab bar, breadcrumbs and status bar.
         let (top_h, tab_h, bread_h, status_h) = self.chrome_heights();
         self.layout.topbar = Rect::new(0, 0, w, top_h);
-        self.layout.sidebar = Rect::new(0, top_h, sb, h - status_h - top_h);
+        let lx = self.rail_w();
+        self.layout.rail = Rect::new(0, top_h, lx, h - status_h - top_h);
+        self.layout.sidebar = Rect::new(lx, top_h, sb, h - status_h - top_h);
+        let sb = sb + lx;
         let rw = self.gitpanel_w();
         self.layout.tabbar = Rect::new(sb, top_h, w - sb - rw, tab_h);
         self.layout.bread = Rect::new(sb, top_h + tab_h, (w - sb - rw).max(0), bread_h);
@@ -156,6 +159,7 @@ impl App {
         self.draw_breadcrumbs(cv);
         self.draw_diff(cv);
         crate::perf::lap!("breadcrumbs_diff");
+        self.draw_rail(cv);
         if self.sidebar_open {
             self.draw_sidebar(cv);
         }
