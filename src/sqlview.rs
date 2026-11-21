@@ -615,7 +615,8 @@ mod tests {
             [("v", true), ("my table", false)]
         );
         let mut tables = tables;
-        apply_counts(&mut tables, &run(&db, &counts_sql(&tables).unwrap()).unwrap());
+        let counts = run(&db, &counts_sql(&tables).unwrap()).unwrap();
+        apply_counts(&mut tables, &counts);
         assert_eq!(tables[1].rows, Some(253));
         assert_eq!(tables[0].rows, Some(3));
         let first = parse_rows(&run(&db, &table_sql("my table", 0)).unwrap(), 0).unwrap();

@@ -238,7 +238,7 @@ impl App {
     /// Placeholder, drop marker and floating tab, drawn on top of the strip.
     pub fn draw_tab_drag(&mut self, cv: &mut Canvas) {
         let Some(d) = self.inp.tabs.drag.filter(|d| d.active) else { return };
-        let Some(doc) = self.docs.get(d.doc) else { return };
+        let Some(doc_name) = self.docs.get(d.doc).map(|x| x.name.clone()) else { return };
         let Some((sx, w)) = self.tab_screen_x(d.doc) else { return };
         let c = self.theme.chrome;
         let bar = self.layout.tabbar;
@@ -276,7 +276,7 @@ impl App {
         }
         cv.card(fr, 8, c.tab_active_bg, c.border);
         let fg = c.tab_active_fg;
-        let icon = self.tx.icons.file_icon(&doc.name);
+        let icon = self.tx.icons.file_icon(&doc_name);
         let (name, _) = self.tab_label(d.doc, true);
         self.tx.icon(cv, &icon, fx + 12, bar.y + (bar.h - 16) / 2, 16, fg, fr);
         self.tx.draw_ui(cv, fx + 34, bar.y + (bar.h - 18) / 2, &name, fg, fr, true);
