@@ -56,7 +56,9 @@ impl App {
                 }
             }
             Cmd::Undo | Cmd::Redo => {
-                if let Some(d) = self.docs.get_mut(self.active) {
+                if !self.mb_undo(c == Cmd::Undo)
+                    && let Some(d) = self.docs.get_mut(self.active)
+                {
                     if c == Cmd::Undo {
                         d.ed.undo(&mut d.buf)
                     } else {

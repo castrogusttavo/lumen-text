@@ -493,7 +493,12 @@ impl App {
     pub fn try_quit(&mut self) -> bool {
         // Hot exit: unsaved buffers are kept on disk and reopened next time, so there is nothing to ask.
         let hot = self.config.hot_exit && self.hot_exit_store();
-        let dirty: Vec<&str> = self.docs.iter().filter(|d| d.buf.is_dirty()).map(|d| d.name.as_str()).collect();
+        let dirty: Vec<&str> = self
+            .docs
+            .iter()
+            .filter(|d| d.buf.is_dirty() || d.mb.as_ref().is_some_and(|m| m.is_dirty()))
+            .map(|d| d.name.as_str())
+            .collect();
         if !hot && !dirty.is_empty() && !self.quit_armed {
             self.quit_armed = true;
             let list = dirty.join(", ");

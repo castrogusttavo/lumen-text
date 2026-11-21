@@ -76,7 +76,7 @@ fn map_pos(p: usize, edits: &[(usize, usize, String)]) -> usize {
 }
 
 /// Apply `edits` (ascending char ranges) to a document as one undo step; the cursor follows.
-fn edit_doc(d: &mut crate::doc::Doc, edits: &[(usize, usize, String)]) {
+pub(crate) fn edit_doc(d: &mut crate::doc::Doc, edits: &[(usize, usize, String)]) {
     if edits.is_empty() {
         return;
     }
