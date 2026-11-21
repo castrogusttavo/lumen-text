@@ -15,7 +15,6 @@ const BTN: i32 = 32;
 const ICON: i32 = 18;
 const GAP: i32 = 4;
 /// Height of the brand mark at the top of the rail.
-const LOGO_H: i32 = 26;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RailBtn {
@@ -104,10 +103,7 @@ impl App {
         cv.fill(r, c.sidebar_bg);
         cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), c.border);
         let x = r.x + (r.w - 1 - BTN) / 2;
-        // The brand mark opens the stack.
-        let lw = crate::brand::width_for(LOGO_H);
-        crate::brand::draw_mark(cv, r.x + (r.w - 1 - lw) / 2, r.y + 10, LOGO_H, r);
-        let mut y = r.y + 10 + LOGO_H + 14;
+        let mut y = r.y + 10;
         for b in RailBtn::TOP {
             self.rail_button(cv, Rect::new(x, y, BTN, BTN), b);
             y += BTN + GAP;
