@@ -1,6 +1,6 @@
 name: Language servers
 
-# Real language servers, end to end (src/lsp_matrix.rs). Slow (installs ~25 servers) and depends on
+# Real language servers, end to end (src/lsp_matrix.rs). Slow (installs ~30 servers) and depends on
 # upstream releases, so pull requests only run it when LSP code changes; main runs it on every push
 # and once a week, so an upstream server that broke shows up even without a code change.
 # Never a dependency of the release: a red job says which language stopped working.

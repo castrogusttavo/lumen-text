@@ -268,7 +268,88 @@ const CASES: &[Case] = &[
         want_diag: true,
         wait: 20,
     },
+    Case {
+        name: "compose",
+        // `portz` is not a compose-spec key; `docker-compose.yml` gets the YAML server (schema store)
+        // plus the compose language service.
+        files: &[(
+            "docker-compose.yml",
+            "services:\n  web:\n    image: nginx:1.27\n    portz:\n      - \"80:80\"\n    depends_on:\n      - db\n  db:\n    image: postgres:16\n",
+        )],
+        hover_on: "image: nginx",
+        want_diag: true,
+        wait: 40,
+    },
+    Case {
+        name: "prisma",
+        // `Post` is not declared anywhere: the schema validator flags the relation field.
+        files: &[(
+            "prisma/schema.prisma",
+            "datasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\nmodel User {\n  id    Int    @id @default(autoincrement())\n  email String @unique\n  posts Post[]\n}\n",
+        )],
+        hover_on: "@unique",
+        want_diag: true,
+        wait: 40,
+    },
+    Case {
+        name: "yaml-k8s",
+        // Kubernetes schema through `yaml.schemas` (`k8s/**`): `replicas` must be an integer.
+        files: &[(
+            "k8s/deployment.yaml",
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  replicas: \"three\"\n  selector:\n    matchLabels:\n      app: web\n  template:\n    metadata:\n      labels:\n        app: web\n    spec:\n      containers:\n        - name: web\n          image: nginx:1.27\n",
+        )],
+        hover_on: "replicas",
+        want_diag: true,
+        wait: 90,
+    },
+    Case {
+        name: "terraform",
+        // terraform-ls answers from its built-in schema without `terraform init`; a missing
+        // provider schema only limits resource attributes.
+        files: &[(
+            "main.tf",
+            "variable \"region\" {\n  type    = string\n  default = \"eu-west-1\"\n}\n\nresource \"aws_s3_bucket\" \"b\" {\n  bucket = var.regionn\n}\n",
+        )],
+        hover_on: "type    = string",
+        want_diag: true,
+        wait: 60,
+    },
+    Case {
+        name: "helm",
+        // helm-ls on a chart template (needs `Chart.yaml` above `templates/`); the unclosed `{{`
+        // is a template syntax error.
+        files: &[
+            (
+                "chart/templates/deployment.yaml",
+                "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {{ .Release.Name }}\nspec:\n  replicas: {{ .Values.replicas }}\n  image: {{ .Values.image.repo \n",
+            ),
+            ("chart/Chart.yaml", "apiVersion: v2\nname: web\nversion: 0.1.0\n"),
+            ("chart/values.yaml", "replicas: 2\nimage:\n  repo: nginx\n"),
+        ],
+        hover_on: ".Values.replicas",
+        want_diag: true,
+        wait: 40,
+    },
+    Case {
+        name: "nginx",
+        // A directive without its `;`.
+        files: &[(
+            "nginx.conf",
+            "events {}\nhttp {\n  server {\n    listen 80\n    server_name example.com;\n    location / {\n      root /var/www;\n    }\n  }\n}\n",
+        )],
+        hover_on: "server_name",
+        want_diag: true,
+        wait: 30,
+    },
 ];
+
+/// Cases that must also answer a completion request (the languages the editor promises
+/// auto-complete for in the infrastructure files).
+const COMPLETION_REQUIRED: &[&str] = &["dockerfile", "prisma", "yaml-k8s"];
+
+/// Cases whose server is young or needs tools outside the matrix (`terraform`, `helm`, `ansible`):
+/// a miss is printed in the table but does not fail the job.
+const SOFT: &[&str] = &["terraform", "helm", "nginx"];
 
 #[derive(Default)]
 struct Outcome {
@@ -407,10 +488,13 @@ fn lsp_matrix() {
         stop(&mut app);
         let line = row(c.name, &o);
         eprintln!("{line}");
-        let ok = o.started && (!c.want_diag || !o.diags.is_empty()) && o.hover;
-        if !ok && !o.note.starts_with("no server ready") {
-            failed.push(c.name);
-        } else if !o.started {
+        let ok = o.started
+            && (!c.want_diag || !o.diags.is_empty())
+            && o.hover
+            && (!COMPLETION_REQUIRED.contains(&c.name) || o.completion);
+        if !ok && SOFT.contains(&c.name) {
+            eprintln!("{}: not fully working, reported only (soft case)", c.name);
+        } else if !ok {
             failed.push(c.name);
         }
         table.push(line);

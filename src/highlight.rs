@@ -654,6 +654,12 @@ pub fn comment_prefix(path: &str) -> &'static str {
     }
 }
 
+/// Is `path` in a folder nginx reads its configuration from?
+fn in_nginx_dir(path: &str) -> bool {
+    let p = path.replace('\\', "/").to_ascii_lowercase();
+    ["/nginx/", "/sites-available/", "/sites-enabled/", "/conf.d/", "/nginx.d/"].iter().any(|d| p.contains(d))
+}
+
 /// The editor's language id (a grammar id from `assets/language-manifest.json`) for a path: by
 /// well-known file name first (Dockerfile, Makefile...), then by extension.
 pub fn language_for(path: &str) -> Option<&'static str> {
@@ -667,6 +673,12 @@ pub fn language_for(path: &str) -> Option<&'static str> {
         "justfile" | ".justfile" => Some("just"),
         ".bashrc" | ".bash_profile" | ".zshrc" | ".zprofile" | ".profile" | "pkgbuild" => Some("shellscript"),
         ".env" => Some("dotenv"),
+        "nginx.conf" | "mime.types" | "fastcgi_params" | "proxy_params" | "uwsgi_params" | "scgi_params" => {
+            Some("nginx")
+        }
+        _ if lower.ends_with(".nginx") || lower.ends_with(".nginx.conf") => Some("nginx"),
+        // `*.conf` inside an nginx folder (/etc/nginx/conf.d, sites-enabled, a project's `nginx/`).
+        _ if lower.ends_with(".conf") && in_nginx_dir(path) => Some("nginx"),
         // Messages git asks the editor to write (`git commit`, `git merge`, `git tag -a`, `git rebase -i`).
         "commit_editmsg" | "merge_msg" | "tag_editmsg" | "squash_msg" => Some("git-commit"),
         "git-rebase-todo" => Some("git-rebase"),
@@ -740,6 +752,7 @@ pub fn language_for(path: &str) -> Option<&'static str> {
         "d" => "d",
         "sql" => "sql",
         "prisma" => "prisma",
+        "env" => "dotenv",
         "graphql" | "gql" => "graphql",
         "proto" => "proto",
         "tf" | "tfvars" => "terraform",
@@ -799,6 +812,13 @@ mod tests {
             ("/p/CMakeLists.txt", Some("cmake")),
             ("/p/Gemfile", Some("ruby")),
             ("/p/.env.local", Some("dotenv")),
+            ("/p/prod.env", Some("dotenv")),
+            ("/p/db/schema.prisma", Some("prisma")),
+            ("/p/infra/main.tf", Some("terraform")),
+            ("/p/infra/prod.tfvars", Some("terraform")),
+            ("/etc/nginx/nginx.conf", Some("nginx")),
+            ("/etc/nginx/conf.d/app.conf", Some("nginx")),
+            ("/p/app.conf", Some("ini")),
             ("/p/App.csproj", Some("xml")),
             ("C:\\p\\Main.java", Some("java")),
             ("/p/pages/home.ghp", Some("ghp")),

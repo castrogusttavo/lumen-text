@@ -18,6 +18,9 @@ NPM_PACKAGES=(
   "yaml-language-server@2.0.0"
   "bash-language-server@5.8.1"
   "dockerfile-language-server-nodejs@0.15.0"
+  "@microsoft/compose-language-service@1.0.0"   # docker-compose-langserver
+  "@prisma/language-server@31.13.0"
+  "@ansible/ansible-language-server@26.6.0"      # module docs / lint need ansible + ansible-lint (optional)
   "basedpyright@1.40.2"
   "intelephense@1.18.5"
   "svelte-language-server@0.18.6"
@@ -30,6 +33,13 @@ PYRIGHT=1.1.414
 TSGO=7.0.0-dev.20260707.2
 RUFF=0.17.4
 PYLSP=1.15.0
+NGINX_LS=0.7.1
+TERRAFORM_LS=0.39.1
+TERRAFORM_LS_SHA256_x86_64=fe2a158e4a1a8ec8047dae9e06c439b468412aa579929ba28b2e1258cedef9c0
+TERRAFORM_LS_SHA256_aarch64=a72a6d9f72580cfc30cc06d3c973fd5f55790f62e3ddb195998435070d9af36d
+HELM_LS=v0.5.4
+HELM_LS_SHA256_x86_64=5d857ba25c461d3218bb98d9e98cb61bc948bfa92b124667d7e6ed695fe2da5f
+HELM_LS_SHA256_aarch64=565d4a298d15e69a1bc7275a7fcf287d364668e53fdf09110d76aac5c820f78c
 LUA_LS=3.19.2
 MARKSMAN=2026-02-08
 TAPLO=0.10.0
@@ -79,7 +89,8 @@ if want npm; then
     && npm install --no-audit --no-fund --loglevel=error "${NPM_PACKAGES[@]}")
   for b in vscode-json-language-server vscode-css-language-server vscode-html-language-server \
     yaml-language-server bash-language-server docker-langserver basedpyright-langserver intelephense \
-    svelteserver astro-ls vue-language-server tailwindcss-language-server; do
+    svelteserver astro-ls vue-language-server tailwindcss-language-server \
+    docker-compose-langserver prisma-language-server ansible-language-server; do
     link "../node_modules/.bin/$b" "$b"
   done
   # pyright gets its own prefix: basedpyright ships a `pyright-langserver` too.
@@ -97,11 +108,12 @@ if want tsgo; then
 fi
 
 if want python; then
-  step "ruff $RUFF, python-lsp-server $PYLSP"
+  step "ruff $RUFF, python-lsp-server $PYLSP, nginx-language-server $NGINX_LS"
   [ -x "$DIR/venv/bin/python" ] || python3 -m venv "$DIR/venv"
-  "$DIR/venv/bin/pip" install -q --disable-pip-version-check "ruff==$RUFF" "python-lsp-server==$PYLSP"
+  "$DIR/venv/bin/pip" install -q --disable-pip-version-check "ruff==$RUFF" "python-lsp-server==$PYLSP" "nginx-language-server==$NGINX_LS"
   link ../venv/bin/ruff ruff
   link ../venv/bin/pylsp pylsp
+  link ../venv/bin/nginx-language-server nginx-language-server
 fi
 
 if want rust; then
@@ -123,6 +135,22 @@ if want taplo && [ ! -x "$BIN/taplo" ]; then
   step "taplo $TAPLO"
   fetch "https://github.com/tamasfe/taplo/releases/download/$TAPLO/taplo-linux-$A.gz" "$BIN/taplo.gz"
   gunzip -f "$BIN/taplo.gz" && chmod +x "$BIN/taplo"
+fi
+
+if want terraform && [ ! -x "$BIN/terraform-ls" ]; then
+  step "terraform-ls $TERRAFORM_LS"
+  a=amd64; [ "$A" = aarch64 ] && a=arm64
+  fetch "https://releases.hashicorp.com/terraform-ls/$TERRAFORM_LS/terraform-ls_${TERRAFORM_LS}_linux_$a.zip" "$TMP/terraform-ls.zip"
+  sum="TERRAFORM_LS_SHA256_$A"; verify "$TMP/terraform-ls.zip" "${!sum}"
+  unzip -q -o "$TMP/terraform-ls.zip" terraform-ls -d "$BIN" && chmod +x "$BIN/terraform-ls"
+fi
+
+if want helm && [ ! -x "$BIN/helm_ls" ]; then
+  step "helm-ls $HELM_LS"
+  a=amd64; [ "$A" = aarch64 ] && a=arm64
+  fetch "https://github.com/mrjosh/helm-ls/releases/download/$HELM_LS/helm_ls_linux_$a" "$BIN/helm_ls"
+  sum="HELM_LS_SHA256_$A"; verify "$BIN/helm_ls" "${!sum}"
+  chmod +x "$BIN/helm_ls"
 fi
 
 if want marksman && [ ! -x "$BIN/marksman" ]; then
