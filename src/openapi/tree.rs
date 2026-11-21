@@ -74,9 +74,6 @@ impl Node {
     pub fn is_map(&self) -> bool {
         matches!(self.val, Val::Map(_))
     }
-    pub fn is_null(&self) -> bool {
-        matches!(self.val, Val::Null)
-    }
 }
 
 /// Parse a JSON or YAML document.

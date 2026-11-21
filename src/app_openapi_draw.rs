@@ -580,7 +580,7 @@ impl ApiView {
 
     fn center_body(&self, p: &mut P, r: Rect, top: i32) -> i32 {
         let Some(spec) = self.spec.as_ref() else { return top };
-        let w = (r.w - 2 * PAD).min(MAX_COL).max(160);
+        let w = (r.w - 2 * PAD).clamp(160, MAX_COL.max(160));
         let x = r.x + ((r.w - w) / 2).max(PAD.min(r.w / 8));
         let y = top + PAD;
         match self.sel {
@@ -998,7 +998,7 @@ impl ApiView {
             return y + 60;
         }
         for f in &self.findings {
-            let lines = p.wrap(&f.msg, w - 220, false, sz(0.95));
+            let lines = p.wrap(&f.msg, w - 330, false, sz(0.95));
             let h = (lines.len() as i32 * lh(sz(0.95)) + 18).max(40);
             let rr = Rect::new(x, y, w, h);
             if p.vis(y, h) {
@@ -1014,7 +1014,7 @@ impl ApiView {
                 for (li, l) in lines.iter().enumerate() {
                     p.text(x + 100, y + 9 + li as i32 * lh(sz(0.95)), l, c.tab_active_fg, false, sz(0.95));
                 }
-                let loc = format!("line {}", f.line + 1);
+                let loc = format!("{} · line {}", f.code, f.line + 1);
                 let lw = p.tw(&loc, false, sz(0.85));
                 p.text(
                     x + w - lw - 14,
@@ -1236,7 +1236,8 @@ impl ApiView {
         // Send.
         if let Some(f) = &self.inflight {
             let secs = f.started.elapsed().as_secs_f32();
-            p.button(Rect::new(x, y, w - 90, 38), &format!("Sending… {secs:.1}s"), Hit::Cancel, false);
+            let what = if f.op == self.sel_op() { "Sending" } else { "Sending (another endpoint)" };
+            p.button(Rect::new(x, y, w - 90, 38), &format!("{what}… {secs:.1}s"), Hit::Cancel, false);
             p.button(Rect::new(x + w - 82, y, 82, 38), "Cancel", Hit::Cancel, false);
         } else {
             p.button(Rect::new(x, y, w, 38), "Send request", Hit::Send, true);
@@ -1316,6 +1317,11 @@ impl ApiView {
             }
         }
         y += 34;
+        if !l.req.url.is_empty() {
+            let line = p.fit(&format!("{} {}", l.req.method, l.req.url), w, false, sz(0.8));
+            p.text(x, y - 4, &line, c.tab_inactive_fg, false, sz(0.8));
+            y += lh(sz(0.8));
+        }
         let nissues = match &l.verdict {
             Some(Verdict::Fail(v)) => v.len(),
             _ => 0,
