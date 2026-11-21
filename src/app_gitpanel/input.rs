@@ -304,6 +304,7 @@ impl App {
                     self.gp_open_diff_stash(&mut gp, j);
                 }
                 Some(Hit::Section(g)) => self.gp_section(&mut gp, g),
+                Some(Hit::Toggle(g)) => self.gp_toggle_group(&mut gp, g),
                 Some(Hit::Msg) => {
                     gp.msg_focus = true;
                     let clicks = gp.msg_click_count(x, y);

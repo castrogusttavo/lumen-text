@@ -18,6 +18,8 @@ pub enum Hit {
     ConfirmDiscard(usize),
     Row(usize),
     Section(Group),
+    /// A group header (or its chevron): collapse / expand its files.
+    Toggle(Group),
     Msg,
     Opt,
     CommitBtn,
@@ -229,6 +231,10 @@ pub struct GitPanel {
     pub refresh_gen: u64,
     pub refresh_busy: bool,
     pub refresh_again: bool,
+    /// Groups whose files are folded away under their header.
+    pub collapsed: std::collections::HashSet<Group>,
+    /// Line counts per file; `None` until the first read arrives (nothing is drawn meanwhile).
+    pub stats: Option<NumStats>,
 }
 
 /// What one refresh of the panel reads from git (on any thread; applied on the UI thread).
@@ -242,6 +248,7 @@ pub struct PanelData {
     pub state: RepoState,
     pub can_undo: bool,
     pub stashes: Vec<StashEntry>,
+    pub stats: NumStats,
 }
 
 /// Run the panel's git commands for `root`: the repository top, one `git status` (changes,
@@ -257,6 +264,7 @@ pub fn read_panel(root: &Path) -> PanelData {
             state: RepoState::Clean,
             can_undo: false,
             stashes: Vec::new(),
+            stats: NumStats::default(),
         };
     };
     let st = git_run(t, &STATUS_V2_ARGS).map(|o| parse_status_v2(&o)).unwrap_or_default();
@@ -267,6 +275,14 @@ pub fn read_panel(root: &Path) -> PanelData {
         state: repo_state(t),
         can_undo: git_run(t, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_ok(),
         stashes: list_stashes(t),
+        stats: NumStats {
+            unstaged: git_run(t, &["diff", "--numstat", "-z", "--no-renames"])
+                .map(|o| parse_numstat(&o))
+                .unwrap_or_default(),
+            staged: git_run(t, &["diff", "--cached", "--numstat", "-z", "--no-renames"])
+                .map(|o| parse_numstat(&o))
+                .unwrap_or_default(),
+        },
         top,
     }
 }
@@ -331,6 +347,8 @@ impl GitPanel {
             refresh_gen: 0,
             refresh_busy: false,
             refresh_again: false,
+            collapsed: std::collections::HashSet::new(),
+            stats: None,
         };
         p.refresh();
         p
@@ -388,6 +406,7 @@ impl GitPanel {
         self.sync = data.sync;
         (self.state, self.can_undo) = (data.state, data.can_undo);
         self.stashes = data.stashes;
+        self.stats = Some(data.stats);
         let still = open_sha.and_then(|s| self.stashes.iter().position(|e| e.sha == s));
         if still.is_none() {
             self.stash_files.clear();
@@ -494,6 +513,15 @@ impl GitPanel {
         }
     }
 
+    /// Fold / unfold a group's files; the cursor stays on a row that exists.
+    pub fn toggle_group(&mut self, g: Group) {
+        if !self.collapsed.remove(&g) {
+            self.collapsed.insert(g);
+        }
+        let n = self.row_count();
+        self.cursor = self.cursor.min(n.saturating_sub(1));
+    }
+
     pub fn staged(&self) -> usize {
         self.changes.iter().filter(|c| c.group == Group::Staged).count()
     }
@@ -520,7 +548,9 @@ impl GitPanel {
                         continue;
                     }
                     v.push(Row::Header(g));
-                    v.extend(idx.into_iter().map(Row::File));
+                    if !self.collapsed.contains(&g) {
+                        v.extend(idx.into_iter().map(Row::File));
+                    }
                 }
                 // Stashes after the changes; the header also offers "Stash…" when there is
                 // something to stash.

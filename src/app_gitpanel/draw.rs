@@ -373,12 +373,19 @@ impl App {
                         Group::Changes => c.git_modified,
                         Group::Untracked => c.info,
                     };
-                    cv.fill_round_clip(Rect::new(body.x + 16, y + 14, 6, 6), 3, tint, clip);
-                    self.tx.draw_ui(cv, body.x + 28, y + 9, g.title(), strong, clip, true);
+                    let hrow = Rect::new(body.x, y, body.w, h);
+                    if self.hv(hrow) && self.hv(vis) {
+                        cv.fill_round_clip(Rect::new(body.x + 6, y, body.w - 12, h), 8, strong.with_alpha(0x0c), clip);
+                    }
+                    gp.hits.push((hrow.intersect(&vis), Hit::Toggle(g)));
+                    let chev = if gp.collapsed.contains(&g) { "ui/chevron_right" } else { "ui/chevron_down" };
+                    self.tx.icon(cv, chev, body.x + 10, y + 9, 16, dim, vis);
+                    cv.fill_round_clip(Rect::new(body.x + 32, y + 14, 6, 6), 3, tint, clip);
+                    self.tx.draw_ui(cv, body.x + 44, y + 9, g.title(), strong, clip, true);
                     let tw = self.tx.ui_width(g.title(), true);
                     let cnt = n.to_string();
                     let cw = (self.tx.ui_width(&cnt, true) + 12).max(20);
-                    let pill = Rect::new(body.x + 28 + tw + 8, y + 9, cw, 16);
+                    let pill = Rect::new(body.x + 44 + tw + 8, y + 9, cw, 16);
                     cv.fill_round_clip(pill, 8, strong.with_alpha(0x1c), clip);
                     let nw = self.tx.ui_width(&cnt, true);
                     self.tx.draw_ui_sized(cv, pill.x + (cw - nw) / 2, pill.y + 1, &cnt, dim, clip, true, 12.0);
@@ -409,7 +416,22 @@ impl App {
                     self.tx.icon(cv, &icon, r.x + 34, y + 7, 16, dim, clip);
                     let conflicted = ch.code == 'U';
                     let reserved = if ch.discardable() { 66 } else { 36 } + if conflicted { 28 } else { 0 };
-                    let avail = r.w - 58 - reserved;
+                    // Line counts sit dim left of the buttons; the stage / unstage button of a hovered
+                    // row takes the slot before them.
+                    let hover_btn = !conflicted;
+                    let slot = if hover_btn { 28 } else { 0 };
+                    let stat = gp.stats.as_ref().and_then(|s| s.of(&ch));
+                    let (stat_w, stat_parts) = match stat {
+                        Some(s) => {
+                            let fmt = |v: Option<u32>, sign: char| v.map_or("-".to_string(), |n| format!("{sign}{n}"));
+                            let (a, d) = (fmt(s.add, '+'), fmt(s.del, '-'));
+                            let w =
+                                self.tx.ui_width_sized(&a, false, 11.0) + 6 + self.tx.ui_width_sized(&d, false, 11.0);
+                            (w + 8, Some((a, d)))
+                        }
+                        None => (0, None),
+                    };
+                    let avail = r.w - 58 - reserved - slot - stat_w;
                     let nm = fit(&mut self.tx, name, avail, false);
                     let nw = self.tx.ui_width(&nm, false);
                     let deleted = ch.code == 'D';
@@ -426,6 +448,25 @@ impl App {
                     self.tx.draw_ui(cv, chip.x + (18 - lw) / 2, y + 6, &letter, tint, chip.intersect(&vis), true);
                     gp.hits.push((Rect::new(r.x + 34, vis.y, r.w - 34, vis.h).intersect(&vis), Hit::Row(i)));
                     gp.hits.push((cbhit.intersect(&vis), Hit::Check(i)));
+                    let btns_x = r.right() - reserved - slot;
+                    if let Some((a, d)) = stat_parts {
+                        let aw = self.tx.ui_width_sized(&a, false, 11.0);
+                        let sx = btns_x - stat_w;
+                        self.tx.draw_ui_sized(cv, sx, y + 8, &a, c.git_added.with_alpha(0x99), clip, false, 11.0);
+                        self.tx.draw_ui_sized(cv, sx + aw + 6, y + 8, &d, c.error.with_alpha(0x99), clip, false, 11.0);
+                    }
+                    if hover_btn && (hov || cur) {
+                        // Same actions as the checkbox: stage / unstage this file.
+                        let staged = ch.check_state() == CheckState::On;
+                        let sr = Rect::new(btns_x + 2, y + 3, 24, 24);
+                        let sh = self.hv(sr) && self.hv(vis);
+                        if sh {
+                            cv.fill_round_clip(sr, 8, strong.with_alpha(0x22), clip);
+                        }
+                        let icon = if staged { "ui/minus" } else { "ui/plus" };
+                        self.tx.icon(cv, icon, sr.x + 4, sr.y + 4, 16, if sh { strong } else { dim }, vis);
+                        gp.hits.push((sr.intersect(&vis), Hit::Check(i)));
+                    }
                     if conflicted {
                         // Conflicted file: the merge editor is one click away (always shown).
                         let br = Rect::new(r.right() - if ch.discardable() { 86 } else { 58 }, y + 3, 24, 24);

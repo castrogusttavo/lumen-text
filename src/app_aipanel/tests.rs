@@ -2,6 +2,15 @@ use super::*;
 use crate::keymap::Keymap;
 use winit::keyboard::NamedKey;
 
+#[test]
+fn session_filter_matches_name_or_agent_words() {
+    assert!(session_matches("api work", "Claude Code", ""));
+    assert!(session_matches("api work", "Claude Code", "API"));
+    assert!(session_matches("api work", "Claude Code", "claude"));
+    assert!(session_matches("api work", "Claude Code", "work cl"));
+    assert!(!session_matches("api work", "Claude Code", "gemini"));
+}
+
 fn sig(alive: bool, idle_ms: u64) -> Signals<'static> {
     Signals {
         alive,

@@ -1,6 +1,7 @@
 //! AI panel model: the sessions, their status heuristic (pure, unit-tested) and the hit targets.
 
 use super::*;
+use crate::field::TextField;
 
 /// What the agent is doing, as far as the terminal shows it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -109,6 +110,10 @@ pub enum AiHit {
     Session(usize),
     /// The close button of session tab `n`.
     CloseSession(usize),
+    /// The session filter field above the terminal.
+    Filter,
+    /// Its clear button.
+    FilterClear,
 }
 
 /// What one session's process looked like at a moment (taken from its terminal).
@@ -356,6 +361,10 @@ pub struct AiState {
     pub hits: Vec<(Rect, AiHit)>,
     /// The left edge is being dragged.
     pub resizing: bool,
+    /// Narrows the session tabs by name or agent.
+    pub filter: TextField,
+    /// Keys go to the filter field instead of the agent.
+    pub filter_focus: bool,
     /// The IDE bridge (Claude Code's diffs, selection, diagnostics, hooks).
     pub bridge: super::bridge::Bridge,
     /// A prompt ("Explain" / "Fix with AI") waiting for its session to finish starting.
@@ -381,6 +390,8 @@ impl Default for AiState {
             last_tab_click: None,
             hits: Vec::new(),
             resizing: false,
+            filter: TextField::default(),
+            filter_focus: false,
             bridge: Default::default(),
             pending_prompt: None,
             #[cfg(test)]
@@ -389,7 +400,21 @@ impl Default for AiState {
     }
 }
 
+/// Does a session called `name` running `agent` match the filter text `q` (case-insensitive,
+/// every word must appear in the name or the agent's name)?
+pub fn session_matches(name: &str, agent: &str, q: &str) -> bool {
+    let hay = format!("{} {}", name.to_lowercase(), agent.to_lowercase());
+    q.split_whitespace().all(|w| hay.contains(&w.to_lowercase()))
+}
+
 impl AiState {
+    /// Indices of the sessions the filter lets through (all of them when it is empty).
+    pub fn visible(&self) -> Vec<usize> {
+        (0..self.sessions.len())
+            .filter(|&i| session_matches(&self.sessions[i].name, self.sessions[i].agent.name, &self.filter.text))
+            .collect()
+    }
+
     pub fn hit_at(&self, x: f64, y: f64) -> Option<(Rect, AiHit)> {
         self.hits.iter().rev().find(|(r, _)| r.contains(x, y)).copied()
     }

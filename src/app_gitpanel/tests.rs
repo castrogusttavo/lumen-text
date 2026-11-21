@@ -134,6 +134,7 @@ fn a_background_refresh_older_than_the_last_one_is_dropped() {
         state: RepoState::Clean,
         can_undo: true,
         stashes: Vec::new(),
+        stats: NumStats::default(),
     };
     // The current generation is applied.
     gp.refresh_busy = true;
@@ -916,5 +917,49 @@ fn commit_box_wraps_scrolls_selects_all_and_commits() {
     assert_eq!(gp.msg.text(), "", "the box is emptied after the commit");
     assert_eq!(git_run(&dir, &["log", "-1", "--format=%s"]).unwrap().trim(), "fix: wrap the commit box");
     drop(app);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn numstat_parses_counts_binaries_and_odd_paths() {
+    let m = parse_numstat("3\t1\tsrc/a.rs\0-\t-\timg/logo.png\00\t12\twith space.txt\0");
+    assert_eq!(m["src/a.rs"], LineStat { add: Some(3), del: Some(1) });
+    assert_eq!(m["img/logo.png"], LineStat { add: None, del: None }, "binary files report '-'");
+    assert_eq!(m["with space.txt"], LineStat { add: Some(0), del: Some(12) });
+    assert_eq!(m.len(), 3);
+    assert!(parse_numstat("").is_empty());
+    assert!(parse_numstat("garbage\0\0x\ty\0").is_empty(), "malformed records are skipped");
+}
+
+#[test]
+fn numstat_is_picked_by_group() {
+    let mut stats = NumStats::default();
+    stats.staged.insert("a".into(), LineStat { add: Some(1), del: Some(0) });
+    stats.unstaged.insert("a".into(), LineStat { add: Some(5), del: Some(2) });
+    let mk = |group| Change { path: "a".into(), old: None, code: 'M', group };
+    assert_eq!(stats.of(&mk(Group::Staged)).unwrap().add, Some(1));
+    assert_eq!(stats.of(&mk(Group::Changes)).unwrap().add, Some(5));
+    assert!(stats.of(&mk(Group::Untracked)).is_none());
+}
+
+#[test]
+fn collapsing_a_group_hides_its_files_only() {
+    let dir = tmp_repo("collapse");
+    std::fs::write(dir.join("a.ts"), "1\n").unwrap();
+    git_run(&dir, &["add", "-A"]).unwrap();
+    commit(&dir, "init").unwrap();
+    std::fs::write(dir.join("a.ts"), "2\n").unwrap();
+    std::fs::write(dir.join("new.ts"), "x\n").unwrap();
+    let mut gp = GitPanel::new(&dir);
+    assert!(gp.rows().contains(&Row::File(0)));
+    let stats = gp.stats.clone().expect("the first read brings the counts");
+    assert_eq!(stats.unstaged["a.ts"], LineStat { add: Some(1), del: Some(1) });
+    gp.toggle_group(Group::Changes);
+    let rows = gp.rows();
+    assert!(rows.contains(&Row::Header(Group::Changes)), "the header stays");
+    assert!(!rows.iter().any(|r| matches!(r, Row::File(i) if gp.changes[*i].group == Group::Changes)));
+    assert!(rows.iter().any(|r| matches!(r, Row::File(i) if gp.changes[*i].group == Group::Untracked)));
+    gp.toggle_group(Group::Changes);
+    assert!(gp.rows().iter().any(|r| matches!(r, Row::File(i) if gp.changes[*i].group == Group::Changes)));
     std::fs::remove_dir_all(&dir).ok();
 }
