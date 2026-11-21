@@ -24,6 +24,8 @@ pub enum Hit {
 const ROW_H: i32 = 34;
 const COL_W: i32 = 420;
 const RECENT_SHOWN: usize = 3;
+/// Height of the brand mark above the title.
+const LOGO_H: i32 = 56;
 
 /// (icon, label, command id for the shortcut, command to run).
 const ACTIONS: [(&str, &str, &str, Cmd); 6] = [
@@ -57,7 +59,7 @@ impl App {
         cv.fill(area, self.theme.background);
         let recent: Vec<PathBuf> = recents().into_iter().filter(|p| *p != self.root).take(RECENT_SHOWN).collect();
         let rows = ACTIONS.len() + recent.len();
-        let head = 28 + 10 + 24 + 20;
+        let head = LOGO_H + 12 + 24 + 20;
         let sec = if recent.is_empty() { 0 } else { 30 };
         let total = head + 20 + rows as i32 * ROW_H + sec;
         let w = COL_W.min(area.w - 32);
@@ -67,8 +69,8 @@ impl App {
         let x = area.x + (area.w - w) / 2;
         let mut y = area.y + ((area.h - total) / 2).max(16);
 
-        self.tx.icon(cv, "ui/sparkle", area.x + (area.w - 28) / 2, y, 28, c.accent_text, area);
-        y += 28 + 10;
+        crate::brand::draw_mark(cv, area.x + (area.w - crate::brand::width_for(LOGO_H)) / 2, y, LOGO_H, area);
+        y += LOGO_H + 12;
         let name = "Lumen";
         let nw = self.tx.ui_width(name, true);
         self.tx.draw_ui(cv, area.x + (area.w - nw) / 2, y, name, c.tab_active_fg, area, true);

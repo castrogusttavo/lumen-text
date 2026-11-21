@@ -81,6 +81,7 @@ mod backup;
 mod bidi;
 mod bigfile;
 mod bookmarks;
+mod brand;
 mod buffer;
 mod buildrun;
 mod cli;
