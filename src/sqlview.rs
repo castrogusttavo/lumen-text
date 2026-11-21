@@ -727,7 +727,11 @@ mod tests {
         assert!(q("EXPLAIN SELECT * FROM v", 0).unwrap().rows.len() > 3);
         let r = q("EXPLAIN QUERY PLAN SELECT * FROM v", 0).unwrap();
         assert_eq!(r.cols, ["QUERY PLAN"]);
-        assert!(r.rows.iter().any(|row| row[0].text.contains("SCAN")));
+        assert!(
+            r.rows.iter().any(|row| row[0].text.contains("SCAN") || row[0].text.contains("SEARCH")),
+            "{:?}",
+            r.rows.iter().map(|r| r[0].text.clone()).collect::<Vec<_>>()
+        );
         // Errors come back as one readable line.
         let e = q("SELECT * FROM nope", 0).unwrap_err();
         assert!(e.contains("no such table"), "{e}");

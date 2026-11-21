@@ -868,7 +868,7 @@ fn commit_box_wraps_scrolls_selects_all_and_commits() {
         assert_eq!(gp.msg_box.h, 3 * App::gp_msg_line() + 2 * MSG_PAD_Y, "three lines when empty");
     }
     // A long message wraps inside the box: no line is wider than it (spaces may hang).
-    let long = "feat: a commit message long enough to wrap many times inside the narrow git panel ".repeat(10);
+    let long = "feat: a commit message long enough to wrap many times inside the narrow git panel ".repeat(40);
     typ(&mut app, &long);
     frame(&mut app);
     {
