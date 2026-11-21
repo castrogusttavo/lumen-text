@@ -105,6 +105,7 @@ impl App {
             Cmd::BuildClean => self.build_clean(),
             Cmd::BuildSelectTarget => self.build_pick_target(),
             Cmd::BuildPanel => self.build_open_panel(),
+            Cmd::DockerPanel => self.docker_open_panel(),
             Cmd::ToggleOutput => self.toggle_panel(),
             Cmd::NewFile => self.prompt_new_file(false),
             Cmd::NewDir => self.prompt_new_file(true),

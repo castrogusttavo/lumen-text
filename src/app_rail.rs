@@ -21,6 +21,7 @@ pub enum RailBtn {
     Search,
     Git,
     Outline,
+    Docker,
     Terminal,
     Debug,
     Settings,
@@ -29,7 +30,7 @@ pub enum RailBtn {
 impl RailBtn {
     /// Top group, then bottom group.
     pub const TOP: [RailBtn; 4] = [RailBtn::Files, RailBtn::Search, RailBtn::Git, RailBtn::Outline];
-    pub const BOTTOM: [RailBtn; 3] = [RailBtn::Terminal, RailBtn::Debug, RailBtn::Settings];
+    pub const BOTTOM: [RailBtn; 4] = [RailBtn::Docker, RailBtn::Terminal, RailBtn::Debug, RailBtn::Settings];
 
     pub fn icon(self) -> &'static str {
         match self {
@@ -37,6 +38,7 @@ impl RailBtn {
             RailBtn::Search => "hugeicons/search",
             RailBtn::Git => "ui/git_branch",
             RailBtn::Outline => "ui/list_tree",
+            RailBtn::Docker => "ui/box",
             RailBtn::Terminal => "ui/terminal",
             RailBtn::Debug => "ui/debug",
             RailBtn::Settings => "ui/settings",
@@ -49,6 +51,7 @@ impl RailBtn {
             RailBtn::Search => "Search in project",
             RailBtn::Git => "Source control",
             RailBtn::Outline => "Outline",
+            RailBtn::Docker => "Docker",
             RailBtn::Terminal => "Terminal",
             RailBtn::Debug => "Debug",
             RailBtn::Settings => "Settings",
@@ -78,6 +81,7 @@ impl App {
             RailBtn::Files => self.sidebar_open && self.sidebar_mode == SidebarMode::Files,
             RailBtn::Outline => self.sidebar_open && self.sidebar_mode == SidebarMode::Outline,
             RailBtn::Git => self.gitpanel.is_some(),
+            RailBtn::Docker => self.panel.open && self.panel.tab == PanelTab::Docker,
             RailBtn::Terminal => self.panel.open && self.panel.tab == PanelTab::Terminal,
             RailBtn::Debug => self.panel.open && self.panel.tab == PanelTab::Debug,
             RailBtn::Search | RailBtn::Settings => false,
@@ -151,6 +155,13 @@ impl App {
             }
             RailBtn::Search => self.open_project_search(),
             RailBtn::Git => self.git_button(),
+            RailBtn::Docker => {
+                if self.rail_active(kind) {
+                    self.toggle_panel();
+                } else {
+                    self.docker_open_panel();
+                }
+            }
             RailBtn::Terminal => {
                 if self.rail_active(kind) {
                     self.toggle_panel();
