@@ -114,6 +114,18 @@ pub enum AiHit {
     Filter,
     /// Its clear button.
     FilterClear,
+    /// The composer box (a click puts the keyboard in it).
+    Composer,
+    /// The round send button of the composer.
+    Send,
+    /// The stop button that replaces Send while the agent works and the box is empty (Esc to it).
+    Interrupt,
+    /// Composer chip: mention the file open in the editor.
+    AttachFile,
+    /// Composer chip: insert the editor's selection.
+    AttachSel,
+    /// Header menu: the sessions, the filter, rename, worktree sessions.
+    Menu,
 }
 
 /// What one session's process looked like at a moment (taken from its terminal).
@@ -365,8 +377,25 @@ pub struct AiState {
     pub filter: TextField,
     /// Keys go to the filter field instead of the agent.
     pub filter_focus: bool,
+    /// The filter row is shown (it also shows while the filter holds text).
+    pub filter_open: bool,
+    /// The composer (not the agent's terminal) has the keyboard, within the focused panel.
+    pub composer_focus: bool,
+    /// What is being typed in the composer.
+    pub composer: crate::textarea::TextArea,
+    /// Messages sent from the composer (Up / Down in an empty box).
+    pub history: super::composer::History,
+    /// Where the composer's text starts on screen (set by the last frame; for clicks).
+    pub composer_origin: (i32, i32),
+    /// The composer's box and whole area, as of the last frame (the terminal gets what is left).
+    pub composer_box: Rect,
+    pub composer_area: i32,
+    /// Last click in the composer: when, where, and how many in a row (double / triple click).
+    pub composer_click: Option<(Instant, (i32, i32), u32)>,
     /// The IDE bridge (Claude Code's diffs, selection, diagnostics, hooks).
     pub bridge: super::bridge::Bridge,
+    /// The Enter that submits a message sent from the composer: (session, when).
+    pub pending_enter: Option<(u64, Instant)>,
     /// A prompt ("Explain" / "Fix with AI") waiting for its session to finish starting.
     pub pending_prompt: Option<(u64, String)>,
     /// Desktop notifications "sent" (title, body): tests look here, nothing pops up.
@@ -392,7 +421,16 @@ impl Default for AiState {
             resizing: false,
             filter: TextField::default(),
             filter_focus: false,
+            filter_open: false,
+            composer_focus: true,
+            composer: Default::default(),
+            history: Default::default(),
+            composer_origin: (0, 0),
+            composer_box: Rect::default(),
+            composer_area: super::COMPOSER_AREA_GUESS,
+            composer_click: None,
             bridge: Default::default(),
+            pending_enter: None,
             pending_prompt: None,
             #[cfg(test)]
             sent: Vec::new(),
