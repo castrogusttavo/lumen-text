@@ -780,8 +780,11 @@ impl App {
         let w = widest + 2 * PAD_X;
         let lines = (title.len() + rest.len()) as i32;
         let h = 2 * PAD_Y + lines * LINE + if rest.is_empty() { 0 } else { 2 };
-        let (x, y) =
-            if matches!(key, TipKey::Ctx(_)) { place_side(anchor, w, h, win) } else { place(anchor, w, h, below, win) };
+        let (x, y) = if matches!(key, TipKey::Ctx(_) | TipKey::Rail(_)) {
+            place_side(anchor, w, h, win)
+        } else {
+            place(anchor, w, h, below, win)
+        };
         let r = Rect::new(x, y, w, h);
         if alpha > 0.6 {
             cv.shadow(r, 8);

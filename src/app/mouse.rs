@@ -147,6 +147,9 @@ impl App {
         self.focus = Focus::Editor;
         self.completion = None;
         if self.docs.is_empty() {
+            if button == MouseButton::Left && self.welcome_click(x, y) {
+                self.request_redraw();
+            }
             return;
         }
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());

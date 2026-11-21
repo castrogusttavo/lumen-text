@@ -94,6 +94,8 @@ pub struct Layout {
     /// Quick-settings button at the right end of the tab bar.
     pub quick: Rect,
     pub rail_btns: Vec<(Rect, crate::app_rail::RailBtn)>,
+    /// Welcome screen rows (only while no file is open).
+    pub welcome: Vec<(Rect, crate::app_welcome::Hit)>,
     /// Non-clickable bottom bar readouts (memory, position, indentation, language): tooltips only.
     pub status_info: Vec<(Rect, crate::app_topbar::StatusBtn)>,
     pub tabbar: Rect,
