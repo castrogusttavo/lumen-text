@@ -39,7 +39,7 @@ impl App {
         }
     }
 
-    /// The "Git | AI" switch on top of the right-hand slot, and the AI panel when it is the one shown.
+    /// The "Git | AI" switch on top of the left-hand slot, and the AI panel when it is the one shown.
     pub fn draw_aipanel(&mut self, cv: &mut Canvas) {
         self.ai.hits.clear();
         if self.gitpanel.is_none() && !self.ai.open && !self.gh_open() {
@@ -47,11 +47,11 @@ impl App {
         }
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
-        let slot = self.right_slot_rect();
+        let slot = self.slot_rect();
         let strip = Rect::new(slot.x, slot.y, slot.w, SLOT_H);
         cv.fill(strip, c.sidebar_bg);
-        cv.fill(Rect::new(strip.x, strip.y, 1, strip.h), c.border);
-        cv.fill(Rect::new(strip.x + 1, strip.bottom() - 1, strip.w - 1, 1), c.border);
+        cv.fill(Rect::new(strip.right() - 1, strip.y, 1, strip.h), c.border);
+        cv.fill(Rect::new(strip.x, strip.bottom() - 1, strip.w - 1, 1), c.border);
         let gh_on = self.gh_open();
         let mut x = strip.x + 12;
         // On the AI switch while hidden: the most pressing session's color.
@@ -89,12 +89,12 @@ impl App {
 
         let p = self.aipanel_rect();
         cv.fill(p, c.sidebar_bg);
-        cv.fill(Rect::new(p.x, p.y, 1, p.h), c.border);
-        // Resize handle: the left edge lights up under the pointer and while dragging.
+        cv.fill(Rect::new(p.right() - 1, p.y, 1, p.h), c.border);
+        // Resize handle: the right edge lights up under the pointer and while dragging.
         let (mx, my) = self.mouse;
         if self.ai.resizing || (self.overlay.is_none() && self.ai_on_edge(mx, my)) {
             cv.fill(
-                Rect::new(slot.x - 1, slot.y, 3, slot.h),
+                Rect::new(slot.right() - 2, slot.y, 3, slot.h),
                 c.accent.with_alpha(if self.ai.resizing { 0xc0 } else { 0x70 }),
             );
         }

@@ -153,9 +153,9 @@ impl App {
             return true;
         };
         use crate::app_panel::PanelTab;
-        // Every other destination leaves the Git / AI page (it would hide the panel or the file).
+        // Every other destination leaves the GitHub page; the Git and AI panels stay docked beside them.
         if !matches!(kind, RailBtn::Git | RailBtn::GitHub | RailBtn::Ai) {
-            self.close_pages();
+            self.gh_hide();
         }
         match kind {
             RailBtn::Files | RailBtn::Outline => {

@@ -499,7 +499,7 @@ mod app {
         let mut app = test_app(&dir);
         open_page(&mut app, &dir);
         frame(&mut app, 1200, 800);
-        let slot = app.right_slot_rect();
+        let slot = app.slot_rect();
         let page = app.gh_rect();
         assert_eq!(page.y, slot.y + crate::app_aipanel::SLOT_H, "under the Git | GitHub | AI switch");
         assert_eq!(page.right(), app.page_rect().right(), "a full page");

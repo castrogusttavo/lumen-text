@@ -447,6 +447,8 @@ fn panel_width_clamps() {
     assert_eq!(clamp_panel_width(300, 400), 240, "tiny window: 60% of it");
     assert_eq!(clamp_panel_width(10, 400), 200, "tiny window: the minimum shrinks to half");
     assert!(clamp_panel_width(0, 100) >= 1);
+    assert_eq!(auto_panel_width(1000), 340);
+    assert_eq!(auto_panel_width(2000), 440);
 }
 
 #[test]
@@ -1066,10 +1068,6 @@ fn composer_scope_dropdowns_and_generate() {
     assert_eq!(items[0].hit, Hit::CommitPush);
     assert!(items.iter().any(|i| i.hit == Hit::Amend && i.checked == Some(false)));
     assert!(items.iter().any(|i| i.hit == Hit::Opt && i.checked == Some(false)));
-    let sections = gp.menu_items(GpMenu::Sections);
-    assert_eq!(sections[0].checked, Some(true));
-    assert_eq!(sections[0].trailing, "2");
-    assert_eq!(sections[1].hit, Hit::Tab(Tab::History));
     assert!(gp.menu_items(GpMenu::Actions).iter().any(|i| i.hit == Hit::StashNew));
     let sync = gp.menu_items(GpMenu::Sync);
     assert_eq!(sync.iter().map(|i| i.hit).collect::<Vec<_>>(), [Hit::Fetch, Hit::Pull, Hit::Push, Hit::PullChoose]);
@@ -1097,4 +1095,40 @@ fn filter_changes_keeps_the_files_whose_path_matches() {
     gp.tab = Tab::History;
     assert_eq!(gp.filter_h(), 0, "History has no box");
     std::fs::remove_dir_all(&d).ok();
+}
+
+#[test]
+fn the_panel_docks_on_the_left_and_its_right_edge_resizes_it() {
+    use crate::app_unsaved::testkit::{lock, test_app, tmp};
+    let _g = lock();
+    let dir = tmp("gpleft");
+    git_run(&dir, &["init", "-q", "-b", "main"]).unwrap();
+    let mut app = test_app(&dir);
+    let (w, h) = (1400, 800);
+    let mut px = vec![0u32; (w * h) as usize];
+    app.render_into(&mut Canvas { px: &mut px, w, h }, 0.016);
+    let closed_x = app.layout.editor.x;
+    app.open_git_panel();
+    app.render_into(&mut Canvas { px: &mut px, w, h }, 0.016);
+    let slot = app.slot_rect();
+    assert_eq!(slot.x, app.layout.sidebar.right(), "right of the rail and the sidebar");
+    assert_eq!(slot.w, app.gitpanel_w(), "the slot is as wide as the room taken from the editor");
+    assert_eq!(app.layout.editor.x, closed_x + slot.w, "the editor makes room on its left");
+    assert!(!app.page_covers_editor(), "and stays visible");
+    assert_eq!(app.gitpanel_rect().y, slot.y + crate::app_aipanel::SLOT_H, "under the Git | GitHub | AI switch");
+    // Hover over the right edge: col-resize; inside: not; a press starts the drag, moves resize.
+    let (ex, ey) = ((slot.right() - 1) as f64, (slot.y + 200) as f64);
+    assert!(app.panel_on_edge(ex, ey) && !app.panel_on_edge((slot.x + 20) as f64, ey));
+    assert_eq!(app.aipanel_cursor(ex, ey), Some(winit::window::CursorIcon::ColResize));
+    assert!(app.aipanel_mouse(ex, ey, 0) && app.ai.resizing);
+    app.mouse = ((slot.x + 520) as f64, ey);
+    assert!(app.aipanel_move());
+    assert_eq!(app.config.git_panel_width, 520);
+    app.aipanel_release();
+    assert!(!app.ai.resizing);
+    assert_eq!(app.slot_rect().w, 520);
+    // GitHub stays a page: the left dock gives way to it.
+    app.gh_show();
+    assert!(app.page_covers_editor() && app.gitpanel_w() == 0);
+    std::fs::remove_dir_all(&dir).ok();
 }

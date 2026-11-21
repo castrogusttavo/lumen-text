@@ -46,16 +46,16 @@ impl App {
         let p = self.gitpanel_rect();
         let c = self.theme.chrome;
         let dim = c.tab_inactive_fg;
-        // A full page: the area beside the centered column is the page background.
-        let slot = self.right_slot_rect();
-        if slot.w > p.w {
-            cv.fill(Rect::new(slot.x, p.y, slot.w, p.h), self.theme.background);
-            cv.fill(Rect::new(p.x - 1, p.y, 1, p.h), c.border);
-            cv.fill(Rect::new(p.right(), p.y, 1, p.h), c.border);
-        } else {
-            cv.fill(Rect::new(p.x, p.y, 1, p.h), c.border);
-        }
         cv.fill(p, c.sidebar_bg);
+        cv.fill(Rect::new(p.right() - 1, p.y, 1, p.h), c.border);
+        // Resize handle: the right edge lights up under the pointer and while dragging.
+        let (mx, my) = self.mouse;
+        if self.ai.resizing || (self.overlay.is_none() && self.panel_on_edge(mx, my)) {
+            cv.fill(
+                Rect::new(p.right() - 2, p.y, 3, p.h),
+                c.accent.with_alpha(if self.ai.resizing { 0xc0 } else { 0x70 }),
+            );
+        }
 
         // Header (section switcher, refresh, actions, close) and the branch row (branch, sync).
         self.gp_draw_header(cv, &mut gp, p);

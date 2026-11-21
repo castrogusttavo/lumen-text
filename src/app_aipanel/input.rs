@@ -2,9 +2,9 @@ use super::*;
 use crate::app_tooltip::TipText;
 
 impl App {
-    /// Is (x, y) on the draggable left edge of the shown AI panel?
-    pub(crate) fn ai_on_edge(&self, _x: f64, _y: f64) -> bool {
-        false // a page: no resize handle
+    /// Is (x, y) on the draggable right edge of the shown left panel (AI or Git)?
+    pub(crate) fn ai_on_edge(&self, x: f64, y: f64) -> bool {
+        self.panel_on_edge(x, y)
     }
 
     /// Keys while the panel has the focus: everything goes to the agent but the editor's few
@@ -177,7 +177,7 @@ impl App {
             self.ai.focused = true;
             return true;
         }
-        let slot = self.right_slot_rect();
+        let slot = self.slot_rect();
         let hit = self.ai.hit_at(x, y).map(|(_, h)| h);
         let in_strip = Rect::new(slot.x, slot.y, slot.w, SLOT_H).contains(x, y);
         if !self.ai.open {
@@ -331,7 +331,7 @@ impl App {
         true
     }
 
-    /// Pointer moved: resizing by the left edge; true when the layout changed.
+    /// Pointer moved: resizing by the right edge; true when the layout changed.
     pub fn aipanel_move(&mut self) -> bool {
         let (x, y) = self.mouse;
         if self.ai_composer_drag(x, y) {
@@ -340,8 +340,9 @@ impl App {
         if !self.ai.resizing {
             return self.chat_move(x, y);
         }
+        // The panel is docked on the left: its width is the distance from its left edge.
         let win = self.size.0 as i32;
-        let w = crate::app_gitpanel::clamp_panel_width(win - self.mouse.0 as i32, win);
+        let w = crate::app_gitpanel::clamp_panel_width(self.mouse.0 as i32 - self.slot_rect().x, win);
         if self.config.git_panel_width != w {
             self.config.git_panel_width = w;
             return true;
@@ -374,7 +375,7 @@ impl App {
         if let Some(c) = self.chat_cursor(x, y) {
             return Some(c);
         }
-        if !self.ai.open || !self.right_slot_rect().contains(x, y) {
+        if !self.ai.open || !self.slot_rect().contains(x, y) {
             return None;
         }
         let body = y >= (self.aipanel_rect().y + self.ai_top_h()) as f64 && self.ai.term().is_some();
