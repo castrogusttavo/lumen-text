@@ -655,6 +655,7 @@ mod tests {
         app.mods = ModifiersState::CONTROL;
         app.mb_key(&KeyIn { key: Key::Named(NamedKey::ArrowDown), text: None });
         app.mods = ModifiersState::empty();
+        app.mb_key(&KeyIn { key: Key::Named(NamedKey::Home), text: None });
         typed(&mut app, "!");
         app.save_active();
         assert!(!app.docs[app.active].mb.as_ref().unwrap().is_dirty());

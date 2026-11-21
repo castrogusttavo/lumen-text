@@ -292,10 +292,7 @@ impl App {
             return false;
         }
         if self.ai.composer_box.contains(x, y) && !self.ai.sessions.is_empty() {
-            let px = match delta {
-                MouseScrollDelta::LineDelta(_, dy) => -(dy as f64) * 3.0 * crate::ui::ui_line() as f64,
-                MouseScrollDelta::PixelDelta(p) => -p.y,
-            };
+            let px = crate::scroller::wheel_px(delta, crate::ui::ui_line() as f64);
             self.ai.composer.scroll_by(px as f32);
             return true;
         }
