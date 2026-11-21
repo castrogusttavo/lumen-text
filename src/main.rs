@@ -65,6 +65,7 @@ mod app_unsaved;
 mod app_update;
 mod app_view;
 mod app_vim;
+mod app_welcome;
 mod app_window;
 mod app_workspace;
 mod app_worktree;

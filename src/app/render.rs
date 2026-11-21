@@ -90,9 +90,7 @@ impl App {
 
     pub(super) fn draw_all(&mut self, cv: &mut Canvas, dt: f64) -> bool {
         self.refresh_find();
-        let t = &self.theme;
-        let c = t.chrome;
-        cv.clear(t.background);
+        cv.clear(self.theme.background);
         crate::perf::lap!("clear");
         self.regions.clear();
         let mut busy = self.input_frame(dt);
@@ -111,6 +109,9 @@ impl App {
             Some(f) => (f.matches.as_slice(), f.current),
             None => (&[], None),
         };
+        if self.docs.get(self.active).is_some() {
+            self.layout.welcome.clear();
+        }
         if let Some(d) = self.docs.get_mut(self.active) {
             d.cell_w = self.tx.cell_w;
             busy |= d.draw(
@@ -121,20 +122,7 @@ impl App {
                 &DrawOpts { dt, find: find_ranges, find_cur, focused: true },
             );
         } else {
-            cv.fill(editor, self.theme.background);
-            let hint = [
-                ("Ctrl+P", "open file"),
-                ("Ctrl+Shift+P", "commands"),
-                ("Ctrl+Shift+F", "search in project"),
-                ("Ctrl+B", "show/hide the sidebar"),
-            ];
-            let x = editor.x + editor.w / 2 - 150;
-            let mut y = editor.y + editor.h / 2 - 56;
-            for (k, v) in hint {
-                self.tx.draw_ui(cv, x, y, k, c.accent_text, editor, true);
-                self.tx.draw_ui(cv, x + 120, y, v, c.tab_inactive_fg, editor, false);
-                y += 28;
-            }
+            self.draw_welcome(cv, editor);
         }
 
         self.draw_jump(cv);

@@ -129,7 +129,14 @@ impl App {
             }
             Overlay::Picker(p) => {
                 let shown = p.filtered.len().min(PICKER_ROWS);
-                let list_h = if shown == 0 { 44 } else { shown as i32 * ROW + 14 };
+                let calm = shown == 0 && p.kind == PickKind::Problems && p.field.text.is_empty();
+                let list_h = if calm {
+                    128
+                } else if shown == 0 {
+                    44
+                } else {
+                    shown as i32 * ROW + 14
+                };
                 // Project search with the replace row: the list starts below it.
                 let top = INPUT_H + if p.rep.is_some() { preplace::REP_H } else { 0 };
                 let r = Rect::new(base.x, base.y, base.w, top + list_h);
@@ -305,15 +312,20 @@ impl App {
                     picker_bar =
                         Some((Rect::new(r.x, r.y + top, r.w, list_h), p.filtered.len() as f64, p.scroll as f64));
                 }
-                if p.filtered.is_empty() {
+                if p.filtered.is_empty() && calm {
+                    // Calm empty state: a check mark, a title and which scope was looked at.
+                    let area = Rect::new(r.x, r.y + top, r.w, list_h);
+                    let hint =
+                        if project { "Alt+W: look at the open files only" } else { "Alt+W: look at the whole project" };
+                    self.tx.icon(cv, "ui/check", area.x + (area.w - 28) / 2, area.y + 14, 28, c.git_added, area);
+                    let title = "No problems";
+                    let tw = self.tx.ui_width(title, true);
+                    self.tx.draw_ui(cv, area.x + (area.w - tw) / 2, area.y + 54, title, c.tab_active_fg, area, true);
+                    let hw = self.tx.ui_width(hint, false);
+                    self.tx.draw_ui(cv, area.x + (area.w - hw) / 2, area.y + 80, hint, dim, area, false);
+                } else if p.filtered.is_empty() {
                     let msg = if p.kind == PickKind::ProjectSearch && p.field.text.is_empty() {
                         "Type to search the project"
-                    } else if p.kind == PickKind::Problems && p.field.text.is_empty() {
-                        if project {
-                            "No problems in the project (Alt+W: open files)"
-                        } else {
-                            "No problems in open files (Alt+W: whole project)"
-                        }
                     } else {
                         "No results"
                     };
