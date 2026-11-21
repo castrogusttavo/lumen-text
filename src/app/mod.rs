@@ -236,6 +236,7 @@ pub struct App {
     pub eslint_busy: std::collections::HashSet<PathBuf>,
     pub tests: crate::app_tests::TestsState,
     pub build: crate::app_build::BuildState,
+    pub docker: crate::app_docker::DockerState,
     /// REST client state (`.http` files): environment, named responses, request in flight.
     pub http: crate::app_http::HttpState,
     pub dbg: Option<crate::app_debug::Debugger>,
@@ -419,6 +420,7 @@ impl App {
             eslint_busy: Default::default(),
             tests: crate::app_tests::TestsState::default(),
             build: crate::app_build::BuildState::default(),
+            docker: crate::app_docker::DockerState::default(),
             http: Default::default(),
             dbg: None,
             diff: None,

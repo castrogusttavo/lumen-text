@@ -27,6 +27,7 @@ impl App {
         self.tests_tick(now, &mut want);
         self.coverage_sync_docs();
         self.build_tick(now, &mut want);
+        self.docker_tick(now, &mut want);
         self.ai_tick(now, &mut want);
         self.ide_tick(now, &mut want);
         self.term_tick(&mut want);

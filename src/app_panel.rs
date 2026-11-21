@@ -49,6 +49,7 @@ pub enum PanelTab {
     Debug,
     Tests,
     Build,
+    Docker,
 }
 
 pub struct Panel {
@@ -275,6 +276,7 @@ impl App {
                     self.build_open_panel();
                     self.build_focus();
                 }
+                Some(PanelTab::Docker) => self.docker_open_panel(),
                 Some(PanelTab::Terminal) => self.open_terminal(),
                 Some(PanelTab::Output) => {
                     self.panel.tab = PanelTab::Output;
@@ -296,6 +298,11 @@ impl App {
         if self.panel.tab == PanelTab::Build {
             self.focus = Focus::Editor;
             self.build_click(x, y);
+            return true;
+        }
+        if self.panel.tab == PanelTab::Docker {
+            self.focus = Focus::Editor;
+            self.docker_click(x, y);
             return true;
         }
         if self.panel.tab == PanelTab::Terminal {
@@ -332,6 +339,10 @@ impl App {
             }
             return true;
         }
+        if self.panel.tab == PanelTab::Docker {
+            self.docker_wheel(delta);
+            return true;
+        }
         let view = r.h - PANEL_HEADER;
         let max = self.panel.max_scroll(view);
         self.panel_wheel_apply(delta, max);
@@ -362,6 +373,7 @@ impl App {
             ("Output", PanelTab::Output),
             ("Tests", PanelTab::Tests),
             ("Build", PanelTab::Build),
+            ("Docker", PanelTab::Docker),
             ("Terminal", PanelTab::Terminal),
             ("Debug", PanelTab::Debug),
         ] {
@@ -397,6 +409,9 @@ impl App {
         }
         if self.panel.tab == PanelTab::Build {
             return self.draw_build(cv, body);
+        }
+        if self.panel.tab == PanelTab::Docker {
+            return self.draw_docker(cv, body);
         }
 
         let state = match (&self.panel.running, self.panel.exit) {
