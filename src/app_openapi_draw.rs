@@ -92,8 +92,8 @@ fn inline(s: &str) -> String {
 }
 
 /// The painter of one column: draws clipped to it and collects the clickable areas.
-struct P<'a> {
-    cv: &'a mut Canvas,
+struct P<'a, 'b> {
+    cv: &'a mut Canvas<'b>,
     tx: &'a mut TextCtx,
     th: &'a Theme,
     clip: Rect,
@@ -101,8 +101,8 @@ struct P<'a> {
     hits: Vec<(Rect, Hit)>,
 }
 
-impl<'a> P<'a> {
-    fn new(cv: &'a mut Canvas, tx: &'a mut TextCtx, th: &'a Theme, clip: Rect, mouse: (f64, f64)) -> P<'a> {
+impl<'a, 'b> P<'a, 'b> {
+    fn new(cv: &'a mut Canvas<'b>, tx: &'a mut TextCtx, th: &'a Theme, clip: Rect, mouse: (f64, f64)) -> P<'a, 'b> {
         P { cv, tx, th, clip, mouse, hits: Vec::new() }
     }
     fn c(&self) -> Chrome {
