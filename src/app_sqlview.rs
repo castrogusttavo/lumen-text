@@ -652,7 +652,9 @@ impl App {
         }
         taken
     }
+}
 
+impl SqlView {
     /// Pointer shape over the viewer: hand on table rows and the enabled page buttons, I-beam on
     /// the query box, arrow elsewhere (the grid has nothing to click). `None` outside the viewer.
     pub fn cursor_at(&self, x: f64, y: f64) -> Option<winit::window::CursorIcon> {
@@ -694,7 +696,9 @@ impl App {
         }
         None
     }
+}
 
+impl App {
     pub fn sql_cursor(&self, x: f64, y: f64) -> Option<winit::window::CursorIcon> {
         self.docs.get(self.active)?.sql.as_deref()?.cursor_at(x, y)
     }
