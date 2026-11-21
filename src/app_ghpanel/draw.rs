@@ -34,7 +34,7 @@ impl App {
 
     /// The page under the "Git | GitHub | AI" switch.
     pub fn gh_rect(&self) -> Rect {
-        let s = self.right_slot_rect();
+        let s = self.slot_rect();
         Rect::new(s.x, s.y + SLOT_H, s.w, (s.h - SLOT_H).max(0))
     }
 

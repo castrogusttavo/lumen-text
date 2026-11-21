@@ -41,7 +41,7 @@ impl App {
             self.tree.toggle(i);
         } else {
             if self.page_covers_editor() {
-                self.close_pages(); // a file from the tree leaves the Git / AI page
+                self.gh_hide(); // a file from the tree leaves the GitHub page
             }
             self.open_path(&row.path, None);
             self.focus = Focus::Editor;

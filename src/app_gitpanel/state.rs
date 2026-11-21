@@ -84,8 +84,6 @@ pub enum Hit {
 /// The dropdowns of the panel.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GpMenu {
-    /// The section switcher of the header (Changes / History).
-    Sections,
     /// The "..." button of the header.
     Actions,
     /// The chevron of the sync button (fetch / pull / push).
@@ -668,16 +666,6 @@ impl GitPanel {
         let mut v = Vec::new();
         let (ahead, behind, up) = (self.sync.ahead, self.sync.behind, self.sync.upstream.is_some());
         match m {
-            GpMenu::Sections => {
-                let mut ch = MenuItem::new("Changes", "ui/git_commit", Hit::Tab(Tab::Changes));
-                ch.checked = Some(self.tab == Tab::Changes);
-                if !self.changes.is_empty() {
-                    ch.trailing = self.changes.len().to_string();
-                }
-                let mut hi = MenuItem::new("History", "ui/git_graph", Hit::Tab(Tab::History));
-                hi.checked = Some(self.tab == Tab::History);
-                v.extend([ch, hi]);
-            }
             GpMenu::Actions => {
                 v.push(MenuItem::new("Refresh", "ui/rotate_cw", Hit::Refresh));
                 if !self.changes.is_empty() {
@@ -999,18 +987,19 @@ pub(super) fn split_name(path: &str) -> (&str, &str) {
 
 /// Narrowest width the panel clamp allows.
 pub(super) const GP_MIN_W: i32 = 280;
-/// Window width from which the Git page sits beside the editor instead of covering it.
-pub(super) const PAGE_SPLIT_MIN_W: i32 = 1400;
-/// Width of the Git page's list column when it sits beside the editor.
-pub(super) const GP_SPLIT_W: i32 = 440;
-/// Widest the centered Git column gets on a full page.
-pub(super) const GP_COL_MAX: i32 = 720;
+/// Half-width of the grab band around the panel's right edge.
+pub(super) const GP_GRAB: i32 = 4;
 
 /// Panel width for a requested `want` px (a dragged value) inside a window `win` px wide:
 /// at least `GP_MIN_W` (less in tiny windows) and at most 60% of the window.
 pub fn clamp_panel_width(want: i32, win: i32) -> i32 {
     let lo = GP_MIN_W.min(win / 2);
     want.clamp(lo, (win * 6 / 10).max(lo))
+}
+
+/// Automatic width: 30% of the window, 340..440 px.
+pub(super) fn auto_panel_width(win: i32) -> i32 {
+    ((win as f32 * 0.30) as i32).clamp(340, 440).min(win / 2)
 }
 
 /// Keys that only change modifier state; they never mean anything on their own.

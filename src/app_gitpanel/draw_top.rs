@@ -1,10 +1,10 @@
-//! The top of the panel, after Athas' Source Control: the header with the section switcher, the
-//! branch row with the sync button, the commit composer, and the dropdowns they open.
+//! The top of the panel, after Athas' Source Control: the header with the Changes / History tabs,
+//! the branch row with the fetch / pull / push buttons, the commit composer, and the dropdowns they open.
 
 use super::*;
 
 impl App {
-    /// "Source Control" and the section switcher on the left, refresh / actions / close on the right.
+    /// The Changes / History tabs on the left, refresh / actions / close on the right.
     pub(super) fn gp_draw_header(&mut self, cv: &mut Canvas, gp: &mut GitPanel, p: Rect) {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
@@ -17,36 +17,36 @@ impl App {
             right -= 30;
         }
 
-        let (label, count) = match gp.tab {
-            Tab::Changes => ("Changes", gp.changes.len()),
-            Tab::History => ("History", 0),
-        };
-        let badge = if count > 0 { count.to_string() } else { String::new() };
-        let lw = self.tx.ui_width(label, true);
-        let bw = if badge.is_empty() { 0 } else { (self.tx.ui_width(&badge, true) + 12).max(20) + 6 };
-        let sw = 10 + lw + bw + 4 + 14 + 6;
-        let title = "Source Control";
-        let tw = self.tx.ui_width(title, false);
-        let show_title = tw + 14 + sw <= right - (p.x + 12);
+        // Both sections are tabs of their own: Changes (with the count) and History.
         let mut x = p.x + 6;
-        if show_title {
-            self.tx.draw_ui(cv, p.x + 12, y + 5, title, dim, p, false);
-            x = p.x + 12 + tw + 6;
+        for (tab, label) in [(Tab::Changes, "Changes"), (Tab::History, "History")] {
+            let n = gp.changes.len();
+            let badge = if tab == Tab::Changes && n > 0 { n.to_string() } else { String::new() };
+            let active = gp.tab == tab;
+            let lw = self.tx.ui_width(label, active);
+            let bw = if badge.is_empty() { 0 } else { (self.tx.ui_width(&badge, true) + 12).max(20) + 6 };
+            let w = 10 + lw + bw + 10;
+            if x + w > right {
+                break;
+            }
+            let r = Rect::new(x, y, w, 28);
+            if active {
+                cv.fill_round(r, 8, strong.with_alpha(0x1e));
+            } else if self.hv(r) {
+                cv.fill_round(r, 8, strong.with_alpha(0x12));
+            }
+            let col = if active || self.hv(r) { strong } else { dim };
+            self.tx.draw_ui(cv, r.x + 10, r.y + 5, label, col, r, active);
+            if !badge.is_empty() {
+                let pill = Rect::new(r.x + 10 + lw + 6, r.y + 6, bw - 6, 16);
+                cv.fill_round(pill, 8, if active { c.accent } else { strong.with_alpha(0x22) });
+                let tw = self.tx.ui_width(&badge, true);
+                let tc = if active { c.on_accent } else { dim };
+                self.tx.draw_ui_sized(cv, pill.x + (pill.w - tw) / 2, pill.y + 1, &badge, tc, pill, true, 12.0);
+            }
+            gp.hits.push((r, Hit::Tab(tab)));
+            x += w + 2;
         }
-        let sr = Rect::new(x, y, sw.min((right - x).max(0)), 28);
-        let open = gp.menu == Some(GpMenu::Sections);
-        if open || self.hv(sr) {
-            cv.fill_round(sr, 8, strong.with_alpha(if open { 0x1e } else { 0x14 }));
-        }
-        self.tx.draw_ui(cv, sr.x + 10, sr.y + 5, label, strong, sr, true);
-        if !badge.is_empty() {
-            let pill = Rect::new(sr.x + 10 + lw + 6, sr.y + 6, bw - 6, 16);
-            cv.fill_round(pill, 8, strong.with_alpha(0x22));
-            let tw = self.tx.ui_width(&badge, true);
-            self.tx.draw_ui_sized(cv, pill.x + (pill.w - tw) / 2, pill.y + 1, &badge, dim, pill, true, 12.0);
-        }
-        self.tx.icon(cv, "ui/chevron_down", sr.x + sw - 6 - 14, sr.y + 7, 14, dim, sr);
-        gp.hits.push((sr, Hit::Menu(GpMenu::Sections)));
     }
 
     /// Branch chip (repo / branch, opens the branch switcher) and the sync button on its right.
@@ -59,37 +59,40 @@ impl App {
         let y = by + 3;
         let busy = gp.job.is_some();
         let (ahead, behind, has_up) = (gp.sync.ahead, gp.sync.behind, gp.sync.upstream.is_some());
-        let plan = sync_plan(ahead, behind, has_up);
-        let tone = if behind > 0 {
-            c.warning
-        } else if ahead > 0 || !has_up {
-            c.accent_text
-        } else {
-            dim
-        };
-        let tone = if busy { dim } else { tone };
-        let cnt = if plan.count > 0 { plan.count.to_string() } else { String::new() };
-        let cw = if cnt.is_empty() { 0 } else { self.tx.ui_width(&cnt, true) + 3 };
-        let main_w = 8 + 14 + cw + 6;
+        // Fetch / Pull / Push as buttons of their own (the counts ride on Pull and Push) and a
+        // chevron for the rest (pull strategy). Only what can run now is clickable.
         let chev_w = 20;
-        let main = Rect::new(p.right() - 8 - main_w - chev_w, y, main_w, 28);
-        let chev = Rect::new(main.right(), y, chev_w, 28);
-        if !busy && self.hv(main) {
-            cv.fill_round(main, 8, strong.with_alpha(0x1c));
-        }
+        let chev = Rect::new(p.right() - 8 - chev_w, y, chev_w, 28);
         if self.hv(chev) || gp.menu == Some(GpMenu::Sync) {
             cv.fill_round(chev, 8, strong.with_alpha(0x1c));
         }
-        let icon = if busy { "ui/rotate_cw" } else { plan.icon };
-        self.tx.icon(cv, icon, main.x + 8, y + 7, 14, tone, main);
-        if !cnt.is_empty() {
-            self.tx.draw_ui(cv, main.x + 8 + 14 + 3, y + 5, &cnt, tone, main, true);
-        }
-        if !busy {
-            gp.hits.push((main, plan.hit));
-        }
-        self.tx.icon(cv, "ui/chevron_down", chev.x + 3, y + 7, 14, tone, chev);
+        self.tx.icon(cv, "ui/chevron_down", chev.x + 3, y + 7, 14, dim, chev);
         gp.hits.push((chev, Hit::Menu(GpMenu::Sync)));
+        let mut right = chev.x;
+        let buttons = [
+            (Hit::Push, "ui/arrow_up", if has_up { ahead } else { 0 }, !busy && (ahead > 0 || !has_up), c.accent_text),
+            (Hit::Pull, "ui/arrow_down", behind, !busy && behind > 0, c.warning),
+            (Hit::Fetch, if busy { "ui/rotate_cw" } else { "ui/cloud_download" }, 0, !busy, dim),
+        ];
+        for (hit, icon, n, enabled, tone) in buttons {
+            let cnt = if n > 0 { n.to_string() } else { String::new() };
+            let cw = if cnt.is_empty() { 0 } else { self.tx.ui_width(&cnt, true) + 3 };
+            let w = 8 + 14 + cw + 6;
+            let r = Rect::new(right - w, y, w, 28);
+            let col = if enabled { tone } else { dim.with_alpha(0x70) };
+            if enabled && self.hv(r) {
+                cv.fill_round(r, 8, strong.with_alpha(0x1c));
+            }
+            self.tx.icon(cv, icon, r.x + 8, y + 7, 14, col, r);
+            if !cnt.is_empty() {
+                self.tx.draw_ui(cv, r.x + 8 + 14 + 3, y + 5, &cnt, col, r, true);
+            }
+            if enabled {
+                gp.hits.push((r, hit));
+            }
+            right = r.x;
+        }
+        let main = Rect::new(right, y, 0, 28);
 
         // The chip: icon, "repo / branch", chevron.
         let repo =
@@ -213,7 +216,7 @@ impl App {
         }
         let w = w.clamp(150, (p.w - 16).max(150));
         let h = items.len() as i32 * ROW + 2 * PAD;
-        let x = if m == GpMenu::Sections { anchor.x } else { anchor.right() - w };
+        let x = anchor.right() - w;
         let x = x.clamp(p.x + 8, (p.right() - 8 - w).max(p.x + 8));
         let below = anchor.bottom() + 4;
         let y = if below + h <= p.bottom() - 4 { below } else { (anchor.y - 4 - h).max(p.y + 4) };

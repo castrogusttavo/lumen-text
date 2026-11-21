@@ -1,5 +1,5 @@
 //! AI panel: the user's own agent CLI (Claude Code, Gemini CLI, Codex CLI) running in a terminal
-//! docked on the right, in the slot it shares with the Git panel (a "Git | AI" switch on top picks
+//! docked on the left, in the slot it shares with the Git panel (a "Git | AI" switch on top picks
 //! which one shows). The agent runs in the project folder with the user's environment, so it uses
 //! its own stored login: Lumen never sees keys or tokens and does not script the CLI.
 //!
@@ -68,7 +68,7 @@ pub use chat_view::{ChatSession, Cur};
 pub use explain::Mode as AskMode;
 pub use state::*;
 
-/// Height of the "Git | AI" switch on top of the right-hand slot.
+/// Height of the "Git | AI" switch on top of the left-hand slot.
 pub const SLOT_H: i32 = 40;
 /// Height of the row of session tabs (shown while any session exists).
 pub(crate) const TABS_H: i32 = 36;
