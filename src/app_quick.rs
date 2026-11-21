@@ -1,6 +1,6 @@
-//! Quick settings: a button at the right end of the tab bar that opens the options a developer
-//! reaches for while a file is open (wrap, minimap, line numbers, whitespace, format, zoom, zen)
-//! as one list, with the current state beside each, without going through the settings page.
+//! Editor strip: three buttons at the right end of the tab bar: find in file, all settings, and
+//! quick settings (the options a developer reaches for while a file is open: wrap, minimap, line
+//! numbers, whitespace, format, zoom, zen) as one list with the current state beside each.
 
 use crate::{
     app::App,
@@ -8,15 +8,24 @@ use crate::{
     ui::{Canvas, Rect},
 };
 
+/// One button of the strip.
+const BTN: i32 = 28;
+const PAD: i32 = 4;
+/// Buttons of the strip, left to right: find in file, all settings, quick editor settings.
+const ICONS: [&str; 3] = ["hugeicons/search", "ui/option", "ui/settings"];
 /// Width reserved at the right end of the tab bar.
-pub const QUICK_W: i32 = 36;
+pub const QUICK_W: i32 = BTN * 3 + PAD * 2;
 
 fn on_off(b: bool) -> String {
     if b { "on".into() } else { "off".into() }
 }
 
+fn button_rect(strip: Rect, i: usize) -> Rect {
+    Rect::new(strip.x + PAD + i as i32 * BTN, strip.y + (strip.h - BTN + 2) / 2, BTN - 2, BTN - 2)
+}
+
 impl App {
-    /// Draw the button over the right end of the tab bar (tabs end `QUICK_W` before it).
+    /// Draw the strip over the right end of the tab bar (tabs end `QUICK_W` before it).
     pub fn draw_quick(&mut self, cv: &mut Canvas) {
         self.layout.quick = Rect::default();
         let bar = self.layout.tabbar;
@@ -24,24 +33,33 @@ impl App {
             return;
         }
         let c = self.theme.chrome;
-        let b = Rect::new(bar.right() - QUICK_W, bar.y, QUICK_W, bar.h);
-        cv.fill(b, c.tabbar_bg);
-        let hot = b.contains(self.mouse.0, self.mouse.1);
-        let btn = Rect::new(b.x + 4, b.y + (b.h - 26) / 2, 26, 26);
-        if hot {
-            cv.fill_round(btn, 7, c.list_hover_bg);
+        let strip = Rect::new(bar.right() - QUICK_W, bar.y, QUICK_W, bar.h);
+        cv.fill(strip, c.tabbar_bg);
+        for (i, icon) in ICONS.iter().enumerate() {
+            let btn = button_rect(strip, i);
+            let hot = btn.contains(self.mouse.0, self.mouse.1);
+            if hot {
+                cv.fill_round(btn, 7, c.list_hover_bg);
+            }
+            let tint = if hot { c.tab_active_fg } else { c.tab_inactive_fg };
+            self.tx.icon(cv, icon, btn.x + (btn.w - 16) / 2, btn.y + (btn.h - 16) / 2, 16, tint, strip);
         }
-        let tint = if hot { c.tab_active_fg } else { c.tab_inactive_fg };
-        self.tx.icon(cv, "ui/ellipsis", btn.x + 5, btn.y + 5, 16, tint, b);
-        self.layout.quick = b;
+        self.layout.quick = strip;
     }
 
-    /// Mouse press on the button; true when it was taken.
+    /// Mouse press on the strip; true when it was taken.
     pub fn quick_click(&mut self, x: f64, y: f64) -> bool {
-        if self.layout.quick.w <= 0 || !self.layout.quick.contains(x, y) {
+        let strip = self.layout.quick;
+        if strip.w <= 0 || !strip.contains(x, y) {
             return false;
         }
-        self.open_quick_settings();
+        match (0..ICONS.len()).find(|&i| button_rect(strip, i).inset(-1).contains(x, y)) {
+            Some(0) => self.open_find(false),
+            Some(1) => self.open_settings(crate::settingsui::Page::Settings),
+            Some(_) => self.open_quick_settings(),
+            None => {}
+        }
+        self.request_redraw();
         true
     }
 
