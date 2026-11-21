@@ -15,7 +15,7 @@ use crate::{
     app_split::{Pane, Split, Zone, focus_to, pick_replacement, remove_pane, zone_at, zone_rect},
     ui::{Canvas, Rect},
 };
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// A pane and the side of it that a drag is over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
