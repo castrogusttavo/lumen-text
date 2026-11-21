@@ -25,6 +25,76 @@
     {
       "status": "shipped",
       "type": "feature",
+      "release": "2026.11.21.1",
+      "title": "Activity rail",
+      "text": "A column of icons switches Explorer, Outline, Search, Git, Terminal, Debug and Settings."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.21.1",
+      "title": "Settings in pages",
+      "text": "Eleven named pages with a title, a description and a modified indicator."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.21.1",
+      "title": "Welcome screen",
+      "text": "Clickable actions with their shortcuts and recent projects when no file is open."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.21.2",
+      "title": "No bottom bar",
+      "text": "Memory sits at the top right; position, indentation, language, encoding and problems live above the editor."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.21.2",
+      "title": "Editor strip",
+      "text": "Find in file, all settings and a gear for quick editor settings at the end of the tab bar."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.21.2",
+      "title": "New Git and AI panel look",
+      "text": "Rounded chips and badges, collapsible groups, +/- line stats, hover stage buttons and a session filter."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.21.2",
+      "title": "First-run tour",
+      "text": "Theme, keymap and font size in three steps, reopened from Help: Welcome tour."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.21.2",
+      "title": "Multibuffer (read-only)",
+      "text": "Project search results and references as one tab of excerpts; Enter jumps to the file."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.21.2",
+      "title": "Docker panel",
+      "text": "Containers and images with start, stop, restart, logs and remove."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
+      "release": "2026.11.21.2",
+      "title": "SQLite viewer",
+      "text": "Tables, a paginated grid and a SELECT-only SQL box, read-only through the system sqlite3."
+    },
+    {
+      "status": "shipped",
+      "type": "feature",
       "release": "2026.11.12.1",
       "title": "Local history",
       "text": "Snapshots on save and before external rewrites, with diff and restore."
