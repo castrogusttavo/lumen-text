@@ -374,6 +374,9 @@ impl App {
         if let Some(c) = self.mb_cursor(x, y) {
             return c;
         }
+        if let Some(c) = self.sql_cursor(x, y) {
+            return c;
+        }
         if l.top_btns.iter().any(|(r, _)| r.contains(x, y))
             || l.status_btns.iter().any(|(r, _)| r.contains(x, y))
             || l.rail_btns.iter().any(|(r, _)| r.contains(x, y))
@@ -481,6 +484,9 @@ impl App {
             return Some(h);
         }
         if let Some(h) = self.build_hover_target() {
+            return Some(h);
+        }
+        if let Some(h) = self.sql_hover_target() {
             return Some(h);
         }
         if self.sidebar_open && l.sidebar.contains(x, y) && y >= (l.sidebar.y + TAB_H) as f64 {

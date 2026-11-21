@@ -69,6 +69,11 @@ impl App {
             self.request_redraw();
             return false;
         }
+        // The query box of a database tab edits itself (Ctrl+A / Z / C...) before the shortcuts.
+        if self.sql_edit_key(ev) {
+            self.request_redraw();
+            return false;
+        }
         if self.md_key(ev) {
             self.request_redraw();
             return false;
