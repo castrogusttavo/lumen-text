@@ -40,6 +40,9 @@ impl App {
         if row.is_dir {
             self.tree.toggle(i);
         } else {
+            if self.page_covers_editor() {
+                self.close_pages(); // a file from the tree leaves the Git / AI page
+            }
             self.open_path(&row.path, None);
             self.focus = Focus::Editor;
         }

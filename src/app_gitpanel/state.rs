@@ -268,7 +268,6 @@ pub struct GitPanel {
     pub hist_sig: u64,
     pub closed: bool,
     /// The left edge is being dragged.
-    pub resizing: bool,
     /// Ahead / behind of the branch against its upstream.
     pub sync: SyncInfo,
     /// Fetch / pull / push running on a worker thread.
@@ -413,7 +412,6 @@ impl GitPanel {
             sig: 0,
             hist_sig: 0,
             closed: false,
-            resizing: false,
             sync: SyncInfo::default(),
             job: None,
             sync_note: None,
@@ -971,21 +969,20 @@ pub(super) fn split_name(path: &str) -> (&str, &str) {
     }
 }
 
-/// Narrowest the panel may be dragged to.
+/// Narrowest width the panel clamp allows.
 pub(super) const GP_MIN_W: i32 = 280;
-/// Half-width of the grab band around the panel's left edge.
-pub(super) const GP_GRAB: i32 = 4;
+/// Window width from which the Git page sits beside the editor instead of covering it.
+pub(super) const PAGE_SPLIT_MIN_W: i32 = 1400;
+/// Width of the Git page's list column when it sits beside the editor.
+pub(super) const GP_SPLIT_W: i32 = 440;
+/// Widest the centered Git column gets on a full page.
+pub(super) const GP_COL_MAX: i32 = 720;
 
 /// Panel width for a requested `want` px (a dragged value) inside a window `win` px wide:
 /// at least `GP_MIN_W` (less in tiny windows) and at most 60% of the window.
 pub fn clamp_panel_width(want: i32, win: i32) -> i32 {
     let lo = GP_MIN_W.min(win / 2);
     want.clamp(lo, (win * 6 / 10).max(lo))
-}
-
-/// Automatic width: 30% of the window, 340..440 px.
-pub(super) fn auto_panel_width(win: i32) -> i32 {
-    ((win as f32 * 0.30) as i32).clamp(340, 440).min(win / 2)
 }
 
 /// Keys that only change modifier state; they never mean anything on their own.

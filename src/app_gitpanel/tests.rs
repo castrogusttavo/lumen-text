@@ -447,8 +447,6 @@ fn panel_width_clamps() {
     assert_eq!(clamp_panel_width(300, 400), 240, "tiny window: 60% of it");
     assert_eq!(clamp_panel_width(10, 400), 200, "tiny window: the minimum shrinks to half");
     assert!(clamp_panel_width(0, 100) >= 1);
-    assert_eq!(auto_panel_width(1000), 340);
-    assert_eq!(auto_panel_width(2000), 440);
 }
 
 #[test]

@@ -216,7 +216,8 @@ fn ai_panel_runs_a_stub_agent_end_to_end() {
     assert!(p.w > 0 && app.ai.hits.iter().any(|(_, h)| *h == AiHit::Stop), "header buttons are laid out");
     assert!(app.ai.hits.iter().any(|(_, h)| *h == AiHit::Session(0)), "the session's tab is drawn");
     assert!(app.ai.hits.iter().any(|(_, h)| *h == AiHit::New), "and the + for another one");
-    assert_eq!(app.layout.editor.right(), p.x, "the editor makes room for the slot");
+    assert_eq!(p.right(), app.page_rect().right(), "the AI page fills the main area to the window edge");
+    assert!(app.page_covers_editor(), "and hides the editor");
     // Hiding keeps the agent alive; the badge appears when it rings while hidden.
     app.run_bound("AiPanel"); // focused -> hide
     assert!(!app.ai.open);

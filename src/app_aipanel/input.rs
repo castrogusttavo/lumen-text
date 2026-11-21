@@ -1,14 +1,10 @@
 use super::*;
 use crate::app_tooltip::TipText;
 
-/// Half-width of the grab band around the slot's left edge.
-const GRAB: i32 = 4;
-
 impl App {
     /// Is (x, y) on the draggable left edge of the shown AI panel?
-    pub(crate) fn ai_on_edge(&self, x: f64, y: f64) -> bool {
-        let s = self.right_slot_rect();
-        self.ai.open && Rect::new(s.x - GRAB, s.y, 2 * GRAB, s.h).contains(x, y)
+    pub(crate) fn ai_on_edge(&self, _x: f64, _y: f64) -> bool {
+        false // a page: no resize handle
     }
 
     /// Keys while the panel has the focus: everything goes to the agent but the editor's few

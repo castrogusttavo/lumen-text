@@ -331,6 +331,9 @@ impl App {
         if self.gitpanel_wheel(delta) {
             return self.request_redraw();
         }
+        if self.page_blocks(x, y) {
+            return;
+        }
         if self.layout.tabbar.contains(x, y) {
             // A notch is 3 tabs' worth (24 px "rows"); the dominant axis wins.
             let (dx, dy) = scroller::wheel_px_xy(delta, 24.0);

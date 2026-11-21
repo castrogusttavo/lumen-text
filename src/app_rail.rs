@@ -20,6 +20,7 @@ pub enum RailBtn {
     Files,
     Search,
     Git,
+    Ai,
     Outline,
     Docker,
     Terminal,
@@ -29,7 +30,7 @@ pub enum RailBtn {
 
 impl RailBtn {
     /// Top group, then bottom group.
-    pub const TOP: [RailBtn; 4] = [RailBtn::Files, RailBtn::Search, RailBtn::Git, RailBtn::Outline];
+    pub const TOP: [RailBtn; 5] = [RailBtn::Files, RailBtn::Search, RailBtn::Git, RailBtn::Ai, RailBtn::Outline];
     pub const BOTTOM: [RailBtn; 4] = [RailBtn::Docker, RailBtn::Terminal, RailBtn::Debug, RailBtn::Settings];
 
     pub fn icon(self) -> &'static str {
@@ -37,6 +38,7 @@ impl RailBtn {
             RailBtn::Files => "ui/file_tree",
             RailBtn::Search => "hugeicons/search",
             RailBtn::Git => "ui/git_branch",
+            RailBtn::Ai => "ui/sparkle",
             RailBtn::Outline => "ui/list_tree",
             RailBtn::Docker => "ui/box",
             RailBtn::Terminal => "ui/terminal",
@@ -50,6 +52,7 @@ impl RailBtn {
             RailBtn::Files => "Explorer",
             RailBtn::Search => "Search in project",
             RailBtn::Git => "Source control",
+            RailBtn::Ai => "AI",
             RailBtn::Outline => "Outline",
             RailBtn::Docker => "Docker",
             RailBtn::Terminal => "Terminal",
@@ -81,6 +84,7 @@ impl App {
             RailBtn::Files => self.sidebar_open && self.sidebar_mode == SidebarMode::Files,
             RailBtn::Outline => self.sidebar_open && self.sidebar_mode == SidebarMode::Outline,
             RailBtn::Git => self.gitpanel.is_some(),
+            RailBtn::Ai => self.ai.open,
             RailBtn::Docker => self.panel.open && self.panel.tab == PanelTab::Docker,
             RailBtn::Terminal => self.panel.open && self.panel.tab == PanelTab::Terminal,
             RailBtn::Debug => self.panel.open && self.panel.tab == PanelTab::Debug,
@@ -141,6 +145,10 @@ impl App {
             return true;
         };
         use crate::app_panel::PanelTab;
+        // Every other destination leaves the Git / AI page (it would hide the panel or the file).
+        if !matches!(kind, RailBtn::Git | RailBtn::Ai) {
+            self.close_pages();
+        }
         match kind {
             RailBtn::Files | RailBtn::Outline => {
                 let mode = if kind == RailBtn::Files { SidebarMode::Files } else { SidebarMode::Outline };
@@ -155,6 +163,14 @@ impl App {
             }
             RailBtn::Search => self.open_project_search(),
             RailBtn::Git => self.git_button(),
+            RailBtn::Ai => {
+                if self.ai.open {
+                    self.ai_hide();
+                    self.focus = crate::app::Focus::Editor;
+                } else {
+                    self.ai_show();
+                }
+            }
             RailBtn::Docker => {
                 if self.rail_active(kind) {
                     self.toggle_panel();

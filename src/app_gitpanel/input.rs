@@ -227,13 +227,6 @@ impl App {
         if self.diff_click(x, y) {
             return true;
         }
-        if self.gp_on_edge(x, y) {
-            if let Some(gp) = self.gitpanel.as_mut() {
-                gp.resizing = true;
-                gp.focused = true;
-            }
-            return true;
-        }
         let Some(mut gp) = self.gitpanel.take() else { return false };
         let p = self.gitpanel_rect();
         let inside = p.contains(x, y);
@@ -428,17 +421,7 @@ impl App {
     pub fn gitpanel_move(&mut self) -> bool {
         let (x, y) = self.mouse;
         let p = self.gitpanel_rect();
-        let win = self.size.0 as i32;
         let Some(gp) = self.gitpanel.as_mut() else { return false };
-        if gp.resizing {
-            // The panel is docked on the right, so its width is the distance to the window edge.
-            let w = clamp_panel_width(win - x as i32, win);
-            if self.config.git_panel_width != w {
-                self.config.git_panel_width = w;
-                return true;
-            }
-            return false;
-        }
         // Selecting in the message box with the button down (also outside the box).
         if gp.msg.dragging() {
             let (ox, oy) = gp.msg_origin();
@@ -456,9 +439,6 @@ impl App {
     /// Cursor over the panel: hand on clickable things, I-beam in the message box.
     pub fn gitpanel_cursor(&self, x: f64, y: f64) -> Option<CursorIcon> {
         let gp = self.gitpanel.as_ref()?;
-        if gp.resizing || self.gp_on_edge(x, y) {
-            return Some(CursorIcon::ColResize);
-        }
         if !self.gitpanel_rect().contains(x, y) {
             return None;
         }

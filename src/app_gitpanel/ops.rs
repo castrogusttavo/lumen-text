@@ -1,22 +1,7 @@
 use super::*;
 
 impl App {
-    /// Width the panel takes when open (also valid while the panel state is taken out of `self`).
-    pub(super) fn gp_width(&self) -> i32 {
-        let w = self.size.0 as i32;
-        match self.config.git_panel_width {
-            0 => auto_panel_width(w),
-            n => clamp_panel_width(n, w),
-        }
-    }
-
-    /// Is (x, y) on the draggable left edge of the open panel (the switch above it included)?
-    pub(super) fn gp_on_edge(&self, x: f64, y: f64) -> bool {
-        let p = self.right_slot_rect();
-        self.gitpanel.is_some() && Rect::new(p.x - GP_GRAB, p.y, 2 * GP_GRAB, p.h).contains(x, y)
-    }
-
-    /// Mouse button released: ends an edge drag and stores the width in `config.json`.
+    /// Mouse button released: ends a text selection in the message box.
     pub fn gitpanel_release(&mut self) {
         let selected = self.gitpanel.as_mut().is_some_and(|gp| {
             gp.msg_auto = None;
@@ -25,31 +10,63 @@ impl App {
         if selected {
             self.request_redraw();
         }
-        if self.gitpanel.as_mut().is_some_and(|gp| std::mem::take(&mut gp.resizing)) {
-            self.config.save();
-            self.request_redraw();
+    }
+
+    /// Wide window: the Git page is a column on the left and the editor stays on the right (the
+    /// diff opens there); otherwise the page covers the whole editor area.
+    pub fn page_split(&self) -> bool {
+        self.size.0 as i32 >= PAGE_SPLIT_MIN_W
+    }
+
+    /// Width taken from the left of the editor area by the Git page in split mode: 0 otherwise.
+    pub fn gitpanel_w(&self) -> i32 {
+        if self.gitpanel.is_some() && !self.ai.open && self.page_split() { GP_SPLIT_W } else { 0 }
+    }
+
+    /// The main area a page (Git, AI) can take: right of the rail and sidebar, below the top bar.
+    pub fn page_rect(&self) -> Rect {
+        let (ww, hh) = (self.size.0 as i32, self.size.1 as i32);
+        let x = self.rail_w() + if self.sidebar_open { self.sidebar_w() } else { 0 };
+        // Between the top and bottom bars, whichever of them are shown (zen mode, View toggles).
+        let (top, bottom) = (self.layout.topbar.h, self.layout.status.h);
+        Rect::new(x, top, (ww - x).max(0), (hh - top - bottom).max(0))
+    }
+
+    /// A page hides the editor (AI always, Git unless it is split beside it).
+    pub fn page_covers_editor(&self) -> bool {
+        self.ai.open || (self.gitpanel.is_some() && !self.page_split())
+    }
+
+    /// (x, y) is on a page that hides the editor: the editor must not see the pointer.
+    pub fn page_blocks(&self, x: f64, y: f64) -> bool {
+        self.page_covers_editor() && self.page_rect().contains(x, y)
+    }
+
+    /// Back to the editor: both pages close (the AI agent keeps running).
+    pub fn close_pages(&mut self) {
+        self.ai_hide();
+        if self.gitpanel.is_some() {
+            self.close_git_panel();
         }
     }
 
-    /// Width taken from the editor area by the right-hand slot (Git or AI panel): 0 when closed.
-    pub fn gitpanel_w(&self) -> i32 {
-        if self.gitpanel.is_none() && !self.ai.open { 0 } else { self.gp_width() }
-    }
-
-    /// The whole right-hand slot, as if open: the "Git | AI" switch on top, then the panel.
+    /// The whole page, as if open: the "Git | AI" switch on top, then the content.
     pub fn right_slot_rect(&self) -> Rect {
-        let w = self.gp_width();
-        let (ww, hh) = (self.size.0 as i32, self.size.1 as i32);
-        // Between the top and bottom bars, whichever of them are shown (zen mode, View toggles).
-        let (top, bottom) = (self.layout.topbar.h, self.layout.status.h);
-        Rect::new(ww - w, top, w, (hh - top - bottom).max(0))
+        let p = self.page_rect();
+        if self.ai.open || !self.page_split() { p } else { Rect::new(p.x, p.y, GP_SPLIT_W.min(p.w), p.h) }
     }
 
-    /// Panel rectangle (as if open): the slot under its switch.
+    /// Content rectangle (as if open): the page under its switch; a centered column for Git on a
+    /// page that is wider than the column's maximum.
     pub fn gitpanel_rect(&self) -> Rect {
         let s = self.right_slot_rect();
         let sw = crate::app_aipanel::SLOT_H;
-        Rect::new(s.x, s.y + sw, s.w, (s.h - sw).max(0))
+        let body = Rect::new(s.x, s.y + sw, s.w, (s.h - sw).max(0));
+        if self.ai.open || self.page_split() {
+            return body;
+        }
+        let w = body.w.min(GP_COL_MAX);
+        Rect::new(body.x + (body.w - w) / 2, body.y, w, body.h)
     }
 
     /// Ctrl+Shift+G / palette: open, or focus, or close when it already has the focus.
@@ -459,6 +476,8 @@ impl App {
         self.diff = DiffView::staging_auto(&top, &c.path, c.old.as_deref(), side, &name);
         if self.diff.is_none() {
             gp.say("No content differences to show", false);
+        } else if !self.page_split() {
+            gp.closed = true; // the diff shows in the editor: leave the page
         }
     }
 
@@ -475,6 +494,9 @@ impl App {
             new,
             self.config.diff_ignore_whitespace,
         ));
+        if !self.page_split() {
+            gp.closed = true; // the diff shows in the editor: leave the page
+        }
         gp.open_file = Some(j);
     }
 
