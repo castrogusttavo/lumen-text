@@ -387,14 +387,138 @@ pub(super) fn section_icon(s: &str) -> &'static str {
     match s {
         "General" => "settings",
         "Editor" => "edit",
+        "Display" | "Editor display" => "eye",
         "Fonts" => "font",
-        "Editor display" => "layout",
         "Appearance" => "palette",
-        "TypeScript" | "Language servers" => "code",
+        "Files" => "folder",
+        "Languages" | "TypeScript" | "Language servers" => "code",
         "Git" => "branch",
+        "Build" => "tool_hammer",
         "Terminal" => "terminal",
         "Status bar" => "layout",
+        "AI" => "sparkle",
         _ => "settings",
+    }
+}
+
+/// One-line description shown under the page title.
+pub(super) fn section_desc(s: &str) -> &'static str {
+    match s {
+        "General" => "Saving, updates and the memory budget.",
+        "Editor" => "How text is edited: indentation, whitespace, keymap and writing aids.",
+        "Display" => "What the editor window shows: gutter, minimap, guides, tabs and diagnostics.",
+        "Appearance" => "Theme, light/dark mode, interface scale and scrolling.",
+        "Fonts" => "Typeface, size and spacing for the code editor and for the interface.",
+        "Files" => "The file explorer and what is kept between sessions.",
+        "Languages" => "Language servers, TypeScript intelligence and code lenses.",
+        "Git" => "Pulling, blame and diffs.",
+        "Build" => "Commands behind Build and Run, and the debugger.",
+        "Status bar" => "Which items the bottom bar shows, and in what order.",
+        "AI" => "Notifications and the prompts used by the AI actions.",
+        _ => "",
+    }
+}
+
+/// Position of a page in the left navigation (unknown pages go last, in definition order).
+pub(super) fn section_rank(s: &str) -> usize {
+    const ORDER: &[&str] = &[
+        "General",
+        "Editor",
+        "Display",
+        "Appearance",
+        "Fonts",
+        "Files",
+        "Languages",
+        "Git",
+        "Build",
+        "Status bar",
+        "AI",
+    ];
+    ORDER.iter().position(|o| *o == s).unwrap_or(ORDER.len())
+}
+
+/// The page (left-nav entry) a setting is listed on. The row definitions live in several modules
+/// with older, finer-grained section names; this regroups them into a few clear pages.
+pub(super) fn page_of(key: &str, section: &'static str) -> &'static str {
+    match key {
+        "mem_budget_mb" => return "General",
+        "word_wrap"
+        | "tab_width"
+        | "trim_trailing_whitespace"
+        | "insert_final_newline"
+        | "vim_mode"
+        | "keymap_preset"
+        | "spell_check"
+        | "inline_completion"
+        | "accessibility"
+        | "bidi_paragraph" => {
+            return "Editor";
+        }
+        "minimap" | "minimap_style" | "sticky_scroll" | "indent_guides" | "breadcrumbs" => return "Display",
+        "explorer_hide_gitignored" | "explorer_sort" | "explorer_folders_first" | "hot_exit" | "persistent_undo" => {
+            return "Files";
+        }
+        "enable_lsp" => return "Languages",
+        _ => {}
+    }
+    match section {
+        "Editor display" => "Display",
+        "TypeScript" | "Language servers" => "Languages",
+        o => o,
+    }
+}
+
+/// Sub-heading of a row inside its page, with the order of the headings (rows keep their
+/// definition order within one heading). Empty = no heading.
+pub(super) fn row_group(key: &str) -> (u8, &'static str) {
+    if key.starts_with("status_pos_") {
+        return (1, "Order");
+    }
+    if key.starts_with("status_") || key == "ram_display" {
+        return (0, "Visible items");
+    }
+    if key.starts_with("buffer_") {
+        return (0, "Code editor");
+    }
+    if key.starts_with("ui_font") || key == "ui_line_height" {
+        return (1, "Interface");
+    }
+    if key.starts_with("language_servers.") {
+        return (0, "Language servers");
+    }
+    if key.starts_with("ai_prompt_") {
+        return (1, "Prompts");
+    }
+    if key.starts_with("debug_") {
+        return (1, "Debugger");
+    }
+    match key {
+        "format_on_save" => (0, "Saving"),
+        "updates" => (1, "Updates"),
+        "mem_budget_mb" => (2, "Performance"),
+        "tab_width" | "word_wrap" => (0, "Text"),
+        "trim_trailing_whitespace" | "insert_final_newline" => (1, "Whitespace"),
+        "spell_check" | "inline_completion" => (2, "Writing aids"),
+        "vim_mode" | "keymap_preset" => (3, "Keys"),
+        "accessibility" | "bidi_paragraph" => (4, "Accessibility"),
+        "show_line_numbers" | "show_bookmarks" | "show_breakpoints" => (0, "Gutter"),
+        "minimap" | "minimap_style" | "breadcrumbs" | "sticky_scroll" | "scrollbar" => (1, "Navigation"),
+        "indent_guides" | "rulers" | "render_whitespace" => (2, "Guides"),
+        "inline_diagnostics" | "problems_scope" => (3, "Diagnostics"),
+        "show_tabs" | "show_status_bar" | "zen_max_width" => (4, "Window"),
+        "markdown_remote_images" => (5, "Markdown"),
+        "appearance" | "theme" | "theme_light" | "theme_dark" | "theme_chrome" => (0, "Theme"),
+        "ui_scale" | "scroll_speed" => (1, "Interface"),
+        "explorer_hide_gitignored" | "explorer_sort" | "explorer_folders_first" => (0, "Explorer"),
+        "hot_exit" | "persistent_undo" => (1, "Recovery"),
+        "enable_lsp" => (0, "Language servers"),
+        "auto_import" | "lsp_narrow" | "code_lens" | "code_lens_refs" | "code_lens_impls" | "inlay_hints"
+        | "inlay_hints_params" | "inlay_hints_types" | "tsgo_source" => (1, "TypeScript"),
+        "git_pull_strategy" => (0, "Sync"),
+        "git_blame" | "diff_ignore_whitespace" => (1, "Display"),
+        "build_command" | "run_command" => (0, "Build and run"),
+        "ai_notifications" => (0, "Notifications"),
+        _ => (0, ""),
     }
 }
 

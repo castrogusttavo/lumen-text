@@ -173,6 +173,10 @@ pub(super) fn draw_settings(
             let t = n.to_string();
             let w = tx.ui_width(&t, false);
             tx.draw_ui(cv, r.right() - w - 10, r.y + 7, &t, dim.with_alpha(150), r, false);
+            // A dot when something on the page differs from its default.
+            if (0..p.defs.len()).any(|d| p.defs[d].section == *s && p.shown(d) && p.is_modified(d)) {
+                cv.fill_round(Rect::new(r.right() - w - 22, r.y + 13, 6, 6), 3, c.accent);
+            }
         }
         hits.push((r, Hit::Section(i)));
     }
@@ -184,7 +188,36 @@ pub(super) fn draw_settings(
     search_box(cv, tx, th, sb, &p.search, "Search settings…", p.edit.is_none());
     hits.push((sb, Hit::Search));
 
-    let list = Rect::new(rx - 8, sb.bottom() + 10, rw + 16, (area.bottom() - 30 - (sb.bottom() + 10)).max(0));
+    // Page header: title, one-line description and how many rows differ from their default.
+    let hy = sb.bottom() + 14;
+    let head = Rect::new(rx, hy, rw, 46);
+    let secs_now = p.sections();
+    let (title, desc) = if searching {
+        let n = vis.len();
+        (
+            "Search results".to_string(),
+            format!("{n} setting{} match your search, across every page.", if n == 1 { "" } else { "s" }),
+        )
+    } else {
+        let s = secs_now.get(p.section).copied().unwrap_or("");
+        (s.to_string(), section_desc(s).to_string())
+    };
+    let n_mod = if searching { 0 } else { vis.iter().filter(|&&d| p.is_modified(d)).count() };
+    let mod_w = if n_mod > 0 {
+        let t = format!("{n_mod} modified");
+        let w = tx.ui_width(&t, false);
+        tx.draw_ui(cv, head.right() - w, head.y + 3, &t, c.accent_text, head, false);
+        w + 16
+    } else {
+        0
+    };
+    let title = fit(tx, &title, head.w - mod_w, true);
+    tx.draw_ui(cv, head.x, head.y, &title, fg, head, true);
+    let desc = fit(tx, &desc, head.w, false);
+    tx.draw_ui(cv, head.x, head.y + 24, &desc, dim, head, false);
+
+    let list_top = head.bottom() + 4;
+    let list = Rect::new(rx - 8, list_top, rw + 16, (area.bottom() - 30 - list_top).max(0));
     p.view_h = list.h;
     p.scroll = p.scroll.clamp(0.0, p.max_scroll());
     if p.sel >= vis.len() {
@@ -207,11 +240,19 @@ pub(super) fn draw_settings(
         }
         push_hit(hits, row, list, Hit::SetRow(d));
         let def = p.defs[d].clone();
+        // The first row of a sub-heading gets its name after the label and a hairline above it.
+        let group = row_group(def.key);
+        let group_start = !group.1.is_empty() && (k == 0 || row_group(p.defs[vis[k - 1]].key).1 != group.1);
+        if group_start && k > 0 {
+            cv.fill_clip(Rect::new(row.x + 14, row.y - 2, row.w - 28, 1), c.border, list);
+        }
 
         // Reset icon (far right) and control area.
         if p.is_modified(d) {
+            // Accent bar on the row's left edge + an accent reset icon: easy to spot while scrolling.
+            rr(cv, Rect::new(row.x + 3, row.y + 10, 3, row.h - 20), 2, c.accent, list);
             let reset = Rect::new(row.right() - 14 - 18, row.y + (row.h - 18) / 2, 18, 18);
-            tx.icon(cv, "hugeicons/reset", reset.x + 1, reset.y + 1, 16, dim, list);
+            tx.icon(cv, "hugeicons/reset", reset.x + 1, reset.y + 1, 16, c.accent_text, list);
             push_hit(hits, reset.inset(-4), list, Hit::SetReset(d));
         }
         let right = row.right() - 14 - 18 - 10;
@@ -247,6 +288,9 @@ pub(super) fn draw_settings(
         if let Some(b) = p.badges.get(def.key).filter(|_| lw + 80 < text_w) {
             let b = fit(tx, &format!("· {b}"), text_w - lw - 8, false);
             tx.draw_ui(cv, row.x + 14 + lw + 8, row.y + 9, &b, c.accent_text, clip_row, false);
+        } else if !searching && lw + 80 < text_w && group_start {
+            let g = fit(tx, &format!("· {}", group.1), text_w - lw - 8, false);
+            tx.draw_ui(cv, row.x + 14 + lw + 8, row.y + 9, &g, dim.with_alpha(170), clip_row, false);
         } else if searching && lw + 80 < text_w {
             tx.draw_ui(
                 cv,

@@ -37,6 +37,9 @@ pub const APP_ICONS: &[&str] = &[
     "cpu",
     "download",
     "edit",
+    "eye",
+    "folder",
+    "font",
     "keyboard",
     "layout",
     "link",
@@ -46,7 +49,9 @@ pub const APP_ICONS: &[&str] = &[
     "reset",
     "search",
     "settings",
+    "sparkle",
     "terminal",
+    "tool_hammer",
     "trash",
 ];
 

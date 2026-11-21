@@ -42,6 +42,13 @@ impl SettingsPage {
             Value::Object(o) => o,
             _ => Map::new(),
         };
+        let defs = defs
+            .into_iter()
+            .map(|mut d| {
+                d.section = page_of(d.key, d.section);
+                d
+            })
+            .collect();
         Self {
             defs,
             values,
@@ -104,7 +111,7 @@ impl SettingsPage {
         Value::Object(self.defaults.clone())
     }
 
-    /// Sections in definition order, without duplicates.
+    /// Pages in navigation order (see `section_rank`), without duplicates.
     pub fn sections(&self) -> Vec<&'static str> {
         let mut out: Vec<&'static str> = Vec::new();
         for d in self.defs.iter().filter(|d| !self.hidden.iter().any(|k| k == d.key)) {
@@ -112,6 +119,7 @@ impl SettingsPage {
                 out.push(d.section);
             }
         }
+        out.sort_by_key(|s| section_rank(s));
         out
     }
 
@@ -130,7 +138,10 @@ impl SettingsPage {
         } else {
             let secs = self.sections();
             let Some(s) = secs.get(self.section) else { return vec![] };
-            (0..self.defs.len()).filter(|&i| self.defs[i].section == *s && self.shown(i)).collect()
+            let mut rows: Vec<usize> =
+                (0..self.defs.len()).filter(|&i| self.defs[i].section == *s && self.shown(i)).collect();
+            rows.sort_by_key(|&i| (row_group(self.defs[i].key).0, i));
+            rows
         }
     }
 

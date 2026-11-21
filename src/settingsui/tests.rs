@@ -182,22 +182,23 @@ fn sections_in_order_and_visible_by_section() {
         vec![
             "General",
             "Editor",
+            "Display",
             "Appearance",
-            "TypeScript",
-            "Git",
-            "Status bar",
             "Fonts",
-            "Editor display",
-            "Build",
             "Files",
+            "Languages",
+            "Git",
+            "Build",
+            "Status bar",
             "AI"
         ]
     );
-    assert_eq!(p.visible().len(), 2);
-    p.set_section(3);
+    assert_eq!(p.visible().len(), 3);
+    p.set_section(6);
     assert_eq!(
         keys_of(&p),
         vec![
+            "enable_lsp",
             "auto_import",
             "lsp_narrow",
             "code_lens",
@@ -210,7 +211,7 @@ fn sections_in_order_and_visible_by_section() {
         ]
     );
     p.set_section(99);
-    assert_eq!(p.section, 3, "out of range ignored");
+    assert_eq!(p.section, 6, "out of range ignored");
 }
 
 #[test]
@@ -232,7 +233,7 @@ fn search_filters_label_and_help_case_insensitive_across_sections() {
     let keys = keys_of(&m.settings);
     assert!(keys.contains(&"theme_dark") && !keys.contains(&"buffer_font_size"), "{keys:?}");
     m.settings.search = TextField::with("   ");
-    assert_eq!(keys_of(&m.settings), vec!["format_on_save", "updates"], "blank search = section list");
+    assert_eq!(keys_of(&m.settings), vec!["format_on_save", "updates", "mem_budget_mb"], "blank search = section list");
 }
 
 #[test]
@@ -248,7 +249,7 @@ fn typing_resets_selection_and_backspace_restores_list() {
         press(&mut m, named(NamedKey::Backspace));
     }
     assert!(m.settings.search.text.is_empty());
-    assert_eq!(m.settings.visible().len(), 2, "back to the section list");
+    assert_eq!(m.settings.visible().len(), 3, "back to the section list");
 }
 
 #[test]
@@ -298,7 +299,7 @@ fn dynamic_choices_and_dropdown_pick() {
     let mut m = modal();
     let themes: Vec<String> = (0..20).map(|i| format!("theme-{i}")).collect();
     m.settings.set_choices("theme", themes.clone());
-    m.settings.set_section(2);
+    m.settings.set_section(3);
     let d = def_idx(&m.settings, "theme");
     assert_eq!(m.settings.choices_of(d), themes);
     press(&mut m, named(NamedKey::ArrowDown));
@@ -327,7 +328,7 @@ fn dynamic_choices_and_dropdown_pick() {
 fn dropdown_selection_is_clamped_and_scrolls() {
     let mut m = modal();
     m.settings.set_choices("theme", (0..30).map(|i| i.to_string()).collect());
-    m.settings.set_section(2);
+    m.settings.set_section(3);
     press(&mut m, named(NamedKey::ArrowDown));
     press(&mut m, named(NamedKey::Enter));
     for _ in 0..50 {
@@ -377,7 +378,7 @@ fn number_out_of_range_value_is_pulled_in_and_fractions_survive() {
 #[test]
 fn number_via_keyboard_arrows() {
     let mut m = modal();
-    m.settings.set_section(6); // Fonts
+    m.settings.set_section(4); // Fonts
     let fs = def_idx(&m.settings, "buffer_font_size");
     m.settings.select_def(fs);
     assert_eq!(m.settings.selected_def(), Some(fs));
@@ -436,21 +437,21 @@ fn reset_row_restores_default_and_flags_modified() {
 #[test]
 fn settings_navigation_bounds_and_tab() {
     let mut m = modal();
-    m.settings.set_section(3); // 7 rows
+    m.settings.set_section(6); // Languages: 10 rows
     press(&mut m, named(NamedKey::ArrowUp));
     assert_eq!(m.settings.sel, 0);
     for _ in 0..10 {
         press(&mut m, named(NamedKey::ArrowDown));
     }
-    assert_eq!(m.settings.sel, 8);
+    assert_eq!(m.settings.sel, 9);
     press(&mut m, named(NamedKey::Home));
     assert_eq!(m.settings.sel, 0);
     press(&mut m, named(NamedKey::End));
-    assert_eq!(m.settings.sel, 8);
+    assert_eq!(m.settings.sel, 9);
     press(&mut m, named(NamedKey::PageUp));
-    assert_eq!(m.settings.sel, 2);
+    assert_eq!(m.settings.sel, 3);
     press(&mut m, named(NamedKey::PageDown));
-    assert_eq!(m.settings.sel, 8);
+    assert_eq!(m.settings.sel, 9);
     // Tab walks sections and wraps
     let last = m.settings.sections().len() - 1;
     m.settings.set_section(last);
@@ -903,7 +904,7 @@ fn settings_clicks_toggle_step_and_dropdown_via_hits() {
     let (x, y) = center(hit_rect(&m, Hit::Toggle(d)));
     assert_eq!(m.mouse_down(x, y), Event::Setting { key: "format_on_save".into(), value: json!(true) });
     // Fonts section: "+" on the buffer font size
-    let (x, y) = center(hit_rect(&m, Hit::Section(6)));
+    let (x, y) = center(hit_rect(&m, Hit::Section(4)));
     m.mouse_down(x, y);
     redraw(&mut m);
     let d = def_idx(&m.settings, "buffer_font_size");
@@ -911,7 +912,7 @@ fn settings_clicks_toggle_step_and_dropdown_via_hits() {
     assert_eq!(m.mouse_down(x, y), Event::Setting { key: "buffer_font_size".into(), value: json!(15) });
     // Appearance: segmented option click, then dropdown open + pick
     m.settings.set_choices("theme", vec!["x".into(), "y".into(), "z".into(), "w".into(), "v".into()]);
-    let (x, y) = center(hit_rect(&m, Hit::Section(2)));
+    let (x, y) = center(hit_rect(&m, Hit::Section(3)));
     m.mouse_down(x, y);
     redraw(&mut m);
     let d = def_idx(&m.settings, "appearance");
