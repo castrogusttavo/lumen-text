@@ -410,6 +410,7 @@ impl App {
             }
             Cmd::NewWindow => self.new_window(),
             Cmd::RemoteOpen => self.remote_open_prompt(),
+            Cmd::DatabaseOpen => self.sql_open_prompt(),
             Cmd::RemoteReconnect => self.remote_reconnect(),
             Cmd::RemoteSaveOverwrite => self.remote_save_overwrite(),
             Cmd::OpenFolderNewWindow => self.open_topmenu_cmd_new_window(),

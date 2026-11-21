@@ -176,6 +176,8 @@ pub enum PromptKind {
     WorkspaceAdd,
     WorkspaceOpen,
     WorkspaceSave,
+    /// "Database: Open SQLite file…" (see `app_sqlview`).
+    SqliteOpen,
 }
 
 pub struct Prompt {

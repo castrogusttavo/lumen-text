@@ -580,6 +580,12 @@ impl Doc {
     /// Draws into `rect`: the picture of an image tab, the text otherwise (see `draw_text`).
     /// Returns true while more frames are needed.
     pub fn draw(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, o: &DrawOpts) -> bool {
+        if let Some(mut v) = self.sql.take() {
+            self.rect = rect;
+            let busy = v.draw(cv, tx, theme, rect);
+            self.sql = Some(v);
+            return busy;
+        }
         let Some(mut v) = self.img.take() else { return self.draw_text(cv, tx, theme, rect, o) };
         let busy = if v.preview {
             self.rect = rect;

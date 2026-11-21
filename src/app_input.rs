@@ -352,7 +352,7 @@ impl App {
         if self.merge_wheel(delta) || self.diff_wheel(delta) {
             return self.request_redraw();
         }
-        if self.img_wheel(delta) || self.md_wheel(delta) || self.split_wheel(delta) {
+        if self.img_wheel(delta) || self.sql_wheel(delta) || self.md_wheel(delta) || self.split_wheel(delta) {
             return self.request_redraw();
         }
         self.hover = None;

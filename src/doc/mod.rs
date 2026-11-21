@@ -202,6 +202,8 @@ pub struct Doc {
     pub md: Option<Box<crate::app_md::MdState>>,
     /// Image tab (PNG, JPEG, GIF, WebP, SVG): the picture shown instead of the text (see `imgview`).
     pub img: Option<Box<crate::imgview::ImgView>>,
+    /// SQLite database tab: the read-only table viewer shown instead of the text (see `app_sqlview`).
+    pub sql: Option<Box<crate::app_sqlview::SqlView>>,
     /// LSP inlay hints for the lines around the viewport (empty = no cost anywhere).
     pub inlay: crate::inlay::InlayState,
     /// Pinned tab (drawn first, kept by "Close all").
@@ -339,6 +341,7 @@ impl Doc {
             pr_rev: 0,
             md: None,
             img: None,
+            sql: None,
             inlay: Default::default(),
             pinned: false,
             fileconf: Default::default(),
@@ -569,6 +572,12 @@ impl Doc {
     /// [`reload_from_disk`](Self::reload_from_disk) decoding the file as `enc` (`None` = detect).
     pub fn reload_as(&mut self, enc: Option<crate::encoding::TextEncoding>) -> std::io::Result<()> {
         let Some(path) = self.path().map(Path::to_path_buf) else { return Ok(()) };
+        if let Some(v) = self.sql.as_mut() {
+            v.reload();
+            self.disk_mtime = self.stat_mtime();
+            self.conflict = false;
+            return Ok(());
+        }
         if let Some(v) = self.img.as_mut() {
             v.reload();
             if v.kind == crate::imgview::Kind::Raster {

@@ -284,6 +284,7 @@ impl App {
                 PromptKind::WorkspaceAdd => self.ws_add_answer(&p.field.text),
                 PromptKind::WorkspaceOpen => self.ws_open_answer(&p.field.text),
                 PromptKind::WorkspaceSave => self.ws_save_answer(&p.field.text),
+                PromptKind::SqliteOpen => self.sql_open_answer(&p.field.text),
             },
             Overlay::None => {}
         }
