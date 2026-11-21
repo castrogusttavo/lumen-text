@@ -40,6 +40,8 @@ mod agents;
 pub mod bridge;
 #[cfg(test)]
 mod bridge_tests;
+pub mod composer;
+mod composer_ui;
 mod draw;
 mod explain;
 mod input;
@@ -55,8 +57,10 @@ pub use state::*;
 pub const SLOT_H: i32 = 40;
 /// Height of the row of session tabs (shown while any session exists).
 pub(crate) const TABS_H: i32 = 36;
-/// Height of the AI panel's header (agent, status, session buttons).
-pub(crate) const HEAD_H: i32 = 44;
+/// Height of the AI panel's header (session title, status, buttons).
+pub(crate) const HEAD_H: i32 = 48;
+/// Height of the composer area before the first frame measured it (box, gaps).
+pub(crate) const COMPOSER_AREA_GUESS: i32 = 132;
 /// Height of the session filter row under the tabs.
 pub(crate) const FILTER_H: i32 = 36;
 /// Inner padding around the agent's terminal.
@@ -115,16 +119,29 @@ impl App {
         self.gitpanel_rect()
     }
 
-    /// Height of what sits above the agent's terminal: the session tabs and their filter (when any sessions) and the header.
+    /// The session filter row is shown (opened from the menu, or while it holds text).
+    pub(crate) fn ai_filter_shown(&self) -> bool {
+        !self.ai.sessions.is_empty() && (self.ai.filter_open || !self.ai.filter.text.is_empty())
+    }
+
+    /// Height of what sits above the agent's terminal: the header, the session pills and, when
+    /// shown, their filter.
     pub(crate) fn ai_top_h(&self) -> i32 {
-        HEAD_H + if self.ai.sessions.is_empty() { 0 } else { TABS_H + FILTER_H }
+        let sessions = !self.ai.sessions.is_empty();
+        HEAD_H + if sessions { TABS_H } else { 0 } + if self.ai_filter_shown() { FILTER_H } else { 0 }
+    }
+
+    /// Height of the composer area at the bottom of the panel (nothing without a session).
+    pub(crate) fn ai_composer_h(&self) -> i32 {
+        if self.ai.sessions.is_empty() { 0 } else { self.ai.composer_area }
     }
 
     /// Where the agent's terminal goes (inside the padding).
     fn ai_inner_rect(&self) -> Rect {
         let p = self.aipanel_rect();
-        let top = self.ai_top_h().max(HEAD_H + TABS_H + FILTER_H);
-        Rect::new(p.x + 1 + PAD, p.y + top + PAD, p.w - 1 - 2 * PAD, (p.h - top - 2 * PAD).max(0))
+        let top = self.ai_top_h();
+        let h = p.h - top - self.ai_composer_h() - 2 * PAD;
+        Rect::new(p.x + 1 + PAD, p.y + top + PAD, p.w - 1 - 2 * PAD, h.max(0))
     }
 
     /// Look for agent CLIs (once, or again with `force`).
@@ -171,6 +188,7 @@ impl App {
         }
         self.ai.open = true;
         self.ai.focused = true;
+        self.ai.composer_focus = true;
         self.focus = Focus::Editor;
         if self.ai.root != self.root {
             // Another project since the sessions started: their agents belong to the old one.
@@ -276,6 +294,7 @@ impl App {
         }
         self.ai.sessions.push(Session { id, agent: a, name, cwd, term, track: Track::default() });
         self.ai.active = self.ai.sessions.len() - 1;
+        self.ai.composer_focus = true;
         self.ai.root = self.root.clone();
         self.request_redraw();
         true
@@ -614,6 +633,7 @@ impl App {
     /// Per-event hook: the status changes with time too (output going quiet).
     pub fn ai_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
         self.ai_flush_prompt(now, want);
+        self.ai_flush_enter(now, want);
         let ms = |n: u64| Duration::from_millis(n);
         let mut redraw = false;
         for i in 0..self.ai.sessions.len() {

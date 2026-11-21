@@ -25,7 +25,7 @@ impl App {
     }
 
     /// 28 px icon button (hover tint comes from the app's hover system).
-    fn ai_icon_btn(&mut self, cv: &mut Canvas, r: Rect, icon: &str, hit: Option<AiHit>) {
+    pub(super) fn ai_icon_btn(&mut self, cv: &mut Canvas, r: Rect, icon: &str, hit: Option<AiHit>) {
         let c = self.theme.chrome;
         let (mx, my) = self.mouse;
         if hit.is_some() && self.overlay.is_none() && r.contains(mx, my) {
@@ -94,33 +94,40 @@ impl App {
                 c.accent.with_alpha(if self.ai.resizing { 0xc0 } else { 0x70 }),
             );
         }
+        let has = !self.ai.sessions.is_empty();
         let mut top = p.y;
-        if !self.ai.sessions.is_empty() {
-            self.ai_draw_tabs(cv, Rect::new(p.x + 1, p.y, p.w - 1, TABS_H));
-            top += TABS_H;
-            self.ai_draw_filter(cv, Rect::new(p.x + 1, top, p.w - 1, FILTER_H));
-            top += FILTER_H;
-        }
         self.ai_draw_header(cv, Rect::new(p.x + 1, top, p.w - 1, HEAD_H));
-        let top = top + HEAD_H;
+        top += HEAD_H;
+        if has {
+            self.ai_draw_tabs(cv, Rect::new(p.x + 1, top, p.w - 1, TABS_H));
+            top += TABS_H;
+            if self.ai_filter_shown() {
+                self.ai_draw_filter(cv, Rect::new(p.x + 1, top, p.w - 1, FILTER_H));
+                top += FILTER_H;
+            }
+        } else {
+            cv.fill(Rect::new(p.x + 1, top - 1, p.w - 1, 1), c.border);
+        }
         let body = Rect::new(p.x + 1, top, p.w - 1, (p.bottom() - top).max(0));
         cv.fill(body, self.theme.background);
-        cv.fill(Rect::new(body.x, body.y, body.w, 1), c.border);
-        if !self.ai.sessions.is_empty() {
-            self.ai_draw_term(cv, body);
+        if has {
+            // The composer is measured first: the terminal gets what is left above it.
+            let geo = self.ai_composer_geo(p, top);
+            let term_body = Rect::new(body.x, body.y, body.w, (geo.area.y - body.y).max(0));
+            self.ai_draw_term(cv, term_body);
+            self.ai_draw_composer(cv, &geo);
         } else {
             self.ai_draw_empty(cv, body);
         }
     }
 
-    /// One tab per session (status dot, agent icon, name, close) and `+` for another one.
+    /// One pill per session (status dot, agent icon, name, close); the `+` lives in the header.
     fn ai_draw_tabs(&mut self, cv: &mut Canvas, r: Rect) {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
         cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), c.border);
-        let plus = Rect::new(r.right() - 8 - 28, r.y + 4, 28, 28);
-        let left = r.x + 8;
-        let avail = plus.x - 4 - left;
+        let left = r.x + 12;
+        let avail = r.right() - 12 - left;
         let vis = self.ai.visible();
         let n = vis.len() as i32;
         if vis.is_empty() {
@@ -133,50 +140,49 @@ impl App {
             .iter()
             .map(|&i| {
                 let unseen = self.ai.sessions[i].track.unseen;
-                (40 + self.tx.ui_width(&self.ai.sessions[i].name, unseen) + 26).min(220)
+                (42 + self.tx.ui_width(&self.ai.sessions[i].name, unseen) + 28).min(220)
             })
             .collect();
-        let total: i32 = natural.iter().sum::<i32>() + 2 * (n - 1);
-        let squeezed = (total > avail).then(|| ((avail - 2 * (n - 1)) / n.max(1)).max(56));
+        let total: i32 = natural.iter().sum::<i32>() + 4 * (n - 1);
+        let squeezed = (total > avail).then(|| ((avail - 4 * (n - 1)) / n.max(1)).max(64));
         let (mx, my) = self.mouse;
         let mut x = left;
         for (&i, &nat) in vis.iter().zip(natural.iter()) {
             let w = squeezed.unwrap_or(nat);
-            if x + w > plus.x - 4 {
+            if x + w > r.right() - 8 {
                 // No room left: the rest stays reachable by "Next session waiting" and the menu.
                 break;
             }
-            let tr = Rect::new(x, r.y + 4, w, 28);
+            let tr = Rect::new(x, r.y + 5, w, 26);
             let active = i == self.ai.active;
             let s = &self.ai.sessions[i];
             let (status, unseen, icon, name) = (s.status(), s.track.unseen, s.agent.icon, s.name.clone());
             let hovered = tr.contains(mx, my) && self.overlay.is_none();
             if active {
-                cv.fill_round(tr, 8, strong.with_alpha(0x1e));
-                cv.fill_round(Rect::new(tr.x + 10, tr.bottom() - 2, (tr.w - 20).max(0), 2), 1, c.accent);
+                cv.fill_round(tr, 13, strong.with_alpha(0x1e));
+                cv.ring(tr, 13, c.accent.with_alpha(0x60));
             } else if hovered {
-                cv.fill_round(tr, 8, strong.with_alpha(0x0c));
+                cv.fill_round(tr, 13, strong.with_alpha(0x0e));
             }
             let dot = self.ai_status_color(status);
-            cv.fill_round(Rect::new(tr.x + 9, tr.y + 11, 6, 6), 3, dot);
+            cv.fill_round(Rect::new(tr.x + 10, tr.y + 10, 6, 6), 3, dot);
             let col = if active || unseen { strong } else { dim };
-            self.tx.icon(cv, icon, tr.x + 21, tr.y + 7, 14, col, tr);
+            self.tx.icon(cv, icon, tr.x + 22, tr.y + 6, 14, col, tr);
             let show_close = active || hovered;
-            let name_w = w - 41 - if show_close { 24 } else { 8 };
+            let name_w = w - 42 - if show_close { 26 } else { 10 };
             if name_w > 8 {
                 let label = crate::ui::fit_ellipsis(&mut self.tx, &name, name_w, unseen);
-                let clip = Rect::new(tr.x, tr.y, tr.w - if show_close { 22 } else { 4 }, tr.h);
-                self.tx.draw_ui(cv, tr.x + 41, tr.y + 5, &label, col, clip, unseen);
+                let clip = Rect::new(tr.x, tr.y, tr.w - if show_close { 24 } else { 6 }, tr.h);
+                self.tx.draw_ui(cv, tr.x + 42, tr.y + 4, &label, col, clip, unseen);
             }
             self.ai.hits.push((tr, AiHit::Session(i)));
             if show_close {
-                let cb = Rect::new(tr.right() - 22, tr.y + 6, 16, 16);
+                let cb = Rect::new(tr.right() - 22, tr.y + 5, 16, 16);
                 self.tx.icon(cv, "ui/close", cb.x + 2, cb.y + 2, 12, dim, cb);
                 self.ai.hits.push((cb, AiHit::CloseSession(i)));
             }
-            x += w + 2;
+            x += w + 4;
         }
-        self.ai_icon_btn(cv, plus, "ui/plus", Some(AiHit::New));
     }
 
     /// The filter field under the tabs: narrows them by name or agent.
@@ -215,63 +221,74 @@ impl App {
         }
     }
 
-    /// Agent picker, status chip, Restart / Stop.
+    /// Header: the session's icon, title and status line, then (right to left) close, menu,
+    /// Stop / Restart, new session and the IDE bridge. Without a session: a plain title and `+`.
     fn ai_draw_header(&mut self, cv: &mut Canvas, h: Rect) {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
-        let (icon, name) = self.ai.agent().map_or(("ui/sparkle", "Choose agent"), |a| (a.icon, a.name));
-        let nw = self.tx.ui_width(name, true);
-        let pill = Rect::new(h.x + 11, h.y + 8, 10 + 16 + 8 + nw + 8 + 12 + 10, 28);
-        let (mx, my) = self.mouse;
-        let hot = self.overlay.is_none() && pill.contains(mx, my);
-        cv.fill_round(pill, 8, strong.with_alpha(if hot { 0x1c } else { 0x0e }));
-        cv.ring(pill, 8, c.border);
-        self.tx.icon(cv, icon, pill.x + 10, pill.y + 6, 16, strong, pill);
-        self.tx.draw_ui(cv, pill.x + 34, pill.y + 5, name, strong, pill, true);
-        self.tx.icon(cv, "ui/chevron_down", pill.right() - 22, pill.y + 8, 12, dim, pill);
-        self.ai.hits.push((pill, AiHit::Agent));
-
-        let alive = self.ai.term().is_some_and(|t| t.alive);
-        let has_agent = self.ai.agent().is_some_and(|a| self.ai.path_of(a).is_some());
-        let mut right = h.right() - 11;
-        for (icon, hit, on) in
-            [("ui/stop", AiHit::Stop, alive), ("ui/rotate_cw", AiHit::Restart, has_agent && self.ai.cur().is_some())]
-        {
-            let b = Rect::new(right - 28, h.y + 8, 28, 28);
-            self.ai_icon_btn(cv, b, icon, on.then_some(hit));
-            right -= 32;
+        let has = !self.ai.sessions.is_empty();
+        let by = h.y + (h.h - 28) / 2;
+        // Buttons, right to left.
+        let mut right = h.right() - 10;
+        if has {
+            let b = Rect::new(right - 28, by, 28, 28);
+            self.ai_icon_btn(cv, b, "ui/close", Some(AiHit::CloseSession(self.ai.active)));
+            right -= 30;
+            let b = Rect::new(right - 28, by, 28, 28);
+            self.ai_icon_btn(cv, b, "ui/ellipsis", Some(AiHit::Menu));
+            right -= 30;
+            let alive = self.ai.term().is_some_and(|t| t.alive);
+            let (icon, hit) = if alive { ("ui/stop", AiHit::Stop) } else { ("ui/rotate_cw", AiHit::Restart) };
+            let b = Rect::new(right - 28, by, 28, 28);
+            self.ai_icon_btn(cv, b, icon, Some(hit));
+            right -= 30;
         }
-        if self.ai.sessions.is_empty() {
-            return;
+        let b = Rect::new(right - 28, by, 28, 28);
+        self.ai_icon_btn(cv, b, "ui/plus", Some(AiHit::New));
+        right -= 30;
+        if has {
+            right = self.ai_draw_bridge(cv, h, right);
         }
-        right = self.ai_draw_bridge(cv, h, right);
-        // Status chip in the room left between the picker and the buttons: dot + words, or a lone dot.
-        let (label, col) = self.ai_status_look();
-        let lw = self.tx.ui_width_sized(&label, false, SMALL);
-        let room = right - 4 - (pill.right() + 8);
-        let full = 10 + 8 + 6 + lw + 10;
-        let w = if room >= full {
-            full
-        } else if room >= 24 {
-            24
-        } else {
-            return;
+        let (icon, name) = match self.ai.cur() {
+            Some(s) => (s.agent.icon, s.name.clone()),
+            None => ("ui/sparkle", "AI agents".to_string()),
         };
-        let chip = Rect::new(pill.right() + 8, h.y + 11, w, 22);
+        let disc = Rect::new(h.x + 12, by, 28, 28);
+        cv.fill_round(disc, 14, c.accent.with_alpha(0x1c));
+        self.tx.icon(cv, icon, disc.x + 6, disc.y + 6, 16, c.accent_text, disc);
+        let tx = disc.right() + 10;
+        let room = right - 6 - tx;
+        if room <= 24 {
+            return;
+        }
+        let clip = Rect::new(tx, h.y, room, h.h);
+        let title = crate::ui::fit_ellipsis(&mut self.tx, &name, room, true);
+        self.tx.draw_ui(cv, tx, h.y + 6, &title, strong, clip, true);
+        // Status line: dot (or spinner while working), the status, and the task the agent shows.
+        let sy = h.y + 26;
+        if !has {
+            self.tx.draw_ui_sized(cv, tx, sy, "No session running", dim, clip, false, SMALL);
+            return;
+        }
+        let (label, col) = self.ai_status_look();
         let bg = c.sidebar_bg;
-        cv.fill_round(chip, 8, col.with_alpha(0x1a).over(bg));
-        let (dx, dy) = (chip.x + if w == 24 { 8 } else { 10 }, chip.y + 7);
         if self.ai.cur().is_some_and(|s| s.status() == Status::Working) {
             // Turns as output arrives (each frame), quiet otherwise: no timer of its own.
             let t = self.ai.term().map_or(0.0, |t| t.started.elapsed().as_secs_f32());
-            crate::app_tests::spinner_t(cv, dx + 4, dy + 4, 4, col, col.with_alpha(0x1a).over(bg), t, chip);
+            crate::app_tests::spinner_t(cv, tx + 4, sy + 9, 4, col, bg, t, clip);
         } else {
-            cv.fill_round(Rect::new(dx, dy, 8, 8), 4, col);
+            cv.fill_round(Rect::new(tx, sy + 5, 8, 8), 4, col);
         }
-        if w == full {
-            self.tx.draw_ui_sized(cv, dx + 14, chip.y + 3, &label, col, chip, false, SMALL);
+        let lw = self.tx.ui_width_sized(&label, false, SMALL);
+        self.tx.draw_ui_sized(cv, tx + 14, sy, &label, col, clip, false, SMALL);
+        let task = self.ai.term().map(|t| title_task(&t.grid.title).to_string()).unwrap_or_default();
+        let left = room - 14 - lw - 12;
+        if !task.is_empty() && left > 40 {
+            let text = crate::ui::fit_ellipsis(&mut self.tx, &task, left, false);
+            self.tx.draw_ui_sized(cv, tx + 14 + lw + 8, sy, &format!("· {text}"), dim, clip, false, SMALL);
         }
-        self.ai.hits.push((chip, AiHit::Status));
+        let status = Rect::new(tx, sy, (14 + lw).min(room), 18);
+        self.ai.hits.push((status, AiHit::Status));
     }
 
     /// Claude Code only: the IDE bridge indicator (link icon, green when connected) and the count of
@@ -287,14 +304,14 @@ impl App {
             let label = pending.to_string();
             let lw = self.tx.ui_width_sized(&label, true, SMALL);
             let w = 8 + 14 + 5 + lw + 9;
-            let r = Rect::new(right - w, h.y + 11, w, 22);
+            let r = Rect::new(right - w, h.y + (h.h - 22) / 2, w, 22);
             cv.fill_round(r, 8, c.accent.with_alpha(0x2a).over(c.sidebar_bg));
             self.tx.icon(cv, "ui/file_diff", r.x + 8, r.y + 4, 14, c.accent_text, r);
             self.tx.draw_ui_sized(cv, r.x + 27, r.y + 3, &label, c.accent_text, r, true, SMALL);
             self.ai.hits.push((r, AiHit::Diffs));
             right = r.x - 4;
         }
-        let b = Rect::new(right - 28, h.y + 8, 28, 28);
+        let b = Rect::new(right - 28, h.y + (h.h - 28) / 2, 28, 28);
         let (icon, tint) =
             if connected { ("ui/link", c.git_added) } else { ("ui/disconnected", c.tab_inactive_fg.with_alpha(0x80)) };
         self.tx.icon(cv, icon, b.x + 6, b.y + 6, 16, tint, b);
@@ -311,14 +328,15 @@ impl App {
         let c = self.theme.chrome;
         let inner = Rect::new(body.x + PAD, body.y + PAD, body.w - 2 * PAD, (body.h - 2 * PAD).max(0));
         let (rows, cols) = crate::termview::fit(self.tx.cell_w, inner.w, inner.h);
-        let focused = self.ai.focused && !self.ai.filter_focus && self.overlay.is_none();
+        let focused = self.ai.focused && !self.ai.filter_focus && !self.ai.composer_focus && self.overlay.is_none();
         let (fg, bg) = (self.theme.foreground, self.theme.background);
         let look = self.term_look(Which::Ai, focused, (inner.x, inner.y));
-        let clip = Rect::new(body.x, body.y + 1, body.w, body.h - 1);
+        let clip = Rect::new(inner.x, inner.y, inner.w, inner.h);
         // The terminal sits on a rounded surface inset from the panel edges.
         let card = Rect::new(inner.x - 6, inner.y - 6, inner.w + 12, inner.h + 12);
-        cv.fill(Rect::new(body.x, body.y + 1, body.w, (body.h - 1).max(0)), c.sidebar_bg);
-        cv.card(card, 10, self.theme.background, c.border);
+        let strip = Rect::new(body.x, body.y, body.w, body.h + self.ai_composer_h());
+        cv.fill(strip, c.sidebar_bg);
+        cv.card(card, 12, self.theme.background, c.border);
         let Some(t) = self.ai.term_mut() else { return };
         t.resize(rows, cols);
         t.grid.colors = (fg, bg);
@@ -326,7 +344,7 @@ impl App {
         crate::termview::draw(&mut self.tx, cv, t, inner.x, inner.y, clip, &look);
         let exited = !t.alive;
         if focused {
-            cv.ring(card, 10, c.accent.with_alpha(0x70));
+            cv.ring(card, 12, c.accent.with_alpha(0x70));
         }
         if exited {
             self.ai_draw_exited(cv, body);
@@ -371,67 +389,78 @@ impl App {
         }
     }
 
-    /// Nothing running: the agents Lumen knows, installed ones ready to start, the others with
-    /// their install command (click copies it).
+    /// Nothing running: an icon, a title and one button per installed agent (click starts a
+    /// session); the agents not installed follow, dimmed, with their install command (click copies it).
     fn ai_draw_empty(&mut self, cv: &mut Canvas, body: Rect) {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
-        let any = self.ai.detected.as_ref().is_some_and(|d| d.iter().any(|(_, p)| p.is_some()));
+        let installed: Vec<usize> = (0..AGENTS.len()).filter(|&i| self.ai.path_of(&AGENTS[i]).is_some()).collect();
+        let missing: Vec<usize> = (0..AGENTS.len()).filter(|i| !installed.contains(i)).collect();
+        let any = !installed.is_empty();
         let w = (body.w - 48).clamp(120, 380);
         let x = body.x + (body.w - w) / 2;
-        let rows_h = AGENTS.len() as i32 * 58;
-        let total = 48 + 16 + 24 + 80 + rows_h + 12 + 30;
+        let rows_h = installed.len() as i32 * 46 + if missing.is_empty() { 0 } else { 28 + missing.len() as i32 * 40 };
+        let total = 56 + 16 + 24 + 36 + rows_h + 12 + 30;
         let mut y = body.y + ((body.h - total) / 2).max(24);
         // Icon in a soft accent disc.
-        let disc = Rect::new(body.x + (body.w - 48) / 2, y, 48, 48);
-        cv.fill_round(disc, 24, c.accent.with_alpha(0x1c));
-        self.tx.icon(cv, "ui/sparkle", disc.x + 14, disc.y + 14, 20, c.accent_text, disc);
-        y += 48 + 16;
-        let title = if any { "No agents yet" } else { "No agent CLI found" };
+        let disc = Rect::new(body.x + (body.w - 56) / 2, y, 56, 56);
+        cv.fill_round(disc, 28, c.accent.with_alpha(0x1c));
+        self.tx.icon(cv, "ui/sparkle", disc.x + 16, disc.y + 16, 24, c.accent_text, disc);
+        y += 56 + 16;
+        let title = if any { "Start an agent session" } else { "No agent CLI found" };
         let tw = self.tx.ui_width(title, true);
         self.tx.draw_ui(cv, body.x + (body.w - tw) / 2, y, title, strong, body, true);
-        y += 24;
+        y += 26;
         let sub = if any {
-            "Start an agent to work on this workspace with you."
+            "Pick an agent to work on this workspace with you."
         } else {
             "Install one, then Refresh. It runs here with your own login."
         };
         let sub = crate::ui::fit_ellipsis(&mut self.tx, sub, w, false);
         let sw = self.tx.ui_width_sized(&sub, false, SMALL);
         self.tx.draw_ui_sized(cv, body.x + (body.w - sw) / 2, y, &sub, dim, body, false, SMALL);
-        y += 32;
-        if any {
-            let label = "New Agent";
-            let bw = 14 + 16 + 6 + self.tx.ui_width(label, true) + 16;
-            let b = Rect::new(body.x + (body.w - bw) / 2, y, bw, 32);
-            cv.fill_round(b, 10, c.accent);
-            self.tx.icon(cv, "ui/plus", b.x + 14, b.y + 8, 16, c.on_accent, b);
-            self.tx.draw_ui(cv, b.x + 36, b.y + 7, label, c.on_accent, b, true);
-            self.ai.hits.push((b, AiHit::New));
-        }
-        y += 48;
-        for (i, a) in AGENTS.iter().enumerate() {
-            let r = Rect::new(x, y, w, 50);
-            let installed = self.ai.path_of(a).is_some();
-            let (mx, my) = self.mouse;
+        y += 36;
+        let (mx, my) = self.mouse;
+        for &i in &installed {
+            let a = &AGENTS[i];
+            let r = Rect::new(x, y, w, 38);
             let hot = self.overlay.is_none() && r.contains(mx, my);
-            cv.card(r, 10, if hot { c.widget_bg } else { c.sidebar_bg }, c.border);
-            let tint = if installed { strong } else { dim };
-            self.tx.icon(cv, a.icon, r.x + 14, r.y + 17, 16, tint, r);
-            self.tx.draw_ui(cv, r.x + 42, r.y + 7, a.name, tint, r, true);
-            let (line, col) = if installed { ("Installed — click to start", c.git_added) } else { (a.install, dim) };
-            let line = crate::ui::fit_ellipsis(&mut self.tx, line, w - 56 - 22, false);
-            self.tx.draw_ui_sized(cv, r.x + 42, r.y + 27, &line, col, r, false, SMALL);
-            let glyph = if installed { "ui/play_outlined" } else { "ui/copy" };
-            self.tx.icon(cv, glyph, r.right() - 30, r.y + 17, 16, dim, r);
+            cv.card(r, 19, if hot { c.widget_bg } else { c.sidebar_bg }, if hot { c.accent } else { c.border });
+            self.tx.icon(cv, a.icon, r.x + 14, r.y + 11, 16, strong, r);
+            self.tx.draw_ui(cv, r.x + 40, r.y + 9, a.name, strong, r, true);
+            self.tx.icon(cv, "ui/arrow_up_right", r.right() - 32, r.y + 11, 16, dim, r);
             self.ai.hits.push((r, AiHit::Install(i)));
-            y += 58;
+            y += 46;
+        }
+        if !missing.is_empty() {
+            self.tx.draw_ui_sized(cv, x + 4, y + 4, "Not installed", dim, body, false, SMALL);
+            y += 28;
+            for &i in &missing {
+                let a = &AGENTS[i];
+                let r = Rect::new(x, y, w, 34);
+                let hot = self.overlay.is_none() && r.contains(mx, my);
+                if hot {
+                    cv.fill_round(r, 10, strong.with_alpha(0x0e));
+                }
+                self.tx.icon(cv, a.icon, r.x + 12, r.y + 9, 16, dim, r);
+                let name_w = self.tx.ui_width(a.name, false);
+                self.tx.draw_ui(cv, r.x + 38, r.y + 7, a.name, dim, r, false);
+                let room = w - 38 - name_w - 16 - 30;
+                if room > 40 {
+                    let line = crate::ui::fit_ellipsis(&mut self.tx, a.install, room, false);
+                    let faint = dim.with_alpha(0xa0);
+                    self.tx.draw_ui_sized(cv, r.x + 38 + name_w + 12, r.y + 9, &line, faint, r, false, SMALL);
+                }
+                self.tx.icon(cv, "ui/copy", r.right() - 28, r.y + 9, 16, dim, r);
+                self.ai.hits.push((r, AiHit::Install(i)));
+                y += 40;
+            }
         }
         y += 12;
         let label = "Refresh";
         let bw = 12 + 16 + 6 + self.tx.ui_width(label, false) + 14;
         let b = Rect::new(body.x + (body.w - bw) / 2, y, bw, 30);
-        cv.ring(b, 8, c.border);
+        cv.ring(b, 15, c.border);
         self.tx.icon(cv, "ui/rotate_cw", b.x + 12, b.y + 7, 16, strong, b);
         self.tx.draw_ui(cv, b.x + 34, b.y + 6, label, strong, b, false);
         self.ai.hits.push((b, AiHit::Refresh));

@@ -488,6 +488,8 @@ impl App {
             _ => {
                 let Some((_, text)) = self.ai.pending_prompt.take() else { return };
                 self.ai_activate(i);
+                // The prompt waits in the agent's own input: Enter there submits it.
+                self.ai.composer_focus = false;
                 self.ai_paste_text(&text);
                 self.say("Sent to the agent — press Enter there to submit");
             }

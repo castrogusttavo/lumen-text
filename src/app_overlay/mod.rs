@@ -48,6 +48,10 @@ pub enum Action {
     AiAgent(String),
     /// AI panel: a new session of this agent.
     AiNew(String),
+    /// AI panel: show the session with this id.
+    AiSession(u64),
+    /// AI panel: open the session filter row.
+    AiFilter,
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),
