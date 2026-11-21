@@ -118,6 +118,7 @@ impl App {
         self.zen.last_esc = None;
         self.sidebar_open = false;
         self.panel.open = false;
+        self.gh_hide();
         if git.is_some() {
             // Closing detaches a running Git command; reopening shows it again.
             self.close_git_panel();

@@ -36,6 +36,10 @@ pub enum Reg {
     BuildLog,
     GitChanges,
     GitLog,
+    /// The GitHub page: its list, the detail beside it and a job's log.
+    GhList,
+    GhDetail,
+    GhLog,
     Picker,
     TopMenu,
     Completion,
@@ -164,6 +168,9 @@ impl App {
             Reg::Completion => self.completion.as_ref().map(|c| c.scroll as f64),
             Reg::GitChanges => self.gitpanel.as_ref().map(|g| g.scroll[0]),
             Reg::GitLog => self.gitpanel.as_ref().map(|g| g.scroll[1]),
+            Reg::GhList => self.gh.as_ref().map(|g| g.scroll[0]),
+            Reg::GhDetail => self.gh.as_ref().map(|g| g.scroll[1]),
+            Reg::GhLog => self.gh.as_ref().map(|g| g.scroll[2]),
             Reg::Md => self.docs.get(self.active)?.md.as_ref().map(|m| m.scroll),
             Reg::Diff => self.diff.as_ref().map(|d| d.scroll),
             Reg::Output => Some(self.panel.scroll),
@@ -376,6 +383,16 @@ impl App {
             Reg::GitLog => {
                 if let Some(gp) = self.gitpanel.as_mut() {
                     gp.scroll[1] = v;
+                }
+            }
+            Reg::GhList | Reg::GhDetail | Reg::GhLog => {
+                let k = match id {
+                    Reg::GhList => 0,
+                    Reg::GhDetail => 1,
+                    _ => 2,
+                };
+                if let Some(g) = self.gh.as_mut() {
+                    g.scroll[k] = v;
                 }
             }
             Reg::Picker => {

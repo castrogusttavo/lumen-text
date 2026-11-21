@@ -30,7 +30,18 @@ impl App {
     pub(super) fn gp_draw_changes(&mut self, cv: &mut Canvas, gp: &mut GitPanel, body: Rect) {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
+        let fh = gp.filter_h();
+        if fh > 0 {
+            self.gp_draw_filter(cv, gp, Rect::new(body.x, body.y, body.w, fh));
+        }
+        let body = Rect::new(body.x, body.y + fh, body.w, (body.h - fh).max(0));
         let rows = gp.rows();
+        if rows.is_empty() && !gp.filter.text.is_empty() {
+            let msg = "No matching files";
+            let w = self.tx.ui_width(msg, false);
+            self.tx.draw_ui(cv, body.x + (body.w - w) / 2, body.y + 36, msg, dim, body, false);
+            return;
+        }
         if rows.is_empty() {
             let cx = body.x + body.w / 2;
             let badge = Rect::new(cx - 22, body.y + 36, 44, 44);
@@ -64,6 +75,41 @@ impl App {
         }
         let (pos, visible) = (gp.scroll[0], body.h as f64);
         self.region_bar(cv, crate::scrollreg::Reg::GitChanges, body, total as f64, visible, pos, 1.0, false);
+    }
+
+    /// The "Filter changes" box above the lists.
+    fn gp_draw_filter(&mut self, cv: &mut Canvas, gp: &mut GitPanel, r: Rect) {
+        let c = self.theme.chrome;
+        let dim = c.tab_inactive_fg;
+        let f = Rect::new(r.x + COMPOSER_MARGIN, r.y + 4, r.w - 2 * COMPOSER_MARGIN, r.h - 8);
+        let on = gp.filter_focus && gp.focused;
+        cv.card(f, 7, c.widget_bg, if on { c.accent } else { c.border });
+        gp.hits.push((f, Hit::Filter));
+        self.tx.icon(cv, "hugeicons/search", f.x + 8, f.y + (f.h - 14) / 2, 14, dim, f);
+        let has = !gp.filter.text.is_empty();
+        let tx = f.x + 29;
+        let right = f.right() - if has { 26 } else { 8 };
+        let clip = Rect::new(f.x, f.y, (right - f.x).max(0), f.h);
+        let (txt, col) =
+            if has { (gp.filter.text.clone(), self.theme.foreground) } else { ("Filter changes".to_string(), dim) };
+        if gp.filter.sel_all && has {
+            let w = self.tx.ui_width(&txt, false);
+            cv.fill_round_clip(Rect::new(tx - 2, f.y + 3, w + 4, f.h - 6), 4, c.accent.with_alpha(0x55), clip);
+        }
+        self.tx.draw_ui(cv, tx, f.y + (f.h - 18) / 2, &txt, col, clip, false);
+        if on {
+            let prefix: String = gp.filter.text.chars().take(gp.filter.cursor).collect();
+            let cx = tx + self.tx.ui_width(&prefix, false);
+            cv.fill_clip(Rect::new(cx, f.y + (f.h - 16) / 2, 1, 16), self.theme.foreground, clip);
+        }
+        if has {
+            let b = Rect::new(f.right() - 24, f.y + (f.h - 20) / 2, 20, 20);
+            if self.hv(b) {
+                cv.fill_round(b, 5, c.tab_active_fg.with_alpha(0x18));
+            }
+            self.tx.icon(cv, "ui/close", b.x + 4, b.y + 4, 12, dim, b);
+            gp.hits.push((b, Hit::FilterClear));
+        }
     }
 
     /// "Staged" / "Unstaged" / "Untracked": chevron, title, count; the actions of the group show

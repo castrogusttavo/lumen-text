@@ -74,6 +74,11 @@ pub enum Hit {
     CommitPush,
     /// "Pull strategy..." of the sync dropdown.
     PullChoose,
+    /// The "Filter changes" box and its clear button.
+    Filter,
+    FilterClear,
+    /// "Initialize repository" of a folder that is not one yet.
+    Init,
 }
 
 /// The dropdowns of the panel.
@@ -207,6 +212,8 @@ pub enum Row {
 }
 
 pub(super) const HEAD_H: i32 = 40;
+/// The "Filter changes" box above the lists.
+pub(super) const FILTER_H: i32 = 36;
 pub(super) const BRANCH_H: i32 = 34;
 /// One line of the result / progress strip under the branch row.
 pub(super) const STRIP_LINE: i32 = 17;
@@ -243,6 +250,9 @@ pub struct GitPanel {
     /// Commit message: soft-wrapped, scrolls vertically, real selection, undo.
     pub msg: TextArea,
     pub msg_focus: bool,
+    /// "Filter changes" box of the Changes tab: only the files whose path contains the text show.
+    pub filter: TextField,
+    pub filter_focus: bool,
     /// Last press in the message box (when, where, click count) for double / triple clicks.
     pub msg_click: (Instant, (f64, f64), u32),
     /// Last autoscroll step while dragging a selection out of the message box.
@@ -392,6 +402,8 @@ impl GitPanel {
             changes: Vec::new(),
             msg: TextArea::default(),
             msg_focus: true,
+            filter: TextField::default(),
+            filter_focus: false,
             msg_click: (Instant::now(), (f64::NAN, f64::NAN), 0),
             msg_auto: None,
             focused: true,
@@ -574,6 +586,21 @@ impl GitPanel {
         self.msg_box.h.max(MSG_MIN_LINES * LINE + 2 * MSG_PAD_Y)
     }
 
+    /// Does file `i` pass the "Filter changes" box (case-insensitive part of its path)?
+    pub fn filter_ok(&self, i: usize) -> bool {
+        let q = self.filter.text.trim().to_lowercase();
+        q.is_empty() || self.changes.get(i).is_some_and(|c| c.path.to_lowercase().contains(&q))
+    }
+
+    /// Height of the filter box above the lists: only when there is something to filter.
+    pub fn filter_h(&self) -> i32 {
+        if self.tab == Tab::Changes && (!self.changes.is_empty() || !self.filter.text.is_empty()) {
+            FILTER_H
+        } else {
+            0
+        }
+    }
+
     /// Height of the commit area pinned to the bottom of the Changes tab.
     pub fn commit_area_h(&self) -> i32 {
         COMMIT_CHROME_H + self.msg_h()
@@ -748,7 +775,8 @@ impl GitPanel {
         match self.tab {
             Tab::Changes => {
                 for g in [Group::Staged, Group::Changes, Group::Untracked] {
-                    let idx: Vec<usize> = (0..self.changes.len()).filter(|&i| self.changes[i].group == g).collect();
+                    let idx: Vec<usize> =
+                        (0..self.changes.len()).filter(|&i| self.changes[i].group == g && self.filter_ok(i)).collect();
                     if idx.is_empty() {
                         continue;
                     }

@@ -42,7 +42,7 @@ impl App {
     /// The "Git | AI" switch on top of the right-hand slot, and the AI panel when it is the one shown.
     pub fn draw_aipanel(&mut self, cv: &mut Canvas) {
         self.ai.hits.clear();
-        if self.gitpanel.is_none() && !self.ai.open {
+        if self.gitpanel.is_none() && !self.ai.open && !self.gh_open() {
             return;
         }
         let c = self.theme.chrome;
@@ -52,6 +52,7 @@ impl App {
         cv.fill(strip, c.sidebar_bg);
         cv.fill(Rect::new(strip.x, strip.y, 1, strip.h), c.border);
         cv.fill(Rect::new(strip.x + 1, strip.bottom() - 1, strip.w - 1, 1), c.border);
+        let gh_on = self.gh_open();
         let mut x = strip.x + 12;
         // On the AI switch while hidden: the most pressing session's color.
         let ai_dot = match self.ai.badge() {
@@ -59,9 +60,11 @@ impl App {
             None => self.ai.cur().map(|_| self.ai_status_look().1),
         }
         .filter(|_| !self.ai.open);
-        for (hit, icon, label, active) in
-            [(AiHit::TabGit, "ui/git_graph", "Git", !self.ai.open), (AiHit::TabAi, "ui/sparkle", "AI", self.ai.open)]
-        {
+        for (hit, icon, label, active) in [
+            (AiHit::TabGit, "ui/git_graph", "Git", !self.ai.open && !gh_on),
+            (AiHit::TabGh, "ui/github", "GitHub", gh_on),
+            (AiHit::TabAi, "ui/sparkle", "AI", self.ai.open),
+        ] {
             let lw = self.tx.ui_width(label, active);
             let dot = hit == AiHit::TabAi && ai_dot.is_some();
             let w = 10 + 16 + 7 + lw + 12 + if dot { 12 } else { 0 };

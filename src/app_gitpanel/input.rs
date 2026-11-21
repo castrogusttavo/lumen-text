@@ -32,6 +32,9 @@ impl App {
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
         let key = &ev.key;
         let entered = matches!(key, Key::Named(NamedKey::Enter));
+        if gp.filter_focus && gp.tab == Tab::Changes {
+            return self.gp_filter_key(gp, ev);
+        }
         if entered && ctrl && gp.tab == Tab::Changes {
             self.gp_commit(gp);
             return true;
@@ -137,8 +140,49 @@ impl App {
             _ if ctrl || alt => return Self::gp_pass(gp),
             _ => {}
         }
-        let view = self.gitpanel_rect().h - gp.chrome_h() - if gp.tab == Tab::Changes { gp.commit_area_h() } else { 0 };
+        let view = self.gitpanel_rect().h
+            - gp.chrome_h()
+            - gp.filter_h()
+            - if gp.tab == Tab::Changes { gp.commit_area_h() } else { 0 };
         gp.reveal(view);
+        true
+    }
+
+    /// A key typed into the "Filter changes" box: Esc clears it (then leaves it), Enter leaves it.
+    fn gp_filter_key(&mut self, gp: &mut GitPanel, ev: &KeyIn) -> bool {
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        match &ev.key {
+            Key::Named(NamedKey::Escape) => {
+                if gp.filter.text.is_empty() {
+                    gp.filter_focus = false;
+                } else {
+                    gp.filter = TextField::default();
+                }
+                return true;
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Tab) => {
+                gp.filter_focus = false;
+                return true;
+            }
+            _ => {}
+        }
+        match gp.filter.key(&ev.key, ctrl, shift, alt) {
+            KeyAct::Handled => {}
+            KeyAct::Copy(t) => self.clip.set(&t),
+            KeyAct::Paste => {
+                let t = self.clip.get();
+                gp.filter.insert(&t.replace(['\n', '\r'], " "));
+            }
+            KeyAct::Ignored => match ev.text.as_deref() {
+                Some(t) if !ctrl && !alt && !t.is_empty() && !t.chars().any(char::is_control) => gp.filter.insert(t),
+                _ => {
+                    gp.filter_focus = false;
+                    return Self::gp_pass(gp);
+                }
+            },
+        }
+        gp.scroll[0] = 0.0;
+        gp.cursor = 0;
         true
     }
 
@@ -257,6 +301,7 @@ impl App {
             if !matches!(hit, Some(Hit::Msg)) {
                 gp.msg_focus = false;
             }
+            gp.filter_focus = matches!(hit, Some(Hit::Filter));
             let (ctrl, shift) = (self.mods.control_key(), self.mods.shift_key());
             match hit {
                 Some(Hit::Tab(t)) => {
@@ -312,6 +357,22 @@ impl App {
                 Some(Hit::MenuItem(_)) => {}
                 Some(Hit::Branches) => branch_anchor = Some(Rect::new(p.x + 8, p.y + HEAD_H, p.w / 2, BRANCH_H)),
                 Some(Hit::Generate) => gp.generate_message(),
+                Some(Hit::Filter) => {}
+                Some(Hit::FilterClear) => {
+                    gp.filter = TextField::default();
+                    gp.filter_focus = true;
+                    gp.scroll[0] = 0.0;
+                }
+                Some(Hit::Init) => match git_run(&gp.root.clone(), &["init"]) {
+                    Ok(_) => {
+                        let mut fresh = Box::new(GitPanel::new(&gp.root));
+                        fresh.wake = gp.wake.clone();
+                        fresh.say("Repository initialized", true);
+                        gp = fresh;
+                        self.refresh_git_status();
+                    }
+                    Err(e) => gp.say(format!("git init: {e}"), false),
+                },
                 Some(Hit::CommitPush) => self.gp_commit_push(&mut gp),
                 Some(Hit::PullChoose) => {
                     if gp.top.is_some() && gp.job.is_none() {
@@ -443,7 +504,7 @@ impl App {
             return None;
         }
         Some(match gp.hit_at(x, y) {
-            Some(Hit::Msg) => CursorIcon::Text,
+            Some(Hit::Msg | Hit::Filter) => CursorIcon::Text,
             Some(_) => CursorIcon::Pointer,
             None => CursorIcon::Default,
         })

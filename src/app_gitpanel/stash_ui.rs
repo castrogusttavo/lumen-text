@@ -314,7 +314,7 @@ impl App {
         gp.open_sfile = None;
         if let Some(k) = gp.index_of(Row::Stash(i)) {
             gp.cursor = k;
-            let view = self.gitpanel_rect().h - gp.chrome_h() - gp.commit_area_h();
+            let view = self.gitpanel_rect().h - gp.chrome_h() - gp.filter_h() - gp.commit_area_h();
             gp.reveal_span(k, k + gp.stash_files.len(), view);
         }
         if gp.stash_files.is_empty() {

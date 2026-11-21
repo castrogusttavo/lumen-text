@@ -20,7 +20,7 @@ impl App {
 
     /// Width taken from the left of the editor area by the Git page in split mode: 0 otherwise.
     pub fn gitpanel_w(&self) -> i32 {
-        if self.gitpanel.is_some() && !self.ai.open && self.page_split() { GP_SPLIT_W } else { 0 }
+        if self.gitpanel.is_some() && !self.ai.open && !self.gh_open() && self.page_split() { GP_SPLIT_W } else { 0 }
     }
 
     /// The main area a page (Git, AI) can take: right of the rail and sidebar, below the top bar.
@@ -34,7 +34,7 @@ impl App {
 
     /// A page hides the editor (AI always, Git unless it is split beside it).
     pub fn page_covers_editor(&self) -> bool {
-        self.ai.open || (self.gitpanel.is_some() && !self.page_split())
+        self.ai.open || self.gh_open() || (self.gitpanel.is_some() && !self.page_split())
     }
 
     /// (x, y) is on a page that hides the editor: the editor must not see the pointer.
@@ -45,6 +45,7 @@ impl App {
     /// Back to the editor: both pages close (the AI agent keeps running).
     pub fn close_pages(&mut self) {
         self.ai_hide();
+        self.gh_hide();
         if self.gitpanel.is_some() {
             self.close_git_panel();
         }
@@ -53,7 +54,11 @@ impl App {
     /// The whole page, as if open: the "Git | AI" switch on top, then the content.
     pub fn right_slot_rect(&self) -> Rect {
         let p = self.page_rect();
-        if self.ai.open || !self.page_split() { p } else { Rect::new(p.x, p.y, GP_SPLIT_W.min(p.w), p.h) }
+        if self.ai.open || self.gh_open() || !self.page_split() {
+            p
+        } else {
+            Rect::new(p.x, p.y, GP_SPLIT_W.min(p.w), p.h)
+        }
     }
 
     /// Content rectangle (as if open): the page under its switch; a centered column for Git on a
@@ -62,7 +67,7 @@ impl App {
         let s = self.right_slot_rect();
         let sw = crate::app_aipanel::SLOT_H;
         let body = Rect::new(s.x, s.y + sw, s.w, (s.h - sw).max(0));
-        if self.ai.open || self.page_split() {
+        if self.ai.open || self.gh_open() || self.page_split() {
             return body;
         }
         let w = body.w.min(GP_COL_MAX);
@@ -88,8 +93,9 @@ impl App {
     }
 
     pub fn open_git_panel(&mut self) {
-        // The Git and AI panels share the right-hand slot (the agent keeps running).
+        // The Git, GitHub and AI pages share the right-hand slot (the agent keeps running).
         self.ai_hide();
+        self.gh_hide();
         self.refresh_git_status();
         let mut gp = Box::new(GitPanel::new(&self.git_root()));
         gp.wake = Some(self.wake());
