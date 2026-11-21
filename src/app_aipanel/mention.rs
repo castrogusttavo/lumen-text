@@ -89,7 +89,7 @@ mod tests {
         assert_eq!(a("see @\"my dir/a b"), Some(Active { start: 4, query: "my dir/a b".into() }));
         assert_eq!(a("see @\"my dir/a b\" now"), None, "a closed quote ends it");
         // The caret in the middle: only what is before it counts.
-        assert_eq!(active("fix @src/main.rs please", 9), Some(Active { start: 4, query: "src".into() }));
+        assert_eq!(active("fix @src/main.rs please", 9), Some(Active { start: 4, query: "src/".into() }));
         assert_eq!(active("héllo @x", 2), None, "inside a character");
     }
 
