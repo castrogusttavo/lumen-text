@@ -98,6 +98,8 @@ impl App {
         if !self.ai.sessions.is_empty() {
             self.ai_draw_tabs(cv, Rect::new(p.x + 1, p.y, p.w - 1, TABS_H));
             top += TABS_H;
+            self.ai_draw_filter(cv, Rect::new(p.x + 1, top, p.w - 1, FILTER_H));
+            top += FILTER_H;
         }
         self.ai_draw_header(cv, Rect::new(p.x + 1, top, p.w - 1, HEAD_H));
         let top = top + HEAD_H;
@@ -119,10 +121,17 @@ impl App {
         let plus = Rect::new(r.right() - 8 - 28, r.y + 4, 28, 28);
         let left = r.x + 8;
         let avail = plus.x - 4 - left;
-        let n = self.ai.sessions.len() as i32;
+        let vis = self.ai.visible();
+        let n = vis.len() as i32;
+        if vis.is_empty() {
+            let msg = "No sessions match";
+            let clip = Rect::new(left, r.y, avail.max(0), r.h);
+            self.tx.draw_ui(cv, left + 4, r.y + 9, msg, dim, clip, false);
+        }
         // Dot, icon, name, close: natural widths, squeezed evenly when they do not fit.
-        let natural: Vec<i32> = (0..self.ai.sessions.len())
-            .map(|i| {
+        let natural: Vec<i32> = vis
+            .iter()
+            .map(|&i| {
                 let unseen = self.ai.sessions[i].track.unseen;
                 (40 + self.tx.ui_width(&self.ai.sessions[i].name, unseen) + 26).min(220)
             })
@@ -131,7 +140,7 @@ impl App {
         let squeezed = (total > avail).then(|| ((avail - 2 * (n - 1)) / n.max(1)).max(56));
         let (mx, my) = self.mouse;
         let mut x = left;
-        for (i, &nat) in natural.iter().enumerate() {
+        for (&i, &nat) in vis.iter().zip(natural.iter()) {
             let w = squeezed.unwrap_or(nat);
             if x + w > plus.x - 4 {
                 // No room left: the rest stays reachable by "Next session waiting" and the menu.
@@ -168,6 +177,42 @@ impl App {
             x += w + 2;
         }
         self.ai_icon_btn(cv, plus, "ui/plus", Some(AiHit::New));
+    }
+
+    /// The filter field under the tabs: narrows them by name or agent.
+    fn ai_draw_filter(&mut self, cv: &mut Canvas, r: Rect) {
+        let c = self.theme.chrome;
+        let (fg, dim) = (self.theme.foreground, c.tab_inactive_fg);
+        cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), c.border);
+        let f = Rect::new(r.x + 8, r.y + 4, r.w - 16, r.h - 9);
+        let (mx, my) = self.mouse;
+        let on = self.ai.filter_focus && self.ai.focused;
+        cv.card(f, 7, c.widget_bg, if on { c.accent } else { c.border });
+        self.ai.hits.push((f, AiHit::Filter));
+        self.tx.icon(cv, "hugeicons/search", f.x + 8, f.y + (f.h - 14) / 2, 14, dim, f);
+        let has = !self.ai.filter.text.is_empty();
+        let tx = f.x + 29;
+        let right = f.right() - if has { 26 } else { 8 };
+        let clip = Rect::new(f.x, f.y, (right - f.x).max(0), f.h);
+        let (txt, col) = if has { (self.ai.filter.text.clone(), fg) } else { ("Filter sessions…".to_string(), dim) };
+        if self.ai.filter.sel_all && has {
+            let w = self.tx.ui_width(&txt, false);
+            cv.fill_round_clip(Rect::new(tx - 2, f.y + 3, w + 4, f.h - 6), 4, c.accent.with_alpha(0x55), clip);
+        }
+        self.tx.draw_ui(cv, tx, f.y + (f.h - 18) / 2, &txt, col, clip, false);
+        if on {
+            let prefix: String = self.ai.filter.text.chars().take(self.ai.filter.cursor).collect();
+            let cx = tx + self.tx.ui_width(&prefix, false);
+            cv.fill_clip(Rect::new(cx, f.y + (f.h - 16) / 2, 1, 16), fg, clip);
+        }
+        if has {
+            let b = Rect::new(f.right() - 24, f.y + (f.h - 20) / 2, 20, 20);
+            if self.overlay.is_none() && b.contains(mx, my) {
+                cv.fill_round(b, 5, c.tab_active_fg.with_alpha(0x18));
+            }
+            self.tx.icon(cv, "ui/close", b.x + 4, b.y + 4, 12, dim, b);
+            self.ai.hits.push((b, AiHit::FilterClear));
+        }
     }
 
     /// Agent picker, status chip, Restart / Stop.
@@ -266,7 +311,7 @@ impl App {
         let c = self.theme.chrome;
         let inner = Rect::new(body.x + PAD, body.y + PAD, body.w - 2 * PAD, (body.h - 2 * PAD).max(0));
         let (rows, cols) = crate::termview::fit(self.tx.cell_w, inner.w, inner.h);
-        let focused = self.ai.focused && self.overlay.is_none();
+        let focused = self.ai.focused && !self.ai.filter_focus && self.overlay.is_none();
         let (fg, bg) = (self.theme.foreground, self.theme.background);
         let look = self.term_look(Which::Ai, focused, (inner.x, inner.y));
         let clip = Rect::new(body.x, body.y + 1, body.w, body.h - 1);

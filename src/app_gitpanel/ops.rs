@@ -155,6 +155,11 @@ impl App {
         self.gp_after_change(gp);
     }
 
+    /// Fold / unfold the files of a group.
+    pub(super) fn gp_toggle_group(&mut self, gp: &mut GitPanel, g: Group) {
+        gp.toggle_group(g);
+    }
+
     pub(super) fn gp_discard(&mut self, gp: &mut GitPanel, i: usize) {
         let (Some(top), Some(c)) = (gp.top.clone(), gp.changes.get(i).cloned()) else { return };
         match discard(&top, &c) {
@@ -506,7 +511,8 @@ impl App {
             Row::CFile(j) => self.gp_open_diff_commit(gp, j),
             Row::Stash(i) => self.gp_toggle_stash(gp, i),
             Row::SFile(j) => self.gp_open_diff_stash(gp, j),
-            Row::Header(_) | Row::StashHead | Row::NoChanges => {}
+            Row::Header(g) => self.gp_toggle_group(gp, g),
+            Row::StashHead | Row::NoChanges => {}
         }
     }
 }

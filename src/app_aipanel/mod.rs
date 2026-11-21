@@ -57,6 +57,8 @@ pub const SLOT_H: i32 = 40;
 pub(crate) const TABS_H: i32 = 36;
 /// Height of the AI panel's header (agent, status, session buttons).
 pub(crate) const HEAD_H: i32 = 44;
+/// Height of the session filter row under the tabs.
+pub(crate) const FILTER_H: i32 = 36;
 /// Inner padding around the agent's terminal.
 pub(crate) const PAD: i32 = 12;
 /// Two clicks on a session tab this close together rename it.
@@ -113,15 +115,15 @@ impl App {
         self.gitpanel_rect()
     }
 
-    /// Height of what sits above the agent's terminal: the session tabs (when any) and the header.
+    /// Height of what sits above the agent's terminal: the session tabs and their filter (when any sessions) and the header.
     pub(crate) fn ai_top_h(&self) -> i32 {
-        HEAD_H + if self.ai.sessions.is_empty() { 0 } else { TABS_H }
+        HEAD_H + if self.ai.sessions.is_empty() { 0 } else { TABS_H + FILTER_H }
     }
 
     /// Where the agent's terminal goes (inside the padding).
     fn ai_inner_rect(&self) -> Rect {
         let p = self.aipanel_rect();
-        let top = self.ai_top_h().max(HEAD_H + TABS_H);
+        let top = self.ai_top_h().max(HEAD_H + TABS_H + FILTER_H);
         Rect::new(p.x + 1 + PAD, p.y + top + PAD, p.w - 1 - 2 * PAD, (p.h - top - 2 * PAD).max(0))
     }
 

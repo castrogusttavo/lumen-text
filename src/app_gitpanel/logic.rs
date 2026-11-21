@@ -39,6 +39,48 @@ impl Change {
     }
 }
 
+/// Lines added / removed in one file (`None`: a binary file, which git reports as `-`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineStat {
+    pub add: Option<u32>,
+    pub del: Option<u32>,
+}
+
+/// Per-file line counts of the Staged side (`git diff --cached`) and the Unstaged side
+/// (`git diff`), by repository-relative path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NumStats {
+    pub staged: std::collections::HashMap<String, LineStat>,
+    pub unstaged: std::collections::HashMap<String, LineStat>,
+}
+
+impl NumStats {
+    /// The counts of a change (untracked files have none).
+    pub fn of(&self, c: &Change) -> Option<LineStat> {
+        match c.group {
+            Group::Staged => self.staged.get(&c.path).copied(),
+            Group::Changes => self.unstaged.get(&c.path).copied(),
+            Group::Untracked => None,
+        }
+    }
+}
+
+/// Parse `git diff --numstat -z --no-renames`: `added<TAB>removed<TAB>path<NUL>` per file, with
+/// `-` for both counts of a binary file.
+pub fn parse_numstat(out: &str) -> std::collections::HashMap<String, LineStat> {
+    let mut m = std::collections::HashMap::new();
+    for rec in out.split('\0') {
+        let mut it = rec.splitn(3, '\t');
+        let (Some(a), Some(d), Some(path)) = (it.next(), it.next(), it.next()) else { continue };
+        if path.is_empty() {
+            continue;
+        }
+        let num = |s: &str| s.trim().parse::<u32>().ok();
+        m.insert(path.to_string(), LineStat { add: num(a), del: num(d) });
+    }
+    m
+}
+
 /// State of a row's checkbox: staged (the Staged group) or not.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CheckState {

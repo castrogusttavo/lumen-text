@@ -20,6 +20,14 @@ impl App {
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
         let clip_key = matches!(&ev.key, Key::Character(c)
             if ctrl && shift && !alt && matches!(c.to_lowercase().as_str(), "c" | "v"));
+        if self.ai.filter_focus {
+            let global = ai_global(&self.keymap, ctrl, shift, alt, &ev.key);
+            if !global {
+                self.ai_filter_key(ev);
+                return true;
+            }
+            self.ai.filter_focus = false;
+        }
         if !clip_key && ai_global(&self.keymap, ctrl, shift, alt, &ev.key) {
             // Ctrl+1 (focus the editor pane) also takes the keyboard away from the agent.
             if self.keymap.lookup(ctrl, shift, alt, &ev.key) == Some("FocusLeftPane") {
@@ -59,6 +67,59 @@ impl App {
         self.term_type(Which::Ai, ev)
     }
 
+    /// A key typed into the session filter field.
+    fn ai_filter_key(&mut self, ev: &KeyIn) {
+        use winit::keyboard::NamedKey as N;
+        let (ctrl, alt) = (self.mods.control_key(), self.mods.alt_key());
+        let paste =
+            (ctrl && matches!(&ev.key, Key::Character(c) if c.eq_ignore_ascii_case("v"))).then(|| self.clip.get());
+        let select = ctrl && matches!(&ev.key, Key::Character(c) if c.eq_ignore_ascii_case("a"));
+        let f = &mut self.ai.filter;
+        match &ev.key {
+            _ if select => f.select_all(),
+            Key::Named(N::Escape) => {
+                if f.text.is_empty() {
+                    self.ai.filter_focus = false;
+                } else {
+                    *f = Default::default();
+                }
+            }
+            Key::Named(N::Enter) => {
+                self.ai.filter_focus = false;
+                let vis = self.ai.visible();
+                if let Some(&first) = vis.first()
+                    && !vis.contains(&self.ai.active)
+                {
+                    self.ai_activate(first);
+                }
+            }
+            Key::Named(N::ArrowLeft) => f.left(),
+            Key::Named(N::ArrowRight) => f.right(),
+            Key::Named(N::Home) => f.home(),
+            Key::Named(N::End) => f.end(),
+            Key::Named(N::Backspace) => {
+                if ctrl {
+                    f.delete_word();
+                } else {
+                    f.backspace();
+                }
+            }
+            Key::Named(N::Delete) => {
+                f.delete();
+            }
+            _ => {
+                if let Some(t) = paste {
+                    f.insert(&t.replace(['\n', '\r'], " "));
+                } else if let (false, false, Some(t)) = (ctrl, alt, ev.text.as_deref())
+                    && !t.is_empty()
+                    && !t.chars().any(char::is_control)
+                {
+                    f.insert(t);
+                }
+            }
+        }
+    }
+
     /// `Ctrl+V` in the agent: files copied in a file manager paste as their paths, text as one
     /// bracketed paste; an image (with no text) leaves the key to the agent, which reads the
     /// clipboard itself (Claude Code and Codex attach it).
@@ -95,6 +156,7 @@ impl App {
     /// [`aipanel_mouse`](Self::aipanel_mouse)).
     pub fn aipanel_mouse_pre(&mut self) {
         self.ai.focused = false;
+        self.ai.filter_focus = false;
     }
 
     /// Mouse press on the switch, the panel's edge, its buttons or the agent's terminal.
@@ -133,6 +195,11 @@ impl App {
             Some(AiHit::Agent) => self.ai_choose_agent(),
             Some(AiHit::New) => self.ai_new_session_menu(),
             Some(AiHit::Restart) => self.ai_respawn(),
+            Some(AiHit::Filter) => self.ai.filter_focus = true,
+            Some(AiHit::FilterClear) => {
+                self.ai.filter = Default::default();
+                self.ai.filter_focus = true;
+            }
             Some(AiHit::Session(i)) => self.ai_tab_click(i, button),
             Some(AiHit::CloseSession(i)) => self.ai_close_request(i),
             Some(AiHit::Stop) => self.ai_stop(),
@@ -319,6 +386,8 @@ impl App {
                     Some("Click to review · Ctrl+Enter accepts · Esc rejects".into()),
                 )
             }
+            AiHit::Filter => ("Filter sessions".into(), None, Some("Type to narrow the tabs by name or agent".into())),
+            AiHit::FilterClear => ("Clear filter".into(), None, None),
             AiHit::Install(_) => (String::new(), None, None),
         };
         let more = match h {
