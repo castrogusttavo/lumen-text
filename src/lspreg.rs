@@ -76,6 +76,7 @@ const EDITOR_LANGS: &[&str] = &[
 
 /// Infrastructure flavours of YAML the editor highlights as plain `yaml` but that have their own
 /// language servers: see [`infra_kind`].
+#[cfg(test)]
 pub const INFRA_KINDS: &[&str] = &["docker-compose", "helm", "ansible"];
 
 fn is_yaml(lang: Option<&str>, ext: &str) -> bool {

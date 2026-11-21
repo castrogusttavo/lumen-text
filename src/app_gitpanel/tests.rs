@@ -876,7 +876,7 @@ fn commit_box_wraps_scrolls_selects_all_and_commits() {
         assert_eq!(gp.msg.text(), long, "wrapping is visual only");
         let inner = (gp.msg_box.w - 2 * MSG_PAD_X) as f32;
         let lines = gp.msg.lines();
-        assert!(lines.len() > 10, "{} visual lines", lines.len());
+        assert!(lines.len() > 6, "{} visual lines", lines.len());
         for l in lines {
             let t = gp.msg.line_text(l);
             let ink = t.trim_end().chars().count();

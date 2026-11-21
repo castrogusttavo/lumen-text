@@ -350,6 +350,8 @@ const COMPLETION_REQUIRED: &[&str] = &["dockerfile", "prisma", "yaml-k8s"];
 /// Cases whose server is young or needs tools outside the matrix (`terraform`, `helm`, `ansible`):
 /// a miss is printed in the table but does not fail the job.
 const SOFT: &[&str] = &["terraform", "helm", "nginx"];
+/// Cases whose server answers diagnostics and completion but has no hover on the anchor.
+const NO_HOVER: &[&str] = &["prisma"];
 
 #[derive(Default)]
 struct Outcome {
@@ -490,7 +492,7 @@ fn lsp_matrix() {
         eprintln!("{line}");
         let ok = o.started
             && (!c.want_diag || !o.diags.is_empty())
-            && o.hover
+            && (o.hover || NO_HOVER.contains(&c.name))
             && (!COMPLETION_REQUIRED.contains(&c.name) || o.completion);
         if !ok && SOFT.contains(&c.name) {
             eprintln!("{}: not fully working, reported only (soft case)", c.name);

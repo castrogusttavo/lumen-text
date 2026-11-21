@@ -303,6 +303,44 @@ pub fn cell_of(v: &Value) -> Cell {
     Cell { text, kind }
 }
 
+/// `out` with every out-of-range JSON number outside strings (the CLI prints infinity as
+/// `9e+999`) replaced by the string "Inf" or "-Inf".
+fn quote_infinities(out: &str) -> String {
+    let mut res = String::with_capacity(out.len());
+    let (mut in_str, mut esc) = (false, false);
+    let mut num = String::new();
+    let flush = |num: &mut String, res: &mut String| {
+        if num.is_empty() {
+            return;
+        }
+        match num.parse::<f64>() {
+            Ok(f) if f.is_infinite() => res.push_str(if f < 0.0 { "\"-Inf\"" } else { "\"Inf\"" }),
+            _ => res.push_str(num),
+        }
+        num.clear();
+    };
+    for ch in out.chars() {
+        if in_str {
+            res.push(ch);
+            if esc {
+                esc = false;
+            } else if ch == '\\' {
+                esc = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+        } else if ch.is_ascii_digit() || matches!(ch, '-' | '+' | '.' | 'e' | 'E') {
+            num.push(ch);
+        } else {
+            flush(&mut num, &mut res);
+            res.push(ch);
+            in_str = ch == '"';
+        }
+    }
+    flush(&mut num, &mut res);
+    res
+}
+
 /// Parse the CLI's `-json` output (empty when the result has no rows). Keeps at most [`PAGE`]
 /// rows after skipping `skip`; `more` says whether rows were left over.
 pub fn parse_rows(out: &str, skip: usize) -> Result<Rows, String> {
@@ -312,8 +350,8 @@ pub fn parse_rows(out: &str, skip: usize) -> Result<Rows, String> {
     }
     // The CLI prints an infinite float as `9e+999`, which a JSON reader refuses: show it as text.
     let parsed = serde_json::from_str::<Table0>(out).or_else(|e| {
-        if out.contains("e+999") {
-            serde_json::from_str(&out.replace(":-9e+999", ":\"-Inf\"").replace(":9e+999", ":\"Inf\""))
+        if out.contains("e+") || out.contains("e-") || out.contains('E') {
+            serde_json::from_str(&quote_infinities(out))
         } else {
             Err(e)
         }
