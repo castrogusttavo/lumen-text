@@ -202,6 +202,8 @@ pub struct Doc {
     pub md: Option<Box<crate::app_md::MdState>>,
     /// Image tab (PNG, JPEG, GIF, WebP, SVG): the picture shown instead of the text (see `imgview`).
     pub img: Option<Box<crate::imgview::ImgView>>,
+    /// Multibuffer tab: excerpts of many files shown as one virtual document (see `multibuf`).
+    pub mb: Option<Box<crate::multibuf::MultiBuf>>,
     /// LSP inlay hints for the lines around the viewport (empty = no cost anywhere).
     pub inlay: crate::inlay::InlayState,
     /// Pinned tab (drawn first, kept by "Close all").
@@ -339,6 +341,7 @@ impl Doc {
             pr_rev: 0,
             md: None,
             img: None,
+            mb: None,
             inlay: Default::default(),
             pinned: false,
             fileconf: Default::default(),

@@ -153,6 +153,9 @@ impl App {
             return;
         }
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        if button == MouseButton::Left && self.mb_mouse_down(x, y) {
+            return self.request_redraw();
+        }
         if self.img_mouse_down(x, y) {
             return self.request_redraw();
         }
@@ -353,6 +356,9 @@ impl App {
             return c;
         }
         if let Some(c) = self.img_cursor(x, y) {
+            return c;
+        }
+        if let Some(c) = self.mb_cursor(x, y) {
             return c;
         }
         if l.top_btns.iter().any(|(r, _)| r.contains(x, y))

@@ -248,6 +248,9 @@ impl App {
     }
 
     pub fn save_active(&mut self) {
+        if self.docs.get(self.active).is_some_and(|d| d.mb.is_some()) {
+            return self.say("A multibuffer is not saved: open a result to edit its file");
+        }
         if self.docs.get(self.active).is_some_and(|d| d.buf.no_write) {
             return self.say("An image is not saved from its tab");
         }

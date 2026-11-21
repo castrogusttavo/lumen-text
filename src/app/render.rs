@@ -126,6 +126,7 @@ impl App {
             self.draw_welcome(cv, editor);
         }
 
+        busy |= self.draw_multibuf(cv, editor);
         self.draw_jump(cv);
         self.zen_restore_minimaps(minimaps);
         crate::perf::lap!("doc.caret_end");

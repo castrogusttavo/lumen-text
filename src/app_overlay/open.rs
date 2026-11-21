@@ -287,6 +287,9 @@ impl App {
             word: p.word,
             replace: p.rep.as_ref().map(|r| r.field.text.clone()),
         };
+        if !q.text.is_empty() {
+            self.mb.last_query = Some(q.clone());
+        }
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Some(r) = p.rep.as_mut() {
             // Select the same match again once the refreshed results arrive.
@@ -352,6 +355,7 @@ impl App {
         self.pump_update();
         self.pump_elevated();
         self.pump_remote();
+        self.mb_pump();
         let cur = self.search_gen.load(Ordering::SeqCst);
         let mut incoming: Vec<Hit> = Vec::new();
         while let Ok((g, hits)) = self.search_rx.try_recv() {

@@ -46,6 +46,8 @@ impl App {
             Cmd::GotoTypeDefinition => self.goto_definition(crate::lsp::DefKind::TypeDefinition),
             Cmd::GotoImplementation => self.goto_definition(crate::lsp::DefKind::Implementation),
             Cmd::FindReferences => self.find_references(),
+            Cmd::SearchMultibuffer => self.multibuffer_search(),
+            Cmd::ReferencesMultibuffer => self.multibuffer_references(),
             Cmd::CodeActions => self.code_actions(),
             Cmd::ToggleComment => {
                 if let Some(d) = self.docs.get_mut(self.active) {
