@@ -565,7 +565,7 @@ fn stash_from_the_app_and_conflicts_open_the_file() {
     ] {
         git_run(&dir, a).unwrap();
     }
-    std::fs::write(dir.join(".gitignore"), "seed.txt\n.config/\n").unwrap();
+    std::fs::write(dir.join(".gitignore"), "seed.txt\n.config/\n.state/\n").unwrap();
     std::fs::write(dir.join("a.txt"), "base\n").unwrap();
     commit_all(&dir, "init");
     let mut app = test_app(&dir);

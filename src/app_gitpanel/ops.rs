@@ -61,6 +61,7 @@ impl App {
     }
 
     /// Back to the editor: every panel closes (the AI agent keeps running).
+    #[cfg(test)]
     pub fn close_pages(&mut self) {
         self.ai_hide();
         self.gh_hide();
