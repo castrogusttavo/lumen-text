@@ -41,6 +41,7 @@ mod app_lsp;
 mod app_lspx;
 mod app_md;
 mod app_merge;
+mod app_onboarding;
 mod app_overlay;
 mod app_panel;
 mod app_problems;
@@ -256,6 +257,7 @@ fn main() -> ExitCode {
     }
     let (args, keys, snap, size, scale_arg) =
         (cli.args.clone(), cli.keys.clone(), cli.snap.clone(), cli.size, cli.scale);
+    let first_run = app_onboarding::is_first_run(config::default_path().as_deref());
     let cfg = config::Config::load();
     theme::set_theme_chrome(cfg.own_chrome());
     let theme_path = env::var("LUMEN_THEME").map(PathBuf::from).unwrap_or_else(|_| {
@@ -375,6 +377,9 @@ fn main() -> ExitCode {
             app.take_handoff(t);
         }
         None => app.take_orphans(),
+    }
+    if first_run {
+        app.onboarding_open();
     }
     mem::report_startup("app ready");
     startup::mark("app ready");

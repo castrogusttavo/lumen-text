@@ -179,6 +179,7 @@ impl App {
         self.draw_hover(cv);
         self.draw_update_card(cv);
         self.draw_overlay(cv);
+        self.draw_onboarding(cv);
         self.draw_tooltip(cv);
         self.draw_toast(cv);
         crate::perf::lap!("overlays");

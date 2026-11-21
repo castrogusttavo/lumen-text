@@ -242,6 +242,7 @@ impl App {
                 self.say(format!("{n} Zed theme(s) imported"));
             }
             Cmd::OpenSettings => self.open_settings(crate::settingsui::Page::Settings),
+            Cmd::WelcomeTour => self.onboarding_open(),
             Cmd::OpenKeybindings => self.open_settings(crate::settingsui::Page::Keybinds),
             Cmd::ToggleMinimap => {
                 for d in &mut self.docs {
