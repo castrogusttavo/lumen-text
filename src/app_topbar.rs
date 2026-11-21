@@ -1087,7 +1087,8 @@ impl App {
         let dim = c.tab_inactive_fg;
         let y = r.y + (r.h - 18) / 2;
         let mut items: Vec<(StatusBtn, String)> = Vec::new();
-        if let Some(d) = self.docs.get(self.active).filter(|d| !d.showing_image()) {
+        if let Some(d) = self.docs.get(self.active).filter(|d| !d.showing_image() && d.sql.is_none() && d.mb.is_none())
+        {
             let (l, col) = d.buf.line_col(d.ed.head());
             let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
             let sel =
