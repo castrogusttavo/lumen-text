@@ -84,7 +84,7 @@ impl App {
         match key {
             Key::Named(N::PageUp) => c.view.scroll_by(-page),
             Key::Named(N::PageDown) => c.view.scroll_by(page),
-            Key::Named(N::End) if ctrl => c.view.to_end(),
+            Key::Named(N::End) if ctrl => c.view.jump_to_end(),
             _ => return false,
         }
         self.request_redraw();
@@ -105,7 +105,7 @@ impl App {
                 After::Nothing
             }
             ChatHit::ToEnd => {
-                cs.view.to_end();
+                cs.view.jump_to_end();
                 After::Nothing
             }
             ChatHit::Perm(id, allow) => {

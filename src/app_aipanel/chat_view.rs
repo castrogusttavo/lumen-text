@@ -235,7 +235,7 @@ impl ChatView {
         self.follow = max - self.scroll < 1.0;
     }
 
-    pub fn to_end(&mut self) {
+    pub fn jump_to_end(&mut self) {
         self.follow = true;
     }
 
