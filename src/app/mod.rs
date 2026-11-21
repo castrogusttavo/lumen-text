@@ -178,6 +178,8 @@ pub struct App {
     pub search_tx: mpsc::Sender<(usize, Vec<Hit>)>,
     pub search_rx: mpsc::Receiver<(usize, Vec<Hit>)>,
     pub search_due: Option<Instant>,
+    /// Multibuffer tabs: the last project search and pending requests (see `app_multibuf`).
+    pub mb: crate::app_multibuf::MbApp,
     /// Keyboard macros: recording, last macro, replay (see `macros`).
     pub macros: crate::macros::Macros,
     /// Vim modal editing; `None` (the default) costs nothing (see `vim`).
@@ -382,6 +384,7 @@ impl App {
             search_tx: stx,
             search_rx: srx,
             search_due: None,
+            mb: Default::default(),
             macros: Default::default(),
             vim: None,
             layout: Layout::default(),

@@ -178,6 +178,10 @@ impl App {
         }
 
         // A tab showing a picture: arrows pan, + / - zoom, nothing edits its (hidden) text.
+        if self.focus == Focus::Editor && self.mb_key(ev) {
+            self.request_redraw();
+            return false;
+        }
         if self.focus == Focus::Editor && (self.img_key(ev) || self.sql_key(ev)) {
             self.request_redraw();
             return false;

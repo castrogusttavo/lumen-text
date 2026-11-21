@@ -204,6 +204,8 @@ pub struct Doc {
     pub img: Option<Box<crate::imgview::ImgView>>,
     /// SQLite database tab: the read-only table viewer shown instead of the text (see `app_sqlview`).
     pub sql: Option<Box<crate::app_sqlview::SqlView>>,
+    /// Multibuffer tab: excerpts of many files shown as one virtual document (see `multibuf`).
+    pub mb: Option<Box<crate::multibuf::MultiBuf>>,
     /// LSP inlay hints for the lines around the viewport (empty = no cost anywhere).
     pub inlay: crate::inlay::InlayState,
     /// Pinned tab (drawn first, kept by "Close all").
@@ -342,6 +344,7 @@ impl Doc {
             md: None,
             img: None,
             sql: None,
+            mb: None,
             inlay: Default::default(),
             pinned: false,
             fileconf: Default::default(),

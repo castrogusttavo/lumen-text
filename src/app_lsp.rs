@@ -1406,7 +1406,10 @@ impl App {
             Pending::References => {
                 let locs = lsp::locations(&v);
                 if locs.is_empty() {
+                    self.mb.want_refs = None;
                     self.say("no references");
+                } else if self.mb_wants_refs() {
+                    self.open_refs_multibuf(&locs);
                 } else {
                     let title = format!("{} references", locs.len());
                     self.show_locations(&title, &locs);

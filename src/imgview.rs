@@ -586,6 +586,12 @@ impl Doc {
             self.sql = Some(v);
             return busy;
         }
+        if self.mb.is_some() {
+            // A multibuffer is painted by `App::draw_multibuf` (it needs the app's tokenizers).
+            self.rect = rect;
+            cv.fill(rect, theme.background);
+            return false;
+        }
         let Some(mut v) = self.img.take() else { return self.draw_text(cv, tx, theme, rect, o) };
         let busy = if v.preview {
             self.rect = rect;
