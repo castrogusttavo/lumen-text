@@ -81,8 +81,18 @@ impl App {
             Rect::new(p.x + 1, comp_y + commit_h, p.w - 1, (p.h - HEAD_H - BRANCH_H - strip_h - commit_h).max(0));
         if gp.top.is_none() {
             let msg = "This folder is not a git repository";
-            let w = self.tx.ui_width(msg, false);
-            self.tx.draw_ui(cv, p.x + (p.w - w) / 2, body.y + 40, msg, dim, body, false);
+            let w = self.tx.ui_width(msg, true);
+            self.tx.draw_ui(cv, p.x + (p.w - w) / 2, body.y + 40, msg, c.tab_active_fg, body, true);
+            let hint = "Initialize one to track changes, commit and push.";
+            let hw = self.tx.ui_width(hint, false);
+            self.tx.draw_ui(cv, p.x + (p.w - hw) / 2, body.y + 64, hint, dim, body, false);
+            let label = "Initialize repository";
+            let bw = self.tx.ui_width(label, false) + 28;
+            let b = Rect::new(p.x + (p.w - bw) / 2, body.y + 96, bw, 30);
+            let hot = self.hv(b);
+            cv.fill_round(b, 8, if hot { c.accent.shift(14) } else { c.accent });
+            self.tx.draw_ui(cv, b.x + 14, b.y + 6, label, c.on_accent, b, false);
+            gp.hits.push((b, Hit::Init));
         } else if gp.tab == Tab::Changes {
             self.gp_draw_commit_area(cv, &mut gp, Rect::new(p.x + 1, comp_y, p.w - 1, commit_h));
             self.gp_draw_changes(cv, &mut gp, body);

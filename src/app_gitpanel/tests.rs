@@ -1076,3 +1076,25 @@ fn composer_scope_dropdowns_and_generate() {
     assert_eq!(sync[2].label, "Publish branch", "no upstream");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn filter_changes_keeps_the_files_whose_path_matches() {
+    let d = tmp_repo("gpfilter");
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    std::fs::write(d.join("src/Alpha.rs"), "a").unwrap();
+    std::fs::write(d.join("beta.txt"), "b").unwrap();
+    git_run(&d, &["add", "-A"]).unwrap();
+    let mut gp = GitPanel::new(&d);
+    let files = |gp: &GitPanel| gp.rows().into_iter().filter(|r| matches!(r, Row::File(_))).count();
+    assert_eq!(files(&gp), 2);
+    assert_eq!(gp.filter_h(), FILTER_H, "the box shows while there is something to filter");
+    gp.filter = TextField::with("  ALPHA ");
+    assert_eq!(files(&gp), 1, "case-insensitive part of the path");
+    gp.filter = TextField::with("zzz");
+    assert_eq!(files(&gp), 0);
+    assert_eq!(gp.filter_h(), FILTER_H, "and stays so to clear it");
+    gp.filter = TextField::default();
+    gp.tab = Tab::History;
+    assert_eq!(gp.filter_h(), 0, "History has no box");
+    std::fs::remove_dir_all(&d).ok();
+}

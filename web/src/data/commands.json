@@ -355,6 +355,36 @@
   "id": "GitPanel"
  },
  {
+  "label": "GitHub: Open panel",
+  "shortcut": "Ctrl+Alt+G",
+  "id": "GithubPanel"
+ },
+ {
+  "label": "GitHub: Pull requests",
+  "shortcut": "",
+  "id": "GithubPrs"
+ },
+ {
+  "label": "GitHub: Issues",
+  "shortcut": "",
+  "id": "GithubIssues"
+ },
+ {
+  "label": "GitHub: Actions runs",
+  "shortcut": "",
+  "id": "GithubRuns"
+ },
+ {
+  "label": "GitHub: Notifications",
+  "shortcut": "",
+  "id": "GithubNotifications"
+ },
+ {
+  "label": "GitHub: Refresh",
+  "shortcut": "",
+  "id": "GithubRefresh"
+ },
+ {
   "label": "AI: Toggle Panel",
   "shortcut": "Ctrl+Shift+A",
   "id": "AiPanel"

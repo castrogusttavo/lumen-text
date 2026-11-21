@@ -201,6 +201,7 @@ impl App {
         if self.gitpanel.is_some() {
             self.close_git_panel();
         }
+        self.gh_hide();
         self.ai.open = true;
         self.ai.focused = true;
         self.ai.composer_focus = true;

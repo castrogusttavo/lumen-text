@@ -38,6 +38,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+g", "GotoLine"),
     ("ctrl+shift+o", "GotoSymbol"),
     ("ctrl+shift+g", "GitPanel"),
+    ("ctrl+alt+g", "GithubPanel"),
     ("ctrl+shift+a", "AiPanel"),
     ("ctrl+alt+k", "AiSendSelection"),
     ("ctrl+alt+a", "AiNextWaiting"),
