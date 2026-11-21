@@ -229,7 +229,7 @@ impl App {
                     let lw = self.tx.ui_width(label, on) + 20;
                     let d = fit(&mut self.tx, desc, (inner - lw - 8).max(10), false);
                     self.tx.draw_ui(cv, rr.x + 8 + lw, rr.y + 5, &d, dim, rr, false);
-                    st.rects.push((rr, Hit::Keymap(*id)));
+                    st.rects.push((rr, Hit::Keymap(id)));
                 }
             }
             _ => {

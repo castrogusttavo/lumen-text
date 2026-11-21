@@ -244,6 +244,7 @@ pub fn run(db: &Path, sql: &str) -> Result<String, Option<String>> {
 }
 
 /// Number of pages for `total` rows (at least one).
+#[cfg(test)]
 pub fn page_count(total: u64) -> u64 {
     total.div_ceil(PAGE as u64).max(1)
 }

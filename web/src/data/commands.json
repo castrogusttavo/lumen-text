@@ -90,6 +90,11 @@
   "id": "ProjectSearch"
  },
  {
+  "label": "Search: Open results in multibuffer",
+  "shortcut": "",
+  "id": "SearchMultibuffer"
+ },
+ {
   "label": "Go to: Line…",
   "shortcut": "Ctrl+G",
   "id": "GotoLine"
@@ -118,6 +123,11 @@
   "label": "Go to: References",
   "shortcut": "Shift+F12",
   "id": "FindReferences"
+ },
+ {
+  "label": "Go: References in multibuffer",
+  "shortcut": "",
+  "id": "ReferencesMultibuffer"
  },
  {
   "label": "Go to: Next problem",
@@ -283,6 +293,11 @@
   "label": "Build: Show Panel",
   "shortcut": "",
   "id": "BuildPanel"
+ },
+ {
+  "label": "Docker: Show panel",
+  "shortcut": "",
+  "id": "DockerPanel"
  },
  {
   "label": "View: Toggle output panel",
@@ -980,6 +995,11 @@
   "id": "OpenSettings"
  },
  {
+  "label": "Help: Welcome tour",
+  "shortcut": "",
+  "id": "WelcomeTour"
+ },
+ {
   "label": "Theme: Create custom theme (JSON template)",
   "shortcut": "",
   "id": "CreateTheme"
@@ -1378,6 +1398,11 @@
   "label": "Remote: Open folder over SSH…",
   "shortcut": "",
   "id": "RemoteOpen"
+ },
+ {
+  "label": "Database: Open SQLite file…",
+  "shortcut": "",
+  "id": "DatabaseOpen"
  },
  {
   "label": "Remote: Reconnect",
