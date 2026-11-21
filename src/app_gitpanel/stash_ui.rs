@@ -356,19 +356,19 @@ impl App {
         let cur = gp.focused && !gp.msg_focus && gp.cursor == k;
         match row {
             Row::NoChanges => {
-                self.tx.draw_ui(cv, body.x + 16, y + 6, "No changes", dim, clip, false);
+                self.tx.draw_ui(cv, body.x + 16, y + (h - 18) / 2, "Working tree clean", dim, clip, false);
             }
             Row::StashHead => {
                 let n = gp.stashes.len();
                 let title = if n > 0 { format!("Stashes  {n}") } else { "Stashes".to_string() };
-                self.tx.draw_ui(cv, body.x + 16, y + 9, &title, dim, clip, true);
+                self.tx.draw_ui(cv, body.x + 16, y + (h - 18) / 2, &title, dim, clip, true);
                 if !gp.changes.is_empty() {
                     let label = match gp.selected.len() {
                         0 => "Stash…".to_string(),
                         n => format!("Stash {n} selected…"),
                     };
                     let before = gp.hits.len();
-                    self.gp_text_btn(cv, gp, body.right() - 10, y + 5, &label, Hit::StashNew, c.accent_text);
+                    self.gp_text_btn(cv, gp, body.right() - 10, y + (h - 24) / 2, &label, Hit::StashNew, c.accent_text);
                     if let Some(last) = gp.hits.get_mut(before) {
                         last.0 = last.0.intersect(&vis);
                     }

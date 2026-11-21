@@ -963,3 +963,117 @@ fn collapsing_a_group_hides_its_files_only() {
     assert!(gp.rows().iter().any(|r| matches!(r, Row::File(i) if gp.changes[*i].group == Group::Changes)));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+fn change(path: &str, code: char, group: Group) -> Change {
+    Change { path: path.to_string(), old: None, code, group }
+}
+
+#[test]
+fn changes_are_grouped_by_folder_top_level_first() {
+    let v = vec![
+        change("src/b.rs", 'M', Group::Changes),
+        change("README.md", 'M', Group::Changes),
+        change("src/a.rs", 'M', Group::Changes),
+        change("docs/x.md", 'A', Group::Changes),
+        change("src/ui/w.rs", 'M', Group::Changes),
+    ];
+    let idx: Vec<usize> = (0..v.len()).collect();
+    let g = group_by_dir(&v, &idx);
+    let dirs: Vec<&str> = g.iter().map(|(d, _)| d.as_str()).collect();
+    assert_eq!(dirs, ["", "docs", "src", "src/ui"]);
+    assert_eq!(g[0].1, vec![1], "the top-level file comes first");
+    assert_eq!(g[2].1, vec![0, 2], "files keep their order inside a folder");
+    assert!(group_by_dir(&v, &[]).is_empty());
+}
+
+#[test]
+fn folders_become_rows_that_fold_their_files() {
+    let dir = tmp_repo("folders");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("top.ts"), "1\n").unwrap();
+    std::fs::write(dir.join("src/a.ts"), "1\n").unwrap();
+    std::fs::write(dir.join("src/b.ts"), "1\n").unwrap();
+    let mut gp = GitPanel::new(&dir);
+    let rows = gp.rows();
+    assert!(matches!(rows[0], Row::Header(Group::Untracked)));
+    assert!(matches!(rows[1], Row::File(_)), "the top-level file has no folder row");
+    let Row::Folder(g, first) = rows[2] else { panic!("{rows:?}") };
+    assert_eq!(g, Group::Untracked);
+    assert_eq!(gp.changes[first].path, "src/a.ts");
+    assert_eq!(rows.iter().filter(|r| matches!(r, Row::File(_))).count(), 3);
+    // Folding the folder hides its two files, not the top-level one.
+    gp.toggle_dir(Group::Untracked, "src");
+    let rows = gp.rows();
+    assert_eq!(rows.iter().filter(|r| matches!(r, Row::File(_))).count(), 1);
+    assert!(rows.contains(&Row::Folder(g, first)), "the folder row stays");
+    // The keyboard cursor skips folder rows like headers.
+    gp.toggle_dir(Group::Untracked, "src");
+    gp.cursor = 1;
+    gp.move_cursor(1);
+    assert!(!matches!(gp.row_at(gp.cursor), Some(Row::Folder(..))));
+    assert_eq!(gp.rows().iter().filter(|r| matches!(r, Row::File(_))).count(), 3);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn sync_button_suggests_the_next_remote_step() {
+    let p = sync_plan(0, 0, true);
+    assert_eq!((p.hit, p.count, p.title.as_str()), (Hit::Fetch, 0, "Fetch from remote"));
+    let p = sync_plan(2, 0, true);
+    assert_eq!((p.hit, p.count, p.title.as_str()), (Hit::Push, 2, "Push 2 commits"));
+    assert_eq!(sync_plan(1, 0, true).title, "Push 1 commit");
+    let p = sync_plan(3, 1, true);
+    assert_eq!((p.hit, p.count, p.title.as_str()), (Hit::Pull, 1, "Pull 1 commit"), "behind wins over ahead");
+    let p = sync_plan(0, 0, false);
+    assert_eq!((p.hit, p.title.as_str()), (Hit::Push, "Publish branch"), "no upstream: publish");
+}
+
+#[test]
+fn message_is_suggested_from_the_files_in_scope() {
+    assert_eq!(suggest_message(&[]), "");
+    assert_eq!(suggest_message(&[change("src/a.rs", 'M', Group::Changes)]), "Update a.rs");
+    assert_eq!(suggest_message(&[change("src/a.rs", '?', Group::Untracked)]), "Add a.rs");
+    assert_eq!(suggest_message(&[change("a.rs", 'D', Group::Changes)]), "Remove a.rs");
+    let two = [change("src/a.rs", 'M', Group::Changes), change("src/b.rs", 'M', Group::Changes)];
+    assert_eq!(suggest_message(&two), "Update 2 files in src\n\n- Update src/a.rs\n- Update src/b.rs");
+    let mixed = [change("a.rs", 'A', Group::Changes), change("src/b.rs", 'D', Group::Changes)];
+    assert!(suggest_message(&mixed).starts_with("Update 2 files\n"));
+    let many: Vec<Change> = (0..10).map(|i| change(&format!("f{i}.rs"), 'A', Group::Changes)).collect();
+    let m = suggest_message(&many);
+    assert!(m.starts_with("Add 10 files\n") && m.ends_with("- and 2 more"), "{m}");
+}
+
+#[test]
+fn composer_scope_dropdowns_and_generate() {
+    let dir = tmp_repo("composer");
+    std::fs::write(dir.join("a.ts"), "1\n").unwrap();
+    git_run(&dir, &["add", "-A"]).unwrap();
+    commit(&dir, "init").unwrap();
+    std::fs::write(dir.join("a.ts"), "1\n2\n3\n").unwrap();
+    std::fs::write(dir.join("b.ts"), "x\n").unwrap();
+    let mut gp = GitPanel::new(&dir);
+    let (label, add, del) = gp.composer_scope();
+    assert_eq!((label.as_str(), add, del), ("All 2 changes", 2, 0), "nothing staged: everything, with the counts");
+    gp.include_all = false;
+    assert_eq!(gp.composer_scope().0, "Nothing staged");
+    git_run(&dir, &["add", "a.ts"]).unwrap();
+    gp.refresh();
+    assert_eq!(gp.composer_scope().0, "1 staged");
+    // The sparkle button writes a message about the staged file.
+    gp.generate_message();
+    assert_eq!(gp.msg.text(), "Update a.ts");
+    // Dropdown entries follow the state.
+    let items = gp.menu_items(GpMenu::Commit);
+    assert_eq!(items[0].hit, Hit::CommitPush);
+    assert!(items.iter().any(|i| i.hit == Hit::Amend && i.checked == Some(false)));
+    assert!(items.iter().any(|i| i.hit == Hit::Opt && i.checked == Some(false)));
+    let sections = gp.menu_items(GpMenu::Sections);
+    assert_eq!(sections[0].checked, Some(true));
+    assert_eq!(sections[0].trailing, "2");
+    assert_eq!(sections[1].hit, Hit::Tab(Tab::History));
+    assert!(gp.menu_items(GpMenu::Actions).iter().any(|i| i.hit == Hit::StashNew));
+    let sync = gp.menu_items(GpMenu::Sync);
+    assert_eq!(sync.iter().map(|i| i.hit).collect::<Vec<_>>(), [Hit::Fetch, Hit::Pull, Hit::Push, Hit::PullChoose]);
+    assert_eq!(sync[2].label, "Publish branch", "no upstream");
+    std::fs::remove_dir_all(&dir).ok();
+}

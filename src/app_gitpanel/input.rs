@@ -37,7 +37,8 @@ impl App {
             return true;
         }
         if matches!(key, Key::Named(NamedKey::Escape)) {
-            if gp.confirm.take().is_some()
+            if gp.menu.take().is_some()
+                || gp.confirm.take().is_some()
                 || gp.publish.take().is_some()
                 || gp.force.take().is_some()
                 || gp.ask.take().is_some()
@@ -240,14 +241,22 @@ impl App {
         let mut deferred: Option<GitAct> = None;
         let mut undo = false;
         let mut merge_path: Option<PathBuf> = None;
+        let mut branch_anchor: Option<Rect> = None;
         if !inside {
             gp.focused = false;
             gp.msg_focus = false;
             gp.confirm = None;
+            gp.menu = None;
         } else {
             gp.focused = true;
             self.focus = crate::app::Focus::Editor;
-            let hit = gp.hit_at(x, y);
+            // Any click closes the open dropdown; an item of it acts like the same button on the panel.
+            let open_menu = gp.menu.take();
+            let mut hit = gp.hit_at(x, y);
+            if let Some(Hit::MenuItem(n)) = hit {
+                hit = open_menu.and_then(|m| gp.menu_items(m).get(n).map(|it| it.hit));
+            }
+            let toggled = if let Some(Hit::Menu(m)) = hit { (open_menu != Some(m)).then_some(m) } else { None };
             let keep_confirm = matches!(hit, Some(Hit::ConfirmDiscard(_)));
             if !keep_confirm {
                 gp.confirm = None;
@@ -304,6 +313,21 @@ impl App {
                     self.gp_open_diff_stash(&mut gp, j);
                 }
                 Some(Hit::Section(g)) => self.gp_section(&mut gp, g),
+                Some(Hit::Folder(g, i)) => self.gp_toggle_dir(&mut gp, g, i),
+                Some(Hit::DiscardAll(g)) => deferred = Some(GitAct::DiscardAllAsk { group: g }),
+                Some(Hit::Menu(_)) => gp.menu = toggled,
+                Some(Hit::MenuItem(_)) => {}
+                Some(Hit::Branches) => branch_anchor = Some(Rect::new(p.x + 8, p.y + HEAD_H, p.w / 2, BRANCH_H)),
+                Some(Hit::Generate) => gp.generate_message(),
+                Some(Hit::CommitPush) => self.gp_commit_push(&mut gp),
+                Some(Hit::PullChoose) => {
+                    if gp.top.is_some() && gp.job.is_none() {
+                        gp.sync_note = None;
+                        gp.publish = None;
+                        gp.force = None;
+                        gp.strategy_ask = true;
+                    }
+                }
                 Some(Hit::Toggle(g)) => self.gp_toggle_group(&mut gp, g),
                 Some(Hit::Msg) => {
                     gp.msg_focus = true;
@@ -373,6 +397,9 @@ impl App {
         }
         if let Some(p) = merge_path {
             self.merge_open(&p);
+        }
+        if let Some(a) = branch_anchor {
+            self.open_topmenu(crate::app_topbar::MenuKind::Branch, a);
         }
         inside
     }
