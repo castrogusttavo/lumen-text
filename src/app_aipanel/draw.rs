@@ -15,6 +15,7 @@ impl App {
             Status::Done => c.git_added,
             Status::Exited(0) => c.tab_inactive_fg,
             Status::Exited(_) => c.error,
+            Status::Ready => c.tab_inactive_fg,
         }
     }
 
@@ -114,7 +115,11 @@ impl App {
             // The composer is measured first: the terminal gets what is left above it.
             let geo = self.ai_composer_geo(p, top);
             let term_body = Rect::new(body.x, body.y, body.w, (geo.area.y - body.y).max(0));
-            self.ai_draw_term(cv, term_body);
+            if self.ai.cur().is_some_and(|s| s.chat.is_some()) {
+                self.ai_draw_chat(cv, term_body);
+            } else {
+                self.ai_draw_term(cv, term_body);
+            }
             self.ai_draw_composer(cv, &geo);
         } else {
             self.ai_draw_empty(cv, body);
@@ -237,7 +242,10 @@ impl App {
             let b = Rect::new(right - 28, by, 28, 28);
             self.ai_icon_btn(cv, b, "ui/ellipsis", Some(AiHit::Menu));
             right -= 30;
-            let alive = self.ai.term().is_some_and(|t| t.alive);
+            let alive = self
+                .ai
+                .cur()
+                .is_some_and(|s| if s.chat.is_some() { s.busy() } else { s.term.as_ref().is_some_and(|t| t.alive) });
             let (icon, hit) = if alive { ("ui/stop", AiHit::Stop) } else { ("ui/rotate_cw", AiHit::Restart) };
             let b = Rect::new(right - 28, by, 28, 28);
             self.ai_icon_btn(cv, b, icon, Some(hit));
@@ -274,14 +282,17 @@ impl App {
         let bg = c.sidebar_bg;
         if self.ai.cur().is_some_and(|s| s.status() == Status::Working) {
             // Turns as output arrives (each frame), quiet otherwise: no timer of its own.
-            let t = self.ai.term().map_or(0.0, |t| t.started.elapsed().as_secs_f32());
+            let t = self.ai.cur().map_or(0.0, |s| {
+                let since = s.chat.as_ref().map(|c| c.started).or(s.term.as_ref().map(|t| t.started));
+                since.map_or(0.0, |t| t.elapsed().as_secs_f32())
+            });
             crate::app_tests::spinner_t(cv, tx + 4, sy + 9, 4, col, bg, t, clip);
         } else {
             cv.fill_round(Rect::new(tx, sy + 5, 8, 8), 4, col);
         }
         let lw = self.tx.ui_width_sized(&label, false, SMALL);
         self.tx.draw_ui_sized(cv, tx + 14, sy, &label, col, clip, false, SMALL);
-        let task = self.ai.term().map(|t| title_task(&t.grid.title).to_string()).unwrap_or_default();
+        let task = self.ai.cur().map(Session::task).unwrap_or_default();
         let left = room - 14 - lw - 12;
         if !task.is_empty() && left > 40 {
             let text = crate::ui::fit_ellipsis(&mut self.tx, &task, left, false);
@@ -294,6 +305,9 @@ impl App {
     /// Claude Code only: the IDE bridge indicator (link icon, green when connected) and the count of
     /// proposed changes waiting for an answer. Returns the new right edge of the free room.
     fn ai_draw_bridge(&mut self, cv: &mut Canvas, h: Rect, mut right: i32) -> i32 {
+        if self.ai.cur().is_some_and(|s| s.chat.is_some()) {
+            return right;
+        }
         let connected = self.ai_bridge_connected();
         if self.ai.agent().is_none_or(|a| a.id != "claude") && !connected {
             return right;

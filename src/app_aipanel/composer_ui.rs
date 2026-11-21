@@ -38,7 +38,8 @@ impl App {
     /// short); the terminal above gets the rest.
     pub(super) fn ai_composer_geo(&mut self, p: Rect, top: i32) -> Geo {
         let lh = (crate::ui::ui_line().ceil() as i32).max(18);
-        let box_w = (p.w - 1 - 2 * PAD).max(1);
+        let chat = self.ai.cur().is_some_and(|s| s.chat.is_some());
+        let box_w = (p.w - 1 - 2 * PAD).max(1).min(if chat { chat_view::MAX_COL } else { i32::MAX });
         let inner_w = (box_w - 2 * BOX_PAD_X).max(1);
         let tx = &mut self.tx;
         self.ai.composer.layout(inner_w as f32, &mut |s: &str| tx.ui_char_xs(s, false, None));
@@ -50,7 +51,7 @@ impl App {
         let area_h = box_h + 8 + 12;
         self.ai.composer_area = area_h;
         let area = Rect::new(p.x + 1, p.bottom() - area_h, p.w - 1, area_h);
-        let boxr = Rect::new(area.x + PAD, area.y + 8, box_w, box_h);
+        let boxr = Rect::new(area.x + (area.w - box_w) / 2, area.y + 8, box_w, box_h);
         self.ai.composer.set_view(lh as f32, (lines as i32 * lh) as f32);
         self.ai.composer_box = boxr;
         self.ai.composer_origin = (boxr.x + BOX_PAD_X, boxr.y + BOX_PAD_TOP);
@@ -87,6 +88,8 @@ impl App {
         if self.ai.composer.text().is_empty() {
             let name = self.ai.agent().map_or("the agent", |a| a.name);
             let ph = format!("Message {name}…  (Enter sends, Shift+Enter adds a line)");
+            let ph =
+                if self.ai.cur().is_some_and(|s| s.chat.is_some()) { format!("Ask {name} anything…") } else { ph };
             let ph = crate::ui::fit_ellipsis(&mut self.tx, &ph, inner_w, false);
             self.tx.draw_ui(cv, ox, oy + ty, &ph, dim, clip, false);
         }
@@ -146,7 +149,12 @@ impl App {
         // The keys hint, when there is room for it.
         let room = left_limit - x - 4;
         if room > 90 && on {
-            let hint = crate::ui::fit_ellipsis(&mut self.tx, "Enter send · Tab terminal", room, false);
+            let keys = if self.ai.cur().is_some_and(|s| s.chat.is_some()) {
+                "Enter send · Esc stop"
+            } else {
+                "Enter send · Tab terminal"
+            };
+            let hint = crate::ui::fit_ellipsis(&mut self.tx, keys, room, false);
             let hr = Rect::new(x + 4, cy, room, CHIPS_H);
             self.tx.draw_ui_sized(cv, hr.x, cy + 6, &hint, dim.with_alpha(0xa0), hr, false, SMALL);
         }
@@ -183,6 +191,9 @@ impl App {
 
     /// The Interrupt button / Esc in the composer: Esc goes to the agent (it stops its turn).
     pub(super) fn ai_interrupt(&mut self) {
+        if self.ai.cur().is_some_and(|s| s.chat.is_some()) {
+            return self.ai_stop();
+        }
         self.ai_write(b"\x1b");
     }
 
@@ -191,6 +202,9 @@ impl App {
     pub(super) fn ai_composer_key(&mut self, ev: &KeyIn) -> bool {
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
         if matches!(&ev.key, Key::Named(n) if input::is_modifier(*n)) {
+            return true;
+        }
+        if self.chat_scroll_key(&ev.key, ctrl) {
             return true;
         }
         let empty = self.ai.composer.text().is_empty();
@@ -214,7 +228,9 @@ impl App {
                 return true;
             }
             Route::ToTerminal => {
-                self.ai.composer_focus = false;
+                if self.ai.cur().is_none_or(|s| s.chat.is_none()) {
+                    self.ai.composer_focus = false;
+                }
                 return true;
             }
             Route::Interrupt => {
@@ -235,7 +251,15 @@ impl App {
         // Ctrl+C with nothing selected is the agent's interrupt, as in its own terminal.
         let ctrl_c = ctrl && !shift && !alt && matches!(&ev.key, Key::Character(c) if c.eq_ignore_ascii_case("c"));
         if ctrl_c && !self.ai.composer.has_selection() {
-            self.ai_write(&[0x03]);
+            if self.ai.cur().is_some_and(|s| s.chat.is_some()) {
+                // A chat: Ctrl+C copies what is selected in the transcript, else stops the turn.
+                match self.chat_selected_text() {
+                    Some(t) => self.clip.set(&t),
+                    None => self.ai_stop(),
+                }
+            } else {
+                self.ai_write(&[0x03]);
+            }
             return true;
         }
         // The text may have changed since the last frame: Up / Down / Home / End need its lines.
@@ -295,15 +319,27 @@ impl App {
         if text.trim().is_empty() {
             return;
         }
+        if let Some(s) = self.ai.cur_mut()
+            && let Some(c) = s.chat.as_mut()
+        {
+            let cs: &mut ChatSession = c;
+            cs.send(&text);
+            s.track.on_input();
+            self.ai.history.push(&text);
+            self.ai.composer.set_text("");
+            self.request_redraw();
+            return;
+        }
         if self.ai.term().is_none_or(|t| !t.alive) {
             self.ai_respawn();
             self.say("Agent restarted — press Enter again to send");
             return;
         }
         let Some(s) = self.ai.cur_mut() else { return };
-        let Some((paste, _)) = composer::submit_bytes(&text, s.term.grid.bracketed_paste) else { return };
-        s.term.sel = None;
-        s.term.write(&paste);
+        let Some(t) = s.term.as_mut() else { return };
+        let Some((paste, _)) = composer::submit_bytes(&text, t.grid.bracketed_paste) else { return };
+        t.sel = None;
+        t.write(&paste);
         let id = s.id;
         self.ai.pending_enter = Some((id, Instant::now() + Duration::from_millis(SUBMIT_DELAY_MS)));
         self.ai.on_input();
@@ -319,11 +355,11 @@ impl App {
             return want(at);
         }
         self.ai.pending_enter = None;
-        if let Some(i) = self.ai.index_of(id) {
-            let t = &mut self.ai.sessions[i].term;
-            if t.alive {
-                t.write(b"\r");
-            }
+        if let Some(i) = self.ai.index_of(id)
+            && let Some(t) = self.ai.sessions[i].term.as_mut()
+            && t.alive
+        {
+            t.write(b"\r");
         }
     }
 

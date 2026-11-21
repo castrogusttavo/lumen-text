@@ -451,7 +451,7 @@ impl App {
         if self.ai.root != self.root {
             self.ai_close_all();
         }
-        let alive = self.ai.cur().is_some_and(|s| s.term.alive);
+        let alive = self.ai.cur().is_some_and(|s| s.chat.is_some() || s.term.as_ref().is_some_and(|t| t.alive));
         if !alive {
             match self.ai_default_agent().or(AGENTS.first()) {
                 Some(a) if self.ai.path_of(a).is_some() => {
@@ -459,7 +459,7 @@ impl App {
                         self.ai_new_session(a, None)
                     } else {
                         self.ai_restart(None);
-                        self.ai.cur().is_some_and(|s| s.term.alive)
+                        self.ai.cur().is_some_and(|s| s.chat.is_some() || s.term.as_ref().is_some_and(|t| t.alive))
                     };
                     if !started {
                         return;
@@ -488,6 +488,13 @@ impl App {
             _ => {
                 let Some((_, text)) = self.ai.pending_prompt.take() else { return };
                 self.ai_activate(i);
+                if let Some(c) = self.ai.sessions[i].chat.as_mut() {
+                    // A chat takes it as a message at once.
+                    c.send(&text);
+                    self.ai.composer_focus = true;
+                    self.request_redraw();
+                    return;
+                }
                 // The prompt waits in the agent's own input: Enter there submits it.
                 self.ai.composer_focus = false;
                 self.ai_paste_text(&text);

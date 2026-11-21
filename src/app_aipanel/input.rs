@@ -245,6 +245,14 @@ impl App {
                 }
             }
             None => {
+                if button == 0 && self.chat_press(x, y) {
+                    self.ai.composer_focus = true;
+                    return true;
+                }
+                if self.ai_is_chat() {
+                    self.ai.composer_focus = true;
+                    return true;
+                }
                 let alive = self.ai.term().is_some_and(|t| t.alive);
                 let in_term = y >= (self.aipanel_rect().y + self.ai_top_h()) as f64
                     && y < (self.aipanel_rect().bottom() - self.ai_composer_h()) as f64;
@@ -292,6 +300,9 @@ impl App {
             self.ai.composer.scroll_by(px as f32);
             return true;
         }
+        if self.ai_is_chat() {
+            return self.chat_wheel(delta);
+        }
         if self.ai.term().is_some() {
             self.term_wheel(Which::Ai, delta);
         }
@@ -305,7 +316,7 @@ impl App {
             return true;
         }
         if !self.ai.resizing {
-            return false;
+            return self.chat_move(x, y);
         }
         let win = self.size.0 as i32;
         let w = crate::app_gitpanel::clamp_panel_width(win - self.mouse.0 as i32, win);
@@ -319,6 +330,7 @@ impl App {
     /// Mouse released: an edge drag ends and the width is stored (shared with the Git panel).
     pub fn aipanel_release(&mut self) {
         self.ai.composer.release();
+        self.chat_release();
         if std::mem::take(&mut self.ai.resizing) {
             self.config.save();
             self.request_redraw();
@@ -336,6 +348,9 @@ impl App {
             Some((_, AiHit::Composer)) => return Some(CursorIcon::Text),
             Some(_) => return Some(CursorIcon::Pointer),
             None => {}
+        }
+        if let Some(c) = self.chat_cursor(x, y) {
+            return Some(c);
         }
         if !self.ai.open || !self.right_slot_rect().contains(x, y) {
             return None;
@@ -398,6 +413,12 @@ impl App {
                 keys("AiCloseSession"),
                 Some("Ends the agent and everything it started".into()),
             ),
+            AiHit::Restart if self.ai_is_chat() => {
+                ("New conversation".into(), None, Some(format!("Start {name} over with an empty transcript")))
+            }
+            AiHit::Stop if self.ai_is_chat() => {
+                ("Stop".into(), None, Some(format!("Interrupt {name} (press again to end its process)")))
+            }
             AiHit::Restart => {
                 ("Restart agent".into(), None, Some(format!("Relaunch {name} (picks up login or config changes)")))
             }
