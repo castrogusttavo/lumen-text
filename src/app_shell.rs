@@ -16,10 +16,11 @@ use crate::{
 
 /// Buttons of the activity rail (see `RailBtn`).
 const RAIL_BTNS: usize = 9;
-/// Title-bar buttons: project picker, branch picker, memory read-out.
-const TOP_BTNS: usize = 3;
+/// Title-bar buttons: project picker, branch picker, memory read-out, the nine menu titles and
+/// the three buttons of the run cluster (see `app_menubar`).
+const TOP_BTNS: usize = 15;
 /// Read-out chips and badges (see `StatusBtn`).
-const CHIPS: usize = 12;
+const CHIPS: usize = 20;
 
 /// Which hover animation a widget owns.
 #[derive(Clone, Copy, Debug)]
@@ -101,6 +102,8 @@ pub struct Plan {
     pub win: (i32, i32),
     /// Height of the title bar (0 in zen mode).
     pub top: i32,
+    /// Height of the status bar under the cards (0 when hidden).
+    pub bottom: i32,
     /// Width of the rail (0 in zen mode).
     pub rail: i32,
     /// Nominal width of the sidebar and of the dock, whether or not they are open.
@@ -140,9 +143,9 @@ pub fn dock_rect(win: (i32, i32), top: i32, bottom: i32, w: i32, gap: i32, t: f3
 
 pub fn solve(p: &Plan) -> Solved {
     let g = p.gap;
-    let body_h = (p.win.1 - g - p.top).max(0);
+    let body_h = (p.win.1 - g - p.top - p.bottom).max(0);
     let side_vis = visible(p.side_w, g, p.side_t);
-    let dock = dock_rect(p.win, p.top, 0, p.dock_w, g, p.dock_t);
+    let dock = dock_rect(p.win, p.top, p.bottom, p.dock_w, g, p.dock_t);
     let x0 = p.rail + side_vis;
     let right = if p.dock_w > 0 { dock.x - g } else { p.win.0 - g };
     let ew = (right - x0).max(0);
@@ -310,6 +313,7 @@ mod tests {
         Plan {
             win: (1400, 900),
             top: 38,
+            bottom: 0,
             rail: 44,
             side_w: 256,
             dock_w: 420,
@@ -323,7 +327,7 @@ mod tests {
     }
 
     fn dock_of(p: &Plan) -> Rect {
-        dock_rect(p.win, p.top, 0, p.dock_w, p.gap, p.dock_t)
+        dock_rect(p.win, p.top, p.bottom, p.dock_w, p.gap, p.dock_t)
     }
 
     #[test]
@@ -339,6 +343,20 @@ mod tests {
         assert_eq!(dock.bottom(), 900 - g);
         assert_eq!(s.card.y, s.outer.y + 40 + 26, "tab bar and breadcrumbs sit inside the card");
         assert_eq!(s.card.bottom(), s.outer.bottom());
+    }
+
+    #[test]
+    fn status_bar_reserves_the_bottom_for_every_card() {
+        let p = Plan { bottom: 22, ..plan() };
+        let s = solve(&p);
+        let dock = dock_of(&p);
+        let want = 900 - 22 - ds::GAP;
+        assert_eq!(s.outer.bottom(), want, "the cards end above the bar, with the gap");
+        assert_eq!(s.sidebar.bottom(), want);
+        assert_eq!(dock.bottom(), want);
+        assert_eq!(s.outer.h, solve(&plan()).outer.h - 22, "the editor card gives the bar its row");
+        let tall = solve(&Plan { bottom: 22, panel_h: 5000, ..plan() });
+        assert_eq!(tall.panel.bottom(), want, "the bottom panel stays inside the card");
     }
 
     #[test]

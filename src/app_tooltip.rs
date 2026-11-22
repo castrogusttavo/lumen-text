@@ -360,7 +360,11 @@ impl App {
             return None;
         }
         let l = &self.layout;
-        if let Some((r, k)) = l.top_btns.iter().find(|(r, k)| r.contains(x, y) && *k != MenuKind::Browse) {
+        if let Some((r, k)) = l
+            .top_btns
+            .iter()
+            .find(|(r, k)| r.contains(x, y) && *k != MenuKind::Browse && !matches!(k, MenuKind::Menu(_)))
+        {
             return Some((TipKey::Top(*k), *r, true));
         }
         if let Some((r, k)) = l.rail_btns.iter().find(|(r, _)| r.contains(x, y)) {
@@ -495,6 +499,7 @@ impl App {
                 ),
                 None => t("Switch branch", None, self.branch.clone()),
             },
+            TipKey::Top(MenuKind::Act(a)) => self.top_act_tip(a),
             TipKey::Top(_) => t("Switch project", None, Some(crate::app_topbar::tilde(&self.root))),
             TipKey::Tab(i) => match self.docs.get(i) {
                 Some(d) => {
@@ -608,6 +613,9 @@ impl App {
                 ),
                 StatusBtn::Project => self.projcfg_tip(),
                 StatusBtn::Pr => t("Pull request", None, self.pr_tip()),
+                StatusBtn::Branch | StatusBtn::Sync | StatusBtn::Lsp | StatusBtn::Eol | StatusBtn::Selection => {
+                    self.statusbar_tip(k)
+                }
             },
         }
     }

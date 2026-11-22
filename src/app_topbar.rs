@@ -9,7 +9,7 @@
 
 use crate::{
     app::{App, KeyIn},
-    app_overlay::Overlay,
+    app_overlay::{Cmd, Overlay},
     app_shell::HotSlot,
     ds,
     field::TextField,
@@ -42,6 +42,21 @@ pub enum MenuKind {
     Branch,
     /// Folder browser behind "Open folder…".
     Browse,
+    /// A menu of the menu bar (index into `app_menubar::MENUS`).
+    Menu(u8),
+    /// A button of the run cluster: not a dropdown, it runs a command.
+    Act(TopAct),
+}
+
+/// Buttons of the run cluster in the title bar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TopAct {
+    /// Pick the run target (Build: Select Target…).
+    Target,
+    /// Run, or stop what runs.
+    Run,
+    /// Start or continue debugging.
+    Debug,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,6 +84,8 @@ pub enum Entry {
     Dir(PathBuf),
     /// "Worktrees…" in the branch menu (how many the repository has).
     Worktrees(usize),
+    /// A command of a menu-bar menu: label without its area, shortcut text, the command.
+    Cmd(String, String, Cmd),
 }
 
 pub struct TopMenu {
@@ -264,6 +281,13 @@ impl TopMenu {
             match e {
                 Entry::UseDir(_) | Entry::Up(_) | Entry::NewBranch | Entry::Worktrees(_) => lead.push(i),
                 Entry::OpenProject => trail.push(i),
+                Entry::Cmd(label, _, _) => {
+                    if !searching {
+                        scored.push((order, i));
+                    } else if let Some(s) = by_name(label, &[]) {
+                        scored.push((s, i));
+                    }
+                }
                 Entry::Project(p, recent) => {
                     if !searching {
                         if *recent && shown_recent < RECENT_SHOWN {
@@ -382,9 +406,12 @@ impl App {
             x = r.right() + 6;
         }
 
-        // Memory read-out at the right end (Settings: activity rail, Ctrl+,), badges in between.
+        // Right end: the memory read-out (Settings: activity rail, Ctrl+,), then the run cluster.
         let ram_x = self.draw_top_ram(cv);
-        self.draw_top_badges(cv, x + 8, ram_x - 8);
+        let run_x = self.draw_run_cluster(cv, ram_x - 6);
+        // The menu bar needs room; when the window is narrow it gives way (the palette has it all).
+        x = self.draw_menu_bar(cv, x, run_x);
+        self.draw_top_badges(cv, x + 8, run_x - 8);
     }
 
     /// Mouse press on the bar. Returns true when it was inside the bar.
@@ -393,7 +420,10 @@ impl App {
             return false;
         }
         if let Some((r, kind)) = self.layout.top_btns.iter().find(|(r, _)| r.contains(x, y)).copied() {
-            self.open_topmenu(kind, r);
+            match kind {
+                MenuKind::Act(a) => self.run_top_act(a),
+                _ => self.open_topmenu(kind, r),
+            }
             return true;
         }
         // Badges and the memory read-out live in the bar too.
@@ -487,16 +517,38 @@ impl App {
                 let start = self.root.parent().map_or_else(|| self.root.clone(), Path::to_path_buf);
                 self.overlay = Overlay::TopMenu(Box::new(browse_menu(anchor, start)));
             }
+            MenuKind::Menu(i) => {
+                let entries = self.menu_entries(i as usize);
+                self.overlay = Overlay::TopMenu(Box::new(TopMenu::new(kind, anchor, entries, self.root.clone())));
+            }
+            MenuKind::Act(_) => {}
+        }
+    }
+
+    /// A press on a run-cluster button: the same commands as the palette entries.
+    pub fn run_top_act(&mut self, act: TopAct) {
+        match act {
+            TopAct::Target => self.run_cmd(Cmd::BuildSelectTarget),
+            TopAct::Run if self.build.job.is_some() => self.run_cmd(Cmd::BuildStop),
+            TopAct::Run => self.run_cmd(Cmd::BuildRun),
+            TopAct::Debug => self.run_cmd(Cmd::DebugStart),
         }
     }
 
     fn menu_rect(&self, m: &TopMenu, shown: usize) -> Rect {
         let w = self.size.0 as i32;
-        let width = if m.kind == MenuKind::Branch { (w - 24).clamp(320, 760) } else { 460.min(w - 16) };
+        let width = match m.kind {
+            MenuKind::Branch => (w - 24).clamp(320, 760),
+            MenuKind::Menu(_) => 400.min(w - 16),
+            _ => 460.min(w - 16),
+        };
         let x = m.anchor.x.min(w - width - 8).max(8);
         let head = if m.kind == MenuKind::Browse { 26 } else { 0 };
         let list_h = if shown == 0 { 40 } else { shown as i32 * ROW + 10 };
-        Rect::new(x, m.anchor.bottom() + 4, width, INPUT + head + list_h)
+        let h = INPUT + head + list_h;
+        // Hanging from the status bar: open upward.
+        let y = if m.anchor.y > self.size.1 as i32 / 2 { m.anchor.y - 4 - h } else { m.anchor.bottom() + 4 };
+        Rect::new(x, y.max(4), width, h)
     }
 
     pub fn draw_topmenu(&mut self, cv: &mut Canvas) {
@@ -520,6 +572,8 @@ impl App {
             MenuKind::Project => "Search projects…",
             MenuKind::Branch => "Search branches…",
             MenuKind::Browse => "Search folders…",
+            MenuKind::Menu(i) => crate::app_menubar::MENUS.get(i as usize).map_or("Search…", |m| m.2),
+            MenuKind::Act(_) => "",
         };
         let (txt, col) = if m.field.text.is_empty() { (hint, dim) } else { (m.field.text.as_str(), fg) };
         if m.field.sel_all {
@@ -592,6 +646,17 @@ impl App {
                     self.tx.icon(cv, "ui/folder", rr.x + 12, iy, 16, dim, rr);
                     let name = fit(&mut self.tx, &project_name(p), rr.w - 60);
                     self.tx.draw_ui(cv, rr.x + 38, ly, &name, fg, rr, false);
+                }
+                Entry::Cmd(label, keys, _) => {
+                    let caps = crate::ui_modal::keycaps(keys);
+                    let kw = if caps.is_empty() { 0 } else { crate::ui_modal::keycaps_width(&mut self.tx, &caps) + 8 };
+                    let name = fit(&mut self.tx, label, rr.w - 28 - kw);
+                    self.tx.draw_ui(cv, rr.x + 14, ly, &name, fg, rr, false);
+                    if !caps.is_empty() {
+                        let ky = y + (ROW - crate::ui_modal::KEY_H) / 2;
+                        let kx = rr.right() - kw - 4;
+                        crate::ui_modal::draw_keycaps(cv, &mut self.tx, &c, kx, ky, &caps, 1.0, rr);
+                    }
                 }
                 Entry::Worktrees(n) => {
                     self.tx.icon(cv, "ui/git_worktree", rr.x + 12, iy, 16, c.accent, rr);
@@ -674,6 +739,13 @@ impl App {
         let _ = (anchor, kind);
         if !r.contains(x, y) {
             self.overlay = Overlay::None;
+            // Pressing another title of the menu bar moves to its menu (the same one just closes).
+            if let Some((b, k)) = self.layout.top_btns.iter().find(|(b, _)| b.contains(x, y)).copied()
+                && matches!(k, MenuKind::Menu(_))
+                && k != kind
+            {
+                self.open_topmenu(k, b);
+            }
         }
         true
     }
@@ -772,6 +844,7 @@ impl App {
             },
             Entry::NewBranch => self.git_new_branch(None, m.field.text.trim()),
             Entry::Worktrees(_) => self.worktrees_open(),
+            Entry::Cmd(_, _, cmd) => self.run_cmd(cmd),
         }
     }
 
@@ -922,11 +995,12 @@ pub fn memory_mb(text: &str) -> f64 {
     total
 }
 
-/// What the old bottom bar carried, now spread over the top bar (badges, memory), the breadcrumb
-/// row (problems, cursor, indentation, language, encoding) and the activity rail.
+/// What the old bottom bar carried, now spread over the top bar (badges, memory), the status bar
+/// (branch, sync, problems, language server, cursor, indentation, language, encoding) and the
+/// activity rail.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StatusBtn {
-    /// Error and warning counts of the open documents (breadcrumb row).
+    /// Error and warning counts of the open documents (status bar).
     Problems,
     /// Memory read-out at the right end of the top bar: opens the resources view.
     Ram,
@@ -948,6 +1022,16 @@ pub enum StatusBtn {
     Inline,
     /// The checked-out branch's pull request (top bar, only when `gh` knows one).
     Pr,
+    /// Status bar: the branch (opens the branch picker).
+    Branch,
+    /// Status bar: commits ahead of / behind the upstream (opens the Git panel).
+    Sync,
+    /// Status bar: language server state (opens its log, or turns servers on when off).
+    Lsp,
+    /// Status bar: line ending of the file (read-out).
+    Eol,
+    /// Status bar: how much text is selected, and how many cursors (read-out).
+    Selection,
 }
 
 impl App {
@@ -973,7 +1057,7 @@ impl App {
     }
 
     /// Badges and transient messages between the top bar's buttons and its right end, from `x0`
-    /// to `limit`: the "LSP off" / remote note, a pending chord, macro and vim state, update,
+    /// to `limit`: the remote note, a pending chord, macro state, update,
     /// build, AI, project-settings, inline-completion and pull-request badges, a git command
     /// left running, and the last status message. The badge painters draw into `layout.status`,
     /// which is pointed at this strip while they run.
@@ -996,10 +1080,6 @@ impl App {
             let w = self.tx.ui_width(&text, false);
             self.tx.draw_ui(cv, x + 2, y, &text, tint, Rect::new(x, r.y, w + 8, r.h), false);
             x += w + 14;
-        } else if !self.lsp_enabled() {
-            let w = self.tx.ui_width("LSP off", false);
-            self.tx.draw_ui(cv, x + 2, y, "LSP off", dim, Rect::new(x, r.y, w + 8, r.h), false);
-            x += w + 14;
         }
         // A chord waits for its second stroke: say so (Esc gives up).
         // So does "Jump to…" while it waits for characters or a label.
@@ -1014,7 +1094,6 @@ impl App {
             x = pill.right() + 8 + hw + 14;
         }
         x = self.draw_macro_status(cv, x);
-        x = self.draw_vim_status(cv, x);
         if self.upd.indicator().is_some() {
             let tint = if self.upd.ready() { c.accent_text } else { dim };
             x = self.status_btn(cv, x, "ui/download", tint, self.upd.card.is_some(), StatusBtn::Update);
@@ -1088,84 +1167,6 @@ impl App {
         b.x
     }
 
-    /// Right end of the breadcrumb row: error / warning counts, then cursor position, indentation,
-    /// language and encoding of the active file, each one clickable. Returns the x where they
-    /// start (the crumbs get the room to its left).
-    pub fn draw_bread_readouts(&mut self, cv: &mut Canvas, r: Rect) -> i32 {
-        let c = self.theme.chrome;
-        let dim = c.tab_inactive_fg;
-        let y = r.y + (r.h - 18) / 2;
-        let mut items: Vec<(StatusBtn, String)> = Vec::new();
-        if let Some(d) = self.docs.get(self.active).filter(|d| {
-            !d.showing_image() && d.sql.is_none() && d.mb.is_none() && !d.api.as_ref().is_some_and(|v| v.preview)
-        }) {
-            let (l, col) = d.buf.line_col(d.ed.head());
-            let vc = crate::editor::visual_col(&d.buf.line(l), col, d.ed.tab_w) + 1;
-            let sel =
-                if d.ed.extra.is_empty() { String::new() } else { format!("{} cursores   ", d.ed.extra.len() + 1) };
-            items.push((StatusBtn::Position, format!("{sel}Ln {}, Col {}", l + 1, vc)));
-            let indent =
-                if d.ed.indent.contains('\t') { "Tab".to_string() } else { format!("Spaces: {}", d.ed.indent.len()) };
-            items.push((StatusBtn::Indent, indent));
-            items.push((StatusBtn::Language, d.lang.unwrap_or("text").to_string()));
-            items.push((StatusBtn::Encoding, d.buf.encoding.short()));
-        }
-        if !self.config.view.show_status_bar {
-            return r.right() - 10;
-        }
-        items.retain(|(k, _)| self.config.status_visible(readout_id(k)));
-        items.sort_by_key(|(k, _)| {
-            self.config.status_order.iter().position(|s| s == readout_id(k)).unwrap_or(usize::MAX)
-        });
-        let floor = r.x + r.w / 3;
-        let mut x = r.right() - 10;
-        for (kind, text) in items.iter().rev() {
-            let w = self.tx.ui_width(text, false);
-            let b = Rect::new(x - w - 12, r.y + 2, w + 12, r.h - 4);
-            if b.x < floor {
-                return x;
-            }
-            let hot = self.hot_fill(cv, HotSlot::Chip(*kind as usize), b, ds::R_CTRL, false, 0.0);
-            let col = crate::anim::lerp_rgba(dim, c.tab_active_fg, hot);
-            self.tx.draw_ui(cv, b.x + 6, y, text, col, b, false);
-            self.layout.status_btns.push((b, *kind));
-            x = b.x - 2;
-        }
-        // Problems chip, leftmost of the group.
-        if !self.config.status_visible("problems") {
-            return x;
-        }
-        let (e, w) = self.diag_counts();
-        let (et, wt) = (e.to_string(), w.to_string());
-        let body = if e == 0 && w == 0 {
-            14
-        } else {
-            12 + 3 + self.tx.ui_width(&et, false) + 8 + 12 + 3 + self.tx.ui_width(&wt, false)
-        };
-        let b = Rect::new(x - body - 12, r.y + 2, body + 12, r.h - 4);
-        if b.x < floor {
-            return x;
-        }
-        let hot = self.hot_fill(cv, HotSlot::Chip(StatusBtn::Problems as usize), b, ds::R_CTRL, false, 0.0);
-        let iy = r.y + (r.h - 12) / 2;
-        if e == 0 && w == 0 {
-            let ok = crate::anim::lerp_rgba(dim, c.tab_active_fg, hot);
-            self.tx.icon(cv, "ui/check", b.x + 6, r.y + (r.h - 14) / 2, 14, ok, r);
-        } else {
-            let (ec, wc) = (if e > 0 { c.error } else { dim }, if w > 0 { c.warning } else { dim });
-            let mut px = b.x + 6;
-            self.tx.icon(cv, "ui/x_circle", px, iy, 12, ec, r);
-            px += 15;
-            self.tx.draw_ui(cv, px, y, &et, ec, r, false);
-            px += self.tx.ui_width(&et, false) + 8;
-            self.tx.icon(cv, "ui/warning", px, iy, 12, wc, r);
-            px += 15;
-            self.tx.draw_ui(cv, px, y, &wt, wc, r, false);
-        }
-        self.layout.status_btns.push((b, StatusBtn::Problems));
-        b.x
-    }
-
     /// (errors, warnings) over every open document.
     pub fn diag_counts(&self) -> (usize, usize) {
         let (mut e, mut w) = (0usize, 0usize);
@@ -1181,9 +1182,9 @@ impl App {
         (e, w)
     }
 
-    /// Mouse press on a top bar badge, the memory read-out or a breadcrumb-row read-out.
+    /// Mouse press on a top bar badge, the memory read-out or a status-bar chip.
     pub fn status_click(&mut self, x: f64, y: f64) -> bool {
-        let Some((_, kind)) = self.layout.status_btns.iter().find(|(r, _)| r.contains(x, y)).copied() else {
+        let Some((r, kind)) = self.layout.status_btns.iter().find(|(r, _)| r.contains(x, y)).copied() else {
             return false;
         };
         match kind {
@@ -1199,6 +1200,10 @@ impl App {
             StatusBtn::Inline => self.inline_status_click(),
             StatusBtn::Ram => self.open_resources(),
             StatusBtn::Pr => self.pr_open(),
+            StatusBtn::Branch => self.open_topmenu(MenuKind::Branch, r),
+            StatusBtn::Sync => self.open_git_panel(),
+            StatusBtn::Lsp => self.statusbar_lsp_click(),
+            StatusBtn::Eol | StatusBtn::Selection => {}
         }
         true
     }
@@ -1602,16 +1607,6 @@ pub fn browse_menu(anchor: Rect, dir: PathBuf) -> TopMenu {
     }
     entries.extend(subdirs(&dir).into_iter().map(Entry::Dir));
     TopMenu::new(MenuKind::Browse, anchor, entries, dir)
-}
-
-/// Config id of a readout in the breadcrumb row (for `status_visible` / `status_order`).
-fn readout_id(k: &StatusBtn) -> &'static str {
-    match k {
-        StatusBtn::Position => "position",
-        StatusBtn::Indent => "indent",
-        StatusBtn::Language => "language",
-        _ => "encoding",
-    }
 }
 
 #[cfg(test)]
