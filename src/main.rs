@@ -3,6 +3,7 @@
 // the parent console for command-line use.
 #![cfg_attr(all(windows, not(debug_assertions), not(test)), windows_subsystem = "windows")]
 mod a11y;
+mod anim;
 mod app;
 mod app_a11y;
 mod app_aipanel;
@@ -99,6 +100,7 @@ mod doc;
 mod doc_scroll;
 mod docker;
 mod docview;
+mod ds;
 mod editor;
 mod editorconfig;
 mod emmet;
