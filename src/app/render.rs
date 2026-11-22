@@ -25,10 +25,7 @@ impl App {
         self.layout.rail = Rect::new(0, top_h, lx, h - top_h);
         self.layout.sidebar = Rect::new(lx, top_h, sb, h - top_h);
         let sb = sb + lx;
-        // The Git page beside the editor (wide windows) takes its left side; a page that covers the
-        // editor (AI, Git in a narrow window) is drawn over it and takes nothing.
-        let sb = sb + self.gitpanel_w();
-        let rw = 0;
+        let rw = self.gitpanel_w();
         self.layout.tabbar = Rect::new(sb, top_h, w - sb - rw, tab_h);
         self.layout.bread = Rect::new(sb, top_h + tab_h, (w - sb - rw).max(0), bread_h);
         let avail = (h - top_h - tab_h - bread_h).max(0);

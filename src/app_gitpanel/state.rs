@@ -987,7 +987,11 @@ pub(super) fn split_name(path: &str) -> (&str, &str) {
 
 /// Narrowest width the panel clamp allows.
 pub(super) const GP_MIN_W: i32 = 280;
-/// Half-width of the grab band around the panel's right edge.
+/// Narrowest the panel is while the GitHub tab shows (list and detail need the room).
+pub(super) const GH_MIN_W: i32 = 460;
+/// Widest the automatic GitHub width gets.
+pub(super) const GH_AUTO_MAX_W: i32 = 820;
+/// Half-width of the grab band around the panel's left edge.
 pub(super) const GP_GRAB: i32 = 4;
 
 /// Panel width for a requested `want` px (a dragged value) inside a window `win` px wide:

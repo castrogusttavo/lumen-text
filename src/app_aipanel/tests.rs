@@ -216,11 +216,10 @@ fn ai_panel_runs_a_stub_agent_end_to_end() {
     assert!(p.w > 0 && app.ai.hits.iter().any(|(_, h)| *h == AiHit::Stop), "header buttons are laid out");
     assert!(app.ai.hits.iter().any(|(_, h)| *h == AiHit::Session(0)), "the session's tab is drawn");
     assert!(app.ai.hits.iter().any(|(_, h)| *h == AiHit::New), "and the + for another one");
-    assert_eq!(p.x, app.layout.sidebar.right(), "the AI panel docks on the left, right of the sidebar");
-    assert!(app.layout.editor.x >= p.right(), "and the editor starts where it ends");
-    assert!(!app.page_covers_editor(), "the editor stays visible beside it");
-    let edge = (p.right() - 1) as f64;
-    assert!(app.ai_on_edge(edge, (p.y + 40) as f64), "the right edge is the resize handle");
+    assert_eq!(p.right(), app.size.0 as i32, "the AI panel docks on the right edge of the window");
+    assert_eq!(app.layout.editor.right(), p.x, "and the editor makes room for it");
+    let edge = p.x as f64;
+    assert!(app.ai_on_edge(edge, (p.y + 40) as f64), "the left edge is the resize handle");
     assert_eq!(app.aipanel_cursor(edge, (p.y + 40) as f64), Some(winit::window::CursorIcon::ColResize));
     // Hiding keeps the agent alive; the badge appears when it rings while hidden.
     app.run_bound("AiPanel"); // focused -> hide

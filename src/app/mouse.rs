@@ -51,10 +51,6 @@ impl App {
         if self.ghpanel_mouse(x, y, if button == MouseButton::Middle { 1 } else { 0 }) {
             return self.request_redraw();
         }
-        // A page hides the editor: nothing beneath it receives the click.
-        if self.page_blocks(x, y) {
-            return self.request_redraw();
-        }
         // The sidebar's right edge (resize) comes before its scrollbar, whose track overlaps it.
         if button == MouseButton::Left && self.sidebar_edge_press(x, y) {
             return self.request_redraw();
@@ -349,9 +345,6 @@ impl App {
         if let Some(c) = self.ghpanel_cursor(x, y) {
             return c;
         }
-        if self.page_blocks(x, y) {
-            return CursorIcon::Default;
-        }
         if self.drop_dragging() {
             return CursorIcon::Grabbing;
         }
@@ -600,12 +593,6 @@ impl App {
 
     pub fn mouse_move(&mut self) {
         let (x, y) = self.mouse;
-        if self.page_blocks(x, y) && !self.sidebar_resizing() {
-            if self.aipanel_move() | self.gitpanel_move() | self.ghpanel_move() {
-                self.request_redraw();
-            }
-            return;
-        }
         if self.hover_mouse_move() {
             return self.request_redraw();
         }
@@ -645,7 +632,7 @@ impl App {
             }
             return;
         }
-        if self.gitpanel_move() {
+        if self.gitpanel_move() | self.ghpanel_move() {
             self.request_redraw();
         }
         if self.split_drag(x, y) {

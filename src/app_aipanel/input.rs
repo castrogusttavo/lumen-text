@@ -2,7 +2,7 @@ use super::*;
 use crate::app_tooltip::TipText;
 
 impl App {
-    /// Is (x, y) on the draggable right edge of the shown left panel (AI or Git)?
+    /// Is (x, y) on the draggable left edge of the shown panel?
     pub(crate) fn ai_on_edge(&self, x: f64, y: f64) -> bool {
         self.panel_on_edge(x, y)
     }
@@ -331,7 +331,7 @@ impl App {
         true
     }
 
-    /// Pointer moved: resizing by the right edge; true when the layout changed.
+    /// Pointer moved: resizing by the left edge; true when the layout changed.
     pub fn aipanel_move(&mut self) -> bool {
         let (x, y) = self.mouse;
         if self.ai_composer_drag(x, y) {
@@ -340,9 +340,9 @@ impl App {
         if !self.ai.resizing {
             return self.chat_move(x, y);
         }
-        // The panel is docked on the left: its width is the distance from its left edge.
+        // The slot is docked on the right, so its width is the distance to the window edge.
         let win = self.size.0 as i32;
-        let w = crate::app_gitpanel::clamp_panel_width(self.mouse.0 as i32 - self.slot_rect().x, win);
+        let w = crate::app_gitpanel::clamp_panel_width(win - self.mouse.0 as i32, win);
         if self.config.git_panel_width != w {
             self.config.git_panel_width = w;
             return true;

@@ -47,14 +47,11 @@ impl App {
         let c = self.theme.chrome;
         let dim = c.tab_inactive_fg;
         cv.fill(p, c.sidebar_bg);
-        cv.fill(Rect::new(p.right() - 1, p.y, 1, p.h), c.border);
-        // Resize handle: the right edge lights up under the pointer and while dragging.
+        cv.fill(Rect::new(p.x, p.y, 1, p.h), c.border);
+        // Resize handle: the left edge lights up under the pointer and while dragging.
         let (mx, my) = self.mouse;
         if self.ai.resizing || (self.overlay.is_none() && self.panel_on_edge(mx, my)) {
-            cv.fill(
-                Rect::new(p.right() - 2, p.y, 3, p.h),
-                c.accent.with_alpha(if self.ai.resizing { 0xc0 } else { 0x70 }),
-            );
+            cv.fill(Rect::new(p.x - 1, p.y, 3, p.h), c.accent.with_alpha(if self.ai.resizing { 0xc0 } else { 0x70 }));
         }
 
         // Header (section switcher, refresh, actions, close) and the branch row (branch, sync).

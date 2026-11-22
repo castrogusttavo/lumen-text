@@ -502,8 +502,9 @@ mod app {
         let slot = app.slot_rect();
         let page = app.gh_rect();
         assert_eq!(page.y, slot.y + crate::app_aipanel::SLOT_H, "under the Git | GitHub | AI switch");
-        assert_eq!(page.right(), app.page_rect().right(), "a full page");
-        assert!(app.page_covers_editor() && app.gh_open());
+        assert_eq!(page.right(), app.size.0 as i32, "docked on the right, like Git and AI");
+        assert!(app.gh_open() && app.gitpanel_w() >= 460, "wide enough for the list and the detail");
+        assert_eq!(app.layout.editor.right(), slot.x, "the editor makes room for it");
         let g = app.gh.as_ref().unwrap();
         for s in Section::ALL {
             assert!(g.hits.iter().any(|(_, h)| *h == GhHit::Section(s)), "tab {s:?}");
@@ -634,7 +635,7 @@ mod app {
         assert!(!app.gh_open() && app.ai.open, "and so does the AI panel");
         app.ai_hide();
         open_page(&mut app, &dir);
-        app.close_pages();
+        app.gh_hide();
         assert!(!app.gh_open());
         assert!(app.gh.is_some(), "its cache stays for the next time");
         drop(app);

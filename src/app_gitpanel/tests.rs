@@ -1098,37 +1098,42 @@ fn filter_changes_keeps_the_files_whose_path_matches() {
 }
 
 #[test]
-fn the_panel_docks_on_the_left_and_its_right_edge_resizes_it() {
+fn the_slot_docks_on_the_right_and_its_left_edge_resizes_it() {
     use crate::app_unsaved::testkit::{lock, test_app, tmp};
     let _g = lock();
-    let dir = tmp("gpleft");
+    let dir = tmp("gpright");
     git_run(&dir, &["init", "-q", "-b", "main"]).unwrap();
     let mut app = test_app(&dir);
     let (w, h) = (1400, 800);
     let mut px = vec![0u32; (w * h) as usize];
     app.render_into(&mut Canvas { px: &mut px, w, h }, 0.016);
-    let closed_x = app.layout.editor.x;
+    let closed_right = app.layout.editor.right();
+    assert_eq!(app.gitpanel_w(), 0);
     app.open_git_panel();
     app.render_into(&mut Canvas { px: &mut px, w, h }, 0.016);
     let slot = app.slot_rect();
-    assert_eq!(slot.x, app.layout.sidebar.right(), "right of the rail and the sidebar");
-    assert_eq!(slot.w, app.gitpanel_w(), "the slot is as wide as the room taken from the editor");
-    assert_eq!(app.layout.editor.x, closed_x + slot.w, "the editor makes room on its left");
-    assert!(!app.page_covers_editor(), "and stays visible");
+    assert_eq!(slot.right(), w as i32, "flush with the window's right edge");
+    assert_eq!(slot.w, app.gitpanel_w());
+    assert_eq!(app.layout.editor.right(), closed_right - slot.w, "the editor gives up that width");
     assert_eq!(app.gitpanel_rect().y, slot.y + crate::app_aipanel::SLOT_H, "under the Git | GitHub | AI switch");
-    // Hover over the right edge: col-resize; inside: not; a press starts the drag, moves resize.
-    let (ex, ey) = ((slot.right() - 1) as f64, (slot.y + 200) as f64);
-    assert!(app.panel_on_edge(ex, ey) && !app.panel_on_edge((slot.x + 20) as f64, ey));
+    // Left edge: col-resize; inside: not; a press starts the drag, moves resize.
+    let (ex, ey) = (slot.x as f64, (slot.y + 200) as f64);
+    assert!(app.panel_on_edge(ex, ey) && !app.panel_on_edge((slot.x + 30) as f64, ey));
     assert_eq!(app.aipanel_cursor(ex, ey), Some(winit::window::CursorIcon::ColResize));
     assert!(app.aipanel_mouse(ex, ey, 0) && app.ai.resizing);
-    app.mouse = ((slot.x + 520) as f64, ey);
+    app.mouse = ((w as i32 - 520) as f64, ey);
     assert!(app.aipanel_move());
     assert_eq!(app.config.git_panel_width, 520);
     app.aipanel_release();
     assert!(!app.ai.resizing);
     assert_eq!(app.slot_rect().w, 520);
-    // GitHub stays a page: the left dock gives way to it.
+    // GitHub is the third tab of the same slot: same edge, but never narrower than its minimum.
+    app.config.git_panel_width = 300;
     app.gh_show();
-    assert!(app.page_covers_editor() && app.gitpanel_w() == 0);
+    assert_eq!(app.gitpanel_w(), GH_MIN_W);
+    assert_eq!(app.slot_rect().right(), w as i32);
+    assert!(app.panel_on_edge(app.slot_rect().x as f64, ey));
+    app.config.git_panel_width = 0;
+    assert!(app.gitpanel_w() > GH_MIN_W, "half the window when automatic");
     std::fs::remove_dir_all(&dir).ok();
 }

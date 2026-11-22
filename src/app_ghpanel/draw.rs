@@ -32,7 +32,7 @@ impl App {
         self.overlay.is_none() && r.contains(self.mouse.0, self.mouse.1)
     }
 
-    /// The page under the "Git | GitHub | AI" switch.
+    /// The GitHub tab under the "Git | GitHub | AI" switch (right-hand slot).
     pub fn gh_rect(&self) -> Rect {
         let s = self.slot_rect();
         Rect::new(s.x, s.y + SLOT_H, s.w, (s.h - SLOT_H).max(0))

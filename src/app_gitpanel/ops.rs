@@ -12,72 +12,49 @@ impl App {
         }
     }
 
-    /// Width of the left-hand panel (Git or AI), also valid while the panel state is taken out of
-    /// `self`: the stored width (dragged by the right edge), or 30% of the window, 340..440 px.
+    /// Width the panel takes when open (also valid while the panel state is taken out of `self`):
+    /// the stored width (dragged by the left edge), or 30% of the window, 340..440 px. The GitHub
+    /// tab needs room for its list and detail, so it is never narrower than `GH_MIN_W`, and its
+    /// automatic width is half the window.
     pub(super) fn gp_width(&self) -> i32 {
         let w = self.size.0 as i32;
-        match self.config.git_panel_width {
+        let base = match self.config.git_panel_width {
+            0 if self.gh_open() => (w / 2).clamp(GH_MIN_W, GH_AUTO_MAX_W),
             0 => auto_panel_width(w),
             n => clamp_panel_width(n, w),
-        }
+        };
+        if self.gh_open() { base.max(GH_MIN_W).min((w * 6 / 10).max(GP_MIN_W)) } else { base }
     }
 
-    /// Is (x, y) on the draggable right edge of the shown left panel (Git or AI)?
+    /// Is (x, y) on the draggable left edge of the shown panel (the switch above it included)?
     pub fn panel_on_edge(&self, x: f64, y: f64) -> bool {
-        if !self.left_dock_shown() {
+        if !self.slot_shown() {
             return false;
         }
         let s = self.slot_rect();
-        Rect::new(s.right() - GP_GRAB, s.y, 2 * GP_GRAB, s.h).contains(x, y)
+        Rect::new(s.x - GP_GRAB, s.y, 2 * GP_GRAB, s.h).contains(x, y)
     }
 
-    /// The Git or AI panel is docked on the left (the GitHub page covers the editor instead).
-    pub fn left_dock_shown(&self) -> bool {
-        (self.gitpanel.is_some() || self.ai.open) && !self.gh_open()
+    /// One of the Git, GitHub or AI tabs is shown in the right-hand slot.
+    pub fn slot_shown(&self) -> bool {
+        self.gitpanel.is_some() || self.ai.open || self.gh_open()
     }
 
-    /// Width taken from the left of the editor area by the Git / AI panel: 0 when closed.
+    /// Width taken from the editor area by the right-hand slot: 0 when closed.
     pub fn gitpanel_w(&self) -> i32 {
-        if self.left_dock_shown() { self.gp_width() } else { 0 }
+        if self.slot_shown() { self.gp_width() } else { 0 }
     }
 
-    /// The main area a page (GitHub) can take: right of the rail and sidebar, below the top bar.
-    pub fn page_rect(&self) -> Rect {
+    /// The whole right-hand slot, as if open: the "Git | GitHub | AI" switch on top, then the panel.
+    pub fn slot_rect(&self) -> Rect {
+        let w = self.gp_width();
         let (ww, hh) = (self.size.0 as i32, self.size.1 as i32);
-        let x = self.rail_w() + if self.sidebar_open { self.sidebar_w() } else { 0 };
         // Between the top and bottom bars, whichever of them are shown (zen mode, View toggles).
         let (top, bottom) = (self.layout.topbar.h, self.layout.status.h);
-        Rect::new(x, top, (ww - x).max(0), (hh - top - bottom).max(0))
+        Rect::new(ww - w, top, w, (hh - top - bottom).max(0))
     }
 
-    /// A page hides the editor (GitHub only: Git and AI are docked beside it).
-    pub fn page_covers_editor(&self) -> bool {
-        self.gh_open()
-    }
-
-    /// (x, y) is on a page that hides the editor: the editor must not see the pointer.
-    pub fn page_blocks(&self, x: f64, y: f64) -> bool {
-        self.page_covers_editor() && self.page_rect().contains(x, y)
-    }
-
-    /// Back to the editor: every panel closes (the AI agent keeps running).
-    #[cfg(test)]
-    pub fn close_pages(&mut self) {
-        self.ai_hide();
-        self.gh_hide();
-        if self.gitpanel.is_some() {
-            self.close_git_panel();
-        }
-    }
-
-    /// The whole slot, as if open: the "Git | GitHub | AI" switch on top, then the content. The
-    /// Git and AI panels dock on the left, right of the rail and the sidebar; GitHub is a page.
-    pub fn slot_rect(&self) -> Rect {
-        let p = self.page_rect();
-        if self.gh_open() { p } else { Rect::new(p.x, p.y, self.gp_width().min(p.w), p.h) }
-    }
-
-    /// Content rectangle (as if open): the slot under its switch.
+    /// Panel rectangle (as if open): the slot under its switch.
     pub fn gitpanel_rect(&self) -> Rect {
         let s = self.slot_rect();
         let sw = crate::app_aipanel::SLOT_H;

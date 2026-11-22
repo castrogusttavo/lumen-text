@@ -1,4 +1,4 @@
-//! Git panel docked on the left, beside the editor: two tabs.
+//! Git panel docked on the right, beside the editor: two tabs.
 //!   * "Changes": changed files grouped as Staged / Unstaged / Untracked (checkbox =
 //!     stage/unstage, click = side-by-side diff against HEAD, trash = discard with a second click
 //!     to confirm), Ctrl / Shift + click to select files, a multi-line commit message box
