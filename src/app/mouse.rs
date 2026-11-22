@@ -348,6 +348,9 @@ impl App {
         if let Some(c) = self.hover_cursor(x, y) {
             return c;
         }
+        if let Some(c) = self.term_cursor(x, y) {
+            return c;
+        }
         if let Some(c) = self.aipanel_cursor(x, y) {
             return c;
         }

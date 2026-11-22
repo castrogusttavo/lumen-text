@@ -189,6 +189,7 @@ mod startup;
 mod structural;
 mod tabnames;
 mod tasks;
+mod termfx;
 mod terminal;
 mod termlink;
 mod termnav;

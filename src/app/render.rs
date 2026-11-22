@@ -208,7 +208,7 @@ impl App {
         self.draw_toast(cv);
         self.draw_toasts(cv);
         crate::perf::lap!("overlays");
-        busy | self.scroll_activity() | self.layout.shell.moving()
+        busy | self.scroll_activity() | self.layout.shell.moving() | crate::termfx::take_moving()
     }
 
     /// The name a tab shows: the file name, with the parent folders in front when another open
