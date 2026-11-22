@@ -69,6 +69,8 @@ pub struct Panel {
     pub cmd: Option<String>,
     pub exit: Option<i32>,
     pub started: Instant,
+    /// Open / maximize springs, tab indicator and header buttons (see `app_panelui`).
+    pub motion: crate::app_panelui::PanelMotion,
 }
 
 impl Panel {
@@ -89,6 +91,7 @@ impl Panel {
             cmd: None,
             exit: None,
             started: Instant::now(),
+            motion: crate::app_panelui::PanelMotion::new(),
         }
     }
 
@@ -99,6 +102,7 @@ impl Panel {
 
 impl App {
     pub fn toggle_panel(&mut self) {
+        self.panel.motion.arm = true;
         self.panel.open = !self.panel.open;
         if !self.panel.open && self.focus == Focus::Terminal {
             self.focus = Focus::Editor;
@@ -258,6 +262,10 @@ impl App {
         if !self.panel.open || !r.contains(x, y) {
             return false;
         }
+        if let Some((_, b)) = self.panel_btn_at(x, y) {
+            self.panel_btn_click(b);
+            return true;
+        }
         if y < (r.y + PANEL_HEADER) as f64 {
             if self.terms_strip_click(x, y) {
                 return true;
@@ -354,12 +362,13 @@ impl App {
     pub fn draw_panel(&mut self, cv: &mut Canvas) {
         let r = self.layout.panel;
         self.layout.panel_tabs.clear();
-        if !self.panel.open || r.h <= 0 {
+        self.panel.motion.btns.clear();
+        if !self.panel_visible() || r.h <= 0 {
             return;
         }
         let c = self.theme.chrome;
         let (fg, dim) = (self.theme.foreground, c.tab_inactive_fg);
-        // Flat panel: hairline on top, quiet header strip with the two tabs.
+        // Flat panel: hairline on top, quiet header strip with the tab pills and the toolbar.
         cv.fill(r, self.theme.background);
         cv.fill(Rect::new(r.x, r.y, r.w, PANEL_HEADER), c.sidebar_bg);
         cv.fill(Rect::new(r.x, r.y, r.w, 1), c.border);
@@ -367,34 +376,10 @@ impl App {
         let body = Rect::new(r.x, r.y + PANEL_HEADER + 1, r.w, (r.h - PANEL_HEADER - 1).max(0));
         let head = Rect::new(r.x, r.y + 1, r.w, PANEL_HEADER - 1);
         let ty = r.y + (PANEL_HEADER - 18) / 2 + 1;
-        // Pill tabs, like the git panel's: the active one tinted, the others dim (hover tint is the app's).
-        let mut x = r.x + 8;
-        for (label, tab) in [
-            ("Output", PanelTab::Output),
-            ("Tests", PanelTab::Tests),
-            ("Build", PanelTab::Build),
-            ("Docker", PanelTab::Docker),
-            ("Terminal", PanelTab::Terminal),
-            ("Debug", PanelTab::Debug),
-        ] {
-            let w = self.tx.ui_width(label, true) + 20;
-            let active = self.panel.tab == tab;
-            let pill = Rect::new(x, r.y + 4, w, PANEL_HEADER - 7);
-            if active {
-                cv.fill_round(pill, 8, c.tab_active_fg.with_alpha(0x1e));
-            }
-            let tw = self.tx.ui_width(label, active);
-            self.tx.draw_ui(cv, x + (w - tw) / 2, ty, label, if active { c.tab_active_fg } else { dim }, head, active);
-            self.layout.panel_tabs.push((pill, tab));
-            x += w + 4;
-        }
-        // The panel toggle as bound now (a rebinding shows its own combo; switched off: no hint).
-        let mut hint_x = r.right() - 8;
-        if let Some(combo) = crate::app_tooltip::shortcut_in(&self.keymap.entries(), "ToggleOutput") {
-            let hint = format!("{combo} closes");
-            let hw = self.tx.ui_width(&hint, false);
-            hint_x = r.right() - hw - 14;
-            self.tx.draw_ui(cv, hint_x, ty, &hint, dim, head, false);
+        let x = self.draw_panel_tabs(cv, r, head, ty);
+        let hint_x = self.draw_panel_toolbar(cv, r);
+        if !crate::app_panelui::body_fits(body) {
+            return; // the first frames of the slide: only the header
         }
 
         if self.panel.tab == PanelTab::Terminal {
@@ -414,6 +399,9 @@ impl App {
             return self.draw_docker(cv, body);
         }
 
+        if self.panel.lines.is_empty() && self.panel.running.is_none() {
+            return self.draw_output_empty(cv, body);
+        }
         let state = match (&self.panel.running, self.panel.exit) {
             (Some(_), _) => ("running", c.accent_text),
             (None, Some(0)) => ("done", c.git_added),

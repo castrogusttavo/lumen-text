@@ -382,6 +382,7 @@ impl App {
             || l.sidebar_tabs.iter().any(|(r, _)| r.contains(x, y))
             || l.crumbs.iter().any(|(r, _)| r.contains(x, y))
             || l.panel_tabs.iter().any(|(r, _)| r.contains(x, y))
+            || self.panel_btn_at(x, y).is_some()
             || self.terms_hit_at(x, y).is_some()
             || self.tests_clickable_at(x, y)
             || self.build_clickable_at(x, y)
@@ -466,6 +467,9 @@ impl App {
         }
         if let Some((r, _)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((*r, 6));
+        }
+        if let Some((r, _)) = self.panel_btn_at(x, y) {
+            return Some((r, crate::ds::R_CTRL));
         }
         if let Some(h) = self.terms_hover_target() {
             return Some(h);

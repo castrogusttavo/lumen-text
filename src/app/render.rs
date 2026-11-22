@@ -29,7 +29,7 @@ impl App {
         self.layout.tabbar = Rect::new(sb, top_h, w - sb - rw, tab_h);
         self.layout.bread = Rect::new(sb, top_h + tab_h, (w - sb - rw).max(0), bread_h);
         let avail = (h - top_h - tab_h - bread_h).max(0);
-        let panel_h = if self.panel.open { self.panel.height.min(avail / 2).max(0) } else { 0 };
+        let panel_h = self.panel_slide_h(avail);
         let gap = if panel_h > 0 { CARD_M } else { 0 };
         let card_h = (avail - CARD_M - panel_h - gap).max(0);
         self.layout.card = Rect::new(sb + CARD_M, top_h + tab_h + bread_h, (w - sb - 2 * CARD_M - rw).max(0), card_h);

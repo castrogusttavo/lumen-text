@@ -480,6 +480,7 @@ impl App {
     /// the panel, and auto-scroll while a selection is dragged outside the text. True while busy.
     pub fn input_frame(&mut self, dt: f64) -> bool {
         let mut busy = self.drag_autoscroll(dt);
+        busy |= self.panel_motion_step(dt);
         busy |= self.tab_drag_frame(dt);
         busy |= self.regions_frame(dt);
         busy |= self.hover_frame(dt);
