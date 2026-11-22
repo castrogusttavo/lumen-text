@@ -213,8 +213,12 @@ fn ai_panel_runs_a_stub_agent_end_to_end() {
     assert!(p.w > 0 && app.ai.hits.iter().any(|(_, h)| *h == AiHit::Stop), "header buttons are laid out");
     assert!(app.ai.hits.iter().any(|(_, h)| *h == AiHit::Session(0)), "the session's tab is drawn");
     assert!(app.ai.hits.iter().any(|(_, h)| *h == AiHit::New), "and the + for another one");
-    assert_eq!(p.right(), app.size.0 as i32, "the AI panel docks on the right edge of the window");
-    assert_eq!(app.layout.editor.right(), p.x, "and the editor makes room for it");
+    assert_eq!(
+        p.right(),
+        app.size.0 as i32 - crate::ds::GAP,
+        "the AI panel docks on the right, one gap from the window's edge"
+    );
+    assert_eq!(app.layout.editor.right() + crate::ds::GAP, p.x, "and the editor makes room for it");
     let edge = p.x as f64;
     assert!(app.ai_on_edge(edge, (p.y + 40) as f64), "the left edge is the resize handle");
     assert_eq!(app.aipanel_cursor(edge, (p.y + 40) as f64), Some(winit::window::CursorIcon::ColResize));

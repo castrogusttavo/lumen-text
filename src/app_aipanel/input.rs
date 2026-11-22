@@ -271,9 +271,9 @@ impl App {
         if !self.ai.resizing {
             return false;
         }
-        // The slot is docked on the right, so its width is the distance to the window edge.
+        // The slot is docked on the right, so its width is the distance to the card margin.
         let win = self.size.0 as i32;
-        let w = crate::app_gitpanel::clamp_panel_width(win - self.mouse.0 as i32, win);
+        let w = crate::app_gitpanel::clamp_panel_width(win - self.shell_gap() - self.mouse.0 as i32, win);
         if self.config.git_panel_width != w {
             self.config.git_panel_width = w;
             return true;

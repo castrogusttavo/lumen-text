@@ -1112,16 +1112,20 @@ fn the_slot_docks_on_the_right_and_its_left_edge_resizes_it() {
     app.open_git_panel();
     app.render_into(&mut Canvas { px: &mut px, w, h }, 0.016);
     let slot = app.slot_rect();
-    assert_eq!(slot.right(), app.size.0 as i32, "flush with the window's right edge");
+    assert_eq!(slot.right(), app.size.0 as i32 - crate::ds::GAP, "a floating card, one gap from the window's edge");
     assert_eq!(slot.w, app.gitpanel_w());
-    assert_eq!(app.layout.editor.right(), closed_right - slot.w, "the editor gives up that width");
+    assert_eq!(
+        app.layout.editor.right(),
+        closed_right - slot.w - crate::ds::GAP,
+        "the editor gives up that width and a gap"
+    );
     assert_eq!(app.gitpanel_rect().y, slot.y + crate::app_aipanel::SLOT_H, "under the Git | AI switch");
     // Left edge: col-resize; inside: not; a press starts the drag, moves resize.
     let (ex, ey) = (slot.x as f64, (slot.y + 200) as f64);
     assert!(app.panel_on_edge(ex, ey) && !app.panel_on_edge((slot.x + 30) as f64, ey));
     assert_eq!(app.aipanel_cursor(ex, ey), Some(winit::window::CursorIcon::ColResize));
     assert!(app.aipanel_mouse(ex, ey, 0) && app.ai.resizing);
-    app.mouse = ((app.size.0 as i32 - 520) as f64, ey);
+    app.mouse = ((app.size.0 as i32 - crate::ds::GAP - 520) as f64, ey);
     assert!(app.aipanel_move());
     assert_eq!(app.config.git_panel_width, 520);
     app.aipanel_release();

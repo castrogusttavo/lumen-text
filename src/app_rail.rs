@@ -100,9 +100,8 @@ impl App {
         if r.w <= 0 {
             return;
         }
-        let c = self.theme.chrome;
-        cv.fill(r, c.sidebar_bg);
-        cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), c.border);
+        // The rail sits on the canvas, between the window's edge and the first card.
+        cv.fill(r, crate::app_shell::canvas_color(&self.theme));
         let x = r.x + (r.w - 1 - BTN) / 2;
         let mut y = r.y + 10;
         for b in RailBtn::TOP {
@@ -119,20 +118,11 @@ impl App {
     fn rail_button(&mut self, cv: &mut Canvas, b: Rect, kind: RailBtn) {
         let c = self.theme.chrome;
         let on = self.rail_active(kind);
-        let hot = b.contains(self.mouse.0, self.mouse.1);
+        let hot = self.hot_fill(cv, crate::app_shell::HotSlot::Rail(kind as usize), b, crate::ds::R_ROW, on, 0.0);
         if on {
-            cv.fill_round(b, 8, c.list_active_bg);
             cv.fill_round(Rect::new(b.x - 6, b.y + 8, 2, b.h - 16), 1, c.accent_text);
-        } else if hot {
-            cv.fill_round(b, 8, c.list_hover_bg);
         }
-        let tint = if on {
-            c.accent_text
-        } else if hot {
-            c.tab_active_fg
-        } else {
-            c.tab_inactive_fg
-        };
+        let tint = if on { c.accent_text } else { crate::anim::lerp_rgba(c.tab_inactive_fg, c.tab_active_fg, hot) };
         let clip = self.layout.rail;
         self.tx.icon(cv, kind.icon(), b.x + (b.w - ICON) / 2, b.y + (b.h - ICON) / 2, ICON, tint, clip);
         self.layout.rail_btns.push((b, kind));

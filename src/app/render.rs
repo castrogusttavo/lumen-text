@@ -16,27 +16,37 @@ impl App {
     }
 
     pub(crate) fn compute_layout(&mut self) {
+        self.shell_sync();
         let (w, h) = (self.size.0 as i32, self.size.1 as i32);
-        let sb = if self.sidebar_open { self.sidebar_w() } else { 0 };
         // Zen mode and the View toggles can hide the top bar, tab bar and breadcrumbs.
         let (top_h, tab_h, bread_h) = self.chrome_heights();
         self.layout.topbar = Rect::new(0, 0, w, top_h);
         let lx = self.rail_w();
         self.layout.rail = Rect::new(0, top_h, lx, h - top_h);
-        self.layout.sidebar = Rect::new(lx, top_h, sb, h - top_h);
-        let sb = sb + lx;
-        let rw = self.gitpanel_w();
-        self.layout.tabbar = Rect::new(sb, top_h, w - sb - rw, tab_h);
-        self.layout.bread = Rect::new(sb, top_h + tab_h, (w - sb - rw).max(0), bread_h);
-        let avail = (h - top_h - tab_h - bread_h).max(0);
-        let panel_h = if self.panel.open { self.panel.height.min(avail / 2).max(0) } else { 0 };
-        let gap = if panel_h > 0 { CARD_M } else { 0 };
-        let card_h = (avail - CARD_M - panel_h - gap).max(0);
-        self.layout.card = Rect::new(sb + CARD_M, top_h + tab_h + bread_h, (w - sb - 2 * CARD_M - rw).max(0), card_h);
-        self.layout.card = self.zen_card(self.layout.card);
+        let sidebar_w = self.sidebar_w();
+        let gap = self.shell_gap();
+        let sh = &self.layout.shell;
+        let plan = crate::app_shell::Plan {
+            win: (w, h),
+            top: top_h,
+            rail: lx,
+            side_w: sidebar_w,
+            dock_w: self.slot_rect().w,
+            tab_h,
+            bread_h,
+            panel_h: if self.panel.open { self.panel.height } else { 0 },
+            gap,
+            side_t: sh.side.value,
+            dock_t: sh.dock.value,
+        };
+        let s = crate::app_shell::solve(&plan);
+        self.layout.sidebar = if self.sidebar_open { s.sidebar } else { Rect::new(lx, top_h, 0, s.sidebar.h) };
+        self.layout.card_outer = s.outer;
+        self.layout.tabbar = s.tabbar;
+        self.layout.bread = s.bread;
+        self.layout.card = self.zen_card(s.card);
         self.layout.editor = self.layout.card;
-        self.layout.panel =
-            Rect::new(sb + CARD_M, top_h + tab_h + bread_h + card_h + gap, (w - sb - 2 * CARD_M - rw).max(0), panel_h);
+        self.layout.panel = s.panel;
         // No bottom bar: a zero-height edge keeps what is anchored above it (cards, panels) in place.
         self.layout.status = Rect::new(0, h, w, 0);
         self.split_layout();
@@ -59,10 +69,14 @@ impl App {
         let since = self.last_frame.elapsed().as_secs_f64();
         let dt = if since > 0.1 { 0.016 } else { since.min(0.05) };
         let t0 = Instant::now();
+        // Shell motion (dock / sidebar slide, hover tints): live after the first frame.
+        self.layout.shell.live = self.first_frame_done;
+        self.shell_sync();
+        let shell_busy = self.layout.shell.step(dt);
         self.compute_layout();
 
         g.surface.resize(w, h).ok();
-        let mut busy = false;
+        let mut busy = shell_busy;
         {
             let Ok(mut buffer) = g.surface.buffer_mut() else {
                 self.gfx = Some(g);
@@ -91,7 +105,8 @@ impl App {
 
     pub(super) fn draw_all(&mut self, cv: &mut Canvas, dt: f64) -> bool {
         self.refresh_find();
-        cv.clear(self.theme.background);
+        cv.clear(crate::app_shell::canvas_color(&self.theme));
+        self.draw_card_shadow(cv);
         crate::perf::lap!("clear");
         self.regions.clear();
         let mut busy = self.input_frame(dt);
@@ -153,10 +168,11 @@ impl App {
         self.draw_breadcrumbs(cv);
         self.draw_diff(cv);
         crate::perf::lap!("breadcrumbs_diff");
-        self.draw_rail(cv);
         if self.sidebar_open {
             self.draw_sidebar(cv);
         }
+        // After the sidebar: while it slides in from under the rail, the rail stays on top.
+        self.draw_rail(cv);
         crate::perf::lap!("sidebar");
         self.draw_panel(cv);
         self.draw_gitpanel(cv);
@@ -164,6 +180,7 @@ impl App {
         if self.sidebar_open {
             self.draw_sidebar_edge(cv);
         }
+        self.draw_cards(cv);
         self.draw_tree_drag(cv);
         self.draw_tab_drag(cv);
         crate::perf::lap!("panels");
@@ -184,7 +201,7 @@ impl App {
         self.draw_tooltip(cv);
         self.draw_toast(cv);
         crate::perf::lap!("overlays");
-        busy | self.scroll_activity()
+        busy | self.scroll_activity() | self.layout.shell.moving()
     }
 
     pub(super) fn draw_tabs(&mut self, cv: &mut Canvas) {

@@ -446,12 +446,7 @@ impl App {
         {
             return None;
         }
-        if let Some((r, _)) = l.top_btns.iter().find(|(r, _)| r.contains(x, y)) {
-            return Some((*r, 8));
-        }
-        if let Some((r, _)) = l.status_btns.iter().find(|(r, _)| r.contains(x, y)) {
-            return Some((*r, 6));
-        }
+        // Title-bar buttons and read-out chips animate their own hover (`App::hot_fill`).
         if let Some((r, _, i)) = l.tabs.iter().find(|(r, _, _)| r.contains(x, y)) {
             if *i != self.active {
                 return Some((Rect::new(r.x + 2, r.y + 5, r.w - 4, r.h - 10), 8));

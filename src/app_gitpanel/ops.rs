@@ -47,7 +47,8 @@ impl App {
         let (ww, hh) = (self.size.0 as i32, self.size.1 as i32);
         // Between the top and bottom bars, whichever of them are shown (zen mode, View toggles).
         let (top, bottom) = (self.layout.topbar.h, self.layout.status.h);
-        Rect::new(ww - w, top, w, (hh - top - bottom).max(0))
+        // A floating card: GAP from the window's edge, sliding in from the right while it opens.
+        crate::app_shell::dock_rect((ww, hh), top, bottom, w, self.shell_gap(), self.shell_dock_t())
     }
 
     /// Panel rectangle (as if open): the slot under its switch.
