@@ -280,8 +280,12 @@ fn the_find_bar_has_a_field_and_buttons() {
     frame(&mut app);
     let all = sweep(&mut app);
     // The sweep is coarse (16 px): the bar's field is wide, its buttons are 24 px or so.
-    assert!(all.iter().any(|(_, _, i, l)| *l == "cascade:find" && *i == C::Text), "an I-beam on the field");
-    assert!(all.iter().any(|(_, _, i, l)| *l == "cascade:find" && *i == C::Pointer), "a hand on its buttons");
+    assert!(all.iter().any(|(_, _, i, l)| *l == "find-field" && *i == C::Text), "an I-beam on the field");
+    assert!(
+        all.iter()
+            .any(|(_, _, i, l)| *l == "find-button" && *i == C::Pointer || *l == "find-button" && *i == C::NotAllowed),
+        "a hand (or not-allowed) on its buttons"
+    );
 }
 
 #[test]
