@@ -220,7 +220,7 @@ pub fn draw_footer(cv: &mut Canvas, tx: &mut TextCtx, c: &Chrome, r: Rect, hints
     let ty = row.y + (FOOT_H - ui_line() as i32) / 2 + 1;
     for (key, what) in hints {
         let keys = keycap::keycaps(key);
-        x += keycap::draw_keys(cv, tx, c, x, y, &keys, 1.0, row) + ds::S2;
+        x += keycap::draw_keys_in(cv, tx, c, x, y, &keys, 1.0, row) + ds::S2;
         tx.draw_ui(cv, x, ty, what, c.tab_inactive_fg, row, false);
         x += tx.ui_width(what, false) + ds::S4;
     }
