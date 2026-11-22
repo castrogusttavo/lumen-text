@@ -1,28 +1,38 @@
-//! First-run onboarding: a short guided card (theme, keymap preset, font size / UI scale) shown
-//! when no `config.json` exists yet, and again from the palette ("Help: Welcome tour"). Choices
-//! apply live through `apply_setting`; Done stores them in `config.json`, Esc puts everything back
-//! and stores the untouched settings so the tour does not return on its own.
+//! First-run onboarding: a five-step, full-window flow (welcome, theme with a live preview,
+//! keymap, font size / UI scale, open a project) shown when no `config.json` exists yet, and again
+//! from the palette ("Help: Welcome tour"). Choices apply live through `apply_setting`; finishing
+//! stores them in `config.json`, Esc / Skip puts everything back and stores the untouched settings
+//! so the tour does not return on its own. Drawing lives in `app_onboarding_draw`.
 
 use crate::{
+    anim::{Anim, dur},
     app::App,
-    app_gitpanel::fit,
-    ui::{Canvas, Rect},
+    app_overlay::Cmd,
+    ui::Rect,
 };
 use serde_json::json;
-use std::path::Path;
+use std::{
+    cell::Cell,
+    path::{Path, PathBuf},
+};
 use winit::keyboard::{Key, NamedKey};
 
-const STEPS: usize = 3;
-const ROW_H: i32 = 30;
-const THEME_ROWS: usize = 6;
-const SCALES: [(&str, f32); 5] = [("Auto", 0.0), ("100%", 1.0), ("125%", 1.25), ("150%", 1.5), ("200%", 2.0)];
-const KEYMAPS: [(&str, &str, &str); 3] = [
-    ("vscode", "VS Code", "The familiar defaults"),
-    ("emacs", "Emacs", "Ctrl+F/B/N/P, kill and yank, Ctrl+X chords"),
-    ("vim", "Vim", "Modal editing with a status pill"),
+pub(crate) const STEPS: usize = 5;
+pub(crate) const SCALES: [(&str, f32); 5] =
+    [("Auto", 0.0), ("100%", 1.0), ("125%", 1.25), ("150%", 1.5), ("200%", 2.0)];
+pub(crate) const KEYMAPS: [(&str, &str, &str, &str); 3] = [
+    ("vscode", "VS Code", "The familiar defaults", "ui/editor_vs_code"),
+    ("emacs", "Emacs", "Ctrl+F/B/N/P, kill and yank, Ctrl+X chords", "ui/editor_emacs"),
+    ("vim", "Vim", "Modal editing with a status pill", "ui/editor_cursor"),
 ];
-const FONT_MIN: f32 = 8.0;
-const FONT_MAX: f32 = 32.0;
+pub(crate) const FONT_MIN: f32 = 8.0;
+pub(crate) const FONT_MAX: f32 = 32.0;
+/// Recent projects offered on the last step.
+const RECENT_MAX: usize = 3;
+/// Seconds the opening fade and the first staggered entrance take.
+const ENTER_SECS: f32 = 1.0;
+/// Rows of the theme list before the window height is known (first frame).
+const THEME_ROWS_GUESS: usize = 6;
 
 /// First launch: the settings file does not exist yet (no path to look at counts as not first).
 pub fn is_first_run(path: Option<&Path>) -> bool {
@@ -30,15 +40,25 @@ pub fn is_first_run(path: Option<&Path>) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Hit {
+pub(crate) enum Hit {
     Theme(usize),
     Keymap(&'static str),
     Size(f32),
     Scale(f32),
+    Goto(usize),
     Back,
     Next,
     Done,
     Skip,
+    OpenFolder,
+    Recent(usize),
+}
+
+impl Hit {
+    /// Rows that get the gliding hover highlight (buttons brighten instead).
+    pub(crate) fn glides(&self) -> bool {
+        matches!(self, Hit::Theme(_) | Hit::Keymap(_) | Hit::Recent(_) | Hit::OpenFolder)
+    }
 }
 
 /// What the settings were before the tour (Esc puts them back).
@@ -50,12 +70,163 @@ struct Orig {
     scale: f32,
 }
 
+/// A hover highlight that glides from row to row and fades out when the pointer leaves.
+pub(crate) struct Glide {
+    r: [Anim; 4],
+    a: Anim,
+}
+
+impl Glide {
+    fn new() -> Self {
+        let m = || Anim::new(0.0, dur::BASE);
+        Self { r: [m(), m(), m(), m()], a: Anim::new(0.0, dur::FAST) }
+    }
+
+    pub(crate) fn aim(&mut self, t: Option<Rect>) {
+        match t {
+            Some(t) => {
+                let v = [t.x, t.y, t.w, t.h].map(|v| v as f32);
+                let hidden = self.a.value < 0.05;
+                for (a, v) in self.r.iter_mut().zip(v) {
+                    if hidden {
+                        a.snap(v);
+                    } else {
+                        a.to(v);
+                    }
+                }
+                self.a.to(1.0);
+            }
+            None => self.a.to(0.0),
+        }
+    }
+
+    fn step(&mut self, dt: f64) -> bool {
+        let mut b = self.a.step(dt);
+        for a in &mut self.r {
+            b |= a.step(dt);
+        }
+        b
+    }
+
+    /// Current rect and opacity while visible.
+    pub(crate) fn now(&self) -> Option<(Rect, f32)> {
+        (self.a.value > 0.01).then(|| {
+            let [x, y, w, h] = self.r.each_ref().map(|a| a.value.round() as i32);
+            (Rect::new(x, y, w, h), self.a.value.clamp(0.0, 1.0))
+        })
+    }
+}
+
 pub struct Onboarding {
-    step: usize,
-    names: Vec<String>,
-    sel: usize,
+    pub(crate) step: usize,
+    pub(crate) names: Vec<String>,
+    pub(crate) sel: usize,
     orig: Orig,
-    rects: Vec<(Rect, Hit)>,
+    pub(crate) rects: Vec<(Rect, Hit)>,
+    /// Fractional step shown (slides between integers).
+    pub(crate) slide: Anim,
+    /// Selection highlight position (row index) of the theme, keymap and last-step lists.
+    pub(crate) selg: [Anim; 3],
+    /// First visible theme row (fractional while the list scrolls).
+    pub(crate) scroll: Anim,
+    pub(crate) glide: Glide,
+    /// Seconds since the tour opened (drives the first staggered entrance).
+    pub(crate) t: f32,
+    /// Font/scale step: 0 = font size, 1 = interface scale.
+    pub(crate) focus: usize,
+    /// Last step: the highlighted choice (0 = open a folder, then recents, then start empty).
+    pub(crate) pick: usize,
+    pub(crate) recents: Vec<PathBuf>,
+    hover: Cell<Option<usize>>,
+}
+
+/// First row of the visible window of a scrolling list that keeps `sel` in view.
+pub(crate) fn theme_window(sel: usize, len: usize, rows: usize) -> usize {
+    sel.saturating_sub(2).min(len.saturating_sub(rows))
+}
+
+/// The preset next to `cur` in `dir` (-1 / +1): from the closest one when `cur` is not a preset.
+pub(crate) fn next_scale(cur: f32, dir: i32) -> f32 {
+    let at = SCALES
+        .iter()
+        .enumerate()
+        .min_by(|a, b| (a.1.1 - cur).abs().total_cmp(&(b.1.1 - cur).abs()))
+        .map_or(0, |(i, _)| i);
+    SCALES[(at as i32 + dir).clamp(0, SCALES.len() as i32 - 1) as usize].1
+}
+
+impl Onboarding {
+    fn new(names: Vec<String>, sel: usize, orig: Orig, recents: Vec<PathBuf>) -> Self {
+        Self {
+            step: 0,
+            names,
+            sel,
+            orig,
+            rects: Vec::new(),
+            slide: Anim::new(0.0, dur::STAGE),
+            selg: [Anim::new(0.0, dur::BASE); 3],
+            scroll: Anim::new(0.0, dur::BASE),
+            glide: Glide::new(),
+            t: 0.0,
+            focus: 0,
+            pick: 0,
+            recents,
+            hover: Cell::new(None),
+        }
+    }
+
+    /// Number of choices on the last step.
+    pub(crate) fn pick_count(&self) -> usize {
+        2 + self.recents.len()
+    }
+
+    fn pick_hit(&self, i: usize) -> Hit {
+        if i == 0 {
+            Hit::OpenFolder
+        } else if i <= self.recents.len() {
+            Hit::Recent(i - 1)
+        } else {
+            Hit::Done
+        }
+    }
+
+    fn go(&mut self, step: usize) {
+        self.step = step.min(STEPS - 1);
+        self.slide.to(self.step as f32);
+        self.focus = 0;
+    }
+
+    /// Aim the selection highlights (`snap` jumps instead of gliding: first frame).
+    pub(crate) fn retarget(&mut self, keymap: &str, rows: usize, snap: bool) {
+        let km = KEYMAPS.iter().position(|m| m.0 == keymap).unwrap_or(0);
+        let win = theme_window(self.sel, self.names.len(), rows);
+        let goals = [self.sel as f32, km as f32, self.pick as f32];
+        for (a, g) in self.selg.iter_mut().zip(goals) {
+            if snap {
+                a.snap(g);
+            } else {
+                a.to(g);
+            }
+        }
+        if snap {
+            self.scroll.snap(win as f32);
+        } else {
+            self.scroll.to(win as f32);
+        }
+    }
+
+    /// Advance every animation; true while something still moves.
+    pub(crate) fn advance(&mut self, dt: f64) -> bool {
+        self.t += dt as f32;
+        let mut b = self.t < ENTER_SECS;
+        b |= self.slide.step(dt);
+        for a in &mut self.selg {
+            b |= a.step(dt);
+        }
+        b |= self.scroll.step(dt);
+        b |= self.glide.step(dt);
+        b
+    }
 }
 
 impl App {
@@ -71,7 +242,10 @@ impl App {
             size: c.buffer_font_size,
             scale: c.ui_scale,
         };
-        self.onboarding = Some(Box::new(Onboarding { step: 0, names, sel, orig, rects: Vec::new() }));
+        let recents = crate::app_welcome::recent_projects(&self.root, RECENT_MAX);
+        let mut st = Onboarding::new(names, sel, orig, recents);
+        st.retarget(&self.config.keymap_preset, THEME_ROWS_GUESS, true);
+        self.onboarding = Some(Box::new(st));
         self.request_redraw();
     }
 
@@ -101,17 +275,35 @@ impl App {
                 }
             }
             Hit::Keymap(p) => self.apply_setting("keymap_preset", &json!(p)),
-            Hit::Size(v) => self.apply_setting("buffer_font_size", &json!(v)),
-            Hit::Scale(v) => self.apply_setting("ui_scale", &json!(v)),
-            Hit::Back => st.step = st.step.saturating_sub(1),
-            Hit::Next => st.step = (st.step + 1).min(STEPS - 1),
+            Hit::Size(v) => {
+                st.focus = 0;
+                self.apply_setting("buffer_font_size", &json!(v));
+            }
+            Hit::Scale(v) => {
+                st.focus = 1;
+                self.apply_setting("ui_scale", &json!(v));
+            }
+            Hit::Goto(i) => st.go(i),
+            Hit::Back => st.go(st.step.saturating_sub(1)),
+            Hit::Next => st.go(st.step + 1),
             Hit::Done => self.onboarding_finish(true),
             Hit::Skip => self.onboarding_finish(false),
+            Hit::OpenFolder => {
+                self.onboarding_finish(true);
+                self.run_cmd(Cmd::ProjectMenu);
+            }
+            Hit::Recent(i) => {
+                let p = st.recents.get(i).cloned();
+                self.onboarding_finish(true);
+                if let Some(p) = p {
+                    self.switch_project(p);
+                }
+            }
         }
         self.request_redraw();
     }
 
-    /// Mouse press: the card is modal, so it always consumes the click.
+    /// Mouse press: the flow is modal, so it always consumes the click.
     pub fn onboarding_mouse(&mut self, x: f64, y: f64) -> bool {
         let Some(st) = &self.onboarding else { return false };
         let hit = st.rects.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| h.clone());
@@ -121,16 +313,31 @@ impl App {
         true
     }
 
-    /// `Some(over a button)` while the tour is open, `None` otherwise (for the pointer shape).
+    /// `Some(over a control)` while the tour is open, `None` otherwise (for the pointer shape).
+    /// A change of the hovered control also asks for a frame, so the highlight follows the pointer.
     pub fn onboarding_cursor_hand(&self) -> Option<bool> {
         let st = self.onboarding.as_ref()?;
-        Some(st.rects.iter().any(|(r, _)| r.contains(self.mouse.0, self.mouse.1)))
+        let h = st.rects.iter().position(|(r, _)| r.contains(self.mouse.0, self.mouse.1));
+        if st.hover.get() != h {
+            st.hover.set(h);
+            self.request_redraw();
+        }
+        Some(h.is_some())
     }
 
-    /// Keys while the card is open: all of them are consumed.
+    /// Keys while the flow is open: all of them are consumed.
     pub fn onboarding_key(&mut self, key: &Key) -> bool {
         let Some(st) = &self.onboarding else { return false };
         let (step, sel, last) = (st.step, st.sel, st.names.len().saturating_sub(1));
+        let (focus, pick, picks) = (st.focus, st.pick, st.pick_count());
+        let enter = st.pick_hit(pick);
+        if let Key::Character(s) = key {
+            let n = s.as_str().parse::<usize>().ok().filter(|n| (1..=KEYMAPS.len()).contains(n));
+            if let (2, Some(n)) = (step, n) {
+                self.onboarding_apply(Hit::Keymap(KEYMAPS[n - 1].0));
+            }
+            return true;
+        }
         let Key::Named(k) = key else { return true };
         let dir: i32 = match k {
             NamedKey::ArrowUp => -1,
@@ -139,141 +346,36 @@ impl App {
         };
         match k {
             NamedKey::Escape => self.onboarding_finish(false),
-            NamedKey::Enter => self.onboarding_apply(if step + 1 == STEPS { Hit::Done } else { Hit::Next }),
+            NamedKey::Enter => self.onboarding_apply(if step + 1 < STEPS { Hit::Next } else { enter }),
             NamedKey::ArrowLeft => self.onboarding_apply(Hit::Back),
-            NamedKey::ArrowRight => self.onboarding_apply(Hit::Next),
+            NamedKey::ArrowRight if step + 1 < STEPS => self.onboarding_apply(Hit::Next),
+            NamedKey::Tab => {
+                if let Some(st) = self.onboarding.as_mut().filter(|st| st.step == 3) {
+                    st.focus ^= 1;
+                }
+            }
             NamedKey::ArrowUp | NamedKey::ArrowDown => match step {
-                0 => self.onboarding_apply(Hit::Theme((sel as i32 + dir).clamp(0, last as i32) as usize)),
-                1 => {
+                1 => self.onboarding_apply(Hit::Theme((sel as i32 + dir).clamp(0, last as i32) as usize)),
+                2 => {
                     let cur = KEYMAPS.iter().position(|m| m.0 == self.config.keymap_preset).unwrap_or(0);
                     let i = (cur as i32 + dir).clamp(0, KEYMAPS.len() as i32 - 1) as usize;
                     self.onboarding_apply(Hit::Keymap(KEYMAPS[i].0));
                 }
-                _ => {
+                3 if focus == 1 => self.onboarding_apply(Hit::Scale(next_scale(self.config.ui_scale, dir))),
+                3 => {
                     let v = (self.config.buffer_font_size - dir as f32).clamp(FONT_MIN, FONT_MAX);
                     self.onboarding_apply(Hit::Size(v));
                 }
+                4 => {
+                    if let Some(st) = self.onboarding.as_mut() {
+                        st.pick = (pick as i32 + dir).clamp(0, picks as i32 - 1) as usize;
+                    }
+                }
+                _ => {}
             },
             _ => {}
         }
         true
-    }
-
-    fn onboarding_button(&mut self, cv: &mut Canvas, r: Rect, label: &str, primary: bool) {
-        let c = self.theme.chrome;
-        let hot = r.contains(self.mouse.0, self.mouse.1);
-        if primary {
-            cv.fill_round(r, 8, if hot { c.accent.shift(14) } else { c.accent });
-        } else {
-            cv.card(r, 8, if hot { c.list_hover_bg } else { c.widget_bg }, c.border);
-        }
-        let tw = self.tx.ui_width(label, primary);
-        let fg = if primary { c.on_accent } else { self.theme.foreground };
-        self.tx.draw_ui(cv, r.x + (r.w - tw) / 2, r.y + (r.h - 18) / 2, label, fg, r, primary);
-    }
-
-    pub fn draw_onboarding(&mut self, cv: &mut Canvas) {
-        let Some(mut st) = self.onboarding.take() else { return };
-        st.rects.clear();
-        let c = self.theme.chrome;
-        let (fg, dim) = (self.theme.foreground, c.tab_inactive_fg);
-        let (sw, sh) = (self.size.0 as i32, self.size.1 as i32);
-        cv.fill(Rect::new(0, 0, sw, sh), self.theme.background.with_alpha(0x90));
-        let w = (sw - 24).clamp(260, 520);
-        let h = (sh - 24).clamp(200, 340);
-        let r = Rect::new((sw - w) / 2, ((sh - h) / 2).max(0), w, h);
-        cv.shadow(r, 12);
-        cv.card(r, 12, c.widget_bg, c.border);
-        let inner = w - 40;
-        let x0 = r.x + 20;
-
-        self.tx.draw_ui(cv, x0, r.y + 16, "Welcome to Lumen", fg, r, true);
-        let count = format!("Step {} of {STEPS}", st.step + 1);
-        let cw = self.tx.ui_width(&count, false);
-        self.tx.draw_ui(cv, r.right() - 20 - cw, r.y + 16, &count, dim, r, false);
-        let (head, hint) = match st.step {
-            0 => ("Pick a theme", "Up / Down to preview, click to choose"),
-            1 => ("Choose a keymap", "You can change it later in Settings"),
-            _ => ("Size things to your eyes", "Editor font size and interface scale"),
-        };
-        self.tx.draw_ui(cv, x0, r.y + 46, head, fg, r, true);
-        let hint = fit(&mut self.tx, hint, inner, false);
-        self.tx.draw_ui(cv, x0, r.y + 68, &hint, dim, r, false);
-
-        let top = r.y + 98;
-        let row_rect = |i: usize| Rect::new(x0 - 6, top + i as i32 * ROW_H, inner + 12, ROW_H - 2);
-        let mark = |mouse: (f64, f64), cv: &mut Canvas, rr: Rect, on: bool| {
-            if on {
-                cv.fill_round(rr, 6, c.accent.with_alpha(0x30));
-            } else if rr.contains(mouse.0, mouse.1) {
-                cv.fill_round(rr, 6, c.list_hover_bg);
-            }
-        };
-        match st.step {
-            0 => {
-                let start = st.sel.saturating_sub(2).min(st.names.len().saturating_sub(THEME_ROWS));
-                for (k, i) in (start..st.names.len().min(start + THEME_ROWS)).enumerate() {
-                    let rr = row_rect(k);
-                    mark(self.mouse, cv, rr, i == st.sel);
-                    let name = fit(&mut self.tx, &st.names[i], inner - 8, i == st.sel);
-                    self.tx.draw_ui(cv, rr.x + 8, rr.y + 5, &name, fg, rr, i == st.sel);
-                    st.rects.push((rr, Hit::Theme(i)));
-                }
-            }
-            1 => {
-                for (k, (id, label, desc)) in KEYMAPS.iter().enumerate() {
-                    let rr = row_rect(k);
-                    let on = self.config.keymap_preset == *id;
-                    mark(self.mouse, cv, rr, on);
-                    self.tx.draw_ui(cv, rr.x + 8, rr.y + 5, label, fg, rr, on);
-                    let lw = self.tx.ui_width(label, on) + 20;
-                    let d = fit(&mut self.tx, desc, (inner - lw - 8).max(10), false);
-                    self.tx.draw_ui(cv, rr.x + 8 + lw, rr.y + 5, &d, dim, rr, false);
-                    st.rects.push((rr, Hit::Keymap(id)));
-                }
-            }
-            _ => {
-                self.tx.draw_ui(cv, x0, top + 6, "Editor font size", fg, r, false);
-                let size = self.config.buffer_font_size;
-                let plus = Rect::new(r.right() - 20 - 30, top, 30, 28);
-                let minus = Rect::new(plus.x - 70 - 30, top, 30, 28);
-                let val = format!("{size:.0}px");
-                let vw = self.tx.ui_width(&val, true);
-                self.tx.draw_ui(cv, minus.right() + (70 - vw) / 2, top + 5, &val, fg, r, true);
-                self.onboarding_button(cv, minus, "-", false);
-                self.onboarding_button(cv, plus, "+", false);
-                st.rects.push((minus, Hit::Size((size - 1.0).max(FONT_MIN))));
-                st.rects.push((plus, Hit::Size((size + 1.0).min(FONT_MAX))));
-                self.tx.draw_ui(cv, x0, top + 56, "Interface scale", fg, r, false);
-                let bw = (inner / SCALES.len() as i32).min(80);
-                for (k, (label, v)) in SCALES.iter().enumerate() {
-                    let b = Rect::new(x0 + k as i32 * (bw + 4), top + 82, bw, 28);
-                    let on = (self.config.ui_scale - *v).abs() < 0.01;
-                    self.onboarding_button(cv, b, label, on);
-                    st.rects.push((b, Hit::Scale(*v)));
-                }
-            }
-        }
-
-        // Footer: Skip on the left, Back / Next (or Done) on the right.
-        let by = r.bottom() - 16 - 30;
-        let skip_w = self.tx.ui_width("Skip", false);
-        let skip = Rect::new(x0, by, skip_w + 8, 30);
-        let hot = skip.contains(self.mouse.0, self.mouse.1);
-        self.tx.draw_ui(cv, skip.x + 4, by + 6, "Skip", if hot { fg } else { dim }, skip, false);
-        st.rects.push((skip, Hit::Skip));
-        let (nl, nh) = if st.step + 1 == STEPS { ("Done", Hit::Done) } else { ("Next", Hit::Next) };
-        let nw = self.tx.ui_width(nl, true) + 30;
-        let next = Rect::new(r.right() - 20 - nw, by, nw, 30);
-        self.onboarding_button(cv, next, nl, true);
-        st.rects.push((next, nh));
-        if st.step > 0 {
-            let bw = self.tx.ui_width("Back", false) + 30;
-            let back = Rect::new(next.x - 8 - bw, by, bw, 30);
-            self.onboarding_button(cv, back, "Back", false);
-            st.rects.push((back, Hit::Back));
-        }
-        self.onboarding = Some(st);
     }
 }
 
@@ -292,5 +394,67 @@ mod tests {
         assert!(!is_first_run(Some(&p)));
         assert!(!is_first_run(None));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn theme_window_keeps_selection_visible() {
+        assert_eq!(theme_window(0, 30, 6), 0);
+        assert_eq!(theme_window(10, 30, 6), 8);
+        assert_eq!(theme_window(29, 30, 6), 24);
+        assert_eq!(theme_window(1, 3, 6), 0);
+    }
+
+    #[test]
+    fn scale_steps_through_presets() {
+        assert_eq!(next_scale(0.0, 1), 1.0);
+        assert_eq!(next_scale(1.0, -1), 0.0);
+        assert_eq!(next_scale(0.0, -1), 0.0);
+        assert_eq!(next_scale(2.0, 1), 2.0);
+        // Between presets: starts from the closest one.
+        assert_eq!(next_scale(1.3, 1), 1.5);
+    }
+
+    fn sample(recents: usize) -> Onboarding {
+        let orig =
+            Orig { theme: "a".into(), appearance: String::new(), keymap: "vscode".into(), size: 14.0, scale: 0.0 };
+        Onboarding::new(vec!["a".into()], 0, orig, (0..recents).map(|i| PathBuf::from(format!("/p{i}"))).collect())
+    }
+
+    #[test]
+    fn steps_clamp_and_slide_retargets() {
+        let mut o = sample(0);
+        o.go(99);
+        assert_eq!(o.step, STEPS - 1);
+        assert_eq!(o.slide.target(), (STEPS - 1) as f32);
+        o.go(2);
+        assert_eq!(o.step, 2);
+    }
+
+    #[test]
+    fn last_step_choices_map_to_actions() {
+        let o = sample(2);
+        assert_eq!(o.pick_count(), 4);
+        assert_eq!(o.pick_hit(0), Hit::OpenFolder);
+        assert_eq!(o.pick_hit(1), Hit::Recent(0));
+        assert_eq!(o.pick_hit(2), Hit::Recent(1));
+        assert_eq!(o.pick_hit(3), Hit::Done);
+    }
+
+    #[test]
+    fn glide_snaps_when_hidden_then_glides() {
+        let mut g = Glide::new();
+        assert!(g.now().is_none());
+        g.aim(Some(Rect::new(0, 100, 50, 20)));
+        assert_eq!(g.r[1].value, 100.0);
+        g.a.snap(1.0);
+        g.aim(Some(Rect::new(0, 200, 50, 20)));
+        g.step(1.0 / 60.0);
+        let (r, _) = g.now().unwrap();
+        assert!(r.y > 100 && r.y < 200, "glides instead of jumping: {}", r.y);
+        g.aim(None);
+        for _ in 0..60 {
+            g.step(1.0 / 60.0);
+        }
+        assert!(g.now().is_none());
     }
 }

@@ -132,6 +132,7 @@ impl App {
         };
         if self.docs.get(self.active).is_some() {
             self.layout.welcome.clear();
+            crate::app_welcome::mark_hidden();
         }
         if let Some(d) = self.docs.get_mut(self.active) {
             d.cell_w = self.tx.cell_w;
@@ -143,7 +144,7 @@ impl App {
                 &DrawOpts { dt, find: find_ranges, find_cur, focused: true },
             );
         } else {
-            self.draw_welcome(cv, editor);
+            busy |= self.draw_welcome(cv, editor, dt);
         }
 
         busy |= self.draw_multibuf(cv, editor);
@@ -203,7 +204,7 @@ impl App {
         self.draw_hover(cv);
         self.draw_update_card(cv);
         self.draw_overlay(cv);
-        self.draw_onboarding(cv);
+        busy |= self.draw_onboarding(cv, dt);
         self.draw_tooltip(cv);
         self.draw_toast(cv);
         self.draw_toasts(cv);
