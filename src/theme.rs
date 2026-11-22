@@ -113,6 +113,27 @@ pub struct Chrome {
     /// the editor text reads on both).
     pub word_hl: Rgba,
     pub word_hl_strong: Rgba,
+    // --- Surface hierarchy for the floating-card layout (see docs/DESIGN.md, "Surfaces"). ---
+    /// Window background behind the cards: a step away from `card` (darker in both modes).
+    pub canvas: Rgba,
+    /// Card body (editor card): the theme's editor background.
+    pub card: Rgba,
+    /// Popovers, menus, modals: one step above the card (lighter on dark, white-ish on light).
+    pub raised: Rgba,
+    /// Softer card rim: `border` leaning toward the accent.
+    pub border_glow: Rgba,
+    /// Translucent overlays for hover / pressed states, drawn over any surface (text keeps >= 4.5:1).
+    pub hover_overlay: Rgba,
+    pub pressed_overlay: Rgba,
+    /// Keyboard focus ring: the accent, nudged to >= 3:1 on canvas, card and raised.
+    pub focus_ring: Rgba,
+    /// Drop-shadow tint (translucent, faintly accent-colored black).
+    pub shadow: Rgba,
+    /// Accent-tinted selection fill (translucent; the foreground reads on it).
+    pub selection_accent: Rgba,
+    /// Rim gradient stops, top to bottom (translucent accent fading out).
+    pub glow_top: Rgba,
+    pub glow_bottom: Rgba,
 }
 
 impl Rgba {
@@ -248,6 +269,11 @@ impl Theme {
         // Surfaces text can sit on. Every UI text color is nudged (toward black/white, keeping its hue)
         // until it reads (>= 4.5:1, WCAG AA) on all of them: editor, sidebar, tabs, widgets, inputs and
         // the selected / hovered row. The tests in `mod tests` (accessibility) guard it.
+        // Floating-card surface hierarchy (all derived from the editor background and foreground).
+        let canvas = if dark { background.mix(Rgba(0, 0, 0, 255), 0.35) } else { tint(0.045) };
+        let raised = if dark { tint(0.06) } else { background };
+        let hover_overlay = foreground.with_alpha(if dark { 0x0c } else { 0x0a });
+        let pressed_overlay = foreground.with_alpha(if dark { 0x16 } else { 0x14 });
         let surfaces = [
             background,
             tint(if dark { 0.025 } else { 0.022 }),
@@ -257,6 +283,11 @@ impl Theme {
             tint(if dark { 0.10 } else { 0.075 }),
             tint(if dark { 0.06 } else { 0.04 }),
             line_highlight,
+            // Appended: text must also read on the new surfaces, with the pressed overlay on top.
+            canvas,
+            raised,
+            pressed_overlay.over(background),
+            pressed_overlay.over(raised),
         ];
         let ok = |c: Rgba, min: f32| {
             if !fix || surfaces.iter().all(|b| c.over(*b).contrast(*b) >= min) {
@@ -318,6 +349,9 @@ impl Theme {
             }
         };
         let accent_text = ok(accent_raw, 4.6);
+        let border = tint(if dark { 0.10 } else { 0.085 });
+        let focus_ring = if fix { accent_raw.readable_on(&[canvas, background, raised], 3.0) } else { accent_raw };
+        let selection_accent = tame(accent_raw.with_alpha(0x3a), background, fg_ui, 0x10);
         let sem = |key: &str, fb: Rgba| ok(ck(key, fb), 4.5);
         let mut chrome = Chrome {
             sidebar_bg: surfaces[1],
@@ -329,7 +363,7 @@ impl Theme {
             tab_inactive_fg: soft(0xb4),
             status_bg: background,
             status_fg: soft(0xb4),
-            border: tint(if dark { 0.10 } else { 0.085 }),
+            border,
             widget_bg: surfaces[3],
             list_active_bg: surfaces[4],
             list_hover_bg: surfaces[5],
@@ -352,6 +386,17 @@ impl Theme {
             ruler,
             word_hl,
             word_hl_strong,
+            canvas,
+            card: background,
+            raised,
+            border_glow: border.mix(accent_raw, 0.22),
+            hover_overlay,
+            pressed_overlay,
+            focus_ring,
+            shadow: Rgba(0, 0, 0, 255).mix(accent_raw, 0.06).with_alpha(if dark { 0x99 } else { 0x40 }),
+            selection_accent,
+            glow_top: accent_raw.with_alpha(if dark { 0x48 } else { 0x30 }),
+            glow_bottom: accent_raw.with_alpha(0x10),
         };
         if own_chrome && fix {
             let opt = |keys: &[&str]| {
@@ -557,6 +602,17 @@ impl Chrome {
             ruler: c,
             word_hl: c,
             word_hl_strong: c,
+            canvas: c,
+            card: c,
+            raised: c,
+            border_glow: c,
+            hover_overlay: c,
+            pressed_overlay: c,
+            focus_ring: c,
+            shadow: c,
+            selection_accent: c,
+            glow_top: c,
+            glow_bottom: c,
         }
     }
 }
@@ -660,6 +716,12 @@ mod tests {
             ("tabbar_bg", c.tabbar_bg),
             ("tab_inactive_bg", c.tab_inactive_bg),
             ("status_bg", c.status_bg),
+            ("canvas", c.canvas),
+            ("card", c.card),
+            ("raised", c.raised),
+            ("raised+pressed", c.pressed_overlay.over(c.raised)),
+            ("card+pressed", c.pressed_overlay.over(c.card)),
+            ("card+hover", c.hover_overlay.over(c.card)),
         ];
         let fgs = [
             ("tab_inactive_fg", c.tab_inactive_fg),
@@ -698,6 +760,11 @@ mod tests {
             ("word highlight (write)", c.word_hl_strong),
         ] {
             pair(format!("foreground on {n}"), t.foreground, hl.over(t.background), 4.5);
+        }
+        // Accent-tinted selection and the focus ring (a non-text UI part, 3:1) on the card surfaces.
+        for (n, bg) in [("canvas", c.canvas), ("card", c.card), ("raised", c.raised)] {
+            pair(format!("foreground on selection_accent over {n}"), t.foreground, c.selection_accent.over(bg), 4.5);
+            pair(format!("focus_ring (UI part) on {n}"), c.focus_ring, bg, 3.0);
         }
         // Matched letters of the pickers sit on the selected / hovered row.
         pair("accent_text on picker row (selected)".into(), c.accent_text, c.list_active_bg, 4.5);
@@ -766,6 +833,21 @@ mod tests {
         }
         assert!(changed > 20, "only {changed} themes adopted their own chrome");
         assert!(kept > 0, "every theme adopted its chrome: no fallback happens");
+    }
+
+    #[test]
+    fn card_surfaces_form_a_hierarchy_in_every_bundled_theme() {
+        for (name, t) in bundled_with(true) {
+            let c = t.chrome;
+            assert_eq!(c.card, t.background, "{name}");
+            assert_ne!(c.canvas, c.card, "{name}: canvas must differ from the card");
+            assert!(c.canvas.luminance() < c.card.luminance(), "{name}: canvas is darker than the card");
+            if t.background.luminance() < 0.5 {
+                assert!(c.raised.luminance() > c.card.luminance(), "{name}: raised is lighter on dark themes");
+            }
+            assert!(c.hover_overlay.3 < c.pressed_overlay.3, "{name}");
+            assert!(c.glow_top.3 > c.glow_bottom.3, "{name}");
+        }
     }
 
     #[test]

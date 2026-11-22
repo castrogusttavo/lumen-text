@@ -92,6 +92,10 @@ impl Anim {
 
     /// Advance by `dt` seconds (exact solution, stable at any frame rate); true while moving.
     pub fn step(&mut self, dt: f64) -> bool {
+        if crate::motion::reduced() {
+            self.snap(self.target);
+            return false;
+        }
         if !self.moving() {
             self.value = self.target;
             self.vel = 0.0;
@@ -168,6 +172,10 @@ impl Tween {
     }
     pub fn step(&mut self, dt: f64) -> bool {
         if !self.running {
+            return false;
+        }
+        if crate::motion::reduced() {
+            self.finish();
             return false;
         }
         self.t += (dt as f32).clamp(0.0, 0.05);

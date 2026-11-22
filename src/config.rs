@@ -77,6 +77,8 @@ pub struct Config {
     pub test_report: String,
     /// Re-run the last tests whenever a file is saved.
     pub test_watch: bool,
+    /// Snap animations instead of easing them (also forced by `LUMEN_REDUCE_MOTION=1`, see `motion.rs`).
+    pub reduce_motion: bool,
     /// Build panel: commands of your own, run by the shell in the project folder. Listed first among
     /// the detected targets; empty = detection only.
     pub build_command: String,
@@ -395,6 +397,7 @@ impl Default for Config {
             debug_hover_evaluate: true,
             debug_open_panel: true,
             test_watch: false,
+            reduce_motion: false,
             explorer_hide_gitignored: true,
             ai_notifications: true,
             ai_prompt_explain: String::new(),
@@ -684,6 +687,7 @@ impl Config {
             test_command: v["test_command"].as_str().unwrap_or("").trim().to_string(),
             test_report: v["test_report"].as_str().unwrap_or("").trim().to_string(),
             test_watch: v["test_watch"].as_bool().unwrap_or(false),
+            reduce_motion: v["reduce_motion"].as_bool().unwrap_or(false),
             build_command: v["build_command"].as_str().unwrap_or("").trim().to_string(),
             run_command: v["run_command"].as_str().unwrap_or("").trim().to_string(),
             markdown_remote_images: v["markdown_remote_images"].as_bool().unwrap_or(true),
@@ -781,7 +785,7 @@ impl Config {
 
     /// Every setting as the JSON object `save_to` writes (`from_value(&c.to_json()) == c`).
     pub fn to_json(&self) -> Value {
-        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "lsp_narrow": self.lsp_narrow, "lsp_lean_v": 2, "lsp_auto_lean": self.lsp_auto_lean, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch});
+        let v = json!({"theme": self.theme, "format_on_save": self.format_on_save, "auto_import": self.auto_import, "lsp_narrow": self.lsp_narrow, "lsp_lean_v": 2, "lsp_auto_lean": self.lsp_auto_lean, "code_lens": self.code_lens, "code_lens_refs": self.code_lens_refs, "code_lens_impls": self.code_lens_impls, "inlay_hints": self.inlay_hints, "inlay_hints_params": self.inlay_hints_params, "inlay_hints_types": self.inlay_hints_types, "appearance": self.appearance, "theme_light": self.theme_light, "theme_dark": self.theme_dark, "tsgo_source": self.tsgo_source, "minimap": self.minimap, "minimap_style": self.minimap_style, "word_wrap": self.word_wrap, "sticky_scroll": self.sticky_scroll, "indent_guides": self.indent_guides, "ui_scale": self.ui_scale, "scroll_speed": self.scroll_speed, "breadcrumbs": self.breadcrumbs, "git_blame": self.git_blame, "ram_display": self.ram_display, "status_items": self.status_items, "status_order": self.status_order, "status_left_order": self.status_left_order, "git_pull_strategy": self.git_pull_strategy, "tab_width": self.tab_width, "git_panel_width": self.git_panel_width, "md_split": self.md_split, "theme_chrome": self.theme_chrome, "updates": self.updates, "test_command": self.test_command, "test_report": self.test_report, "test_watch": self.test_watch, "reduce_motion": self.reduce_motion});
         // Split in two: one `json!` this long hits the macro recursion limit.
         let fonts = json!({"buffer_font_family": self.buffer_font_family, "buffer_font_size": self.buffer_font_size, "buffer_font_weight": self.buffer_font_weight, "buffer_line_height": self.buffer_line_height, "buffer_font_ligatures": self.buffer_font_ligatures, "ui_font_family": self.ui_font_family, "ui_font_size": self.ui_font_size, "ui_font_weight": self.ui_font_weight, "ui_line_height": self.ui_line_height, "ui_font_ligatures": self.ui_font_ligatures, "show_line_numbers": self.show_line_numbers, "show_bookmarks": self.show_bookmarks, "show_breakpoints": self.show_breakpoints, "scrollbar": self.scrollbar, "enable_lsp": self.enable_lsp});
         let mut v = v;
@@ -914,6 +918,7 @@ mod tests {
             test_command: "make test".into(),
             test_report: "out/junit.xml".into(),
             test_watch: true,
+            reduce_motion: true,
             build_command: "make -j8".into(),
             run_command: "./out/app --port 8080".into(),
             markdown_remote_images: false,

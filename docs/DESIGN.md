@@ -22,13 +22,29 @@ below. The editor card is the hero: biggest, brightest, the only one with a subt
 (`Elev::Card`). Popovers use `Elev::Pop`, the command palette and modals `Elev::Modal` with a
 dimmed, softly faded backdrop. `CARD_M` (currently 0) becomes `ds::GAP`; zen mode removes the gaps.
 
+### Surfaces (`theme::Chrome`, derived from any theme, light and dark)
+| field | use |
+|---|---|
+| `canvas` | window background behind the cards; always darker than `card` |
+| `card` | card body (the editor background) |
+| `raised` | popovers, menus, modals: lighter than the card on dark, white-ish on light |
+| `border` / `border_glow` | hairline card border / softer rim leaning toward the accent |
+| `hover_overlay`, `pressed_overlay` | translucent foreground tints drawn over any surface (text keeps >= 4.5:1 under them) |
+| `focus_ring` | accent nudged to >= 3:1 on canvas, card and raised |
+| `shadow` | translucent drop-shadow tint (faintly accent-colored black) |
+| `selection_accent` | translucent accent fill for selected things; the foreground reads on it |
+| `glow_top`, `glow_bottom` | rim gradient stops (accent fading from top to bottom) |
+
+All text colors are nudged to read on `canvas`, `raised` and the pressed overlays too; the audit in
+`theme.rs` tests it for every bundled theme.
+
 ## 2. Motion (see `anim.rs`)
 - Anything that appears or disappears eases: dock open/close (`dur::SLOW`), modal in (fade + 8 px
   rise, `dur::SLOW`), menus/tooltips (`dur::BASE`), hover/press/focus (`Hot`, `dur::FAST`).
 - Tab switch: indicator slides to the new tab. List selection: highlight glides between rows.
 - Loading uses a shimmer/pulse, never a frozen UI. Toasts slide in, wait, fade.
 - Everything is driven by `dt` and reported through the `busy` flag so an idle editor sleeps.
-- Respect "reduce motion" (config `reduce_motion`, default follows the OS when known): `Anim::snap`.
+- Respect "reduce motion": config `reduce_motion` (default false) or `LUMEN_REDUCE_MOTION=1`; `motion::reduced()` is the check. `Anim::step` and `Tween::step` already snap when it is on; shimmer/pulse/slide code must draw its final state.
 - Never animate text being typed, the caret blink path, or scrolling of code (already tuned).
 
 ## 3. Components (reuse, do not fork)

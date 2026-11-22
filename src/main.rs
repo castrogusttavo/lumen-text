@@ -154,6 +154,7 @@ mod mdview;
 mod mem;
 mod merge3;
 mod minimap;
+mod motion;
 mod multibuf;
 mod notify;
 mod openapi;
@@ -272,6 +273,7 @@ fn main() -> ExitCode {
         (cli.args.clone(), cli.keys.clone(), cli.snap.clone(), cli.size, cli.scale);
     let first_run = app_onboarding::is_first_run(config::default_path().as_deref());
     let cfg = config::Config::load();
+    motion::set(cfg.reduce_motion);
     theme::set_theme_chrome(cfg.own_chrome());
     let theme_path = env::var("LUMEN_THEME").map(PathBuf::from).unwrap_or_else(|_| {
         let name = cfg.resolve_theme(if cfg.appearance == "system" { config::detect_dark() } else { None });
