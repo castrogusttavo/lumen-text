@@ -306,7 +306,7 @@ impl App {
             }
             let Some((x, y)) = d.screen_pos(t.pos) else { continue };
             let chip = Rect::new(x, y, self.tx.cells(rest.chars().count()).max(1), lh);
-            cv.fill_round_clip(chip, 3, bg, body);
+            cv.fill_round_clip(chip, crate::ds::S1, bg, body);
             self.tx.draw_styled(cv, x, y, &[(rest, fg, BOLD)], body);
         }
     }

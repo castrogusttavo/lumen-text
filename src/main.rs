@@ -208,6 +208,7 @@ mod ui_empty;
 mod ui_keycap;
 mod ui_viewer;
 mod ui_vwr;
+mod ui_popup;
 mod undo_store;
 mod update;
 mod vim;

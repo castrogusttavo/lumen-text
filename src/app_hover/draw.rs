@@ -3,13 +3,15 @@ use super::*;
 impl App {
     // ───────────── drawing ─────────────
 
-    pub fn draw_hover(&mut self, cv: &mut Canvas) {
-        let Some(mut h) = self.hover.take() else { return };
+    pub fn draw_hover(&mut self, cv: &mut Canvas, dt: f64) -> bool {
+        let Some(mut h) = self.hover.take() else { return false };
         if h.is_empty() {
-            return;
+            return false;
         }
+        let busy = h.fade.step(dt);
         self.draw_tip(cv, &mut h);
         self.hover = Some(h);
+        busy
     }
 
     pub(super) fn draw_tip(&mut self, cv: &mut Canvas, h: &mut HoverTip) {
@@ -65,8 +67,9 @@ impl App {
         h.view = view;
         clamp_scroll(h);
 
-        cv.shadow(rect, 10);
-        cv.card(rect, 10, chrome.widget_bg, chrome.border);
+        let fading = h.fade.k() < 1.0;
+        let backdrop = fading.then(|| cv.grab(crate::ui_popup::shadow_area(rect)));
+        cv.pop_card(rect, &chrome);
         let _laid = &h.laid.as_ref().unwrap().1;
         let oy = view.y - h.scroll.round() as i32;
         let clip = Rect::new(rect.x + 1, view.y, rect.w - 2, view.h);
@@ -152,7 +155,7 @@ impl App {
                     let r = Rect::new(x - 5, y, wd + 10, FOOT_ROW - 2);
                     let hot = self.hv.hot == Some(Hit::Act(a));
                     if hot {
-                        cv.fill_round_clip(r, 5, pal.fg.with_alpha(0x1c), fclip);
+                        cv.fill_round_clip(r, crate::ds::R_CTRL, pal.fg.with_alpha(0x1c), fclip);
                     }
                     let col = if hot { pal.link } else { pal.dim };
                     self.tx.draw_ui(cv, x, y + 2, a.label(), col, fclip, false);
@@ -164,5 +167,8 @@ impl App {
             }
         }
         widths.clear();
+        if let Some(b) = backdrop {
+            cv.fade_toward(&b, h.fade.k());
+        }
     }
 }

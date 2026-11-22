@@ -45,6 +45,7 @@ impl HoverTip {
             bar: None,
             hits: vec![],
             has_lsp: !md_text.trim().is_empty(),
+            fade: Default::default(),
         };
         t.compose();
         t

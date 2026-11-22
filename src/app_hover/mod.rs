@@ -244,6 +244,8 @@ pub struct HoverTip {
     pub bar: Option<VBar>,
     pub hits: Vec<(Rect, Hit)>,
     pub has_lsp: bool,
+    /// Fade-in of the card (starts when the tip is created).
+    pub fade: crate::ui_popup::PopupFade,
 }
 
 type LayKey = (i32, u32, u32, u32, u64, u32);

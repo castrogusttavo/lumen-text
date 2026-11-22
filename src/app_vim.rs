@@ -272,9 +272,10 @@ impl App {
         let y = r.y + (r.h - 18) / 2;
         let lw = self.tx.ui_width(&label, true);
         let pill = Rect::new(x + 2, r.y + 4, lw + 18, r.h - 8);
-        let tint = if v.mode == Mode::Insert { c.accent } else { c.tab_inactive_fg };
+        let (tint, ink) =
+            if v.mode == Mode::Insert { (c.accent, c.accent_text) } else { (c.tab_inactive_fg, c.status_fg) };
         cv.fill_round(pill, (pill.h / 2).min(10), tint.with_alpha(0x38));
-        self.tx.draw_ui(cv, pill.x + 9, y, &label, c.accent_text, pill, true);
+        self.tx.draw_ui(cv, pill.x + 9, y, &label, ink, pill, true);
         pill.right() + 8
     }
 }

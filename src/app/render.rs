@@ -200,8 +200,8 @@ impl App {
             cv.fill_round(r, rad, f.with_alpha(if self.theme.background.luminance() < 0.5 { 0x16 } else { 0x12 }));
         }
         self.draw_find(cv);
-        self.draw_completion(cv);
-        self.draw_hover(cv);
+        busy |= self.draw_completion(cv, dt);
+        busy |= self.draw_hover(cv, dt);
         self.draw_update_card(cv);
         self.draw_overlay(cv);
         busy |= self.draw_onboarding(cv, dt);
