@@ -176,7 +176,7 @@ fn the_sidebar_slides_shut_with_round_corners_and_without_hit_areas() {
     let c = app.theme.chrome;
     // The canvas as the softbuffer pixel format holds it (the margin beside the editor card carries
     // its shadow, so it is not a reference).
-    let canvas_px = u32::from(c.canvas.0) << 16 | u32::from(c.canvas.1) << 8 | u32::from(c.canvas.2);
+    let canvas_px = (u32::from(c.canvas.0) << 16) | (u32::from(c.canvas.1) << 8) | u32::from(c.canvas.2);
     app.sidebar_open = false;
     app.layout.shell.live = true;
     let rail_w = app.rail_w();
