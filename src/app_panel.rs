@@ -12,6 +12,11 @@ use std::time::Instant;
 use winit::event::MouseScrollDelta;
 
 pub const PANEL_HEADER: i32 = 30;
+/// Half-width (px) of the grab band around the panel's top edge.
+pub const EDGE_GRAB: i32 = 4;
+/// Shortest height the panel can be dragged to, and the height it starts with.
+pub const PANEL_MIN_H: i32 = 120;
+pub const PANEL_H: i32 = 260;
 const MAX_LINES: usize = 6000;
 
 /// Commands whose shortcuts keep working while the terminal has the focus (toggle the panel or
@@ -45,6 +50,7 @@ pub fn term_global(
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PanelTab {
     Output,
+    Problems,
     Terminal,
     Debug,
     Tests,
@@ -52,7 +58,50 @@ pub enum PanelTab {
     Docker,
 }
 
+/// Resize state of the panel's top edge (the cursors agent reads `panel_on_edge` / `panel_resizing`).
+#[derive(Default)]
+pub struct PanelEdge {
+    /// Dragging: pointer offset from the edge at the press.
+    pub grab: Option<f64>,
+    /// Pointer over the edge (for the highlight).
+    pub hot: bool,
+    /// Last press on the edge (double click resets the height).
+    pub last_press: Option<Instant>,
+}
+
+/// File that remembers the panel height between runs (next to `config.json`).
+fn height_file() -> Option<std::path::PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    Some(crate::paths::config_home()?.join("lumen-text").join("panel.json"))
+}
+
+/// The remembered panel height, clamped to a sane range.
+fn load_height() -> i32 {
+    let saved = height_file()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v["height"].as_i64());
+    clamp_height(saved.unwrap_or(PANEL_H as i64) as i32, 4000)
+}
+
+fn save_height(h: i32) {
+    if let Some(p) = height_file() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, serde_json::json!({ "height": h }).to_string());
+    }
+}
+
+/// The panel height for a dragged edge, between the minimum and `max`.
+pub fn clamp_height(h: i32, max: i32) -> i32 {
+    h.clamp(PANEL_MIN_H, max.max(PANEL_MIN_H))
+}
+
 pub struct Panel {
+    pub edge: PanelEdge,
     pub tab: PanelTab,
     pub open: bool,
     pub height: i32,
@@ -76,9 +125,10 @@ pub struct Panel {
 impl Panel {
     pub fn new() -> Self {
         Self {
+            edge: PanelEdge::default(),
             tab: PanelTab::Output,
             open: false,
-            height: 260,
+            height: load_height(),
             title: String::new(),
             lines: Vec::new(),
             plain: Vec::new(),
@@ -257,8 +307,81 @@ impl App {
 
     // ───────────── input ─────────────
 
+    // ───────────── resize edge ─────────────
+
+    /// The grab band around the panel's top edge (None when the panel is closed).
+    fn panel_edge_rect(&self) -> Option<Rect> {
+        let r = self.layout.panel;
+        (self.panel.open && r.h > 0 && !self.panel_animating())
+            .then(|| Rect::new(r.x, r.y - EDGE_GRAB, r.w, 2 * EDGE_GRAB + 1))
+    }
+
+    /// Is the pointer on the resize edge? (row-resize cursor)
+    pub fn panel_on_edge(&self, x: f64, y: f64) -> bool {
+        self.overlay.is_none() && self.panel_edge_rect().is_some_and(|e| e.contains(x, y))
+    }
+
+    /// Is the edge being dragged?
+    pub fn panel_resizing(&self) -> bool {
+        self.panel.edge.grab.is_some()
+    }
+
+    /// Press on the edge starts a resize; a double click restores the default height.
+    pub fn panel_edge_press(&mut self, x: f64, y: f64) -> bool {
+        if !self.panel_on_edge(x, y) {
+            return false;
+        }
+        let now = Instant::now();
+        self.panel.motion.maximized = false;
+        if self.panel.edge.last_press.take().is_some_and(|t| now.duration_since(t).as_millis() < 400) {
+            self.panel.height = PANEL_H;
+            save_height(PANEL_H);
+            return true;
+        }
+        self.panel.edge.last_press = Some(now);
+        self.panel.edge.grab = Some(y - self.layout.panel.y as f64);
+        true
+    }
+
+    /// Pointer moved: follows an edge drag (true = consumed) and tracks the hover highlight.
+    pub fn panel_edge_move(&mut self) -> bool {
+        let (x, y) = self.mouse;
+        if let Some(grab) = self.panel.edge.grab {
+            let bottom = self.layout.panel.bottom();
+            let want = bottom - (y - grab).round() as i32;
+            let h = clamp_height(want, self.size.1 as i32 / 2);
+            if h != self.panel.height {
+                self.panel.height = h;
+                self.request_redraw();
+            }
+            return true;
+        }
+        let hot = self.panel_on_edge(x, y);
+        if hot != self.panel.edge.hot {
+            self.panel.edge.hot = hot;
+            self.request_redraw();
+        }
+        false
+    }
+
+    /// Button released: ends an edge drag and remembers the height.
+    pub fn panel_edge_release(&mut self) {
+        if self.panel.edge.grab.take().is_some() {
+            save_height(self.panel.height);
+            self.request_redraw();
+        }
+    }
+
+    /// Per frame (from `panel_motion_step`): true while the panel's own animations need frames.
+    pub fn panel_extra_step(&mut self) -> bool {
+        self.problems_frame()
+    }
+
     pub fn panel_mouse(&mut self, x: f64, y: f64) -> bool {
         let r = self.layout.panel;
+        if self.panel_edge_press(x, y) {
+            return true;
+        }
         if !self.panel.open || !r.contains(x, y) {
             return false;
         }
@@ -272,6 +395,7 @@ impl App {
             }
             let hit = self.layout.panel_tabs.iter().find(|(rr, _)| rr.contains(x, y)).map(|(_, t)| *t);
             match hit {
+                Some(PanelTab::Problems) => self.open_problems_tab(),
                 Some(PanelTab::Debug) => {
                     self.panel.tab = PanelTab::Debug;
                     self.focus = Focus::Editor;
@@ -292,6 +416,11 @@ impl App {
                 }
                 None => {}
             }
+            return true;
+        }
+        if self.panel.tab == PanelTab::Problems {
+            self.focus = Focus::Editor;
+            self.problems_tab_click(x, y);
             return true;
         }
         if self.panel.tab == PanelTab::Debug {
@@ -351,6 +480,10 @@ impl App {
             self.docker_wheel(delta);
             return true;
         }
+        if self.panel.tab == PanelTab::Problems {
+            self.problems_tab_wheel(delta);
+            return true;
+        }
         let view = r.h - PANEL_HEADER;
         let max = self.panel.max_scroll(view);
         self.panel_wheel_apply(delta, max);
@@ -358,6 +491,16 @@ impl App {
     }
 
     // ───────────── drawing ─────────────
+
+    /// The top edge lights up in the accent color under the pointer and while dragging.
+    fn draw_panel_edge(&mut self, cv: &mut Canvas, r: Rect) {
+        let dragging = self.panel_resizing();
+        let hot = self.panel_on_edge(self.mouse.0, self.mouse.1);
+        if dragging || hot {
+            let a = if dragging { 0xc0 } else { 0x70 };
+            cv.fill(Rect::new(r.x, r.y, r.w, 2), self.theme.chrome.accent.with_alpha(a));
+        }
+    }
 
     pub fn draw_panel(&mut self, cv: &mut Canvas) {
         let r = self.layout.panel;
@@ -376,6 +519,7 @@ impl App {
         let body = Rect::new(r.x, r.y + PANEL_HEADER + 1, r.w, (r.h - PANEL_HEADER - 1).max(0));
         let head = Rect::new(r.x, r.y + 1, r.w, PANEL_HEADER - 1);
         let ty = r.y + (PANEL_HEADER - 18) / 2 + 1;
+        self.draw_panel_edge(cv, r);
         let x = self.draw_panel_tabs(cv, r, head, ty);
         let hint_x = self.draw_panel_toolbar(cv, r);
         if !crate::app_panelui::body_fits(body) {
@@ -385,6 +529,9 @@ impl App {
         if self.panel.tab == PanelTab::Terminal {
             self.draw_term_strip(cv, Rect::new(x, r.y, hint_x - 12 - x, PANEL_HEADER));
             return self.draw_terminal(cv, body);
+        }
+        if self.panel.tab == PanelTab::Problems {
+            return self.draw_problems_tab(cv, body);
         }
         if self.panel.tab == PanelTab::Debug {
             return self.draw_debug(cv, body);

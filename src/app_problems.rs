@@ -33,7 +33,7 @@ pub const SCOPE_LABELS: [&str; 2] = ["Open files", "Whole project"];
 
 /// One in-flight `workspace/diagnostic` request.
 #[derive(Debug, Clone)]
-struct Inflight {
+pub(crate) struct Inflight {
     server: String,
     root: PathBuf,
     id: i64,
@@ -43,13 +43,15 @@ struct Inflight {
 /// Workspace pulls and the panel's refresh bookkeeping (kept in `LspX`).
 #[derive(Default)]
 pub struct WsState {
-    inflight: Vec<Inflight>,
+    pub(crate) inflight: Vec<Inflight>,
     /// Servers already asked while the panel shows the whole project (asked again after a save).
-    asked: HashSet<(String, PathBuf)>,
+    pub(crate) asked: HashSet<(String, PathBuf)>,
     serial: u64,
     /// Signature the open panel's rows were built from, and when.
-    shown: Option<u64>,
-    built_at: Option<Instant>,
+    pub(crate) shown: Option<u64>,
+    pub(crate) built_at: Option<Instant>,
+    /// State of the bottom panel's Problems tab (see `app_probtab`).
+    pub tab: crate::app_probtab::ProbTab,
 }
 
 /// Does a server offer workspace pull diagnostics?
@@ -64,7 +66,7 @@ fn fill_source(diags: &mut [PDiag], server: &str) {
     }
 }
 
-fn sev_icon(s: u8) -> &'static str {
+pub(crate) fn sev_icon(s: u8) -> &'static str {
     match s {
         1 => "\u{f057}",
         2 => "\u{f071}",
@@ -78,12 +80,26 @@ impl App {
         self.config.problems_scope == "project"
     }
 
-    fn problems_panel_open(&self) -> bool {
+    fn problems_overlay_open(&self) -> bool {
         matches!(&self.overlay, Overlay::Picker(p) if p.kind == PickKind::Problems)
     }
 
-    /// Palette / status bar: open the panel in the configured scope.
+    /// Is a Problems view (the bottom panel's tab or the picker) showing?
+    pub(crate) fn problems_panel_open(&self) -> bool {
+        self.problems_overlay_open() || self.problems_tab_shown()
+    }
+
+    /// Palette / status bar / editor chip: show the Problems tab of the bottom panel in the
+    /// configured scope. Zen mode hides the panel, so the picker keeps that case working.
     pub fn open_problems(&mut self) {
+        if self.zen.active() {
+            return self.open_problems_picker();
+        }
+        self.open_problems_tab();
+    }
+
+    /// The classic floating list (also the fallback when the tab cannot be shown).
+    pub fn open_problems_picker(&mut self) {
         let project = self.problems_project();
         self.lspx.ws.asked.clear();
         if project {
@@ -119,6 +135,12 @@ impl App {
     /// Rows of the panel for a scope: file headers ("path — 2 errors, 1 warning", opens the
     /// file) followed by their problems (open the location). Returns the panel title too.
     pub(crate) fn problem_items(&self, project: bool) -> (String, Vec<Item>) {
+        let groups = self.problem_groups(project);
+        self.problem_items_of(project, &groups)
+    }
+
+    /// The problems of a scope, grouped by file (shared by the picker and the Problems tab).
+    pub(crate) fn problem_groups(&self, project: bool) -> Vec<problems::FileGroup> {
         let mut rows: Vec<(PathBuf, Row)> = Vec::new();
         let mut open: HashSet<PathBuf> = HashSet::new();
         for d in &self.docs {
@@ -162,11 +184,14 @@ impl App {
                 }
             }
         }
-        let groups = problems::group(rows);
+        problems::group(rows)
+    }
+
+    fn problem_items_of(&self, project: bool, groups: &[problems::FileGroup]) -> (String, Vec<Item>) {
         let (mut errors, mut warnings, mut total) = (0, 0, 0);
         let mut items = Vec::new();
         let mut shown = 0;
-        for g in &groups {
+        for g in groups {
             errors += g.errors;
             warnings += g.warnings;
             total += g.rows.len();
@@ -211,7 +236,7 @@ impl App {
     }
 
     /// What the open panel's rows depend on (a change rebuilds them).
-    fn problems_signature(&self) -> u64 {
+    pub(crate) fn problems_signature(&self) -> u64 {
         let diags: usize = self.docs.iter().map(|d| d.diags.len()).sum();
         let mut h = self.lspx.problems.generation.wrapping_mul(0x9e37_79b9_7f4a_7c15);
         h ^= (diags as u64).wrapping_mul(0x1000_0000_01b3);
@@ -221,16 +246,21 @@ impl App {
     }
 
     /// Rebuild the open panel's rows, keeping the filter text and the selected row.
-    fn problems_rebuild(&mut self) {
+    pub(crate) fn problems_rebuild(&mut self) {
         if !self.problems_panel_open() {
             return;
         }
-        let (title, items) = self.problem_items(self.problems_project());
-        if let Overlay::Picker(p) = &mut self.overlay {
-            // `refilter` keeps the selected row (clamped) and the filter text.
-            p.title = title;
-            p.items = items;
-            p.refilter();
+        if self.problems_tab_shown() {
+            self.problems_tab_refresh();
+        }
+        if self.problems_overlay_open() {
+            let (title, items) = self.problem_items(self.problems_project());
+            if let Overlay::Picker(p) = &mut self.overlay {
+                // `refilter` keeps the selected row (clamped) and the filter text.
+                p.title = title;
+                p.items = items;
+                p.refilter();
+            }
         }
         self.lspx.ws.shown = Some(self.problems_signature());
         self.lspx.ws.built_at = Some(Instant::now());
@@ -266,7 +296,7 @@ impl App {
     // ───────────── workspace pull ─────────────
 
     /// Send `workspace/diagnostic` to every ready server that supports it and was not asked yet.
-    fn ws_pull_new(&mut self) {
+    pub(crate) fn ws_pull_new(&mut self) {
         for li in 0..self.lsps.len() {
             let l = &self.lsps[li];
             if !l.ready || l.shutting_down || !supports_workspace_pull(&l.caps) {
@@ -295,7 +325,7 @@ impl App {
     }
 
     /// Cancel every in-flight workspace pull (scope switched, panel closed).
-    fn ws_cancel_all(&mut self) {
+    pub(crate) fn ws_cancel_all(&mut self) {
         for f in std::mem::take(&mut self.lspx.ws.inflight) {
             if let Some(l) = self.lsps.iter_mut().find(|l| l.name == f.server && l.root == f.root) {
                 l.cancel(f.id);
@@ -516,7 +546,7 @@ mod tests {
             &json!([{"range": {"start": {"line": 4, "character": 1}, "end": {"line": 4, "character": 2}}, "severity": 1, "message": "closed error"}]),
         );
         app.config.problems_scope = "open_files".into();
-        app.open_problems();
+        app.open_problems_picker();
         let r = rows(&app);
         assert_eq!(r[0], ("b.txt".to_string(), "1 error, 1 warning".to_string()), "{r:?}");
         assert!(r[1].0.ends_with("error b") && r[1].1 == "2:1", "{r:?}");
@@ -567,7 +597,7 @@ mod tests {
         );
         assert!(app.docs[i].diags.is_empty());
         app.config.problems_scope = "project".into();
-        app.open_problems();
+        app.open_problems_picker();
         assert!(rows(&app).iter().any(|r| r.0.ends_with("fixme from a") && r.1.starts_with("2:")), "{:?}", rows(&app));
         // The server stops: what it said goes with it.
         app.overlay = Overlay::None;
@@ -591,7 +621,7 @@ mod tests {
         let _i = open(&mut app, &dir.join("x.fk"), "open file\n");
         assert!(pump(&mut app, 8000, |a| a.lsps.first().is_some_and(|l| l.ready)), "server never ready");
         app.config.problems_scope = "project".into();
-        app.open_problems();
+        app.open_problems_picker();
         // File headers of files nobody opened.
         let has = |a: &App, m: &str| rows(a).iter().any(|r| r.0 == m);
         assert!(
@@ -619,7 +649,7 @@ mod tests {
         app.overlay = Overlay::None;
         app.lsp_tick(Instant::now(), &mut |_| {});
         std::fs::write(dir.join("hang"), "").unwrap();
-        app.open_problems();
+        app.open_problems_picker();
         assert_eq!(app.lspx.ws.inflight.len(), 1);
         app.set_problems_scope(false);
         assert!(app.lspx.ws.inflight.is_empty());
