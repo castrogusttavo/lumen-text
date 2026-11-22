@@ -984,3 +984,126 @@ fn record_mouse_combos() {
     let mut m = modal();
     assert_eq!(m.record_mouse(false, false, false, "middle"), None);
 }
+
+/// Draw `m` once into a scratch window.
+fn frame(m: &mut Modal) {
+    let (w, h) = (1000i32, 700i32);
+    let mut px = vec![BG; (w * h) as usize];
+    let theme = test_theme();
+    let mut tx = TextCtx::new(None);
+    let mut cv = Canvas { px: &mut px, w, h };
+    m.draw(&mut cv, &mut tx, &theme, Rect::new(0, 0, w, h));
+}
+
+#[test]
+fn fractional_number_rows_are_sliders_set_by_click_and_drag() {
+    let mut m = modal();
+    frame(&mut m);
+    let (x, y) = center(hit_rect(&m, Hit::Section(3)));
+    m.mouse_down(x, y);
+    m.settings.scroll = m.settings.max_scroll();
+    frame(&mut m);
+    let d = def_idx(&m.settings, "scroll_speed");
+    let r = hit_rect(&m, Hit::Slide(d));
+    let cy = (r.y + r.h / 2) as f64;
+    let ev = m.mouse_down((r.right() - 1) as f64, cy);
+    assert_eq!(ev, Event::Setting { key: "scroll_speed".into(), value: json!(5) });
+    assert_eq!(m.mo.drag, Some(d));
+    // Dragging to the left end follows the pointer, and the cursor is a grab while it lasts.
+    let (ev, redraw) = m.pointer_move((r.x + 8) as f64, cy);
+    assert!(redraw);
+    assert_eq!(ev, Event::Setting { key: "scroll_speed".into(), value: json!(0.1) });
+    assert_eq!(m.cursor_at(10.0, 10.0), winit::window::CursorIcon::Grabbing);
+    m.pointer_up();
+    assert_eq!(m.mo.drag, None);
+    let (ev, _) = m.pointer_move((r.x + 8) as f64, cy);
+    assert_eq!(ev, Event::None, "after the release the pointer only hovers");
+    // Whole-number rows keep the stepper.
+    let (x, y) = center(hit_rect(&m, Hit::Section(4)));
+    m.mouse_down(x, y);
+    frame(&mut m);
+    let d = def_idx(&m.settings, "buffer_font_size");
+    assert!(m.hits.iter().any(|(_, h)| *h == Hit::Step(d, 1)));
+    assert!(!m.hits.iter().any(|(_, h)| *h == Hit::Slide(d)));
+}
+
+#[test]
+fn hover_picks_the_cursor_and_a_tooltip_waits_for_its_delay() {
+    let mut m = modal();
+    frame(&mut m);
+    let d = def_idx(&m.settings, "format_on_save");
+    let (x, y) = center(hit_rect(&m, Hit::Toggle(d)));
+    let (_, redraw) = m.pointer_move(x, y);
+    assert!(redraw, "hover changes what is drawn");
+    assert_eq!(m.cursor_at(x, y), winit::window::CursorIcon::Pointer);
+    assert!(!m.pointer_move(x, y).1, "no change, no redraw");
+    let (sx, sy) = center(hit_rect(&m, Hit::Search));
+    assert_eq!(m.cursor_at(sx, sy), winit::window::CursorIcon::Text);
+    assert_eq!(m.cursor_at(1.0, 1.0), winit::window::CursorIcon::Default, "outside the modal");
+    // Close shows "Close Esc" after the delay; until then the app keeps redrawing.
+    let (cx, cy) = center(hit_rect(&m, Hit::Close));
+    m.pointer_move(cx, cy);
+    frame(&mut m);
+    assert!(m.animating(), "tooltip delay pending");
+    m.mo.hover_t = TIP_DELAY + 1.0;
+    frame(&mut m);
+    assert!(!m.animating(), "tooltip visible, nothing moves");
+    assert_eq!(tip_text(&Hit::Close, &m.settings).map(|t| t.0), Some("Close".to_string()));
+}
+
+#[test]
+fn switches_glide_unless_motion_is_reduced() {
+    let mut m = modal();
+    frame(&mut m);
+    assert!(!m.animating(), "everything starts at rest");
+    let d = def_idx(&m.settings, "format_on_save");
+    m.settings.set_bool(d, true);
+    frame(&mut m);
+    assert!(m.animating(), "the switch slides to its new position");
+
+    let mut p = page_with(json!({ "reduce_motion": true }));
+    let d = def_idx(&p, "format_on_save");
+    p.set_bool(d, false);
+    let mut m = Modal::new(p, KeybindsPage::new(commands(), HashMap::new()), Page::Settings);
+    frame(&mut m);
+    m.settings.set_bool(d, true);
+    frame(&mut m);
+    assert!(!m.animating(), "reduce motion: the switch jumps");
+}
+
+#[test]
+fn an_empty_search_offers_to_clear_itself() {
+    let mut m = modal();
+    typing(&mut m, "zzzzqq");
+    frame(&mut m);
+    assert!(m.settings.visible().is_empty());
+    let (x, y) = center(hit_rect(&m, Hit::ClearSearch));
+    assert_eq!(m.mouse_down(x, y), Event::None);
+    assert!(m.settings.search.text.is_empty());
+    assert!(!m.settings.visible().is_empty());
+    // The shortcuts page has the same way out.
+    m.switch_page();
+    typing(&mut m, "zzzzqq");
+    frame(&mut m);
+    assert!(m.keybinds.rows().is_empty());
+    let (x, y) = center(hit_rect(&m, Hit::KbClearFilter));
+    m.mouse_down(x, y);
+    assert!(m.keybinds.filter.text.is_empty());
+    assert!(!m.keybinds.rows().is_empty());
+}
+
+#[test]
+fn a_conflict_is_flagged_on_both_rows_and_recording_pulses() {
+    let mut m = modal();
+    m.switch_page();
+    frame(&mut m);
+    let row = hit_rect(&m, Hit::KbRow(2));
+    m.mouse_down((row.x + 20) as f64, (row.y + 5) as f64);
+    assert!(m.keybinds.is_recording());
+    frame(&mut m);
+    assert!(m.animating(), "the recording ring pulses");
+    m.key(&ch("p"), None, true, false, false);
+    assert!(m.keybinds.pending_conflict().is_some());
+    frame(&mut m);
+    assert!(!m.animating(), "the conflict question is static");
+}

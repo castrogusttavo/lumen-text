@@ -208,6 +208,7 @@ impl App {
         self.draw_toast(cv);
         self.draw_toasts(cv);
         crate::perf::lap!("overlays");
+        busy |= self.settings_busy();
         busy | self.scroll_activity() | self.layout.shell.moving() | crate::termfx::take_moving()
     }
 

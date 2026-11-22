@@ -333,6 +333,9 @@ impl App {
                 CursorIcon::Default
             };
         }
+        if let Some(icon) = self.settings_cursor() {
+            return icon;
+        }
         if !self.overlay.is_none() {
             return if l.overlay_rows.iter().any(|(r, _)| r.contains(x, y)) {
                 CursorIcon::Pointer
@@ -603,6 +606,9 @@ impl App {
         }
         if self.regions_drag() {
             return self.request_redraw();
+        }
+        if self.settings_pointer_move() {
+            return;
         }
         if self.diff_drag_move(x, y) {
             return self.request_redraw();

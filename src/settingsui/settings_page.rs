@@ -205,6 +205,17 @@ impl SettingsPage {
         }
     }
 
+    /// The default value of a row as a short caption ("On", "Merge", "1.25").
+    pub(super) fn default_label(&self, def: usize) -> String {
+        match self.defaults.get(self.defs[def].key) {
+            Some(Value::Bool(b)) => String::from(if *b { "On" } else { "Off" }),
+            Some(Value::String(s)) if s.is_empty() => "empty".to_string(),
+            Some(Value::String(s)) => choice_label(s),
+            Some(Value::Number(n)) => fmt_num(n.as_f64().unwrap_or(0.0)),
+            _ => "none".to_string(),
+        }
+    }
+
     pub(super) fn explicit(&self, def: usize) -> bool {
         self.values.contains_key(self.defs[def].key)
     }

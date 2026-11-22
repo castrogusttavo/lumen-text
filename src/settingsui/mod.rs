@@ -23,6 +23,7 @@ mod draw;
 mod keybinds;
 mod modal;
 mod model;
+mod motion;
 mod settings_page;
 #[cfg(test)]
 mod tests;
@@ -31,6 +32,7 @@ use draw::*;
 pub use keybinds::*;
 pub use modal::*;
 pub use model::*;
+use motion::*;
 pub use settings_page::*;
 
 // ───────────────────────────── events ─────────────────────────────

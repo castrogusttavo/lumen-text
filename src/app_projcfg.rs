@@ -48,6 +48,40 @@ pub enum ProjPick {
 
 const THEME_KEYS: &[&str] = &["theme", "theme_light", "theme_dark", "appearance"];
 
+/// Pointer, cursor and animation plumbing of the settings modal.
+impl App {
+    /// True while the modal still animates (a sliding indicator, a switch, a tooltip delay).
+    pub(crate) fn settings_busy(&self) -> bool {
+        matches!(&self.overlay, Overlay::Settings(m) if m.animating())
+    }
+
+    /// Mouse cursor over the modal; `None` when it is not open.
+    pub(crate) fn settings_cursor(&self) -> Option<winit::window::CursorIcon> {
+        let Overlay::Settings(m) = &self.overlay else { return None };
+        Some(m.cursor_at(self.mouse.0, self.mouse.1))
+    }
+
+    /// Hover and slider drags. True when the modal is open (it owns the pointer then).
+    pub(crate) fn settings_pointer_move(&mut self) -> bool {
+        let (x, y) = self.mouse;
+        let Overlay::Settings(m) = &mut self.overlay else { return false };
+        let (ev, redraw) = m.pointer_move(x, y);
+        if ev != crate::settingsui::Event::None {
+            self.apply_settings_event(ev);
+        } else if redraw {
+            self.request_redraw();
+        }
+        true
+    }
+
+    /// The mouse button went up: a slider drag ends.
+    pub(crate) fn settings_pointer_up(&mut self) {
+        if let Overlay::Settings(m) = &mut self.overlay {
+            m.pointer_up();
+        }
+    }
+}
+
 impl App {
     fn proj_state_file(&self, name: &str) -> Option<PathBuf> {
         match &self.proj.state_dir {
@@ -302,6 +336,7 @@ impl App {
         // Without project settings the User side keeps the key hints.
         let footer = (scope == Scope::Project || st.project_active()).then_some(footer);
         let Overlay::Settings(m) = &mut self.overlay else { return };
+        m.set_theme_dir(self.assets.join("themes"));
         m.scope = Some(scope);
         let mut values = m.settings.values();
         if let (Some(dst), Some(src)) = (values.as_object_mut(), shown.as_object()) {
