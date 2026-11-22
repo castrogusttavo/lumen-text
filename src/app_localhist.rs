@@ -78,6 +78,10 @@ impl App {
                 format!("no local history for {name} (setting local_history is off)")
             });
         }
+        // A timeline: the snapshots are grouped by how long ago they were taken.
+        let now = crate::paths::now_unix();
+        let by: Vec<String> =
+            entries.iter().map(|e| crate::app_overlay::age_bucket(now - e.secs()).to_string()).collect();
         let items: Vec<Item> = entries
             .into_iter()
             .map(|e| Item {
@@ -88,6 +92,7 @@ impl App {
             .collect();
         let title = format!("Local history — {}", self.rel(&canon));
         self.open_locations(&title, items);
+        self.set_picker_groups(by);
     }
 
     /// "File: Local history (deleted files)": files whose path is gone but whose history is kept.

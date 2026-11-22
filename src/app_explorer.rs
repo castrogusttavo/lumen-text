@@ -7,6 +7,8 @@
 use crate::{
     app::{App, Focus, ROW_H, SidebarMode, TAB_H},
     app_ctxmenu::paste_one,
+    app_overlay::PromptKind,
+    ds,
     tree::{self, Drag},
     ui::{Canvas, Rect},
 };
@@ -29,7 +31,39 @@ pub fn describe(paths: &[PathBuf]) -> String {
     }
 }
 
+/// Row slot and depth of the inline name field of an explorer prompt: over the row being renamed,
+/// or just below the folder (at the depth of its children) that gets the new entry.
+pub fn inline_slot_of(rows: &[tree::Row], kind: &PromptKind) -> Option<(usize, usize)> {
+    match kind {
+        PromptKind::RenamePath { from } => rows.iter().position(|r| &r.path == from).map(|k| (k, rows[k].depth)),
+        PromptKind::NewFile { dir } | PromptKind::NewDir { dir } => match rows.iter().position(|r| &r.path == dir) {
+            Some(k) => Some((k + 1, rows[k].depth + 1)),
+            None => Some((0, 0)),
+        },
+        _ => None,
+    }
+}
+
 impl App {
+    /// Where the inline name field of the open prompt goes in the explorer: its rect and the x of
+    /// the name text. None when the prompt is not an explorer one, or its row is not on screen
+    /// (then the prompt keeps its modal panel).
+    pub fn inline_field_rect(&self) -> Option<(Rect, i32)> {
+        let crate::app_overlay::Overlay::Prompt(p) = &self.overlay else { return None };
+        if !self.files_sidebar() || self.layout.sidebar.w <= 0 {
+            return None;
+        }
+        let (slot, depth) = inline_slot_of(&self.tree.rows, &p.kind)?;
+        let side = self.layout.sidebar;
+        let top = side.y + TAB_H;
+        let y = top + slot as i32 * ROW_H - self.tree.scroll as i32;
+        if y < top || y + ROW_H > side.bottom() {
+            return None;
+        }
+        let r = Rect::new(side.x + ds::S2, y + 1, side.w - 17, ROW_H - 2);
+        Some((r, r.x + 18 + depth as i32 * 14 + 38 - ds::S2))
+    }
+
     fn files_sidebar(&self) -> bool {
         self.sidebar_open && self.sidebar_mode == SidebarMode::Files
     }
@@ -334,5 +368,38 @@ mod tests {
     fn describe_names_one_or_counts_many() {
         assert_eq!(describe(&[PathBuf::from("/p/a.ts")]), "a.ts");
         assert_eq!(describe(&[PathBuf::from("/p/a.ts"), PathBuf::from("/p/b.ts")]), "2 items");
+    }
+}
+
+#[cfg(test)]
+mod inline_tests {
+    use super::*;
+
+    fn row(path: &str, depth: usize, is_dir: bool) -> tree::Row {
+        tree::Row {
+            path: PathBuf::from(path),
+            name: name_of(Path::new(path)),
+            depth,
+            is_dir,
+            expanded: is_dir,
+            ignored: false,
+        }
+    }
+
+    #[test]
+    fn rename_sits_over_its_row() {
+        let rows = [row("/p", 0, true), row("/p/src", 1, true), row("/p/src/a.rs", 2, false)];
+        let kind = PromptKind::RenamePath { from: PathBuf::from("/p/src/a.rs") };
+        assert_eq!(inline_slot_of(&rows, &kind), Some((2, 2)));
+    }
+
+    #[test]
+    fn new_entry_sits_below_its_folder_one_level_deeper() {
+        let rows = [row("/p", 0, true), row("/p/src", 1, true), row("/p/src/a.rs", 2, false)];
+        let kind = PromptKind::NewFile { dir: PathBuf::from("/p/src") };
+        assert_eq!(inline_slot_of(&rows, &kind), Some((2, 2)));
+        let kind = PromptKind::NewDir { dir: PathBuf::from("/elsewhere") };
+        assert_eq!(inline_slot_of(&rows, &kind), Some((0, 0)));
+        assert_eq!(inline_slot_of(&rows, &PromptKind::GotoLine), None);
     }
 }
