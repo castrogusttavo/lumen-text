@@ -33,6 +33,8 @@ pub fn surface_id(o: &Overlay) -> u8 {
     match o {
         Overlay::None => 0,
         Overlay::Picker(p) => 16 + p.kind as u8,
+        // Explorer name fields (rename, new file / folder) sit in the tree: no dim, no panel.
+        Overlay::Prompt(p) if p.is_inline() => 8,
         Overlay::Prompt(_) => 2,
         Overlay::Settings(_) => 3,
         Overlay::TopMenu(_) => 4,
@@ -175,7 +177,9 @@ impl App {
                 self.modal.glide_to(row);
             }
         }
-        busy | self.modal.sel.moving()
+        // A refused explorer name shakes its field for a moment.
+        let shaking = matches!(&self.overlay, Overlay::Prompt(p) if p.shaking());
+        busy | self.modal.sel.moving() | shaking
     }
 
     /// Dim the window behind a modal (also while the dim fades out after it closed).
@@ -190,7 +194,7 @@ impl App {
 
     /// Start of a panel entrance: the pixels of the band the modals live in, while it is moving.
     pub fn reveal_begin(&self, cv: &Canvas) -> Option<Snap> {
-        if self.modal.progress() >= 0.999 || matches!(surface_id(&self.overlay), 0 | 4 | 5) {
+        if self.modal.progress() >= 0.999 || matches!(surface_id(&self.overlay), 0 | 4 | 5 | 8) {
             return None;
         }
         let (sw, sh) = (self.size.0 as i32, self.size.1 as i32);

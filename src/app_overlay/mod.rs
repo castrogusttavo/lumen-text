@@ -19,12 +19,14 @@ use winit::{
 mod commands;
 mod draw;
 pub(crate) mod find;
+mod groups;
 mod input;
 mod open;
 pub mod preplace;
 mod run;
 
 pub use commands::*;
+pub use groups::age_bucket;
 
 #[derive(Clone)]
 pub enum Action {
@@ -115,6 +117,9 @@ pub struct Picker {
     pub goto: Option<Box<crate::app_goto::GotoState>>,
     /// Go to picker: where the file rows come from (`items` then holds only the rows shown).
     pub files: Option<Box<crate::app_goto::FileSource>>,
+    /// Group of every item (parallel to `items`) for the headers of an unfiltered list; pickers
+    /// without it derive theirs (see `groups`).
+    pub group_by: Option<Vec<String>>,
 }
 
 pub enum PromptKind {
@@ -187,14 +192,39 @@ pub struct Prompt {
     /// New file: icon of the typed name, resolved once typing pauses (`icon_due`).
     pub icon: Option<String>,
     pub icon_due: Option<Instant>,
+    /// Inline name field (explorer rename / new file / new folder): why the name was refused, and
+    /// when the refusal started (the field shakes for [`SHAKE`]).
+    pub error: Option<String>,
+    pub shake: Option<Instant>,
 }
+
+/// How long a refused name shakes the inline field.
+pub const SHAKE: std::time::Duration = std::time::Duration::from_millis(320);
 
 /// How long the new-file prompt waits after the last keystroke before resolving the type icon.
 pub const PROMPT_ICON_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
 
 impl Prompt {
     pub fn new(kind: PromptKind, title: String, field: TextField) -> Prompt {
-        Prompt { kind, title, field, icon: None, icon_due: None }
+        Prompt { kind, title, field, icon: None, icon_due: None, error: None, shake: None }
+    }
+
+    /// Is the field still shaking after a refused name?
+    pub fn shaking(&self) -> bool {
+        self.shake.is_some_and(|t| t.elapsed() < SHAKE)
+    }
+
+    /// Horizontal offset of the shaking field in logical px (0 when settled or motion is reduced).
+    pub fn shake_dx(&self) -> i32 {
+        match self.shake {
+            Some(t) if !crate::motion::reduced() => shake_offset(t.elapsed().as_secs_f32() / SHAKE.as_secs_f32()),
+            _ => 0,
+        }
+    }
+
+    /// Explorer name prompts (rename, new file, new folder): drawn as a field in the tree.
+    pub fn is_inline(&self) -> bool {
+        matches!(self.kind, PromptKind::NewFile { .. } | PromptKind::NewDir { .. } | PromptKind::RenamePath { .. })
     }
 
     /// Icon shown in the input: a folder for "New Folder", the type of the typed name for
@@ -213,6 +243,34 @@ impl Prompt {
     pub fn icon_name(&self) -> &str {
         let t = self.field.text.trim();
         t.rsplit(['/', '\\']).next().unwrap_or(t)
+    }
+}
+
+/// Offset of a shake at progress `k` (0..1): three damped swings of at most 6 px.
+pub fn shake_offset(k: f32) -> i32 {
+    if !(0.0..1.0).contains(&k) {
+        return 0;
+    }
+    ((k * std::f32::consts::TAU * 3.0).sin() * 6.0 * (1.0 - k)).round() as i32
+}
+
+/// Why `text` cannot be the name asked by an explorer prompt (None = fine). Looks at the disk only
+/// for names that would collide.
+pub fn name_error(kind: &PromptKind, text: &str) -> Option<&'static str> {
+    let name = text.trim();
+    if name.is_empty() {
+        return Some("Type a name");
+    }
+    if name.contains('\0') || name.split(['/', '\\']).any(|c| c == "..") {
+        return Some("Not a valid name");
+    }
+    match kind {
+        PromptKind::RenamePath { from } => {
+            let to = from.parent()?.join(name);
+            (to != *from && to.exists()).then_some("Already exists")
+        }
+        PromptKind::NewDir { dir } => dir.join(name.trim_start_matches('/')).exists().then_some("Already exists"),
+        _ => None,
     }
 }
 
@@ -288,6 +346,7 @@ impl Picker {
             real: 0,
             goto: None,
             files: None,
+            group_by: None,
         };
         p.real = p.items.len();
         p.refilter();
@@ -391,5 +450,39 @@ impl Picker {
 
     pub(crate) fn selected(&self) -> Option<Item> {
         self.filtered.get(self.sel).map(|(i, _)| self.items[*i].clone())
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn shake_swings_and_settles() {
+        assert_eq!(shake_offset(0.0), 0);
+        assert_eq!(shake_offset(1.0), 0);
+        assert_eq!(shake_offset(-0.5), 0);
+        assert!((0..40).map(|i| shake_offset(i as f32 / 40.0).abs()).max().unwrap() >= 3);
+        assert!((0..40).all(|i| shake_offset(i as f32 / 40.0).abs() <= 6));
+    }
+
+    #[test]
+    fn names_are_checked_before_the_disk_is_touched() {
+        let dir = std::env::temp_dir().join(format!("lumen-name-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("taken")).unwrap();
+        std::fs::write(dir.join("a.txt"), "x").unwrap();
+        let new_dir = PromptKind::NewDir { dir: dir.clone() };
+        let new_file = PromptKind::NewFile { dir: dir.clone() };
+        let rename = PromptKind::RenamePath { from: dir.join("a.txt") };
+        assert_eq!(name_error(&new_file, "  "), Some("Type a name"));
+        assert_eq!(name_error(&new_file, "../x"), Some("Not a valid name"));
+        assert_eq!(name_error(&new_file, "src/ok.rs"), None);
+        assert_eq!(name_error(&new_file, "a.txt"), None, "an existing file is opened, not refused");
+        assert_eq!(name_error(&new_dir, "taken"), Some("Already exists"));
+        assert_eq!(name_error(&new_dir, "fresh"), None);
+        assert_eq!(name_error(&rename, "taken"), Some("Already exists"));
+        assert_eq!(name_error(&rename, "a.txt"), None, "same name: nothing to do");
+        assert_eq!(name_error(&rename, "b.txt"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2031,6 +2031,8 @@ impl App {
     fn show_locations(&mut self, title: &str, locs: &[(String, usize, usize)]) {
         let mut cache: HashMap<PathBuf, Vec<String>> = HashMap::new();
         let mut items = Vec::new();
+        // References are grouped by file (headers show while the list is not filtered).
+        let mut by = Vec::new();
         for (uri, line, col) in locs.iter().take(500) {
             let Some(path) = uri_to_path(uri) else { continue };
             let text = cache
@@ -2042,6 +2044,7 @@ impl App {
                 .map(|l| l.trim().to_string())
                 .unwrap_or_default();
             // Columns here are UTF-16; for display and cursor placement treat them as char columns.
+            by.push(self.rel(&path));
             items.push(Item {
                 label: text,
                 detail: format!("{}:{}", self.rel(&path), line + 1),
@@ -2049,6 +2052,7 @@ impl App {
             });
         }
         self.open_locations(title, items);
+        self.set_picker_groups(by);
     }
 
     pub fn next_diagnostic(&mut self, forward: bool) {

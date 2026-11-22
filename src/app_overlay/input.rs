@@ -200,6 +200,9 @@ impl App {
                 if schedule {
                     self.search_due = Some(std::time::Instant::now() + std::time::Duration::from_millis(180));
                 }
+                if let Overlay::Prompt(p) = &mut self.overlay {
+                    p.error = None;
+                }
                 if let Overlay::Prompt(p) = &mut self.overlay
                     && matches!(p.kind, PromptKind::NewFile { .. })
                 {
@@ -231,6 +234,16 @@ impl App {
     }
 
     pub fn overlay_accept(&mut self) {
+        // An explorer name that cannot be used keeps the field open, red, and shakes it.
+        if let Overlay::Prompt(p) = &mut self.overlay
+            && p.is_inline()
+            && let Some(why) = name_error(&p.kind, &p.field.text)
+        {
+            p.error = Some(why.to_string());
+            p.shake = Some(Instant::now());
+            self.request_redraw();
+            return;
+        }
         let overlay = std::mem::replace(&mut self.overlay, Overlay::None);
         match overlay {
             Overlay::Settings(_) | Overlay::TopMenu(_) | Overlay::Ctx(_) | Overlay::Font(_) => {}
@@ -362,7 +375,10 @@ impl App {
         let r = self.picker_rect();
         let input = match &self.overlay {
             Overlay::Picker(p) if p.kind != PickKind::Problems => Rect::new(r.x + 40, r.y, r.w - 40, INPUT_H),
-            Overlay::Prompt(_) => Rect::new(r.x + 12, r.y + 38, r.w - 24, 34),
+            Overlay::Prompt(_) => match self.inline_field_rect() {
+                Some((field, _)) => field,
+                None => Rect::new(r.x + 12, r.y + 38, r.w - 24, 34),
+            },
             _ => return false,
         };
         input.contains(self.mouse.0, self.mouse.1)
@@ -385,6 +401,14 @@ impl App {
         if matches!(self.overlay, Overlay::Font(_)) {
             return self.fontpicker_mouse(x, y);
         }
+        if let Some((field, _)) = self.inline_field_rect() {
+            // A click in the name field keeps typing; anywhere else cancels it (as Esc does).
+            if !field.contains(x, y) {
+                self.dismiss_picker();
+            }
+            self.request_redraw();
+            return true;
+        }
         if self.problems_chip_click(self.picker_rect(), INPUT_H, x, y) {
             self.request_redraw();
             return true;
@@ -405,7 +429,13 @@ impl App {
         if x < r.x as f64
             || x > r.right() as f64
             || y < r.y as f64
-            || y > (r.y + INPUT_H + extra + PICKER_ROWS as i32 * ROW + 12 + crate::ui_modal::FOOT_H) as f64
+            || y > (r.y
+                + INPUT_H
+                + extra
+                + PICKER_ROWS as i32 * ROW
+                + 12
+                + groups::HDR_H * groups::RESERVED as i32
+                + crate::ui_modal::FOOT_H) as f64
         {
             self.dismiss_picker();
         }

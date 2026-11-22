@@ -41,6 +41,15 @@ impl App {
         self.overlay = Overlay::Picker(Picker::new(PickKind::Locations, title, items));
     }
 
+    /// Give the open picker a group per item (see `groups`); a length that does not fit is ignored.
+    pub fn set_picker_groups(&mut self, by: Vec<String>) {
+        if let Overlay::Picker(p) = &mut self.overlay
+            && by.len() == p.items.len()
+        {
+            p.group_by = Some(by);
+        }
+    }
+
     pub fn open_symbols_with(&mut self, items: Vec<Item>) {
         self.overlay = Overlay::Picker(Picker::new(PickKind::Symbols, "Go to symbol", items));
     }

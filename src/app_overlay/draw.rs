@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    anim,
     ds::{self, Elev},
     ui_kit::keycap::KEY_H,
     ui_modal::{self, FOOT_H},
@@ -7,6 +8,9 @@ use crate::{
 
 /// Hints under every picker.
 const PICK_HINTS: [(&str, &str); 3] = [("↑ ↓", "navigate"), ("Enter", "open"), ("Esc", "close")];
+
+/// Hints under the local history timeline: Enter opens the comparison, which has Restore.
+const HIST_HINTS: [(&str, &str); 3] = [("↑ ↓", "navigate"), ("Enter", "compare / restore"), ("Esc", "close")];
 
 /// What an empty list tells the person: (title, hint).
 fn empty_copy(kind: PickKind, query: &str) -> (&'static str, &'static str) {
@@ -155,6 +159,8 @@ impl App {
         let chips = matches!(&self.overlay, Overlay::Picker(p) if p.kind == PickKind::Problems)
             .then(|| self.problems_chips(base, INPUT_H));
         let project = self.problems_project();
+        // Explorer prompts (rename, new file / folder) draw as a field in the tree when it shows.
+        let inline = self.inline_field_rect();
 
         match &self.overlay {
             Overlay::None => {}
@@ -162,6 +168,54 @@ impl App {
             Overlay::TopMenu(_) => self.draw_topmenu(cv),
             Overlay::Ctx(_) => self.draw_ctxmenu(cv),
             Overlay::Font(_) => self.draw_fontpicker(cv),
+            Overlay::Prompt(p) if inline.is_some() => {
+                let (field, text_x) = inline.unwrap_or_default();
+                let k = self.modal.progress();
+                let f = Rect::new(field.x + p.shake_dx(), field.y, field.w, field.h);
+                let ring = if p.error.is_some() { c.error } else { c.focus_ring };
+                cv.shadow(f, ds::R_ROW);
+                cv.card(f, ds::R_ROW, c.input_bg, anim::fade(ring, k));
+                cv.ring(f.inset(-1), ds::R_ROW + 1, anim::fade(ring, 0.45 * k));
+                // The entry's own icon: the folder, or the file type of the name (renaming keeps the old one).
+                let icon = match (&p.kind, p.input_icon()) {
+                    (_, Some(i)) => i.to_string(),
+                    (PromptKind::RenamePath { from }, None) if !from.is_dir() => {
+                        let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        self.tx.icons.file_icon(&name)
+                    }
+                    _ => "file/folder".to_string(),
+                };
+                self.tx.icon(cv, &icon, text_x - 24, f.y + (f.h - 16) / 2, 16, dim, f);
+                let ty = f.y + (f.h - 18) / 2;
+                let text_x = text_x + p.shake_dx();
+                if p.field.sel_all {
+                    let w = self.tx.ui_width(&p.field.text, false);
+                    cv.fill_round(Rect::new(text_x - 2, f.y + 4, w + 4, f.h - 8), 4, c.selection_accent);
+                }
+                self.tx.draw_ui(cv, text_x, ty, &p.field.text, fg, f.inset(1), false);
+                let prefix: String = p.field.text.chars().take(p.field.cursor).collect();
+                let x = text_x + self.tx.ui_width(&prefix, false);
+                cv.fill_clip(Rect::new(x, ty, 1, 18), fg, f);
+                if f.w > 220 && p.field.text.is_empty() {
+                    ui_modal::draw_keycaps(
+                        cv,
+                        &mut self.tx,
+                        &c,
+                        f.right() - 48,
+                        f.y + (f.h - KEY_H) / 2,
+                        &["Esc".to_string()],
+                        k,
+                        f,
+                    );
+                }
+                if let Some(why) = &p.error {
+                    let w = self.tx.ui_width(why, false) + 2 * ds::S3;
+                    let tip = Rect::new(f.x + ds::S2, f.bottom() + ds::S1, w, KEY_H + ds::S1);
+                    cv.shadow(tip, ds::R_CTRL);
+                    cv.card(tip, ds::R_CTRL, c.raised, c.error);
+                    self.tx.draw_ui(cv, tip.x + ds::S3, tip.y + 3, why, c.error, tip, false);
+                }
+            }
             Overlay::Prompt(p) => {
                 let r = Rect::new(base.x, base.y, base.w, 86 + FOOT_H);
                 self.modal_panel(cv, r, Elev::Modal);
@@ -186,20 +240,28 @@ impl App {
             }
             Overlay::Picker(p) => {
                 let shown = p.filtered.len().min(PICKER_ROWS);
+                let open_docs: Vec<&std::path::Path> = self.docs.iter().filter_map(|d| d.path()).collect();
+                let groups = p.groups(&open_docs);
                 let calm = shown == 0 && p.kind == PickKind::Problems && p.field.text.is_empty();
                 let list_h = if calm {
                     128
                 } else if shown == 0 {
                     112
                 } else {
-                    shown as i32 * ROW + 14
+                    shown as i32 * ROW + 14 + groups::reserve(&groups)
                 };
                 // Project search with the replace row: the list starts below it.
                 let top = INPUT_H + if p.rep.is_some() { preplace::REP_H } else { 0 };
                 let r = Rect::new(base.x, base.y, base.w, top + list_h + FOOT_H);
                 self.modal_panel(cv, r, Elev::Modal);
                 // Input row.
-                self.tx.icon(cv, "hugeicons/search", r.x + 18, r.y + (INPUT_H - 16) / 2, 16, dim, r);
+                // Quick actions show a lightbulb, local history a clock, everything else a magnifier.
+                let lead_icon = match p.kind {
+                    PickKind::CodeActions => "ui/sparkle",
+                    PickKind::Locations if p.title.starts_with("Local history") => "ui/clock",
+                    _ => "hugeicons/search",
+                };
+                self.tx.icon(cv, lead_icon, r.x + 18, r.y + (INPUT_H - 16) / 2, 16, dim, r);
                 let (shown_text, col) =
                     if p.field.text.is_empty() { (p.title.as_str(), dim) } else { (p.field.text.as_str(), fg) };
                 if p.field.sel_all {
@@ -261,20 +323,47 @@ impl App {
                 let mut rows = Vec::new();
                 // Mid-glide the list sits a fraction of a row past `p.scroll`: rows shift up by `off`
                 // px, one more row shows at the bottom and everything is clipped to the list.
-                let off = self.region_off(crate::scrollreg::Reg::Picker, ROW);
+                let off = if groups.is_empty() { self.region_off(crate::scrollreg::Reg::Picker, ROW) } else { 0 };
                 let lclip = Rect::new(r.x, r.y + top, r.w, list_h);
                 if !p.filtered.is_empty() {
                     // The highlight glides between rows; the accent bar marks the selected one.
-                    let glide = ((self.modal.sel.value - p.scroll as f32) * ROW as f32).round() as i32;
+                    let glide = groups::glide_y(&groups, p.scroll, self.modal.sel.value, ROW);
                     let hl = Rect::new(r.x + 8, r.y + top + 6 + glide - off, r.w - 16, ROW);
                     cv.fill_round_clip(hl, ds::R_ROW + 2, c.list_active_bg, lclip);
                     cv.fill_round_clip(Rect::new(hl.x + 3, hl.y + 9, 3, ROW - 18), 1, c.accent, lclip);
+                }
+                // Group headers: each one above its first row, the one of the first visible row sticky.
+                if !groups.is_empty() {
+                    let list_y = r.y + top + 6;
+                    let mut at: Vec<(i32, &groups::Group)> = Vec::new();
+                    if let Some(g) = groups::group_of(&groups, p.scroll).filter(|g| g.start < p.scroll) {
+                        at.push((list_y, g));
+                    }
+                    for g in groups.iter().filter(|g| g.start >= p.scroll && g.start < p.scroll + PICKER_ROWS) {
+                        at.push((list_y + groups::row_y(&groups, p.scroll, g.start, ROW) - groups::HDR_H, g));
+                    }
+                    for (hy, g) in at {
+                        let ty = hy + (groups::HDR_H - 14) / 2 + 3;
+                        self.tx.draw_ui_sized(cv, r.x + 22, ty, &g.title.to_uppercase(), dim, lclip, true, 10.5);
+                        let tw = self.tx.ui_width_sized(&g.title.to_uppercase(), true, 10.5);
+                        let n = g.count.to_string();
+                        self.tx.draw_ui_sized(
+                            cv,
+                            r.x + 22 + tw + ds::S2,
+                            ty,
+                            &n,
+                            dim.with_alpha(0xa0),
+                            lclip,
+                            false,
+                            10.5,
+                        );
+                    }
                 }
                 for (k, (idx, pos)) in
                     p.filtered.iter().enumerate().skip(p.scroll).take(PICKER_ROWS + (off > 0) as usize)
                 {
                     let it = &p.items[*idx];
-                    let y = r.y + top + 6 + (k - p.scroll) as i32 * ROW - off;
+                    let y = r.y + top + 6 + groups::row_y(&groups, p.scroll, k, ROW) - off;
                     let row_full = Rect::new(r.x + 8, y, r.w - 16, ROW);
                     let rr = row_full.intersect(&lclip);
                     if let Some(h) = p.rep.as_ref().and_then(|rp| rp.hits.get(*idx)) {
@@ -419,7 +508,8 @@ impl App {
                     let hw = self.tx.ui_width(&hint, false);
                     self.tx.draw_ui(cv, area.x + (area.w - hw) / 2, area.y + 70, &hint, dim, area, false);
                 }
-                ui_modal::draw_footer(cv, &mut self.tx, &c, r, &PICK_HINTS);
+                let hints = if p.title.starts_with("Local history") { HIST_HINTS } else { PICK_HINTS };
+                ui_modal::draw_footer(cv, &mut self.tx, &c, r, &hints);
             }
         }
         if let Some((area, total, pos)) = picker_bar {
