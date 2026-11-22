@@ -300,6 +300,7 @@ impl App {
 
     /// Conventional pointer: arrow on chrome, hand on clickable things, I-beam over text,
     /// resize arrows on the dividers. See `app_cursor` for the per-frame region registry.
+    #[cfg(test)]
     pub(crate) fn cursor_for(&self) -> CursorIcon {
         self.cursor_probe().0
     }
