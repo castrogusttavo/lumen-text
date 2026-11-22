@@ -209,6 +209,7 @@ impl App {
         self.draw_tooltip(cv);
         self.draw_toast(cv);
         self.draw_toasts(cv);
+        self.cursor_collect();
         crate::perf::lap!("overlays");
         busy |= self.settings_busy();
         busy | self.scroll_activity() | self.layout.shell.moving() | crate::termfx::take_moving()
