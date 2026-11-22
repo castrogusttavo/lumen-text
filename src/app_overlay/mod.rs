@@ -18,7 +18,7 @@ use winit::{
 
 mod commands;
 mod draw;
-mod find;
+pub(crate) mod find;
 mod input;
 mod open;
 pub mod preplace;

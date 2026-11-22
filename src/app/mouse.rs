@@ -543,6 +543,18 @@ impl App {
             }
             self.request_redraw();
         }
+        if self.split_hover_update(mx, my) {
+            self.request_redraw();
+        }
+        // Minimap / gutter hover glides (the editor reads `fx_zone` while drawing).
+        let zone =
+            if self.overlay.is_none() { self.docs.get(self.active).map_or(0, |d| d.pointer_zone(mx, my)) } else { 0 };
+        if self.docs.get(self.active).is_some_and(|d| d.fx_zone != zone) {
+            if let Some(d) = self.docs.get_mut(self.active) {
+                d.fx_zone = zone;
+            }
+            self.request_redraw();
+        }
         let hot_reg = self.over_region_bar(mx, my);
         if hot_reg != self.region_hot {
             self.region_hot = hot_reg;

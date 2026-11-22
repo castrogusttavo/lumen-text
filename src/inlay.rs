@@ -41,6 +41,18 @@ pub fn label_cells(chars: usize) -> usize {
     (chars * 85).div_ceil(100)
 }
 
+/// Opacity of the chip behind a hint label (over the hint color): faint enough to stay calm.
+pub const CHIP_ALPHA: u8 = 0x1c;
+
+/// Chip box `(x, y, w, h, radius)` of a hint spanning pixels `x0..x1` on a row at `y` that is `lh`
+/// tall: inset by a pixel on each side and 2 px top and bottom, fully rounded. It lives inside the
+/// hint's own cells, so it never moves the text.
+pub fn chip_geometry(x0: i32, x1: i32, y: i32, lh: i32) -> (i32, i32, i32, i32, i32) {
+    let w = (x1 - x0 - 2).max(1);
+    let h = (lh - 4).max(2);
+    (x0 + 1, y + 2, w, h, (h / 2).min(6))
+}
+
 /// A clickable stretch of a hint label (an LSP label part with a `location`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HintLink {
@@ -717,6 +729,15 @@ pub fn window_pieces_hinted(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chip_stays_inside_its_cells() {
+        let (x, y, w, h, r) = super::chip_geometry(100, 160, 20, 20);
+        assert!(x >= 100 && x + w <= 160 && y >= 20 && y + h <= 40);
+        assert!(r * 2 <= h);
+        let (_, _, w, h, _) = super::chip_geometry(0, 1, 0, 2);
+        assert!(w >= 1 && h >= 2);
+    }
+
     use super::*;
     use serde_json::json;
 

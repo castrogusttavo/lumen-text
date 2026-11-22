@@ -31,6 +31,8 @@ pub struct TabsFx {
     /// Diagnostics chip visibility and the counts it keeps showing while it fades out.
     chip: Hot,
     chip_counts: (usize, usize),
+    /// Hover amount per tab (indexed by document): crossfades the dirty dot / pin into the close button.
+    tab_hot: Vec<Hot>,
 }
 
 impl Default for TabsFx {
@@ -41,6 +43,7 @@ impl Default for TabsFx {
             ind_ready: false,
             chip: Hot::default(),
             chip_counts: (0, 0),
+            tab_hot: Vec::new(),
         }
     }
 }
@@ -122,7 +125,10 @@ impl App {
         if let Some((_, tx0, tw)) = active_geo {
             self.tabs_fx.aim(tx0 + 2, tw - 4);
         }
-        let busy = self.tabs_fx.step(dt);
+        let mut busy = self.tabs_fx.step(dt);
+        if self.tabs_fx.tab_hot.len() != self.docs.len() {
+            self.tabs_fx.tab_hot.resize(self.docs.len(), Hot::default());
+        }
         let (px, pw) = self.tabs_fx.span();
         if active_geo.is_some() && pw > 0 {
             let pill = Rect::new(bar.x + px - off, bar.y + 5, pw, bar.h - 10);
@@ -152,22 +158,32 @@ impl App {
             let over_close = over_tab && close.contains(mx, my);
             let dirty = d.buf.is_dirty() || d.mb.as_ref().is_some_and(|m| m.is_dirty());
             let pinned = d.pinned;
-            if over_tab {
-                // Hovering a tab (focused or not) turns the dirty dot / pin into the close button; it
-                // gets its own background when the pointer is on it.
+            // The dirty dot / pin and the close button crossfade with the pointer instead of swapping;
+            // the close button gets its own background when the pointer is on it.
+            let hot = &mut self.tabs_fx.tab_hot[i];
+            hot.set(over_tab);
+            busy |= hot.step(dt);
+            let hv = hot.v();
+            if over_close {
                 let cb = Rect::new(close.x + 4, r.y + (bar.h - 20) / 2, 20, 20);
-                if over_close {
-                    cv.fill_round_clip(cb, ds::R_CTRL, self.theme.foreground.with_alpha(0x38), strip);
-                }
+                cv.fill_round_clip(cb, ds::R_CTRL, self.theme.foreground.with_alpha(0x38), strip);
+            }
+            if hv > 0.01 {
                 let ic = if over_close { c.tab_active_fg } else { c.tab_inactive_fg };
-                self.tx.icon(cv, "ui/close", close.x + 8, r.y + (bar.h - 12) / 2, 12, ic, strip);
-            } else if dirty {
-                // Like Zed: the unsaved dot takes the close button's place.
-                cv.fill_round_clip(Rect::new(close.x + 10, r.y + bar.h / 2 - 4, 8, 8), 4, c.accent, strip);
-            } else if pinned {
-                self.tx.icon(cv, "ui/pin", close.x + 8, r.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, strip);
-            } else if active {
-                self.tx.icon(cv, "ui/close", close.x + 8, r.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, strip);
+                self.tx.icon(cv, "ui/close", close.x + 8, r.y + (bar.h - 12) / 2, 12, fade(ic, hv), strip);
+            }
+            let rest = 1.0 - hv;
+            if rest > 0.01 {
+                let iy = r.y + (bar.h - 12) / 2;
+                if dirty {
+                    // Like Zed: the unsaved dot takes the close button's place.
+                    let dot = Rect::new(close.x + 10, r.y + bar.h / 2 - 4, 8, 8);
+                    cv.fill_round_clip(dot, 4, fade(c.accent, rest), strip);
+                } else if pinned {
+                    self.tx.icon(cv, "ui/pin", close.x + 8, iy, 12, fade(c.tab_inactive_fg, rest), strip);
+                } else if active {
+                    self.tx.icon(cv, "ui/close", close.x + 8, iy, 12, fade(c.tab_inactive_fg, rest), strip);
+                }
             }
             // Split editor: an underline and the pane number for every pane that shows this tab, in
             // the accent color for the focused pane and gray for the others.

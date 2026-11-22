@@ -39,6 +39,8 @@ const MAX_GRID_COLS: usize = 3;
 const MIN_AREA: i32 = 360;
 const MIN_PANE: i32 = 160;
 const MIN_PANE_H: i32 = 80;
+/// Alpha of the hairline around the focused pane of a split.
+const FOCUS_RING_A: u8 = 0x70;
 /// Pixels around the 1px divider that grab the mouse.
 const GRAB: i32 = 3;
 
@@ -547,6 +549,9 @@ pub struct Split {
     pub drag: Option<DivKind>,
     /// Pane the open diff view covers (set when a diff appears, follows pane removals).
     pub diff_at: Option<usize>,
+    /// Divider under the pointer (index into `divs`) and the glide of each divider's highlight.
+    pub hover: Option<usize>,
+    pub hot: Vec<crate::anim::Hot>,
 }
 
 impl Split {
@@ -560,6 +565,8 @@ impl Split {
             divs: Vec::new(),
             drag: None,
             diff_at: None,
+            hover: None,
+            hot: Vec::new(),
         }
     }
 
@@ -738,6 +745,8 @@ impl App {
             divs: Vec::new(),
             drag: None,
             diff_at: None,
+            hover: None,
+            hot: Vec::new(),
         }));
         self.split_layout();
     }
@@ -1019,6 +1028,51 @@ impl App {
             .map(|d| if matches!(d.kind, DivKind::Col(_)) { CursorIcon::ColResize } else { CursorIcon::RowResize })
     }
 
+    /// The pointer moved: which divider is it on? True when that changed (a redraw is due).
+    pub fn split_hover_update(&mut self, x: f64, y: f64) -> bool {
+        let over = self.overlay.is_none();
+        let Some(sp) = self.split.as_mut() else { return false };
+        let now = if over { sp.divs.iter().position(|d| grab_rect(d).contains(x, y)) } else { None };
+        let changed = sp.hover != now;
+        sp.hover = now;
+        changed
+    }
+
+    /// Chrome over the panes, after every pane is drawn: the divider under the pointer (or being
+    /// dragged) glows in the accent, and the focused pane gets a hairline focus ring. Returns true
+    /// while a highlight glides.
+    pub fn draw_split_chrome(&mut self, cv: &mut Canvas, dt: f64) -> bool {
+        let c = self.theme.chrome;
+        let Some(sp) = self.split.as_mut() else { return false };
+        if sp.rects.len() != sp.panes.len() || sp.panes.len() < 2 {
+            return false;
+        }
+        sp.hot.resize(sp.divs.len(), crate::anim::Hot::default());
+        let mut busy = false;
+        for (i, d) in sp.divs.iter().enumerate() {
+            let on = sp.hover == Some(i) || sp.drag == Some(d.kind);
+            sp.hot[i].set(on);
+            busy |= sp.hot[i].step(dt);
+            let v = sp.hot[i].v();
+            if v > 0.01 {
+                // Thicken across the divider without moving it: 1 px of border becomes a 3 px accent bar.
+                let r = if d.rect.w >= d.rect.h {
+                    Rect::new(d.rect.x, d.rect.y - 1, d.rect.w, d.rect.h + 2)
+                } else {
+                    Rect::new(d.rect.x - 1, d.rect.y, d.rect.w + 2, d.rect.h)
+                };
+                cv.fill(r, crate::anim::fade(c.focus_ring, v));
+            }
+        }
+        if let Some(r) = sp.rects.get(sp.focus).copied().filter(|r| r.w > 4 && r.h > 4) {
+            cv.fill_clip(Rect::new(r.x, r.y, r.w, 1), c.focus_ring.with_alpha(FOCUS_RING_A), r);
+            cv.fill_clip(Rect::new(r.x, r.bottom() - 1, r.w, 1), c.focus_ring.with_alpha(FOCUS_RING_A), r);
+            cv.fill_clip(Rect::new(r.x, r.y, 1, r.h), c.focus_ring.with_alpha(FOCUS_RING_A), r);
+            cv.fill_clip(Rect::new(r.right() - 1, r.y, 1, r.h), c.focus_ring.with_alpha(FOCUS_RING_A), r);
+        }
+        busy
+    }
+
     /// Is (x, y) inside a pane that is not focused?
     pub fn split_in_other(&self, x: f64, y: f64) -> bool {
         self.split
@@ -1046,6 +1100,7 @@ impl App {
                 if let Some(d) = self.docs.get_mut(di) {
                     d.cell_w = self.tx.cell_w;
                     let reveal = std::mem::replace(&mut d.reveal, false);
+                    let zone = std::mem::replace(&mut d.fx_zone, 0); // pointer feedback is for the focused pane
                     d.swap_pane_view(&mut sp.panes[i].view);
                     busy |= d.draw(
                         cv,
@@ -1056,6 +1111,7 @@ impl App {
                     );
                     d.swap_pane_view(&mut sp.panes[i].view);
                     d.reveal = reveal;
+                    d.fx_zone = zone;
                 } else {
                     cv.fill(r, self.theme.background);
                 }

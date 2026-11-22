@@ -72,6 +72,8 @@ pub enum TipKey {
     SideFilter,
     /// A toolbar button of the Debug panel.
     Debug(crate::app_debug::Tool),
+    /// A button of the find bar.
+    Find(crate::app_overlay::find::FindBtn),
 }
 
 /// Pointer-rest state (the text is resolved while drawing).
@@ -401,6 +403,9 @@ impl App {
         if let Some((k, r)) = self.debug_tip_at(x, y) {
             return Some((TipKey::Debug(k), r, false));
         }
+        if let Some((b, r)) = self.find_tip_at(x, y) {
+            return Some((TipKey::Find(b), r, true));
+        }
         if let Some(r) = self.sidebar_filter_tip_at(x, y) {
             return Some((TipKey::SideFilter, r, true));
         }
@@ -469,6 +474,10 @@ impl App {
             TipKey::Fs(k) => self.fswatch_tip(k),
             TipKey::SideFilter => self.sidebar_filter_tip(),
             TipKey::Debug(k) => self.debug_tip(k),
+            TipKey::Find(b) => {
+                let (title, keys, detail) = b.tip();
+                t(title, Some(keys.to_string()), Some(detail.to_string()))
+            }
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
                 Some(s) => t(&s.name, None, Some(format!("{} · line {}", symbol_kind_name(s.kind), s.sl + 1))),
                 None => TipText::default(),

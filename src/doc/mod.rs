@@ -153,6 +153,11 @@ pub struct Doc {
     /// Folded-region "..." markers drawn last frame: (rect, header line).
     pub fold_pills: Vec<(Rect, usize)>,
     pub minimap_layout: Option<crate::minimap::Layout>,
+    /// Pointer feedback of the minimap and the gutter: the animation state, which zone the pointer is
+    /// in (`doc::draw::ZONE_*`, set by the mouse code) and whether the slider is being dragged.
+    pub mm_fx: crate::minimap::Fx,
+    pub fx_zone: u8,
+    pub mm_drag: bool,
     /// Minimap row infos of rows without token colors (those only depend on the text): (layout key, buffer
     /// version described, row -> info).
     mm_cache: (u64, u64, std::collections::HashMap<usize, crate::minimap::LineInfo>),
@@ -308,6 +313,9 @@ impl Doc {
             view: Default::default(),
             fold_pills: Vec::new(),
             minimap_layout: None,
+            mm_fx: Default::default(),
+            fx_zone: 0,
+            mm_drag: false,
             mm_cache: (0, u64::MAX, Default::default()),
             synced_ver: 0,
             conflicts: Vec::new(),

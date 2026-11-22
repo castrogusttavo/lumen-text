@@ -65,14 +65,16 @@ pub(super) fn hint_decor<'a>(
         if h.kind == crate::inlay::HintKind::Ghost {
             continue;
         }
-        let pill = Rect::new(vx(v), y + 1, vx(v + w) - vx(v), lh - 2);
+        let (cx, cy, cw, ch, rad) = crate::inlay::chip_geometry(vx(v), vx(v + w), y, lh);
+        let pill = Rect::new(cx, cy, cw, ch);
+        let fill = hint_fg.with_alpha(crate::inlay::CHIP_ALPHA);
         if pill.x >= clip.x && pill.right() <= clip.right() && pill.y >= clip.y && pill.bottom() <= clip.bottom() {
-            cv.fill_round(pill, 3, hint_fg.with_alpha(0x26));
+            cv.fill_round(pill, rad, fill);
         } else {
-            cv.fill_clip(pill, hint_fg.with_alpha(0x26), clip);
+            cv.fill_clip(pill, fill, clip);
         }
         let text_w = h.label.chars().count() as f32 * cell_w * crate::inlay::HINT_SCALE;
-        labels.push((pill.x + ((pill.w as f32 - text_w) / 2.0).round() as i32, y, h.label.as_str()));
+        labels.push((vx(v) + (((vx(v + w) - vx(v)) as f32 - text_w) / 2.0).round() as i32, y, h.label.as_str()));
     }
 }
 
