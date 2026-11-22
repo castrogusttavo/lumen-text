@@ -43,6 +43,7 @@ mod bridge_tests;
 mod draw;
 mod explain;
 mod input;
+mod motion;
 mod state;
 #[cfg(test)]
 mod tests;

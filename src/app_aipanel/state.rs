@@ -114,6 +114,8 @@ pub enum AiHit {
     Filter,
     /// Its clear button.
     FilterClear,
+    /// Suggested prompt `n` of the empty state: starts the agent and types it in.
+    Prompt(usize),
 }
 
 /// What one session's process looked like at a moment (taken from its terminal).
@@ -359,6 +361,10 @@ pub struct AiState {
     /// The last click on a session tab (a second one soon after renames it).
     pub last_tab_click: Option<(u64, Instant)>,
     pub hits: Vec<(Rect, AiHit)>,
+    /// Hover / slide / pulse state of the chrome.
+    pub motion: super::motion::Motion,
+    /// The button the primary mouse button is held on (pressed look).
+    pub pressed: Option<AiHit>,
     /// The left edge is being dragged.
     pub resizing: bool,
     /// Narrows the session tabs by name or agent.
@@ -389,6 +395,8 @@ impl Default for AiState {
             window_focused: true,
             last_tab_click: None,
             hits: Vec::new(),
+            motion: Default::default(),
+            pressed: None,
             resizing: false,
             filter: TextField::default(),
             filter_focus: false,
