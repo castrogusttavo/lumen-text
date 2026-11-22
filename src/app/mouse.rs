@@ -324,6 +324,9 @@ impl App {
         if self.sidebar_resizing() || self.ai.resizing {
             return (C::ColResize, "cascade:edge-drag");
         }
+        if self.bottom_panel_resizing() {
+            return (C::RowResize, "cascade:panel-edge-drag");
+        }
         // The onboarding tour, the update / about card and the toasts float above everything.
         if let Some(hand) = self.onboarding_cursor_hand() {
             return if hand { (C::Pointer, "cascade:onboarding-ctl") } else { (C::Default, "cascade:onboarding") };

@@ -363,7 +363,11 @@ impl App {
         let w = lw + ds::ICON_S + ds::S2 + 2 * ds::S4;
         let btn = Rect::new(cx - w / 2, y, w, 28);
         let (mx, my) = self.mouse;
-        let fill = if btn.contains(mx, my) { c.accent.mix(Rgba(255, 255, 255, 255), 0.14) } else { c.accent };
+        let fill = if self.overlay.is_none() && btn.contains(mx, my) {
+            c.accent.mix(Rgba(255, 255, 255, 255), 0.14)
+        } else {
+            c.accent
+        };
         cv.fill_round_clip(btn, ds::R_CTRL, fill, body);
         self.tx.icon(cv, "ui/play_filled", btn.x + ds::S4, btn.y + (28 - ds::ICON_S) / 2, ds::ICON_S, c.on_accent, btn);
         self.tx.draw_ui(cv, btn.x + ds::S4 + ds::ICON_S + ds::S2, btn.y + 5, label, c.on_accent, btn, true);

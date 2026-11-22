@@ -13,7 +13,7 @@
 //! Debug aid: `LUMEN_CURSOR_DEBUG=1` appends `cursor=<Icon> region=<label>` to the window title
 //! while the pointer moves (the label is a registry label, or `cascade:<branch>`).
 
-use crate::{app::App, app_debug::DebugHit, app_overlay::Overlay, app_panel::PanelTab, ui::Rect};
+use crate::{app::App, app_overlay::Overlay, ui::Rect};
 use winit::window::CursorIcon;
 
 /// Regular chrome: buttons, tabs, chips.
@@ -88,7 +88,7 @@ impl App {
 
     /// Rebuild the registry from what this frame laid out. Called once at the end of `draw_all`.
     pub(crate) fn cursor_collect(&mut self) {
-        use CursorIcon::{ColResize, Pointer, Text};
+        use CursorIcon::{ColResize, Pointer};
         let mut reg = std::mem::take(&mut self.cur);
         reg.list.clear();
         let l = &self.layout;
@@ -118,12 +118,7 @@ impl App {
         for (r, _) in &l.panel_tabs {
             reg.push(*r, Pointer, Z_BASE, "panel-tab");
         }
-        if self.panel.open && self.panel.tab == PanelTab::Debug {
-            for (r, h) in &l.debug_hits {
-                let icon = if matches!(h, DebugHit::ConsoleInput | DebugHit::WatchInput) { Text } else { Pointer };
-                reg.push(*r, icon, Z_BASE, "debug-control");
-            }
-        }
+        self.cursor_collect_panel(&mut reg);
         for (r, _) in &l.completion_rows {
             reg.push(*r, Pointer, Z_FLOAT, "completion-row");
         }

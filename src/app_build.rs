@@ -1690,7 +1690,7 @@ impl App {
         let lw = self.tx.ui_width(&label, false);
         let b = Rect::new(x, r.y + 3, 8 + 14 + 6 + lw + 8, r.h - 6);
         if self.panel.open && self.panel.tab == PanelTab::Build {
-            cv.fill_round(b, 6, c.list_active_bg);
+            cv.fill_round(b, crate::ds::R_CTRL, c.list_active_bg);
         }
         if running == Some(Job::Run) {
             status_dot(cv, b.x + 8 + 7, r.y + r.h / 2, c.git_added, r);

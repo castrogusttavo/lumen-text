@@ -195,10 +195,17 @@ impl App {
         t.scroll = (t.scroll + px).clamp(0.0, t.max_scroll);
     }
 
-    /// Is there something clickable under (x, y)? (pointer cursor; for `cursor_for`)
-    #[allow(dead_code)]
+    /// Every clickable region of the tab as last drawn (fold headers, rows, scope switch), for
+    /// the cursor registry.
+    pub fn problems_hit_rects(&self) -> impl Iterator<Item = Rect> + '_ {
+        let shown = self.problems_tab_shown();
+        self.lspx.ws.tab.hits.iter().filter(move |_| shown).map(|(r, _)| *r)
+    }
+
+    /// Is there something clickable under (x, y)? (pointer cursor)
+    #[cfg(test)]
     pub fn problems_clickable_at(&self, x: f64, y: f64) -> bool {
-        self.problems_tab_shown() && self.lspx.ws.tab.hits.iter().any(|(r, _)| r.contains(x, y))
+        self.problems_hit_rects().any(|r| r.contains(x, y))
     }
 
     pub fn problems_tab_click(&mut self, x: f64, y: f64) {
