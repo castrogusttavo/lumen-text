@@ -161,6 +161,14 @@
   "default": 1
  },
  {
+  "key": "reduce_motion",
+  "section": "Appearance",
+  "label": "Reduce motion",
+  "help": "Turns animations into instant changes: no sliding panels, shimmer, pulses or blinking cursor. LUMEN_REDUCE_MOTION=1 does the same.",
+  "kind": "bool",
+  "default": false
+ },
+ {
   "key": "explorer_hide_gitignored",
   "section": "Appearance",
   "label": "Hide git-ignored files",
