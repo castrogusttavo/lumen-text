@@ -14,6 +14,7 @@ use crate::{
     app_panel::PanelTab,
     dap::{BpSpec, Dap, MultiSession, Session, State},
     debug_model::{self as dm, BpGlyph, BpMeta, ConsoleKind, DebugState, LaunchConfig, LaunchKind, StackRow},
+    ds,
     field::TextField,
     scrollreg::Reg,
     theme::Rgba,
@@ -1366,11 +1367,19 @@ impl App {
             Tool::Restart => ("Restart", "DebugRestart", "Stops the session and starts it again"),
             Tool::Stop => ("Stop", "DebugStop", "Ends the session and the program"),
         };
+        let why = match t {
+            _ if self.tool_enabled(t) => None,
+            Tool::Over | Tool::Into | Tool::Out => Some("Unavailable: the program is not paused"),
+            Tool::Pause => Some("Unavailable: the program is not running"),
+            Tool::Restart => Some("Unavailable: nothing has been started yet"),
+            Tool::Stop => Some("Unavailable: there is no session"),
+            Tool::Continue => Some("Unavailable: wait for the build or the shutdown"),
+        };
         crate::app_tooltip::TipText {
             title: title.to_string(),
             keys: self.shortcut_text(id),
             detail: Some(detail.to_string()),
-            more: Vec::new(),
+            more: why.map(|w| vec![w.to_string()]).unwrap_or_default(),
         }
     }
 
@@ -1491,10 +1500,16 @@ impl App {
         ];
         let (mx, my) = self.mouse;
         let mut x = bar.x + 8;
-        for (t, icon) in tools {
+        for (i, (t, icon)) in tools.into_iter().enumerate() {
+            // Hairlines between the groups: run / step / pause / session.
+            if matches!(i, 1 | 4 | 5) {
+                x += 3;
+                cv.fill(Rect::new(x, bar.y + 8, 1, TOOLBAR_H - 16), c.border);
+                x += 4;
+            }
             let on = self.tool_enabled(t);
             let col = if !on {
-                dim.with_alpha(0x70)
+                dim.with_alpha(0x55)
             } else {
                 match t {
                     Tool::Stop => c.error,
@@ -1503,8 +1518,8 @@ impl App {
                 }
             };
             let r = Rect::new(x, bar.y + 3, 26, TOOLBAR_H - 6);
-            if on && r.contains(mx, my) {
-                cv.fill_round(r, 5, fg.with_alpha(0x18));
+            if on && self.overlay.is_none() && r.contains(mx, my) {
+                cv.fill_round(r, ds::R_CTRL, c.hover_overlay);
             }
             self.tx.icon(cv, icon, x + 5, bar.y + 7, 16, col, bar);
             self.layout.debug_hits.push((r, DebugHit::Tool(t)));
@@ -1530,9 +1545,19 @@ impl App {
         // State at the right.
         let status = self.debug_status_text();
         if !status.is_empty() {
+            let tone = if status.starts_with("Paused") {
+                c.warning
+            } else if status == "Finished" {
+                dim
+            } else {
+                c.accent_text
+            };
             let sw = self.tx.ui_width(&status, false);
-            let sx = (bar.right() - sw - 14).max(chip.right() + 10);
-            self.tx.draw_ui(cv, sx, bar.y + 7, &status, dim, bar, false);
+            let pill =
+                Rect::new((bar.right() - sw - 28).max(chip.right() + 10), bar.y + (TOOLBAR_H - 20) / 2, sw + 20, 20);
+            cv.fill_round_clip(pill, ds::R_CTRL, tone.with_alpha(0x24), bar);
+            cv.fill_round_clip(Rect::new(pill.x + 7, pill.y + 7, 6, 6), 3, tone, bar);
+            self.tx.draw_ui(cv, pill.x + 18, pill.y + 1, &status, tone, pill, false);
         }
     }
 

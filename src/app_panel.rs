@@ -3,6 +3,7 @@
 use crate::{
     app::{App, Focus},
     app_overlay::{Action, Item},
+    ds,
     scrollreg::Reg,
     tasks::{self, Ansi, Event, Running, Segs},
     theme::Rgba,
@@ -58,7 +59,7 @@ pub enum PanelTab {
     Docker,
 }
 
-/// Resize state of the panel's top edge (the cursors agent reads `panel_on_edge` / `panel_resizing`).
+/// Resize state of the panel's top edge (the cursors agent reads `bottom_panel_on_edge` / `bottom_panel_resizing`).
 #[derive(Default)]
 pub struct PanelEdge {
     /// Dragging: pointer offset from the edge at the press.
@@ -317,18 +318,18 @@ impl App {
     }
 
     /// Is the pointer on the resize edge? (row-resize cursor)
-    pub fn panel_on_edge(&self, x: f64, y: f64) -> bool {
+    pub fn bottom_panel_on_edge(&self, x: f64, y: f64) -> bool {
         self.overlay.is_none() && self.panel_edge_rect().is_some_and(|e| e.contains(x, y))
     }
 
     /// Is the edge being dragged?
-    pub fn panel_resizing(&self) -> bool {
+    pub fn bottom_panel_resizing(&self) -> bool {
         self.panel.edge.grab.is_some()
     }
 
     /// Press on the edge starts a resize; a double click restores the default height.
     pub fn panel_edge_press(&mut self, x: f64, y: f64) -> bool {
-        if !self.panel_on_edge(x, y) {
+        if !self.bottom_panel_on_edge(x, y) {
             return false;
         }
         let now = Instant::now();
@@ -356,7 +357,7 @@ impl App {
             }
             return true;
         }
-        let hot = self.panel_on_edge(x, y);
+        let hot = self.bottom_panel_on_edge(x, y);
         if hot != self.panel.edge.hot {
             self.panel.edge.hot = hot;
             self.request_redraw();
@@ -374,7 +375,8 @@ impl App {
 
     /// Per frame (from `panel_motion_step`): true while the panel's own animations need frames.
     pub fn panel_extra_step(&mut self) -> bool {
-        self.problems_frame()
+        let loading = self.http_loading() && !crate::motion::reduced();
+        self.problems_frame() | loading
     }
 
     pub fn panel_mouse(&mut self, x: f64, y: f64) -> bool {
@@ -447,7 +449,12 @@ impl App {
             return true;
         }
         self.focus = Focus::Editor;
-        let rel = y - (r.y + PANEL_HEADER) as f64 + self.panel.scroll;
+        let strip = self.http_strip_h();
+        if strip > 0 && y < (r.y + PANEL_HEADER + 1 + strip) as f64 {
+            self.http_strip_click(x, y);
+            return true;
+        }
+        let rel = y - (r.y + PANEL_HEADER + strip) as f64 + self.panel.scroll;
         let idx = (rel / line_h() as f64) as usize;
         let Some(text) = self.panel.plain.get(idx).cloned() else { return true };
         let col = (((x - (r.x + 10) as f64) / self.tx.cell_w as f64).floor().max(0.0)) as usize;
@@ -484,7 +491,7 @@ impl App {
             self.problems_tab_wheel(delta);
             return true;
         }
-        let view = r.h - PANEL_HEADER;
+        let view = r.h - PANEL_HEADER - self.http_strip_h();
         let max = self.panel.max_scroll(view);
         self.panel_wheel_apply(delta, max);
         true
@@ -494,8 +501,8 @@ impl App {
 
     /// The top edge lights up in the accent color under the pointer and while dragging.
     fn draw_panel_edge(&mut self, cv: &mut Canvas, r: Rect) {
-        let dragging = self.panel_resizing();
-        let hot = self.panel_on_edge(self.mouse.0, self.mouse.1);
+        let dragging = self.bottom_panel_resizing();
+        let hot = self.bottom_panel_on_edge(self.mouse.0, self.mouse.1);
         if dragging || hot {
             let a = if dragging { 0xc0 } else { 0x70 };
             cv.fill(Rect::new(r.x, r.y, r.w, 2), self.theme.chrome.accent.with_alpha(a));
@@ -548,6 +555,15 @@ impl App {
 
         if self.panel.lines.is_empty() && self.panel.running.is_none() {
             return self.draw_output_empty(cv, body);
+        }
+        let mut body = body;
+        if self.http_strip_active() {
+            body = self.draw_http_strip(cv, body);
+            if self.http_loading() {
+                let pad = Rect::new(body.x + ds::S4, body.y + ds::S4, (body.w - 2 * ds::S4).max(0), body.h);
+                cv.skeleton_lines(&self.theme, pad, 4, body, crate::tool_ui::clock());
+                return;
+            }
         }
         let state = match (&self.panel.running, self.panel.exit) {
             (Some(_), _) => ("running", c.accent_text),

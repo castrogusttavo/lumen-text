@@ -349,9 +349,9 @@ impl App {
     }
 
     fn d_row_bg(&mut self, cv: &mut Canvas, area: Rect, row: Rect) {
-        let strong = self.theme.chrome.tab_active_fg;
+        let hover = self.theme.chrome.hover_overlay;
         if self.overlay.is_none() && row.contains(self.mouse.0, self.mouse.1) {
-            cv.fill_round_clip(row, 6, strong.with_alpha(0x0a), area);
+            cv.fill_round_clip(row, crate::ds::R_CTRL, hover, area);
         }
     }
 
@@ -377,11 +377,16 @@ impl App {
             bx += ICO;
         }
         let x0 = area.x + 12;
-        cv.fill_round_clip(Rect::new(x0, y + (ROW_H - 8) / 2, 8, 8), 4, dot_color(&c, &ct.state), area);
+        // Status dot; a running container gets a soft halo.
+        let dot = dot_color(&c, &ct.state);
+        if ct.running() {
+            cv.fill_round_clip(Rect::new(x0 - 3, y + (ROW_H - 14) / 2, 14, 14), 7, dot.with_alpha(0x26), area);
+        }
+        cv.fill_round_clip(Rect::new(x0, y + (ROW_H - 8) / 2, 8, 8), 4, dot, area);
         let ty = y + (ROW_H - 18) / 2;
         let avail = (text_right - (x0 + 18)).max(0);
         let cols = [
-            (ct.name.as_str(), strong, true, avail * 28 / 100),
+            (ct.name.as_str(), if ct.running() { strong } else { dim }, true, avail * 28 / 100),
             (ct.image.as_str(), dim, false, avail * 24 / 100),
             (ct.status.as_str(), dim, false, avail * 22 / 100),
             (ct.ports.as_str(), dim, false, avail - avail * 74 / 100),
