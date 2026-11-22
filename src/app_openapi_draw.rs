@@ -5,20 +5,21 @@
 //! view are touched), the center and right columns skip every block outside the viewport.
 
 use crate::{
-    app_openapi::{ApiView, BODY_ROWS, Hit, NARROW, NavKind, Sel, line_col},
+    app_openapi::{ApiView, BODY_ROWS, Hit, NARROW, NavKind, Sel, flash_key, line_col},
     openapi::{
+        copy::{self, Flash},
         example,
         lint::{self, Severity},
         request::Verdict,
-        schema,
-        snippets::{self, LANGS},
+        schema, snippets,
         spec::{SecKind, Spec},
-        tree::Node,
+        tree::{Node, to_json},
     },
     tasks::Segs,
     theme::{Chrome, Rgba, Theme},
     ui::{Canvas, Rect, TextCtx, VBar, line_h, ui_size},
 };
+use std::sync::Arc;
 
 const PAD: i32 = 28;
 const MAX_COL: i32 = 820;
@@ -99,11 +100,15 @@ struct P<'a, 'b> {
     clip: Rect,
     mouse: (f64, f64),
     hits: Vec<(Rect, Hit)>,
+    /// The last copy (a button of it says "Copied").
+    flash: Option<Flash>,
+    /// Copyable blocks (Ctrl+C over one copies it).
+    blocks: Vec<(Rect, Hit)>,
 }
 
 impl<'a, 'b> P<'a, 'b> {
     fn new(cv: &'a mut Canvas<'b>, tx: &'a mut TextCtx, th: &'a Theme, clip: Rect, mouse: (f64, f64)) -> P<'a, 'b> {
-        P { cv, tx, th, clip, mouse, hits: Vec::new() }
+        P { cv, tx, th, clip, mouse, hits: Vec::new(), flash: None, blocks: Vec::new() }
     }
     fn c(&self) -> Chrome {
         self.th.chrome
@@ -288,6 +293,83 @@ impl<'a, 'b> P<'a, 'b> {
         }
         self.hit(r, Hit::Field(id.to_string()));
     }
+    /// Small "Copy" button; says "Copied" for a moment after a click.
+    fn copy_btn(&mut self, r: Rect, hit: Hit) {
+        if !self.vis(r.y, r.h) {
+            return;
+        }
+        let c = self.c();
+        let on = self.flash.is_some_and(|f| f.on(flash_key(&hit)));
+        let hov = self.hover(r);
+        let bg = if on {
+            c.git_added.with_alpha(0x38)
+        } else if hov {
+            c.list_hover_bg
+        } else {
+            c.widget_bg.with_alpha(0xD0)
+        };
+        self.round(r, 5, bg);
+        let size = sz(0.78);
+        let label = if on { "Copied" } else { "Copy" };
+        let fg = if on { c.git_added.readable_on(&[self.th.background], 4.5) } else { c.tab_active_fg };
+        let w = self.tw(label, true, size);
+        self.text(r.x + (r.w - w) / 2, r.y + (r.h - lh(size)) / 2, label, fg, true, size);
+        self.hit(r, hit);
+    }
+
+    /// A copy button for `text` (built only when the button is on screen).
+    fn copy_text(&mut self, r: Rect, what: &'static str, text: impl FnOnce() -> String) {
+        if self.vis(r.y, r.h) {
+            self.copy_btn(r, Hit::Copy(Arc::from(text()), what));
+        }
+    }
+
+    /// Pill-shaped action button of `label` (any copy hit); returns its width with the gap.
+    fn pill(&mut self, x: i32, y: i32, label: &str, hit: Hit) -> i32 {
+        let c = self.c();
+        let size = sz(0.82);
+        let on = self.flash.is_some_and(|f| f.on(flash_key(&hit)));
+        let shown = if on { "Copied" } else { label };
+        let w = self.tw(label, true, size).max(self.tw("Copied", true, size)) + 18;
+        let r = Rect::new(x, y, w, lh(size) + 8);
+        let bg = if on {
+            c.git_added.with_alpha(0x38)
+        } else if self.hover(r) {
+            c.list_hover_bg
+        } else {
+            c.widget_bg.with_alpha(0xB0)
+        };
+        self.round(r, 6, bg);
+        let fg = if on { c.git_added.readable_on(&[self.th.background], 4.5) } else { c.tab_active_fg };
+        let tw = self.tw(shown, true, size);
+        self.text(r.x + (w - tw) / 2, r.y + 4, shown, fg, true, size);
+        self.hit(r, hit);
+        w + 6
+    }
+
+    /// Code block with its own Copy button in the corner; Ctrl+C over it copies `text`.
+    fn code_block_copy(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        lines: &[Segs],
+        what: &'static str,
+        text: impl FnOnce() -> String,
+    ) -> i32 {
+        let h = self.code_block(x, y, w, lines);
+        if self.vis(y, h) {
+            self.block_hit(Rect::new(x, y, w, h), Hit::Copy(Arc::from(text()), what));
+        }
+        h
+    }
+
+    /// Make the block `r` copyable: a corner button and Ctrl+C.
+    fn block_hit(&mut self, r: Rect, hit: Hit) {
+        self.blocks.push((r.intersect(&self.clip), hit.clone()));
+        self.copy_btn(Rect::new(r.right() - 62, r.y + 6, 54, 22), hit);
+    }
+
     /// Code font block; returns its height. Only the visible lines are drawn.
     fn code_block(&mut self, x: i32, y: i32, w: i32, lines: &[Segs]) -> i32 {
         let lhm = (line_h().round() as i32).max(14);
@@ -316,6 +398,26 @@ fn json_lines(text_lines: &[String], json: bool, fg: Rgba, dim: Rgba) -> Vec<Seg
         .collect()
 }
 
+/// The plain text of code lines.
+fn segs_text(lines: &[Segs]) -> String {
+    lines.iter().map(|l| l.iter().map(|(t, _)| t.as_str()).collect::<String>()).collect::<Vec<_>>().join("\n")
+}
+
+/// Tabs laid out in rows that wrap at `x + w`; returns the y below them.
+fn tabs_wrap(p: &mut P, x: i32, w: i32, mut y: i32, items: Vec<(String, bool, Hit)>) -> i32 {
+    let mut cx = x;
+    let row = lh(sz(0.9)) + 8 + 6;
+    for (label, on, hit) in items {
+        let tw = p.tw(&label, on, sz(0.9)) + 20;
+        if cx + tw > x + w && cx > x {
+            cx = x;
+            y += row;
+        }
+        cx += p.tab(cx, y, &label, on, hit);
+    }
+    y + row + 4
+}
+
 /// Simple markdown: headings, bullets, fenced code, paragraphs. Returns the height.
 fn markdown(p: &mut P, x: i32, y0: i32, w: i32, src: &str, size: f32) -> i32 {
     let (fg, dim) = (p.fg(), p.dim());
@@ -333,7 +435,7 @@ fn markdown(p: &mut P, x: i32, y0: i32, w: i32, src: &str, size: f32) -> i32 {
         let t = line.trim_end();
         if t.trim_start().starts_with("```") {
             match code.take() {
-                Some(block) => y += p.code_block(x, y, w, &block) + 8,
+                Some(block) => y += p.code_block_copy(x, y, w, &block, "code", || segs_text(&block)) + 8,
                 None => {
                     flush(p, &mut para, x, &mut y, w, size, fg);
                     code = Some(Vec::new());
@@ -367,7 +469,7 @@ fn markdown(p: &mut P, x: i32, y0: i32, w: i32, src: &str, size: f32) -> i32 {
     }
     flush(p, &mut para, x, &mut y, w, size, fg);
     if let Some(block) = code {
-        y += p.code_block(x, y, w, &block) + 8;
+        y += p.code_block_copy(x, y, w, &block, "code", || segs_text(&block)) + 8;
     }
     (y - y0 - 6).max(0)
 }
@@ -390,6 +492,7 @@ impl ApiView {
         self.poll();
         self.rect = rect;
         self.hits.clear();
+        self.blocks.clear();
         cv.fill(rect, th.background);
         if self.spec.is_none() {
             let mut p = P::new(cv, tx, th, rect, self.mouse);
@@ -439,7 +542,7 @@ impl ApiView {
             self.draw_right(cv, tx, th, right);
             cv.fill(Rect::new(right.x, right.y, 1, right.h), th.chrome.border);
         }
-        self.loading || self.inflight.is_some()
+        self.loading || self.inflight.is_some() || self.flash.is_some_and(|f| f.alive())
     }
 
     // ── left column ──
@@ -567,6 +670,7 @@ impl ApiView {
 
     fn draw_center(&mut self, cv: &mut Canvas, tx: &mut TextCtx, th: &Theme, r: Rect) {
         let mut p = P::new(cv, tx, th, r, self.mouse);
+        p.flash = self.flash;
         let top = r.y - self.scroll_c as i32;
         let end = self.center_body(&mut p, r, top);
         let content = end - top + 32;
@@ -576,6 +680,7 @@ impl ApiView {
         }
         let hits = p.hits;
         self.hits.extend(hits);
+        self.blocks.extend(p.blocks);
     }
 
     fn center_body(&self, p: &mut P, r: Rect, top: i32) -> i32 {
@@ -612,7 +717,8 @@ impl ApiView {
             for s in &spec.servers {
                 let r = Rect::new(x, y, w, 40);
                 p.panel(r, p.card_bg(), c.border.with_alpha(0x90));
-                let u = p.fit(&s.url, w - 24, true, sz(0.95));
+                p.copy_text(Rect::new(x + w - 62, y + 9, 54, 22), "server URL", || s.url.clone());
+                let u = p.fit(&s.url, w - 80, true, sz(0.95));
                 p.text(x + 12, y + 3, &u, c.tab_active_fg, true, sz(0.95));
                 if !s.description.is_empty() {
                     let d = p.fit(&s.description, w - 24, false, sz(0.8));
@@ -712,6 +818,7 @@ impl ApiView {
         if !op.op_id.is_empty() && cx + 120 < x + w {
             p.chip(cx, y + 3, &op.op_id, c.tab_inactive_fg, c.widget_bg, sz(0.78));
         }
+        p.copy_text(Rect::new(x + w - 56 - 62, y + 2, 54, 22), "path", || op.path.clone());
         let src = Rect::new(x + w - 56, y + 2, 56, 24);
         let hov = p.hover(src);
         let col = if hov { c.accent_text } else { c.tab_inactive_fg };
@@ -757,6 +864,7 @@ impl ApiView {
                 if q.deprecated {
                     p.chip(cx, y, "deprecated", c.warning, c.warning.with_alpha(0x24), sz(0.74));
                 }
+                p.copy_text(Rect::new(x + w - 54, y - 2, 54, 22), "parameter name", || q.name.clone());
                 y += lh(sz(1.0)) + 4;
                 let d = schema::deref(&spec.root, &q.schema);
                 if !q.description.is_empty() {
@@ -865,6 +973,8 @@ impl ApiView {
             }
             return y;
         };
+        p.copy_text(Rect::new(x + w - 54, y, 54, 22), "schema", || to_json(sch, true));
+        y += 28;
         y = self.schema_tree(p, spec, sch, x, w, y);
         let text = match ex {
             Some(e) => crate::openapi::tree::to_json(e, true),
@@ -883,7 +993,7 @@ impl ApiView {
         }
         let json = text.starts_with(['{', '[']);
         let lines = json_lines(&shown, json, fg, dim);
-        y + p.code_block(x, y, w, &lines) + 12
+        y + p.code_block_copy(x, y, w, &lines, "example", || text.to_string()) + 12
     }
 
     fn schema_tree(&self, p: &mut P, spec: &Spec, sch: &Node, x: i32, w: i32, mut y: i32) -> i32 {
@@ -991,6 +1101,7 @@ impl ApiView {
                 sz(0.85),
             ) + 8;
         }
+        p.copy_text(Rect::new(x + w - 54, y, 54, 22), "all findings", || copy::findings(&self.findings));
         y += 40;
         if self.findings.is_empty() {
             p.panel(Rect::new(x, y, w, 52), p.card_bg(), c.border.with_alpha(0x90));
@@ -1024,6 +1135,7 @@ impl ApiView {
                     hov,
                     sz(0.85),
                 );
+                p.copy_text(Rect::new(x + w - lw - 14 - 62, y + 9, 54, 22), "finding", || copy::finding(f));
                 p.hit(rr, Hit::Source(f.line));
             }
             y += h + 8;
@@ -1035,6 +1147,7 @@ impl ApiView {
 
     fn draw_right(&mut self, cv: &mut Canvas, tx: &mut TextCtx, th: &Theme, r: Rect) {
         let mut p = P::new(cv, tx, th, r, self.mouse);
+        p.flash = self.flash;
         p.fill(r, th.chrome.sidebar_bg.mix(th.background, 0.5));
         let top = r.y - self.scroll_r as i32;
         let end = self.try_body(&mut p, r, top);
@@ -1045,6 +1158,7 @@ impl ApiView {
         }
         let hits = p.hits;
         self.hits.extend(hits);
+        self.blocks.extend(p.blocks);
     }
 
     fn try_body(&self, p: &mut P, r: Rect, top: i32) -> i32 {
@@ -1166,6 +1280,7 @@ impl ApiView {
         let named: Vec<_> =
             op.params.iter().filter(|q| matches!(q.loc.as_str(), "path" | "query" | "header" | "cookie")).collect();
         if !named.is_empty() {
+            p.pill(x + w - 82, y - 4, "Copy all", Hit::CopyParams);
             y += label(p, x, y, "Parameters");
             for q in named {
                 let nw = p.text(x, y, &q.name, c.tab_active_fg, true, sz(0.92));
@@ -1180,8 +1295,12 @@ impl ApiView {
                         sz(0.78),
                     );
                 }
-                y += lh(sz(0.92)) + 4;
                 let id = ApiView::field_id(&q.loc, &q.name);
+                p.copy_text(Rect::new(x + w - 54, y - 3, 54, 22), "parameter", || {
+                    let v = self.fields.get(&id).map(|f| f.text.trim().to_string()).unwrap_or_default();
+                    if v.is_empty() { q.name.clone() } else { copy::pair(&q.name, &v) }
+                });
+                y += lh(sz(0.92)) + 4;
                 let (t, cur) = tf(&id);
                 let ph = schema::type_label(&spec.root, &q.schema, 0);
                 p.input(Rect::new(x, y, w, 32), &id, t, cur, &ph, focus == Some(id.as_str()), false);
@@ -1192,6 +1311,7 @@ impl ApiView {
 
         // Body.
         if let Some(b) = &op.body {
+            p.copy_text(Rect::new(x + w - 54, y - 4, 54, 22), "request body", || copy::pretty(&self.body));
             y += label(p, x, y, "Body");
             if b.media.len() > 1 {
                 let mut cx = x;
@@ -1249,21 +1369,63 @@ impl ApiView {
             y = self.response_card(p, l, x, w, y);
         }
 
-        // Snippets.
-        y += label(p, x, y, "Code");
-        let mut cx = x;
-        for (i, name) in LANGS.iter().enumerate() {
-            cx += p.tab(cx, y, name, self.lang == i, Hit::Lang(i));
+        // Request URL and code.
+        let req = self.build_req(false);
+        y += label(p, x, y, "Request URL");
+        let url = req.as_ref().map(|r| r.url.clone()).unwrap_or_default();
+        let ur = Rect::new(x, y, w, 34);
+        p.panel(ur, p.card_bg(), c.border.with_alpha(0x90));
+        let shown = p.fit(&url, w - 90, false, sz(0.88));
+        p.text(x + 12, y + (34 - lh(sz(0.88))) / 2, &shown, c.tab_active_fg, false, sz(0.88));
+        if !url.is_empty() {
+            p.blocks.push((ur.intersect(&p.clip), Hit::CopyUrl));
+            p.copy_btn(Rect::new(x + w - 62, y + 6, 54, 22), Hit::CopyUrl);
         }
-        p.button(Rect::new(x + w - 64, y, 64, 28), "Copy", Hit::CopySnippet, false);
-        y += 40;
-        let text = match self.build_req(false) {
-            Ok(req) => snippets::render(self.lang, &req),
-            Err(e) => e,
+        y += 50;
+        y += label(p, x, y, "Code");
+        let groups: Vec<(String, bool, Hit)> = snippets::groups()
+            .into_iter()
+            .map(|g| (g.to_string(), g == snippets::group_of(self.lang), Hit::LangGroup(g)))
+            .collect();
+        y = tabs_wrap(p, x, w, y, groups);
+        let clients: Vec<(String, bool, Hit)> = snippets::of_group(snippets::group_of(self.lang))
+            .into_iter()
+            .map(|i| (snippets::TARGETS[i].name.to_string(), i == self.lang, Hit::Lang(i)))
+            .collect();
+        if clients.len() > 1 {
+            y = tabs_wrap(p, x, w, y - 4, clients);
+        }
+        // Quick copies.
+        let mut cx = x;
+        let quick: [(&str, Hit); 6] = [
+            ("Copy snippet", Hit::CopySnippet),
+            ("Copy as cURL", Hit::CopyAs(snippets::CURL)),
+            ("Copy as HTTPie", Hit::CopyAs(snippets::HTTPIE)),
+            ("Copy URL", Hit::CopyUrl),
+            ("Copy params", Hit::CopyParams),
+            ("Copy headers", Hit::CopyReqHeaders),
+        ];
+        let size = sz(0.82);
+        for (name, hit) in quick {
+            let pw = p.tw(name, true, size).max(p.tw("Copied", true, size)) + 24;
+            if cx + pw > x + w && cx > x {
+                cx = x;
+                y += lh(size) + 8 + 6;
+            }
+            cx += p.pill(cx, y, name, hit);
+        }
+        y += lh(size) + 8 + 14;
+        let text = match &req {
+            Ok(req) => snippets::render(self.lang, req),
+            Err(e) => e.clone(),
         };
         let fg = p.fg();
         let lines: Vec<Segs> = text.lines().map(|l| vec![(l.to_string(), fg)]).collect();
-        y + p.code_block(x, y, w, &lines) + 8
+        let h = p.code_block(x, y, w, &lines);
+        if req.is_ok() && p.vis(y, h) {
+            p.block_hit(Rect::new(x, y, w, h), Hit::CopySnippet);
+        }
+        y + h + 8
     }
 
     fn sel_op(&self) -> usize {
@@ -1281,6 +1443,7 @@ impl ApiView {
                 let h = p.wrap(e, w - 28, false, sz(0.92)).len() as i32 * lh(sz(0.92)) + 28;
                 p.panel(Rect::new(x, y, w, h), c.error.with_alpha(0x1c), c.error.with_alpha(0x80));
                 p.para(x + 14, y + 14, w - 28, e, c.error.readable_on(&[p.th.background], 4.5), false, sz(0.92));
+                p.copy_text(Rect::new(x + w - 62, y + 6, 54, 22), "error", || e.clone());
                 return y + h + 20;
             }
             Ok(r) => r,
@@ -1318,7 +1481,8 @@ impl ApiView {
         }
         y += 34;
         if !l.req.url.is_empty() {
-            let line = p.fit(&format!("{} {}", l.req.method, l.req.url), w, false, sz(0.8));
+            p.pill(x + w - 82, y - 6, "Copy all", Hit::CopyResp);
+            let line = p.fit(&format!("{} {}", l.req.method, l.req.url), w - 90, false, sz(0.8));
             p.text(x, y - 4, &line, c.tab_inactive_fg, false, sz(0.8));
             y += lh(sz(0.8));
         }
@@ -1331,7 +1495,16 @@ impl ApiView {
         cx += p.tab(cx, y, "Body", self.resp_tab == 0, Hit::RespTab(0));
         cx += p.tab(cx, y, "Headers", self.resp_tab == 1, Hit::RespTab(1));
         p.tab(cx, y, &vlabel, self.resp_tab == 2, Hit::RespTab(2));
-        p.button(Rect::new(x + w - 64, y, 64, 28), "Copy", Hit::CopyBody, false);
+        let tab_copy = match self.resp_tab {
+            0 => Hit::CopyBody,
+            1 => Hit::Copy(Arc::from(copy::headers(&r.headers)), "response headers"),
+            _ => match &l.verdict {
+                Some(Verdict::Fail(v)) => Hit::Copy(Arc::from(copy::issues(v)), "validation issues"),
+                Some(Verdict::Pass) => Hit::Copy(Arc::from("PASS"), "validation"),
+                _ => Hit::CopyBody,
+            },
+        };
+        p.button(Rect::new(x + w - 64, y, 64, 28), "Copy", tab_copy, false);
         y += 40;
         let (fg, dim) = (p.fg(), p.dim());
         match self.resp_tab {
@@ -1348,13 +1521,15 @@ impl ApiView {
                         ));
                     }
                     let lines = json_lines(&shown, l.json, fg, dim);
-                    y += p.code_block(x, y, w, &lines) + 8;
+                    let h = p.code_block(x, y, w, &lines);
+                    p.block_hit(Rect::new(x, y, w, h), Hit::CopyBody);
+                    y += h + 8;
                 }
             }
             1 => {
                 let lines: Vec<Segs> =
                     r.headers.iter().map(|(k, v)| vec![(format!("{k}: "), c.info), (v.clone(), fg)]).collect();
-                y += p.code_block(x, y, w, &lines) + 8;
+                y += p.code_block_copy(x, y, w, &lines, "response headers", || copy::headers(&r.headers)) + 8;
             }
             _ => match &l.verdict {
                 Some(Verdict::Pass) => {
@@ -1379,6 +1554,7 @@ impl ApiView {
                         let h = lh(sz(0.85)) + lines.len() as i32 * lh(sz(0.88)) + 18;
                         p.panel(Rect::new(x, y, w, h), c.error.with_alpha(0x14), c.error.with_alpha(0x60));
                         p.text(x + 14, y + 7, &iss.path, c.warning, true, sz(0.85));
+                        p.copy_text(Rect::new(x + w - 62, y + 5, 54, 22), "issue", || copy::pair(&iss.path, &iss.msg));
                         for (li, line) in lines.iter().enumerate() {
                             p.text(
                                 x + 14,
