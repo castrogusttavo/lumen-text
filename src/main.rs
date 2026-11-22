@@ -206,6 +206,7 @@ mod ui_modal;
 mod ui_toast;
 mod ui_empty;
 mod ui_keycap;
+mod ui_viewer;
 mod undo_store;
 mod update;
 mod vim;

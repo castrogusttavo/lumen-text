@@ -84,6 +84,10 @@ impl App {
             }
             return true;
         }
+        if let Some(&(_, step)) = v.hud.iter().find(|(r, _)| r.contains(x, y)) {
+            self.img_zoom_cmd(step);
+            return true;
+        }
         let Some(v) = self.img_shown_mut().filter(|v| v.rect.contains(x, y)) else { return false };
         v.begin_drag(x, y);
         self.focus = Focus::Editor;
@@ -99,7 +103,11 @@ impl App {
             self.request_redraw();
             return true;
         }
-        v.rect.contains(x, y)
+        let inside = v.rect.contains(x, y);
+        if v.set_hover(x, y) {
+            self.request_redraw();
+        }
+        inside
     }
 
     pub fn img_release(&mut self) {
@@ -111,7 +119,7 @@ impl App {
     /// Hand over the switch, open / closed hand over the picture.
     pub fn img_cursor(&self, x: f64, y: f64) -> Option<CursorIcon> {
         let v = self.docs.get(self.active)?.img.as_deref()?;
-        if v.toggle.iter().any(|(r, _)| r.contains(x, y)) {
+        if v.toggle.iter().any(|(r, _)| r.contains(x, y)) || v.hud.iter().any(|(r, _)| r.contains(x, y)) {
             return Some(CursorIcon::Pointer);
         }
         let v = self.img_shown()?;

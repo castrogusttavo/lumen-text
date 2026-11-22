@@ -19,6 +19,7 @@
 use crate::{
     buffer::Buffer,
     doc::{Doc, DrawOpts},
+    ds,
     mdimg::{self, Decoded, Pix},
     theme::{Rgba, Theme},
     ui::{Canvas, Rect, TextCtx},
@@ -195,6 +196,10 @@ pub struct ImgView {
     pub dev_img: Rect,
     /// "Preview | Source" buttons of the last frame (SVG): (rect, is the preview button).
     pub toggle: Vec<(Rect, bool)>,
+    /// Zoom pill buttons of the last frame: (rect, zoom step; 0 = fit / 100 %).
+    pub hud: Vec<(Rect, i32)>,
+    /// The button of `toggle` / `hud` under the pointer.
+    hover: Option<Rect>,
     /// Zoom of the last frame (status bar, steps).
     pub shown_zoom: f32,
     frames: Vec<Pix>,
@@ -229,6 +234,8 @@ impl ImgView {
             rect: Rect::default(),
             dev_img: Rect::default(),
             toggle: Vec::new(),
+            hud: Vec::new(),
+            hover: None,
             shown_zoom: 1.0,
             frames: Vec::new(),
             ends: Vec::new(),
@@ -407,6 +414,28 @@ impl ImgView {
         s
     }
 
+    /// "1920 × 1080 px · 245.3 KB · animated": what the info chip shows (no zoom, it has its own).
+    pub fn info_text(&self) -> String {
+        let size = human_bytes(self.file_len);
+        let mut s = match self.natural {
+            Some((w, h)) => format!("{w} × {h} px · {size}"),
+            None => size,
+        };
+        if self.frames.len() > 1 || self.badge {
+            s.push_str(" · animated");
+        }
+        s
+    }
+
+    /// Track the pointer over the toolbar buttons. True when the lit button changed (redraw).
+    pub fn set_hover(&mut self, x: f64, y: f64) -> bool {
+        let now = self.toggle.iter().map(|(r, _)| r).chain(self.hud.iter().map(|(r, _)| r)).find(|r| r.contains(x, y));
+        let now = now.copied();
+        let changed = now != self.hover;
+        self.hover = now;
+        changed
+    }
+
     // ── drawing ──
 
     /// Draw the picture into `rect`; `ver` / `buf` are the tab's text (the SVG source). True while
@@ -490,36 +519,76 @@ impl ImgView {
     }
 
     fn message(&self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, msg: &str) {
-        let w = tx.ui_width(msg, false);
-        tx.draw_ui(cv, rect.x + (rect.w - w) / 2, rect.y + rect.h / 2 - 9, msg, theme.line_number, rect, false);
+        let hint = if msg.starts_with("Loading") { "" } else { "Check the file, or open it as text" };
+        cv.empty_state(tx, &theme.chrome, rect, "ui/image", msg, hint);
     }
 
     /// The SVG "Preview | Source" switch, top right of the pane (drawn in both modes).
     pub fn draw_toggle(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect) {
+        let lit = self.toggle.iter().position(|(r, _)| Some(*r) == self.hover);
         self.toggle.clear();
         if self.kind != Kind::Svg || rect.w < 240 {
             return;
         }
+        let active = if self.preview { 0 } else { 1 };
+        let rects =
+            cv.seg_control(tx, &theme.chrome, (rect.right() - 16, rect.y + 10), &["Preview", "Source"], active, lit);
+        self.toggle = rects.into_iter().zip([true, false]).collect();
+    }
+
+    /// Bottom of a shown picture: the info chip (size, bytes) and the zoom pill (`-`, level, `+`, Fit).
+    pub fn draw_hud(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect) {
+        let lit = self.hud.iter().position(|(r, _)| Some(*r) == self.hover);
+        self.hud.clear();
+        if !self.preview || self.frames.is_empty() || self.natural.is_none() || rect.w < 320 || rect.h < 120 {
+            return;
+        }
         let c = theme.chrome;
-        let (h, pad) = (24, 10);
-        let parts = [("Preview", true), ("Source", false)];
-        let widths: Vec<i32> = parts.iter().map(|(l, _)| tx.ui_width(l, false) + 2 * pad).collect();
-        let total: i32 = widths.iter().sum();
-        let mut x = rect.right() - total - 16;
-        let y = rect.y + 10;
-        let bg = Rect::new(x - 3, y - 3, total + 6, h + 6);
-        cv.fill_round(bg, 9, c.border);
-        cv.fill_round(bg.inset(1), 8, c.widget_bg);
-        for ((label, is_preview), w) in parts.into_iter().zip(widths) {
-            let r = Rect::new(x, y, w, h);
-            let on = is_preview == self.preview;
-            if on {
-                cv.fill_round(r, 6, c.accent.with_alpha(0x40));
+        let (btn, gap) = (ds::HIT_MIN, ds::S1);
+        let level = tx.ui_width("1600%", true);
+        let fit_w = tx.ui_width("Fit", false) + 2 * ds::S2;
+        let total = gap + btn + gap + level + gap + btn + gap + 1 + gap + fit_w + gap;
+        let h = btn + 2 * gap;
+        let pill = Rect::new(rect.right() - ds::S3 - total, rect.bottom() - ds::S3 - h, total, h);
+        cv.shadow(pill, ds::R_FLOAT);
+        cv.card(pill, ds::R_FLOAT, c.widget_bg, c.border);
+        let by = pill.y + gap;
+        let minus = Rect::new(pill.x + gap, by, btn, btn);
+        let lvl_x = minus.right() + gap;
+        let plus = Rect::new(lvl_x + level + gap, by, btn, btn);
+        let div_x = plus.right() + gap;
+        let fit = Rect::new(div_x + 1 + gap, by, fit_w, btn);
+        cv.fill(Rect::new(div_x, by + ds::S2, 1, btn - 2 * ds::S2), c.border);
+        let pct = format!("{}%", (self.shown_zoom * 100.0).round());
+        let w = tx.ui_width(&pct, true);
+        tx.draw_ui(cv, lvl_x + (level - w) / 2, by + (btn - 18) / 2, &pct, c.tab_active_fg, pill, true);
+        for (i, (r, step)) in [(minus, -1), (plus, 1), (fit, 0)].into_iter().enumerate() {
+            let on_fit = step == 0 && self.zoom.is_none();
+            if lit == Some(i) {
+                cv.fill_round(r, ds::R_CTRL, c.list_hover_bg);
+            } else if on_fit {
+                cv.fill_round(r, ds::R_CTRL, c.accent.with_alpha(0x30));
             }
-            let fg = if on { c.accent_text } else { c.tab_inactive_fg };
-            tx.draw_ui(cv, x + pad, y + (h - 18) / 2, label, fg, r, on);
-            self.toggle.push((r, is_preview));
-            x += w;
+            match step {
+                0 => {
+                    let fg = if on_fit { c.accent_text } else { c.tab_inactive_fg };
+                    tx.draw_ui(cv, r.x + ds::S2, r.y + (btn - 18) / 2, "Fit", fg, r, on_fit);
+                }
+                s => {
+                    let icon = if s < 0 { "ui/minus" } else { "ui/plus" };
+                    let at = r.x + (btn - ds::ICON_S) / 2;
+                    tx.icon(cv, icon, at, r.y + (btn - ds::ICON_S) / 2, ds::ICON_S, c.tab_active_fg, r);
+                }
+            }
+            self.hud.push((r, step));
+        }
+        // Info chip, bottom left, when it fits beside the pill.
+        let info = self.info_text();
+        let iw = tx.ui_width(&info, false) + 2 * ds::S3;
+        let chip = Rect::new(rect.x + ds::S3, pill.y, iw, h);
+        if chip.right() + ds::S3 <= pill.x {
+            cv.card(chip, ds::R_FLOAT, c.widget_bg, c.border);
+            tx.draw_ui(cv, chip.x + ds::S3, chip.y + (h - 18) / 2, &info, c.tab_inactive_fg, chip, false);
         }
     }
 }
@@ -608,6 +677,7 @@ impl Doc {
             self.draw_text(cv, tx, theme, rect, o)
         };
         v.draw_toggle(cv, tx, theme, rect);
+        v.draw_hud(cv, tx, theme, rect);
         self.img = Some(v);
         busy
     }

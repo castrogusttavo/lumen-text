@@ -3,7 +3,7 @@
 use crate::{
     app::App,
     app_overlay::{Action, Item},
-    git,
+    ds, git,
     gitx::{self, Pick, Row, RowKind, Side},
     theme::Rgba,
     ui::{Canvas, Rect, line_h},
@@ -151,6 +151,16 @@ impl DiffView {
     /// The block containing row `k`.
     pub fn block_of(&self, k: usize) -> Option<usize> {
         self.blocks.iter().position(|&(a, b)| (a..b).contains(&k))
+    }
+
+    /// Lines `(added, removed)` the rows show: a changed row counts on both sides.
+    pub fn stats(&self) -> (usize, usize) {
+        self.rows.iter().fold((0, 0), |(a, d), r| match r.kind {
+            RowKind::Same => (a, d),
+            RowKind::Added => (a + 1, d),
+            RowKind::Removed => (a, d + 1),
+            RowKind::Changed => (a + 1, d + 1),
+        })
     }
 
     /// Height of the header (a proposal's is taller: two lines and the Accept / Reject pills).
@@ -786,7 +796,18 @@ impl App {
             (false, _) => format!("{}   ·   Esc closes · n next block", dv.right_name),
         };
         let fg = self.theme.foreground;
+        let (added, removed) = dv.stats();
         self.tx.draw_ui(cv, editor.x + 14, editor.y + 5, &left, fg, Rect::new(editor.x, editor.y, half, head_h), true);
+        // `+N` / `-N` chips after the title, when the left half has room for them.
+        let mut cx = editor.x + 14 + self.tx.ui_width(&left, true) + ds::S3;
+        for (n, sign, col) in [(added, '+', c.git_added), (removed, '-', c.git_deleted)] {
+            let text = format!("{sign}{n}");
+            let w = self.tx.ui_width_sized(&text, true, 11.0) + 2 * ds::S2;
+            if n > 0 && cx + w < editor.x + half - ds::S2 {
+                cx += cv.chip(&mut self.tx, (cx, editor.y + (head_h - 18) / 2), &text, col, col.with_alpha(0x22))
+                    + ds::S1;
+            }
+        }
         self.tx.draw_ui(
             cv,
             editor.x + half + 14,
@@ -894,6 +915,18 @@ mod tests {
             git_run(&d, a).unwrap();
         }
         d
+    }
+
+    #[test]
+    fn stats_count_added_and_removed_lines() {
+        let row = |kind| Row { left: None, right: None, kind };
+        let dv = DiffView::plain(
+            String::new(),
+            String::new(),
+            String::new(),
+            vec![row(RowKind::Same), row(RowKind::Added), row(RowKind::Removed), row(RowKind::Changed)],
+        );
+        assert_eq!(dv.stats(), (2, 2));
     }
 
     #[test]
