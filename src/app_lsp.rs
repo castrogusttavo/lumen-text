@@ -6,6 +6,7 @@ use crate::{
     app_overlay::{Action, Item, Overlay, PickKind},
     buffer::EditKind,
     doc::{Diag, Doc, LspEdit, path_to_uri, uri_to_path},
+    ds,
     fuzzy::fuzzy,
     lsp::{self, DefKind, Lsp, Msg, Pending},
     lspmerge::MultiKind,
@@ -55,6 +56,8 @@ pub struct Completion {
     pub start: usize,
     /// Length of the prefix the list was fetched for; typing less than this needs a new request.
     pub seed_len: usize,
+    /// Fade-in; carried over when the list is refetched so typing does not make it blink.
+    pub fade: crate::ui_popup::PopupFade,
 }
 
 /// One `Ctrl+.` round. The menu opens with the first items there are and every later answer is
@@ -2189,8 +2192,16 @@ impl App {
         // The user's, the project's and the built-in snippets ride along with the server's list.
         items.extend(crate::app_snippets::snippet_citems(&self.root, d.lang));
         // An empty server list can still get names from the import index (added by the refilter).
-        let mut c =
-            Completion { items, filtered: Vec::new(), sel: 0, scroll: 0, start, seed_len: prefix.chars().count() };
+        let fade = self.completion.as_ref().map(|o| o.fade).unwrap_or_default();
+        let mut c = Completion {
+            items,
+            filtered: Vec::new(),
+            sel: 0,
+            scroll: 0,
+            start,
+            seed_len: prefix.chars().count(),
+            fade,
+        };
         self.refilter_completion_into(&mut c);
         self.completion = if c.filtered.is_empty() { None } else { Some(c) };
         // No `release_memory()` here: malloc_trim walks the whole heap, synchronously, right before
@@ -2381,7 +2392,7 @@ impl App {
 
     // ───────────── drawing ─────────────
 
-    pub fn draw_completion(&mut self, cv: &mut Canvas) {
+    pub fn draw_completion(&mut self, cv: &mut Canvas, dt: f64) -> bool {
         self.layout.completion_rows.clear();
         // Drop a stale popup: the cursor left the word it was opened for (jump, click, goto…).
         if let (Some(c), Some(d)) = (&self.completion, self.docs.get(self.active)) {
@@ -2391,17 +2402,18 @@ impl App {
                 self.completion = None;
             }
         }
-        let Some(c) = &self.completion else { return };
-        let Some(d) = self.docs.get(self.active) else { return };
-        let Some((x, y)) = d.screen_pos(c.start) else { return };
+        let busy = self.completion.as_mut().is_some_and(|c| c.fade.step(dt));
+        let Some(c) = &self.completion else { return false };
+        let Some(d) = self.docs.get(self.active) else { return false };
+        let Some((x, y)) = d.screen_pos(c.start) else { return false };
         let chrome = self.theme.chrome;
         let cell = self.tx.cell_w;
         let ed = self.layout.editor;
         let below = ed.bottom() - (y + line_h() as i32 + 2) - 6;
         let above = y - ed.y - 2 - 6;
-        let go_below = below >= 22 * 4 || below >= above;
+        let go_below = below >= COMP_ROW * 4 || below >= above;
         let room = if go_below { below } else { above };
-        let rows = c.filtered.len().min(10).min((room / 22).max(1) as usize);
+        let rows = c.filtered.len().min(10).min((room / COMP_ROW).max(1) as usize);
         let widest = c
             .filtered
             .iter()
@@ -2409,40 +2421,64 @@ impl App {
             .max()
             .unwrap_or(20)
             .clamp(24, 70);
-        let w = (widest as f32 * cell) as i32 + 28;
-        let h = rows as i32 * 22 + 6;
+        let w = (widest as f32 * cell) as i32 + COMP_ICON_COL + 24;
+        let h = rows as i32 * COMP_ROW + 2 * COMP_PAD;
         let ry = if go_below { y + line_h() as i32 + 2 } else { y - h - 2 };
         let rx = x.min(ed.right() - w - 4).max(ed.x);
         let r = Rect::new(rx, ry, w, h);
-        cv.shadow(r, 10);
-        cv.card(r, 10, chrome.widget_bg, chrome.border);
+        let fade_k = c.fade.k();
+        let backdrop = (fade_k < 1.0).then(|| {
+            let wide = Rect::new(r.x - COMP_DOC_W - 12, r.y, w + 2 * (COMP_DOC_W + 12), r.h);
+            cv.grab(crate::ui_popup::shadow_area(wide))
+        });
+        cv.pop_card(r, &chrome);
         let fg = self.theme.foreground;
-        let dim = self.theme.chrome.tab_inactive_fg;
+        let dim = chrome.tab_inactive_fg;
+        let prefix = if d.ed.head() > c.start { d.buf.slice(c.start, d.ed.head()) } else { String::new() };
         let mut layout_rows = Vec::new();
         // Mid-glide: rows shift up by a fraction of a row, one more shows at the bottom, all clipped.
-        let off = self.region_off(crate::scrollreg::Reg::Completion, 22);
-        let lclip = Rect::new(r.x + 2, r.y + 3, r.w - 4, rows as i32 * 22);
+        let off = self.region_off(crate::scrollreg::Reg::Completion, COMP_ROW);
+        let lclip = Rect::new(r.x + 2, r.y + COMP_PAD, r.w - 4, rows as i32 * COMP_ROW);
         for (k, &i) in c.filtered.iter().enumerate().skip(c.scroll).take(rows + (off > 0) as usize) {
             let it = &c.items[i];
-            let yy = r.y + 3 + (k - c.scroll) as i32 * 22 - off;
-            let row_full = Rect::new(r.x + 2, yy, r.w - 4, 22);
+            let yy = r.y + COMP_PAD + (k - c.scroll) as i32 * COMP_ROW - off;
+            let row_full = Rect::new(r.x + 4, yy, r.w - 8, COMP_ROW);
             let rr = row_full.intersect(&lclip);
             if k == c.sel {
-                cv.fill_clip(row_full, chrome.list_active_bg, lclip);
+                let sel = Rect::new(row_full.x, row_full.y + 1, row_full.w, row_full.h - 2);
+                cv.fill_round_clip(sel, ds::R_CTRL, chrome.list_active_bg, lclip);
+                let bar = Rect::new(sel.x + 1, sel.y + 5, 3, sel.h - 10);
+                cv.fill_round_clip(bar, 1, chrome.accent, lclip);
             }
-            let (glyph, col) = kind_glyph(it.kind, &self.theme);
-            self.tx.draw_line(cv, rr.x + 6, yy + 1, glyph, col, rr);
-            self.tx.draw_line(cv, rr.x + 6 + self.tx.cells(2), yy + 1, &it.label, fg, rr);
+            let (icon_col, lx) = (kind_color(it.kind, &self.theme), rr.x + COMP_ICON_COL);
+            self.tx.icon(cv, crate::ui_popup::kind_icon(it.kind), rr.x + 9, yy + (COMP_ROW - 14) / 2, 14, icon_col, rr);
+            let matched = if prefix.is_empty() {
+                Vec::new()
+            } else {
+                crate::fuzzy::fuzzy(&prefix, &it.label).map(|m| m.1).unwrap_or_default()
+            };
+            let mut n = 0;
+            for (run, on) in crate::ui_popup::match_runs(&it.label, &matched) {
+                let col = if on { chrome.accent_text } else { fg };
+                let rx = lx + self.tx.cells(n);
+                self.tx.draw_line(cv, rx, yy + 2, &run, col, rr);
+                n += run.chars().count();
+            }
             if !it.detail.is_empty() {
-                let dx = rr.x + 6 + self.tx.cells(2 + it.label.chars().count() + 1);
-                let room = ((rr.right() - dx - 6) as f32 / cell) as usize;
+                let room = ((rr.right() - 10 - (lx + self.tx.cells(n + 2))) as f32 / cell).max(0.0) as usize;
                 let det: String = it.detail.chars().take(room).collect();
-                self.tx.draw_line(cv, dx, yy + 1, &det, dim, rr);
+                let dx = rr.right() - 10 - self.tx.cells(det.chars().count());
+                self.tx.draw_line(cv, dx, yy + 2, &det, dim, rr);
             }
             layout_rows.push((rr, k));
         }
+        // Docs of the highlighted item: a second card next to the list (never over the caret line).
+        let docs = c.filtered.get(c.sel).map(|&i| (c.items[i].detail.clone(), item_doc(&c.items[i].raw)));
         let (total, pos) = (c.filtered.len(), c.scroll);
         self.layout.completion_rows = layout_rows;
+        if let Some((head, body)) = docs {
+            self.draw_completion_docs(cv, r, ed, &head, &body);
+        }
         if total > rows {
             self.region_bar(
                 cv,
@@ -2451,11 +2487,61 @@ impl App {
                 total as f64,
                 rows as f64,
                 pos as f64,
-                22.0,
+                COMP_ROW as f64,
                 true,
             );
         }
+        if let Some(b) = backdrop {
+            cv.fade_toward(&b, fade_k);
+        }
+        busy
     }
+
+    /// The side card of the completion list: signature (`head`) and documentation (`body`).
+    fn draw_completion_docs(&mut self, cv: &mut Canvas, list: Rect, ed: Rect, head: &str, body: &str) {
+        if head.trim().is_empty() && body.trim().is_empty() {
+            return;
+        }
+        let chrome = self.theme.chrome;
+        let inner = COMP_DOC_W - 2 * ds::S3;
+        let tx = &mut self.tx;
+        let head_lines = crate::ui_popup::wrap_words(head, inner, 3, |s| tx.ui_width(s, true));
+        let body_lines = crate::ui_popup::wrap_words(body, inner, 8, |s| tx.ui_width(s, false));
+        let gap = if head_lines.is_empty() || body_lines.is_empty() { 0 } else { ds::S2 };
+        let h = 2 * ds::S3 + (head_lines.len() + body_lines.len()) as i32 * COMP_DOC_LINE + gap;
+        let right = list.right() + 6;
+        let x = if right + COMP_DOC_W <= ed.right() { right } else { list.x - 6 - COMP_DOC_W };
+        if x < ed.x {
+            return;
+        }
+        let card = Rect::new(x, list.y, COMP_DOC_W, h);
+        cv.pop_card(card, &chrome);
+        let clip = Rect::new(card.x + 1, card.y + 1, card.w - 2, card.h - 2);
+        let mut ty = card.y + ds::S3;
+        for l in &head_lines {
+            tx.draw_ui(cv, card.x + ds::S3, ty, l, self.theme.foreground, clip, true);
+            ty += COMP_DOC_LINE;
+        }
+        ty += gap;
+        for l in &body_lines {
+            tx.draw_ui(cv, card.x + ds::S3, ty, l, chrome.tab_inactive_fg, clip, false);
+            ty += COMP_DOC_LINE;
+        }
+    }
+}
+
+/// Row height, vertical padding, icon column and docs-card metrics of the completion popup.
+const COMP_ROW: i32 = 24;
+const COMP_PAD: i32 = 4;
+const COMP_ICON_COL: i32 = 30;
+const COMP_DOC_W: i32 = 300;
+const COMP_DOC_LINE: i32 = 18;
+
+/// Plain text of an item's `documentation` (a string or `{kind, value}` markup), fences removed.
+fn item_doc(raw: &Value) -> String {
+    let doc = &raw["documentation"];
+    let text = doc.as_str().or_else(|| doc["value"].as_str()).unwrap_or("");
+    text.lines().filter(|l| !l.trim_start().starts_with("```")).collect::<Vec<_>>().join("\n").replace('`', "")
 }
 
 /// Hand freed heap pages back to the OS (large JSON responses otherwise stay resident).
@@ -2466,20 +2552,14 @@ pub fn release_memory() {
     }
 }
 
-fn kind_glyph(kind: u32, t: &crate::theme::Theme) -> (&'static str, Rgba) {
+fn kind_color(kind: u32, t: &crate::theme::Theme) -> Rgba {
     let c = &t.chrome;
     match kind {
-        2..=4 => ("ƒ", Rgba(0xb1, 0x80, 0xd7, 0xff)),
-        5 | 10 => ("o", Rgba(0x75, 0xbe, 0xff, 0xff)),
-        6 => ("x", Rgba(0x75, 0xbe, 0xff, 0xff)),
-        7 | 22 => ("C", Rgba(0xee, 0x9d, 0x28, 0xff)),
-        8 => ("I", c.info),
-        9 => ("M", c.info),
-        13 | 20 => ("E", Rgba(0xee, 0x9d, 0x28, 0xff)),
-        14 => ("k", t.foreground),
-        21 => ("c", Rgba(0x75, 0xbe, 0xff, 0xff)),
-        25 => ("T", c.info),
-        _ => ("·", t.chrome.tab_inactive_fg),
+        2..=4 => c.accent_text,
+        5 | 6 | 9 | 10 | 21 => c.info,
+        7 | 8 | 13 | 20 | 22 | 25 => c.warning,
+        15 => c.git_added,
+        _ => c.tab_inactive_fg,
     }
 }
 

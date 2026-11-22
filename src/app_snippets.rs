@@ -234,7 +234,8 @@ impl App {
             return;
         }
         let seed_len = head - start;
-        let mut c = Completion { items, filtered: Vec::new(), sel: 0, scroll: 0, start, seed_len };
+        let mut c =
+            Completion { items, filtered: Vec::new(), sel: 0, scroll: 0, start, seed_len, fade: Default::default() };
         self.refilter_completion_into(&mut c);
         self.completion = if c.filtered.is_empty() { None } else { Some(c) };
         self.request_redraw();
