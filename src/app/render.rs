@@ -199,6 +199,7 @@ impl App {
             let f = self.theme.foreground;
             cv.fill_round(r, rad, f.with_alpha(if self.theme.background.luminance() < 0.5 { 0x16 } else { 0x12 }));
         }
+        self.draw_inline_hint(cv);
         self.draw_find(cv);
         busy |= self.draw_completion(cv, dt);
         busy |= self.draw_hover(cv, dt);

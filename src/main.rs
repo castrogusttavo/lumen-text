@@ -209,6 +209,7 @@ mod ui_keycap;
 mod ui_viewer;
 mod ui_vwr;
 mod ui_popup;
+mod ui_chip;
 mod undo_store;
 mod update;
 mod vim;
