@@ -288,6 +288,8 @@ pub struct App {
     pub tabs_scroll: f64,
     pub tabs_max: f64,
     pub tabs_seen: Option<usize>,
+    /// Animation state of the tab strip and the diagnostics chip (see `app_tabs`).
+    pub tabs_fx: crate::app_tabs::TabsFx,
     /// Tab under the pointer and whether the pointer is on its close button (for redraws).
     pub tab_hover: Option<(usize, bool)>,
     pub sidebar_bar: Option<crate::ui::VBar>,
@@ -462,6 +464,7 @@ impl App {
             tabs_scroll: 0.0,
             tabs_max: 0.0,
             tabs_seen: None,
+            tabs_fx: Default::default(),
             tab_hover: None,
             sidebar_bar: None,
             sidebar_bar_hot: false,

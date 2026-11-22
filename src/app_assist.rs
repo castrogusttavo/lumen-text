@@ -436,19 +436,21 @@ mod tests {
         caret(&mut app, i, 2, 0); // the caret's line has no problem
         let (a, b) = frames(&mut app, |app| app.apply_setting("inline_diagnostics", &json!("all")));
         let d = &app.docs[i];
+        // The diagnostics chip fades in at the top-right corner; the test looks left of it.
+        const CHIP_ROOM: i32 = 120;
         let (lh, w) = (crate::ui::line_h() as i32, app.size.0 as i32);
         let text_x = d.rect.x + d.gutter_w();
         let end = text_x + (10.0 * d.cell_w).round() as i32; // "let a = 1;"
         let row0 = (d.rect.y + 2, d.rect.y + lh - 4); // above the squiggle
-        assert!(diff(&a, &b, w, (end + 1, row0.0, d.rect.right() - 20, row0.1)) > 20, "message after the code");
+        assert!(diff(&a, &b, w, (end + 1, row0.0, d.rect.right() - CHIP_ROOM, row0.1)) > 20, "message after the code");
         assert_eq!(diff(&a, &b, w, (d.rect.x, row0.0, end + 1, row0.1)), 0, "the code is untouched");
         let row1 = (d.rect.y + lh, d.rect.y + 2 * lh);
         assert_eq!(
-            diff(&a, &b, w, (d.rect.x, row1.0, d.rect.right(), row1.1)),
+            diff(&a, &b, w, (d.rect.x, row1.0, d.rect.right() - CHIP_ROOM, row1.1)),
             0,
             "a line filling the row shows nothing"
         );
-        let area = (d.rect.x, d.rect.y, d.rect.right(), d.rect.bottom());
+        let area = (d.rect.x, d.rect.y, d.rect.right() - CHIP_ROOM, d.rect.bottom());
         // Current line only: the caret's line has no problem, so nothing shows anywhere.
         let (a2, b2) = frames(&mut app, |app| app.apply_setting("inline_diagnostics", &json!("current_line")));
         assert!(diff(&a2, &b2, w, (area.0, row0.0, area.2, row0.1)) > 20, "line 0 message gone");

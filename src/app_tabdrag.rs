@@ -274,7 +274,7 @@ impl App {
             let g = Rect::new(fr.x - i, fr.y - i + 3, fr.w + 2 * i, fr.h + 2 * i);
             cv.fill_round(g, 8 + i, crate::theme::Rgba(0, 0, 0, 10));
         }
-        cv.card(fr, 8, c.tab_active_bg, c.border);
+        cv.card(fr, crate::ds::R_ROW, c.tab_active_bg, c.accent.with_alpha(0x90));
         let fg = c.tab_active_fg;
         let icon = self.tx.icons.file_icon(&doc_name);
         let (name, _) = self.tab_label(d.doc, true);

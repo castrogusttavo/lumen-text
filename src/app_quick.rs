@@ -11,17 +11,18 @@ use crate::{
 /// One button of the strip.
 const BTN: i32 = 28;
 const PAD: i32 = 4;
-/// Buttons of the strip, left to right: find in file, all settings, quick editor settings.
-const ICONS: [&str; 3] = ["hugeicons/search", "ui/option", "ui/settings"];
+/// Buttons of the strip, left to right: open tabs list, find in file, all settings, quick editor settings.
+const ICONS: [&str; 4] = ["ui/chevron_down", "hugeicons/search", "ui/option", "ui/settings"];
 /// Width reserved at the right end of the tab bar.
-pub const QUICK_W: i32 = BTN * 3 + PAD * 2;
+pub const QUICK_W: i32 = BTN * 4 + PAD * 2;
 
 fn on_off(b: bool) -> String {
     if b { "on".into() } else { "off".into() }
 }
 
 /// Tooltip of each button: (title, command id of its shortcut, detail).
-pub const TIPS: [(&str, Option<&str>, &str); 3] = [
+pub const TIPS: [(&str, Option<&str>, &str); 4] = [
+    ("Open tabs", None, "Every open file, even those scrolled out of the strip"),
     ("Find in file", Some("Find"), "Search the open file"),
     ("All settings", Some("OpenSettings"), "Every option, grouped in pages"),
     ("Editor settings", None, "Wrap, minimap, line numbers, whitespace, zoom, zen"),
@@ -69,13 +70,35 @@ impl App {
             return false;
         }
         match (0..ICONS.len()).find(|&i| button_rect(strip, i).inset(-1).contains(x, y)) {
-            Some(0) => self.open_find(false),
-            Some(1) => self.open_settings(crate::settingsui::Page::Settings),
+            Some(0) => self.open_tab_list(),
+            Some(1) => self.open_find(false),
+            Some(2) => self.open_settings(crate::settingsui::Page::Settings),
             Some(_) => self.open_quick_settings(),
             None => {}
         }
         self.request_redraw();
         true
+    }
+
+    /// Every open file with a path as one list (the strip scrolls; this reaches any tab at once).
+    pub fn open_tab_list(&mut self) {
+        let mut items = Vec::new();
+        let mut sel = 0;
+        for i in crate::app_ctxmenu::tab_order(&self.docs) {
+            let d = &self.docs[i];
+            let Some(path) = d.path() else { continue };
+            if i == self.active {
+                sel = items.len();
+            }
+            let dir = path.parent().map(|p| self.rel(p)).unwrap_or_default();
+            let detail = if d.buf.is_dirty() { format!("{dir}  (unsaved)") } else { dir };
+            items.push(Item { label: d.name.clone(), detail, action: Action::Open(path.to_path_buf(), None) });
+        }
+        if items.is_empty() {
+            return;
+        }
+        self.overlay = Overlay::Picker(crate::app_overlay::choice_picker("Open tabs", items, sel));
+        self.request_redraw();
     }
 
     /// The list: each row runs the command that flips the setting.

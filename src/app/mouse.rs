@@ -55,7 +55,8 @@ impl App {
         if button == MouseButton::Left && self.sidebar_edge_press(x, y) {
             return self.request_redraw();
         }
-        if self.rail_click(x, y)
+        if self.find_click(x, y)
+            || self.rail_click(x, y)
             || self.quick_click(x, y)
             || self.topbar_click(x, y)
             || self.fswatch_click(x, y)
@@ -341,6 +342,9 @@ impl App {
                 CursorIcon::Default
             };
         }
+        if let Some(c) = self.find_cursor(x, y) {
+            return c;
+        }
         if let Some(c) = self.hover_cursor(x, y) {
             return c;
         }
@@ -461,6 +465,9 @@ impl App {
             return None;
         }
         // Title-bar buttons and read-out chips animate their own hover (`App::hot_fill`).
+        if let Some(h) = self.find_hover_target() {
+            return Some(h);
+        }
         if let Some((r, _, i)) = l.tabs.iter().find(|(r, _, _)| r.contains(x, y)) {
             if *i != self.active {
                 return Some((Rect::new(r.x + 2, r.y + 5, r.w - 4, r.h - 10), 8));
