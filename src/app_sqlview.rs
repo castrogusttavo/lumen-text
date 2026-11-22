@@ -752,8 +752,9 @@ impl App {
     /// The pointer is over the viewer: no text hover there.
     pub fn sql_mouse_move(&mut self, x: f64, y: f64) -> bool {
         self.sql_active().is_some_and(|v| {
-            v.hover = Some((x, y)).filter(|_| v.rect.contains(x, y));
-            v.rect.contains(x, y)
+            let inside = v.rect.contains(x, y);
+            v.hover = inside.then_some((x, y));
+            inside
         })
     }
 
