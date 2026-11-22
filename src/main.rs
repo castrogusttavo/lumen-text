@@ -195,6 +195,7 @@ mod testrun;
 mod textarea;
 mod textmate;
 mod theme;
+mod tool_ui;
 mod tree;
 mod ui;
 mod ui_modal;

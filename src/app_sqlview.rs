@@ -5,11 +5,13 @@
 use crate::{
     app::{App, Focus, KeyIn},
     app_gitpanel::fit,
+    ds,
     field::TextField,
     lsp::Wake,
     sqlview::{self, CellKind, Rows, Table},
     textarea::KeyAct,
-    theme::{Rgba, Theme},
+    theme::Theme,
+    tool_ui,
     ui::{Canvas, HBar, Rect, TextCtx, VBar},
 };
 use std::{
@@ -79,6 +81,10 @@ pub struct SqlView {
     input_r: Rect,
     prev_r: Rect,
     next_r: Rect,
+    /// The primary action of the empty grid ("Open <first table>"); empty when not shown.
+    empty_r: Rect,
+    /// Last pointer position over the viewer (hover tint of the empty-state button).
+    hover: Option<(f64, f64)>,
     rows_r: Vec<(Rect, usize)>,
 }
 
@@ -115,6 +121,8 @@ impl SqlView {
             input_r: Rect::default(),
             prev_r: Rect::default(),
             next_r: Rect::default(),
+            empty_r: Rect::default(),
+            hover: None,
             rows_r: Vec::new(),
         };
         v.load();
@@ -251,13 +259,17 @@ impl SqlView {
         self.poll();
         self.rect = rect;
         cv.fill(rect, theme.background);
-        let dim = theme.chrome.tab_inactive_fg;
         if self.no_sqlite {
-            let lines = [
-                ("This viewer talks to the sqlite3 command line tool, which is not installed.".to_string(), dim),
-                ("Install it (e.g. apt install sqlite3, brew install sqlite) and reopen the file.".to_string(), dim),
-            ];
-            empty_state(cv, tx, theme, rect, "sqlite3 not found", &lines);
+            tool_ui::empty_head(
+                cv,
+                tx,
+                theme,
+                rect,
+                rect,
+                "ui/warning",
+                "sqlite3 not found",
+                "Install it (apt install sqlite3, brew install sqlite) and reopen the file.",
+            );
             return false;
         }
         let list_w = (rect.w / 3).clamp(120, 240);
@@ -282,8 +294,13 @@ impl SqlView {
         self.list_scroll = self.list_scroll.clamp(0.0, max);
         self.rows_r.clear();
         if self.tables.is_empty() {
-            let msg = if self.loaded { "No tables" } else { "Loading…" };
-            tx.draw_ui(cv, r.x + 12, body.y + 6, msg, c.tab_inactive_fg, body, false);
+            if self.loaded {
+                tx.draw_ui(cv, r.x + 12, body.y + 8, "No tables", c.tab_active_fg, body, true);
+                tx.draw_ui(cv, r.x + 12, body.y + 30, "Nothing to browse yet.", c.tab_inactive_fg, body, false);
+            } else {
+                let area = Rect::new(r.x + 12, body.y + 12, (r.w - 24).max(0), body.h);
+                cv.skeleton_lines(theme, area, 6, body, tool_ui::clock());
+            }
             return;
         }
         let mut y = body.y - self.list_scroll as i32;
@@ -295,7 +312,9 @@ impl SqlView {
             }
             let on = self.sel == Some(i);
             if on {
-                cv.fill(row.intersect(&body), c.list_active_bg);
+                let pill = Rect::new(row.x + 4, row.y + 1, row.w - 8, row.h - 2);
+                cv.fill_round_clip(pill, ds::R_CTRL, c.list_active_bg, body);
+                cv.fill_round_clip(Rect::new(pill.x, pill.y + 6, 3, pill.h - 12), 1, c.accent, body);
             }
             let count = t.rows.map(sqlview::group_digits).unwrap_or_default();
             let cw = tx.ui_width(&count, false);
@@ -319,8 +338,8 @@ impl SqlView {
         // The query box.
         let bar = Rect::new(main.x, main.y, main.w, BAR_H);
         self.input_r = Rect::new(bar.x + 10, bar.y + 7, (bar.w - 20).max(0), BAR_H - 14);
-        cv.fill_round(self.input_r, 6, c.input_bg);
-        cv.ring(self.input_r, 6, if self.input_focus { c.accent } else { c.border });
+        cv.fill_round(self.input_r, ds::R_CTRL, c.input_bg);
+        cv.ring(self.input_r, ds::R_CTRL, if self.input_focus { c.accent } else { c.border });
         let tr = self.input_r.inset(1);
         let ty = tr.y + (tr.h - 18) / 2;
         if self.input.text.is_empty() {
@@ -378,7 +397,7 @@ impl SqlView {
             x -= w;
             let r = Rect::new(x, foot.y + 3, w, foot.h - 6);
             x -= 6;
-            cv.fill_round(r, 5, if on { c.widget_bg } else { c.widget_bg.with_alpha(0x60) });
+            cv.fill_round(r, ds::R_CTRL, if on { c.widget_bg } else { c.widget_bg.with_alpha(0x60) });
             let fg = if on { c.tab_active_fg } else { c.tab_inactive_fg.with_alpha(0x80) };
             tx.draw_ui(cv, r.x + 10, ty - 1, label, fg, r, false);
             r
@@ -405,16 +424,25 @@ impl SqlView {
     fn draw_grid(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, grid: Rect) {
         let c = theme.chrome;
         let dim = c.tab_inactive_fg;
+        self.empty_r = Rect::default();
         let Some(res) = self.result.take() else {
-            let msg = if self.busy || !self.loaded { "Loading…" } else { "Pick a table on the left" };
-            let w = tx.ui_width(msg, false);
-            tx.draw_ui(cv, grid.x + (grid.w - w) / 2, grid.y + 40, msg, dim, grid, false);
+            if self.busy || !self.loaded {
+                self.draw_grid_skeleton(cv, theme, grid);
+                return;
+            }
+            let hint = "Pick a table on the left, or type a SELECT above.";
+            let y = tool_ui::empty_head(cv, tx, theme, grid, grid, "ui/table", "Nothing selected", hint);
+            if let Some(t) = self.tables.first() {
+                let label = fit(tx, &format!("Open {}", t.name), 220, true);
+                let w = (tx.ui_width(&label, true) + 2 * ds::S5).max(120);
+                self.empty_r = Rect::new(grid.x + (grid.w - w) / 2, y, w, 32);
+                let hover = self.hover.is_some_and(|(hx, hy)| self.empty_r.contains(hx, hy));
+                tool_ui::primary_button(cv, tx, theme, self.empty_r, &label, hover);
+            }
             return;
         };
         if res.cols.is_empty() {
-            let msg = "No rows";
-            let w = tx.ui_width(msg, false);
-            tx.draw_ui(cv, grid.x + (grid.w - w) / 2, grid.y + 40, msg, dim, grid, false);
+            tool_ui::empty_head(cv, tx, theme, grid, grid, "ui/table", "No rows", "The query returned nothing.");
             self.result = Some(res);
             return;
         }
@@ -432,9 +460,7 @@ impl SqlView {
             if y >= body.bottom() {
                 break;
             }
-            if ri % 2 == 1 {
-                cv.fill(Rect::new(grid.x, y, grid.w, ROW_H).intersect(&body), c.list_hover_bg.with_alpha(0x28));
-            }
+            cv.fill(Rect::new(grid.x, y + ROW_H - 1, grid.w, 1).intersect(&body), c.border.with_alpha(0x28));
             let mut x = grid.x - sx;
             for (ci, cell) in row.iter().enumerate() {
                 let w = widths.get(ci).copied().unwrap_or(COL_MIN);
@@ -488,6 +514,24 @@ impl SqlView {
         self.result = Some(res);
     }
 
+    /// Loading: a header strip and rows of shimmering cells instead of a frozen blank grid.
+    fn draw_grid_skeleton(&self, cv: &mut Canvas, theme: &Theme, grid: Rect) {
+        let c = theme.chrome;
+        let t = tool_ui::clock();
+        cv.fill(Rect::new(grid.x, grid.y, grid.w, HEAD_H), c.tabbar_bg);
+        let rows = ((grid.h - HEAD_H) / ROW_H).clamp(0, 14);
+        let col_w = ((grid.w - 2 * CELL_PAD) / 4).max(COL_MIN);
+        for ri in 0..=rows {
+            let y = grid.y + ri * ROW_H + (if ri == 0 { 0 } else { HEAD_H - ROW_H });
+            for ci in 0..4 {
+                let x = grid.x + CELL_PAD + ci * col_w;
+                let w = (col_w - 2 * CELL_PAD).max(20) * (60 + ((ri + ci * 3) % 4) * 10) / 100;
+                let r = Rect::new(x, y + (ROW_H - tool_ui::BAR_H) / 2, w, tool_ui::BAR_H);
+                cv.skeleton_bar(theme, r, grid, t);
+            }
+        }
+    }
+
     // ── input ──
 
     pub fn wheel(&mut self, x: f64, y: f64, delta: MouseScrollDelta, shift: bool) -> bool {
@@ -524,6 +568,8 @@ impl SqlView {
             self.input.move_to(at, shift);
         } else if let Some(&(_, i)) = self.rows_r.iter().find(|(r, _)| r.contains(x, y)) {
             self.open_table(i);
+        } else if self.empty_r.contains(x, y) {
+            self.open_table(0);
         } else if self.prev_r.contains(x, y)
             && let Some(o) = sqlview::prev_offset(self.offset)
         {
@@ -611,25 +657,6 @@ fn col_widths(tx: &mut TextCtx, r: &Rows) -> Vec<i32> {
     w.iter().map(|v| (v + 2 * CELL_PAD).clamp(COL_MIN, COL_MAX)).collect()
 }
 
-/// A calm centered message with an icon (the viewer's own `b_empty_state`).
-fn empty_state(cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, area: Rect, title: &str, lines: &[(String, Rgba)]) {
-    let c = theme.chrome;
-    let block = 28 + 12 + 22 + lines.len() as i32 * 20;
-    let mut y = area.y + ((area.h - block) / 2).clamp(16, 40);
-    tx.icon(cv, "ui/terminal", area.x + (area.w - 28) / 2, y, 28, c.tab_inactive_fg, area);
-    y += 28 + 12;
-    let t = fit(tx, title, area.w - 32, true);
-    let w = tx.ui_width(&t, true);
-    tx.draw_ui(cv, area.x + (area.w - w) / 2, y, &t, c.tab_active_fg, area, true);
-    y += 24;
-    for (s, col) in lines {
-        let s = fit(tx, s, area.w - 32, false);
-        let w = tx.ui_width(&s, false);
-        tx.draw_ui(cv, area.x + (area.w - w) / 2, y, &s, *col, area, false);
-        y += 20;
-    }
-}
-
 impl App {
     fn sql_active(&mut self) -> Option<&mut SqlView> {
         self.docs.get_mut(self.active).and_then(|d| d.sql.as_deref_mut())
@@ -672,6 +699,7 @@ impl SqlView {
     fn clickable(&self, x: f64, y: f64) -> bool {
         let more = self.result.as_ref().is_some_and(|r| r.more);
         self.rows_r.iter().any(|(r, _)| r.contains(x, y))
+            || self.empty_r.contains(x, y)
             || (self.prev_r.contains(x, y) && sqlview::prev_offset(self.offset).is_some())
             || (self.next_r.contains(x, y) && more)
     }
@@ -682,14 +710,30 @@ impl SqlView {
             return None;
         }
         if let Some(&(r, i)) = self.rows_r.iter().find(|(r, _)| r.contains(x, y)) {
-            return (self.sel != Some(i)).then(|| (Rect::new(r.x + 4, r.y + 1, r.w - 8, r.h - 2), 6));
+            return (self.sel != Some(i)).then(|| (Rect::new(r.x + 4, r.y + 1, r.w - 8, r.h - 2), ds::R_CTRL));
         }
         let more = self.result.as_ref().is_some_and(|r| r.more);
         if self.prev_r.contains(x, y) && sqlview::prev_offset(self.offset).is_some() {
-            return Some((self.prev_r, 5));
+            return Some((self.prev_r, ds::R_CTRL));
         }
         if self.next_r.contains(x, y) && more {
-            return Some((self.next_r, 5));
+            return Some((self.next_r, ds::R_CTRL));
+        }
+        // A data row: a full-width tint follows the pointer (rows have no zebra stripes).
+        let body_y = self.grid.y + HEAD_H;
+        if self.grid.contains(x, y) && y >= body_y as f64 && !self.empty_r.contains(x, y) {
+            let res = self.result.as_ref()?;
+            let ri = ((y - body_y as f64 + self.scroll.1) / ROW_H as f64) as usize;
+            if ri < res.rows.len() {
+                let top = body_y + ri as i32 * ROW_H - self.scroll.1 as i32;
+                let row = Rect::new(self.grid.x, top, self.grid.w, ROW_H).intersect(&Rect::new(
+                    self.grid.x,
+                    body_y,
+                    self.grid.w,
+                    (self.grid.h - HEAD_H).max(0),
+                ));
+                return (row.h > 0).then_some((row, 0));
+            }
         }
         None
     }
@@ -707,7 +751,11 @@ impl App {
 
     /// The pointer is over the viewer: no text hover there.
     pub fn sql_mouse_move(&mut self, x: f64, y: f64) -> bool {
-        self.sql_active().is_some_and(|v| v.rect.contains(x, y))
+        self.sql_active().is_some_and(|v| {
+            let inside = v.rect.contains(x, y);
+            v.hover = inside.then_some((x, y));
+            inside
+        })
     }
 
     /// The query box's editing keys, before the global shortcuts (Ctrl+A, C, X, V, Z, Y, Shift /
