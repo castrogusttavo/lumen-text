@@ -167,6 +167,7 @@ impl App {
         }
         let slot = self.slot_rect();
         let hit = self.ai.hit_at(x, y).map(|(_, h)| h);
+        self.ai.pressed = if button == 0 { hit } else { None };
         let in_strip = Rect::new(slot.x, slot.y, slot.w, SLOT_H).contains(x, y);
         if !self.ai.open {
             // The Git panel is shown: only its switch is ours.
@@ -221,6 +222,11 @@ impl App {
             Some(AiHit::Install(i)) => {
                 if let Some(a) = AGENTS.get(i) {
                     self.ai_pick(a.id);
+                }
+            }
+            Some(AiHit::Prompt(i)) => {
+                if let Some((_, _, text)) = PROMPTS.get(i) {
+                    self.ai_ask(text);
                 }
             }
             None => {
@@ -283,6 +289,7 @@ impl App {
 
     /// Mouse released: an edge drag ends and the width is stored (shared with the Git panel).
     pub fn aipanel_release(&mut self) {
+        self.ai.pressed = None;
         if std::mem::take(&mut self.ai.resizing) {
             self.config.save();
             self.request_redraw();
@@ -296,8 +303,8 @@ impl App {
         if self.gitpanel.is_none() && !self.ai.open {
             return None;
         }
-        if self.ai.hit_at(x, y).is_some() {
-            return Some(CursorIcon::Pointer);
+        if let Some((_, h)) = self.ai.hit_at(x, y) {
+            return Some(if h == AiHit::Filter { CursorIcon::Text } else { CursorIcon::Pointer });
         }
         if !self.ai.open || !self.slot_rect().contains(x, y) {
             return None;
@@ -310,15 +317,9 @@ impl App {
     pub fn aipanel_hover_target(&self) -> Option<(Rect, i32)> {
         let (x, y) = self.mouse;
         let (r, h) = self.ai.hit_at(x, y)?;
-        let active_tab = (h == AiHit::TabAi && self.ai.open)
-            || (h == AiHit::TabGit && !self.ai.open)
-            || h == AiHit::Session(self.ai.active);
-        let radius = match h {
-            AiHit::CloseSession(_) => 4,
-            AiHit::Session(_) => 7,
-            _ => 8,
-        };
-        (!active_tab && !matches!(h, AiHit::Status)).then_some((r, radius))
+        let active_tab = (h == AiHit::TabAi && self.ai.open) || (h == AiHit::TabGit && !self.ai.open);
+        // Only the Git | AI switch still uses the app-wide tint: everything below it glides its own.
+        (!active_tab && matches!(h, AiHit::TabGit | AiHit::TabAi)).then_some((r, 8))
     }
 
     /// The button under the pointer, for a tooltip.
@@ -386,6 +387,12 @@ impl App {
             AiHit::Filter => ("Filter sessions".into(), None, Some("Type to narrow the tabs by name or agent".into())),
             AiHit::FilterClear => ("Clear filter".into(), None, None),
             AiHit::Install(_) => (String::new(), None, None),
+            AiHit::Prompt(i) => match PROMPTS.get(i) {
+                Some((_, label, text)) => {
+                    (label.to_string(), None, Some(format!("{text} · typed into {name}, press Enter to send")))
+                }
+                None => (String::new(), None, None),
+            },
         };
         let more = match h {
             AiHit::Session(_) => vec!["Double-click to rename · middle-click to close".to_string()],

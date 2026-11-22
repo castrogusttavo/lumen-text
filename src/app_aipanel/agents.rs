@@ -36,6 +36,19 @@ pub const AGENTS: &[Agent] = &[
     Agent { id: "codex", name: "Codex CLI", bin: "codex", icon: "ui/ai_open_ai", install: "npm i -g @openai/codex" },
 ];
 
+/// Suggested first prompts of the empty state: (icon, label, text typed into the agent). They are
+/// typed, not sent: the user reads them and presses Enter.
+pub const PROMPTS: &[(&str, &str, &str)] = &[
+    (
+        "ui/file_tree",
+        "Explain this project",
+        "Explain this project: how it is organized, how to run it and where to start reading.",
+    ),
+    ("ui/git_commit", "Review my changes", "Review my uncommitted changes and point out bugs or risks."),
+    ("ui/debug", "Find bugs in this file", "Find and fix the bugs in the file I have open."),
+    ("ui/list_todo", "Write tests", "Write tests for the file I have open."),
+];
+
 pub fn agent(id: &str) -> Option<&'static Agent> {
     AGENTS.iter().find(|a| a.id == id)
 }
