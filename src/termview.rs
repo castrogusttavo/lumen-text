@@ -26,6 +26,12 @@ pub struct Look {
     pub hover_span: Option<(usize, usize, usize)>,
 }
 
+/// Seconds since the last key sent or output received (the blink stays solid while active).
+pub fn idle_secs(term: &Term) -> f32 {
+    let last = [term.last_input, term.last_output].into_iter().flatten().max().unwrap_or(term.started);
+    last.elapsed().as_secs_f32()
+}
+
 /// Rows and columns of `cell_w` x `line_h` cells that fit in `w` x `h` px (at least 2 x 10).
 pub fn fit(cell_w: f32, w: i32, h: i32) -> (usize, usize) {
     let lh = ui::line_h() as i32;
@@ -82,7 +88,12 @@ fn resolve(k: &Key, look: &Look) -> (Rgba, Option<Rgba>) {
         bg = Some(f);
     }
     if k.selected {
-        bg = Some(look.selection.over(bg.unwrap_or(look.bg)));
+        let sel = if look.focused { look.selection } else { crate::termfx::inactive_selection(look.selection) };
+        bg = Some(sel.over(bg.unwrap_or(look.bg)));
+    }
+    if k.hot {
+        // Hovered link: a faint wash under the underline says "this is clickable".
+        bg = Some(look.fg.with_alpha(0x1c).over(bg.unwrap_or(look.bg)));
     }
     if k.found != 0 {
         let hit = if k.found == 2 { Rgba(0xf0, 0x8a, 0x24, 0xe0) } else { Rgba(0xe2, 0xb3, 0x40, 0x90) };
@@ -101,6 +112,8 @@ pub fn draw(tx: &mut TextCtx, cv: &mut Canvas, term: &Term, ox: i32, oy: i32, cl
     let g = &term.grid;
     let (cw, lh) = (tx.cell_w, ui::line_h() as i32);
     let off = term.scroll_offset;
+    let fx = term.fx.frame(std::time::Instant::now(), g.bells, idle_secs(term), look.focused);
+    let strength = |a: u8| (a as f32 * fx.cursor).round() as u8;
     let xs = |c: usize| ox + (c as f32 * cw).round() as i32;
     let mut row: Vec<Cell> = Vec::with_capacity(g.cols);
     for r in 0..g.rows {
@@ -156,7 +169,7 @@ pub fn draw(tx: &mut TextCtx, cv: &mut Canvas, term: &Term, ox: i32, oy: i32, cl
         if cursor_here && look.focused && g.cursor_shape == CursorShape::Block {
             let w = if row[g.cx].has(terminal::WIDE) { 2 } else { 1 };
             let (x0, x1) = (xs(g.cx), xs((g.cx + w).min(g.cols)));
-            cv.fill_clip(Rect::new(x0, y, x1 - x0, lh), look.cursor.with_alpha(0xb0), clip);
+            cv.fill_clip(Rect::new(x0, y, x1 - x0, lh), look.cursor.with_alpha(strength(0xb0)), clip);
         }
         // Text: runs of simple characters are shaped together; the rest is placed cell by cell.
         let last = row.iter().rposition(|c| c.ch != ' ' && c.ch != terminal::WIDE_TAIL).map_or(0, |i| i + 1);
@@ -209,15 +222,21 @@ pub fn draw(tx: &mut TextCtx, cv: &mut Canvas, term: &Term, ox: i32, oy: i32, cl
             if k.flags & terminal::STRIKE != 0 {
                 cv.fill_clip(Rect::new(x0, y + lh / 2, x1 - x0, 1), *fg, clip);
             }
+            if k.found == 2 {
+                // The current search hit gets a frame so it stands out from the other hits.
+                let c = Rgba(0xf0, 0x8a, 0x24, 0xff);
+                cv.fill_clip(Rect::new(x0, y, x1 - x0, 1), c, clip);
+                cv.fill_clip(Rect::new(x0, y + lh - 1, x1 - x0, 1), c, clip);
+            }
         }
         if cursor_here {
             let w = if row[g.cx].has(terminal::WIDE) { 2 } else { 1 };
             let (x0, x1) = (xs(g.cx), xs((g.cx + w).min(g.cols)));
-            let col = look.cursor;
+            let col = look.cursor.with_alpha(strength(look.cursor.3));
             match (look.focused, g.cursor_shape) {
                 (true, CursorShape::Block) => {}
                 (true, CursorShape::Underline) => cv.fill_clip(Rect::new(x0, y + lh - 2, x1 - x0, 2), col, clip),
-                (true, CursorShape::Bar) => cv.fill_clip(Rect::new(x0, y, 2, lh), col, clip),
+                (true, CursorShape::Bar) => cv.fill_clip(Rect::new(x0, y + 1, 2, lh - 2), col, clip),
                 (false, _) => {
                     let c = col.with_alpha(0x90);
                     cv.fill_clip(Rect::new(x0, y, x1 - x0, 1), c, clip);
@@ -227,6 +246,10 @@ pub fn draw(tx: &mut TextCtx, cv: &mut Canvas, term: &Term, ox: i32, oy: i32, cl
                 }
             }
         }
+    }
+    if fx.bell > 0.0 {
+        // Visual bell: the whole grid flashes softly and fades.
+        cv.fill_clip(clip, crate::termfx::bell_tint(look.fg, fx.bell), clip);
     }
     if let Some(f) = term.find.as_deref() {
         draw_find_bar(tx, cv, f, clip, look);
@@ -489,6 +512,27 @@ mod tests {
         assert!(lit(cv.px, 19, 20) && lit(cv.px, 15, 29), "both arms reach their edges");
         assert!(!block_glyph(&mut cv, 'a', cell, white, ALL));
         assert!(!block_glyph(&mut cv, '⏺', cell, white, ALL));
+    }
+
+    #[test]
+    fn hovered_links_get_a_wash_and_inactive_selection_is_dimmer() {
+        let mut look = Look {
+            fg: Rgba(200, 200, 200, 255),
+            bg: Rgba(20, 20, 20, 255),
+            cursor: Rgba(255, 255, 255, 255),
+            selection: Rgba(40, 80, 160, 200),
+            focused: true,
+            hover_link: 0,
+            hover_span: None,
+        };
+        let k = Key { fg: None, bg: None, flags: 0, selected: false, hot: true, found: 0 };
+        let (_, bg) = resolve(&k, &look);
+        assert!(bg.is_some_and(|b| b.luminance() > look.bg.luminance()), "link hover lightens its cells");
+        let sel = Key { selected: true, hot: false, ..k };
+        let on = resolve(&sel, &look).1.unwrap();
+        look.focused = false;
+        let off = resolve(&sel, &look).1.unwrap();
+        assert!(off.luminance() != on.luminance() && (off.2 as i32 - 20).abs() < (on.2 as i32 - 20).abs());
     }
 
     #[test]

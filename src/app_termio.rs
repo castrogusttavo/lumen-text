@@ -562,9 +562,33 @@ impl App {
                 }
             }
         }
+        // Soft cursor blink: wake only when a focused cursor flips its half, never while idle.
+        let now = std::time::Instant::now();
+        for w in self.terms_on_screen() {
+            if let Some(t) = self.term_ref(w) {
+                let (flip, blinking) = t.fx.due(termview::idle_secs(t));
+                redraw |= flip;
+                if blinking {
+                    want(now + crate::termfx::POLL);
+                }
+            }
+        }
         if redraw {
             self.request_redraw();
         }
+    }
+
+    /// Pointer over a terminal grid: a hand on a hovered link (underlined, Ctrl+click opens it),
+    /// the text beam elsewhere on the bottom panel's terminals. `None` outside them.
+    pub fn term_cursor(&self, x: f64, y: f64) -> Option<winit::window::CursorIcon> {
+        use winit::window::CursorIcon;
+        let over = self.terms_on_screen().into_iter().find(|w| self.term_cell(*w, x, y).is_some())?;
+        let on_link = self.termio.hover_link.is_some_and(|(w, _)| w == over)
+            || self.termio.hover.as_ref().is_some_and(|(w, _)| *w == over);
+        if on_link {
+            return Some(CursorIcon::Pointer);
+        }
+        (over != Which::Ai).then_some(CursorIcon::Text)
     }
 }
 

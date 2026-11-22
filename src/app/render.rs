@@ -184,7 +184,7 @@ impl App {
         self.draw_tooltip(cv);
         self.draw_toast(cv);
         crate::perf::lap!("overlays");
-        busy | self.scroll_activity()
+        busy | self.scroll_activity() | crate::termfx::take_moving()
     }
 
     pub(super) fn draw_tabs(&mut self, cv: &mut Canvas) {

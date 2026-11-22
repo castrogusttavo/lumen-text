@@ -1169,6 +1169,8 @@ pub struct Term {
     pub find: Option<Box<Find>>,
     /// Prompt line of the command the last "previous / next command" jump landed on.
     pub nav_line: Option<usize>,
+    /// Presentation only: cursor blink and bell flash (see `termfx`).
+    pub fx: crate::termfx::Fx,
 }
 
 impl Term {
@@ -1227,6 +1229,7 @@ impl Term {
             focus_sent: None,
             find: None,
             nav_line: None,
+            fx: Default::default(),
         }
     }
 
