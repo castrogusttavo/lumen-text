@@ -647,7 +647,7 @@ impl App {
                 return;
             }
         }
-        if self.tree_drag_move() || self.sidebar_edge_move() || self.tab_drag_move() {
+        if self.tree_drag_move() || self.sidebar_edge_move() || self.panel_edge_move() || self.tab_drag_move() {
             return self.request_redraw();
         }
         if let Some((kind, grab)) = self.drag_bar {

@@ -569,7 +569,7 @@ fn problem_rows_of_the_list_and_failed_tests_become_prompts() {
         }],
     );
     // The Problems list: the file header is refused, the problem row gives a prompt.
-    app.open_problems();
+    app.open_problems_picker();
     if let crate::app_overlay::Overlay::Picker(p) = &mut app.overlay {
         p.sel = 0;
     }

@@ -707,6 +707,7 @@ impl App {
         self.aipanel_release();
         self.term_release();
         self.sidebar_edge_release();
+        self.panel_edge_release();
         self.tab_drag_release();
         self.tree_drag_release();
         self.diff_release();

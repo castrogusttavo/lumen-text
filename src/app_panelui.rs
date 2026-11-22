@@ -89,8 +89,9 @@ fn badge_w(count_w: i32, b: Badge) -> i32 {
     }
 }
 
-const TABS: [(&str, PanelTab); 6] = [
+const TABS: [(&str, PanelTab); 7] = [
     ("Output", PanelTab::Output),
+    ("Problems", PanelTab::Problems),
     ("Tests", PanelTab::Tests),
     ("Build", PanelTab::Build),
     ("Docker", PanelTab::Docker),
@@ -161,7 +162,7 @@ impl App {
         }
         busy |= m.ind_x.step(dt);
         busy |= m.ind_w.step(dt);
-        busy
+        busy | self.panel_extra_step()
     }
 
     // ───────────── buttons ─────────────
@@ -215,6 +216,11 @@ impl App {
                 (None, Some(0)) => Badge::Dot(c.git_added),
                 (None, Some(_)) => Badge::Dot(c.error),
                 _ => Badge::None,
+            },
+            PanelTab::Problems => match self.diag_counts() {
+                (0, 0) => Badge::None,
+                (0, w) => Badge::Count(w, c.warning),
+                (e, _) => Badge::Count(e, c.error),
             },
             PanelTab::Tests => {
                 let n = crate::testrun::Counts::of(&self.tests.cases);

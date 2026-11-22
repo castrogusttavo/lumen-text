@@ -543,6 +543,9 @@ impl App {
             TipKey::PanelTab(PanelTab::Tests) => {
                 t("Tests", self.shortcut_text("TestAll"), Some("Run tests and browse the results".into()))
             }
+            TipKey::PanelTab(PanelTab::Problems) => {
+                t("Problems", None, Some("Errors and warnings, grouped by file".into()))
+            }
             TipKey::PanelTab(PanelTab::Docker) => t("Docker", None, Some("Containers and images".into())),
             TipKey::PanelTab(PanelTab::Debug) => t("Debug", None, Some("Stack, variables and output".into())),
             TipKey::PanelTab(PanelTab::Build) => t(

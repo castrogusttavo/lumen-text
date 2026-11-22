@@ -57,6 +57,7 @@ mod app_overlay;
 mod app_panel;
 mod app_panelui;
 mod app_problems;
+mod app_probtab;
 mod app_projcfg;
 mod app_quick;
 mod app_rail;

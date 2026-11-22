@@ -10,10 +10,12 @@ use crate::{
     app::App,
     app_panel::PanelTab,
     doc::Lens,
+    ds,
     httpclient::{self, Resp},
     httpfile::{self, Ctx},
     tasks::{PALETTE, Segs},
     theme::Rgba,
+    ui::{Canvas, Rect},
 };
 use std::{
     collections::HashMap,
@@ -49,23 +51,52 @@ pub struct Last {
     dir: PathBuf,
 }
 
+/// Height of the strip above the response (status, timing and size chips, view switch, copy).
+pub const HTTP_STRIP_H: i32 = 38;
+const CHIP_H: i32 = 18;
+const CHIP_FONT: f32 = 11.0;
+const CHIP_LINE: i32 = 15;
+
+/// A clickable part of the response strip.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HHit {
+    /// Pretty (true) or raw (false) body.
+    Pretty(bool),
+    Copy,
+    Cancel,
+}
+
+/// Color family of a status code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StatusClass {
+    Ok,
+    Redirect,
+    ClientError,
+    ServerError,
+}
+
+pub fn status_class(code: u16) -> StatusClass {
+    match code / 100 {
+        1 | 2 => StatusClass::Ok,
+        3 => StatusClass::Redirect,
+        4 => StatusClass::ClientError,
+        _ => StatusClass::ServerError,
+    }
+}
+
 #[derive(Default)]
 pub struct HttpState {
+    /// The panel shows a response: its strip (chips, Pretty / Raw, Copy) is drawn above the text.
+    pub rich: bool,
+    /// Raw body instead of the pretty-printed one.
+    pub raw: bool,
+    pub hits: Vec<(Rect, HHit)>,
     /// Selected environment of `http-client.env.json`.
     pub env: Option<String>,
     /// Responses of named requests.
     pub responses: HashMap<String, Resp>,
     pub inflight: Option<Inflight>,
     pub last: Option<Last>,
-}
-
-pub(crate) fn status_color(code: u16) -> Rgba {
-    match code / 100 {
-        2 => PALETTE[2],
-        3 => PALETTE[4],
-        4 => PALETTE[3],
-        _ => PALETTE[1],
-    }
 }
 
 /// One JSON line split into colored pieces: keys, strings, numbers, literals, punctuation.
@@ -114,34 +145,39 @@ pub(crate) fn json_segs(line: &str, fg: Rgba, dim: Rgba) -> Segs {
 
 /// The body as shown: pretty JSON when it is JSON, the text otherwise.
 pub(crate) fn body_text(r: &Resp) -> String {
+    body_text_mode(r, true)
+}
+
+/// The body, pretty-printed when `pretty` and it is JSON, byte for byte (as text) otherwise.
+pub(crate) fn body_text_mode(r: &Resp, pretty: bool) -> String {
     if r.body.contains(&0) {
         return format!("(binary, {})", httpfile::human_size(r.body.len()));
     }
     let t = r.text();
     let is_json = r.header("content-type").is_none_or(|c| c.to_ascii_lowercase().contains("json"));
-    if is_json && let Some(p) = httpfile::pretty_json(&t) {
+    if pretty
+        && is_json
+        && let Some(p) = httpfile::pretty_json(&t)
+    {
         return p;
     }
     t
 }
 
-/// Everything the panel shows for a response.
-pub fn response_lines(label: &str, r: &Resp, fg: Rgba, dim: Rgba) -> Vec<Segs> {
+/// What the panel shows under the response strip: the request line, the headers as a two-column
+/// table and the body (pretty or raw).
+pub fn response_lines(label: &str, r: &Resp, fg: Rgba, dim: Rgba, pretty: bool) -> Vec<Segs> {
     let mut v: Vec<Segs> = Vec::new();
-    let reason = if r.reason.is_empty() { String::new() } else { format!(" {}", r.reason) };
-    v.push(vec![
-        (format!("HTTP {}{reason}", r.status), status_color(r.status)),
-        (format!("   {} ms   {}", r.ms, httpfile::human_size(r.body.len())), dim),
-    ]);
     v.push(vec![(label.to_string(), dim)]);
     v.push(Vec::new());
+    let kw = r.headers.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0).min(32);
     for (k, val) in &r.headers {
-        v.push(vec![(format!("{k}: "), PALETTE[6]), (val.clone(), fg)]);
+        v.push(vec![(format!("{k:<kw$}  "), PALETTE[6]), (val.clone(), fg)]);
     }
     if !r.body.is_empty() {
         v.push(Vec::new());
-        let text = body_text(r);
-        let json = text.starts_with(['{', '[']);
+        let text = body_text_mode(r, pretty);
+        let json = pretty && text.starts_with(['{', '[']);
         let n = text.lines().count();
         for l in text.lines().take(MAX_SHOWN) {
             v.push(if json { json_segs(l, fg, dim) } else { vec![(l.to_string(), fg)] });
@@ -167,6 +203,7 @@ impl App {
         if self.panel.running.is_some() {
             return false;
         }
+        self.http.rich = false;
         let p = &mut self.panel;
         p.plain = lines.iter().map(|l| l.iter().map(|(s, _)| s.as_str()).collect()).collect();
         p.lines = lines;
@@ -269,8 +306,8 @@ impl App {
         let (fg, dim) = (self.theme.foreground, self.theme.chrome.tab_inactive_fg);
         match got {
             Ok(resp) => {
-                let lines = response_lines(&inf.label, &resp, fg, dim);
-                self.http_panel(lines, Some(i32::from(resp.status >= 400)));
+                let lines = response_lines(&inf.label, &resp, fg, dim, !self.http.raw);
+                self.http.rich = self.http_panel(lines, Some(i32::from(resp.status >= 400)));
                 self.say(format!("HTTP {} in {} ms", resp.status, resp.ms));
                 if let Some(n) = &inf.name {
                     self.http.responses.insert(n.clone(), resp.clone());
@@ -339,9 +376,181 @@ impl App {
         let Some(l) = &self.http.last else {
             return self.say("HTTP: no response yet");
         };
-        let t = body_text(&l.resp);
+        let t = body_text_mode(&l.resp, !self.http.raw);
         self.clip.set(&t);
         self.say("Response body copied");
+    }
+
+    /// Show the response again after the Pretty / Raw switch.
+    fn http_rerender(&mut self) {
+        let Some(l) = &self.http.last else { return };
+        let (fg, dim) = (self.theme.foreground, self.theme.chrome.tab_inactive_fg);
+        let lines = response_lines(&l.label, &l.resp, fg, dim, !self.http.raw);
+        let exit = Some(i32::from(l.resp.status >= 400));
+        self.http.rich = self.http_panel(lines, exit);
+    }
+
+    // ───────────── the response strip ─────────────
+
+    /// Is a request running and shown in the Output panel (loading shimmer)?
+    pub fn http_loading(&self) -> bool {
+        self.http.inflight.is_some() && self.panel.title == "HTTP" && self.panel.running.is_none()
+    }
+
+    /// Does the Output panel carry the response strip (a response, or a request in flight)?
+    pub fn http_strip_active(&self) -> bool {
+        self.panel.tab == PanelTab::Output && self.panel.title == "HTTP" && (self.http.rich || self.http_loading())
+    }
+
+    /// Height the strip takes from the Output body.
+    pub fn http_strip_h(&self) -> i32 {
+        if self.http_strip_active() { HTTP_STRIP_H } else { 0 }
+    }
+
+    /// A press on the strip; true when it hit a button.
+    pub fn http_strip_click(&mut self, x: f64, y: f64) -> bool {
+        let Some(hit) = self.http.hits.iter().rev().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h) else {
+            return false;
+        };
+        match hit {
+            HHit::Pretty(p) => {
+                if self.http.raw == p {
+                    self.http.raw = !p;
+                    self.http_rerender();
+                }
+            }
+            HHit::Copy => self.http_copy(),
+            HHit::Cancel => self.http_cancel(),
+        }
+        true
+    }
+
+    /// A tinted pill; returns its rect.
+    fn http_pill(
+        &mut self,
+        cv: &mut Canvas,
+        (x, y): (i32, i32),
+        text: &str,
+        col: Rgba,
+        bold: bool,
+        clip: Rect,
+    ) -> Rect {
+        let w = self.tx.ui_width_sized(text, bold, CHIP_FONT) + 2 * ds::S2;
+        let r = Rect::new(x, y, w, CHIP_H);
+        cv.fill_round_clip(r, ds::R_CTRL, col.with_alpha(0x24), clip);
+        cv.ring(r, ds::R_CTRL, col.with_alpha(0x40));
+        self.tx.draw_ui_sized_i(
+            cv,
+            r.x + ds::S2,
+            r.y + (CHIP_H - CHIP_LINE) / 2,
+            text,
+            col,
+            clip,
+            bold,
+            false,
+            CHIP_FONT,
+        );
+        r
+    }
+
+    /// Draw the strip at the top of `body`; returns what is left under it.
+    pub fn draw_http_strip(&mut self, cv: &mut Canvas, body: Rect) -> Rect {
+        let c = self.theme.chrome;
+        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
+        let (mx, my) = self.mouse;
+        let free = self.overlay.is_none();
+        let strip = Rect::new(body.x, body.y, body.w, HTTP_STRIP_H);
+        let rest = Rect::new(body.x, body.y + HTTP_STRIP_H, body.w, (body.h - HTTP_STRIP_H).max(0));
+        let old = std::mem::take(&mut self.http.hits);
+        let hot = |r: Rect| free && r.contains(mx, my);
+        let mut hits: Vec<(Rect, HHit)> = Vec::new();
+        let cy = strip.y + (HTTP_STRIP_H - CHIP_H) / 2;
+        let by = strip.y + (HTTP_STRIP_H - ds::HIT_MIN) / 2;
+        let mut x = strip.x + ds::S3;
+        let mut limit = strip.right() - ds::S3;
+
+        if let Some(label) = self.http.inflight.as_ref().map(|i| i.label.clone()) {
+            // Loading: what is being sent and a Cancel button.
+            let w = ds::S3 + ds::ICON_S + ds::S1 + self.tx.ui_width("Cancel", false) + ds::S3;
+            let btn = Rect::new(limit - w, by, w, ds::HIT_MIN);
+            if hot(btn) {
+                cv.fill_round_clip(btn, ds::R_CTRL, c.hover_overlay, strip);
+            }
+            cv.ring(btn, ds::R_CTRL, c.border);
+            self.tx.icon(cv, "ui/stop", btn.x + ds::S3, btn.y + (btn.h - ds::ICON_S) / 2, ds::ICON_S, c.error, strip);
+            self.tx.draw_ui(
+                cv,
+                btn.x + ds::S3 + ds::ICON_S + ds::S1,
+                btn.y + (btn.h - 18) / 2,
+                "Cancel",
+                strong,
+                strip,
+                false,
+            );
+            hits.push((btn, HHit::Cancel));
+            limit = btn.x - ds::S3;
+            let r = self.http_pill(cv, (x, cy), "Sending", c.accent_text, true, strip);
+            x = r.right() + ds::S2;
+            let text = crate::app_gitpanel::fit(&mut self.tx, &label, (limit - x).max(0), false);
+            self.tx.draw_ui(cv, x, strip.y + (HTTP_STRIP_H - 18) / 2, &text, dim, strip, false);
+        } else if let Some((status, reason, ms, size, ctype)) = self.http.last.as_ref().map(|l| {
+            let ct = l.resp.header("content-type").map(|t| t.split(';').next().unwrap_or("").trim().to_string());
+            (l.resp.status, l.resp.reason.clone(), l.resp.ms, l.resp.body.len(), ct)
+        }) {
+            // Right side first: Pretty / Raw switch, then Copy.
+            let hover = old.iter().find_map(|(r, h)| match h {
+                HHit::Pretty(p) if hot(*r) => Some(usize::from(!*p)),
+                _ => None,
+            });
+            let segs =
+                cv.seg_control(&mut self.tx, &c, (limit, by), &["Pretty", "Raw"], usize::from(self.http.raw), hover);
+            for (k, r) in segs.iter().enumerate() {
+                hits.push((*r, HHit::Pretty(k == 0)));
+            }
+            limit = segs.first().map_or(limit, |r| r.x) - 3 - ds::S2;
+            let cw = ds::S3 + ds::ICON_S + ds::S1 + self.tx.ui_width("Copy", false) + ds::S3;
+            let copy = Rect::new(limit - cw, by, cw, ds::HIT_MIN);
+            if hot(copy) {
+                cv.fill_round_clip(copy, ds::R_CTRL, c.hover_overlay, strip);
+            }
+            cv.ring(copy, ds::R_CTRL, c.border);
+            self.tx.icon(cv, "ui/copy", copy.x + ds::S3, copy.y + (copy.h - ds::ICON_S) / 2, ds::ICON_S, dim, strip);
+            self.tx.draw_ui(
+                cv,
+                copy.x + ds::S3 + ds::ICON_S + ds::S1,
+                copy.y + (copy.h - 18) / 2,
+                "Copy",
+                strong,
+                strip,
+                false,
+            );
+            hits.push((copy, HHit::Copy));
+            limit = copy.x - ds::S3;
+            // Left side: status, time, size, content type (as many as fit).
+            let col = match status_class(status) {
+                StatusClass::Ok => c.git_added,
+                StatusClass::Redirect => c.info,
+                StatusClass::ClientError => c.warning,
+                StatusClass::ServerError => c.error,
+            };
+            let st = if reason.is_empty() { status.to_string() } else { format!("{status} {reason}") };
+            let mut chips =
+                vec![(st, col, true), (format!("{ms} ms"), dim, false), (httpfile::human_size(size), dim, false)];
+            if let Some(t) = ctype.filter(|t| !t.is_empty()) {
+                chips.push((t, dim, false));
+            }
+            for (text, tone, bold) in chips {
+                let w = self.tx.ui_width_sized(&text, bold, CHIP_FONT) + 2 * ds::S2;
+                if x + w > limit {
+                    break;
+                }
+                let r = self.http_pill(cv, (x, cy), &text, tone, bold, strip);
+                x = r.right() + ds::S2;
+            }
+        }
+        cv.fill(Rect::new(body.x, strip.bottom() - 1, body.w, 1), c.border);
+        self.http.hits = hits;
+        rest
     }
 
     /// `HTTP: Open response in editor` (pretty-printed, with the language's highlighting).
@@ -427,27 +636,31 @@ mod tests {
     #[test]
     fn panel_lines_show_status_headers_and_pretty_body() {
         let (fg, dim) = (Rgba(255, 255, 255, 255), Rgba(1, 1, 1, 255));
-        let lines = response_lines("GET http://x/y", &resp("application/json", r#"{"a":[1,"b",null,true]}"#), fg, dim);
+        let lines =
+            response_lines("GET http://x/y", &resp("application/json", r#"{"a":[1,"b",null,true]}"#), fg, dim, true);
         let plain: Vec<String> = lines.iter().map(|l| l.iter().map(|(s, _)| s.as_str()).collect()).collect();
-        assert_eq!(plain[0], "HTTP 200 OK   12 ms   23 B");
-        assert_eq!(plain[1], "GET http://x/y");
-        assert_eq!(plain[3], "Content-Type: application/json");
-        assert_eq!(plain[5], "{");
-        assert_eq!(plain[6], "  \"a\": [");
-        assert_eq!(lines[0][0].1, PALETTE[2]);
+        assert_eq!(plain[0], "GET http://x/y");
+        assert_eq!(plain[2], "Content-Type  application/json");
+        assert_eq!(plain[4], "{");
+        assert_eq!(plain[5], "  \"a\": [");
         // the key is cyan, the string value green, the number yellow
-        let key = lines[6].iter().find(|(s, _)| s == "\"a\"").unwrap();
+        let key = lines[5].iter().find(|(s, _)| s == "\"a\"").unwrap();
         assert_eq!(key.1, PALETTE[6]);
-        let s = lines[8].iter().find(|(s, _)| s == "\"b\"").unwrap();
+        let s = lines[7].iter().find(|(s, _)| s == "\"b\"").unwrap();
         assert_eq!(s.1, PALETTE[2]);
-        let n = lines[7].iter().find(|(s, _)| s == "1").unwrap();
+        let n = lines[6].iter().find(|(s, _)| s == "1").unwrap();
         assert_eq!(n.1, PALETTE[3]);
-        // text bodies are left alone, errors are red
-        let t = response_lines("GET /", &resp("text/plain", "hello\nworld"), fg, dim);
+        // text bodies are left alone
+        let t = response_lines("GET /", &resp("text/plain", "hello\nworld"), fg, dim, true);
         assert_eq!(t.last().unwrap()[0].0, "world");
-        let mut e = resp("text/plain", "");
-        e.status = 500;
-        assert_eq!(response_lines("GET /", &e, fg, dim)[0][0].1, PALETTE[1]);
+        // raw keeps the JSON as sent
+        let raw = response_lines("GET /", &resp("application/json", r#"{"a":1}"#), fg, dim, false);
+        assert_eq!(raw.last().unwrap()[0].0, r#"{"a":1}"#);
+        // status colors by class
+        assert_eq!(status_class(204), StatusClass::Ok);
+        assert_eq!(status_class(302), StatusClass::Redirect);
+        assert_eq!(status_class(404), StatusClass::ClientError);
+        assert_eq!(status_class(503), StatusClass::ServerError);
         assert_eq!(body_text(&Resp { body: vec![0, 1, 2], ..Default::default() }), "(binary, 3 B)");
     }
 
@@ -528,7 +741,12 @@ mod tests {
         assert!(app.http.inflight.is_some());
         assert_eq!(app.docs[app.active].lenses[0].title.as_deref(), Some("■ Cancel request"));
         wait_http(&mut app);
-        assert!(app.panel.plain[0].starts_with("HTTP 200 OK"), "{:?}", app.panel.plain);
+        assert!(
+            app.panel.plain[0].starts_with("POST ") || app.panel.plain[0].starts_with("GET "),
+            "{:?}",
+            app.panel.plain
+        );
+        assert!(app.http.rich && app.http.last.as_ref().is_some_and(|l| l.resp.status == 200));
         assert!(app.panel.open && app.panel.exit == Some(0));
         assert_eq!(app.docs[app.active].lenses[0].title.as_deref(), Some("▶ Send Request"));
 

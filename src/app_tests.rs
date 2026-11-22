@@ -1718,58 +1718,61 @@ impl App {
         x += self.t_button(cv, x, ty, "Watch", Some("ui/eye"), Btn::Toggle(watch_on), true, Hit::Watch, body) + 6;
         x += self.t_select(cv, x, ty, body) + 12;
 
-        // Right side: live status.
-        let mut pieces: Vec<(String, Rgba)> = Vec::new();
+        // Right side: live status as text, the counts as chips (passed / failed / skipped).
+        let mut pieces: Vec<(String, Rgba, bool)> = Vec::new();
         if running {
             let secs = self.tests.started.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
             let what = if debug_build { "Building for the debugger" } else { "Running" };
-            pieces.push((format!("{what} · {}", testrun::fmt_secs(secs)), dim));
+            pieces.push((format!("{what} · {}", testrun::fmt_secs(secs)), dim, false));
             if counts.passed + counts.failed > 0 {
-                pieces.push(("   ".into(), dim));
-                pieces.push((format!("{} passed", counts.passed), c.git_added));
+                pieces.push((format!("{} passed", counts.passed), c.git_added, true));
                 if counts.failed > 0 {
-                    pieces.push(("  ".into(), dim));
-                    pieces.push((format!("{} failed", counts.failed), c.error));
+                    pieces.push((format!("{} failed", counts.failed), c.error, true));
                 }
             }
         } else if self.tests.log_only
             && counts.total() == 0
             && let Some(e) = self.tests.exit
         {
-            pieces.push(match e {
+            let (text, col) = match e {
                 0 => ("Passed · exit code 0".to_string(), c.git_added),
                 -1 => ("Stopped".to_string(), dim),
                 e => (format!("Failed · exit code {e}"), c.error),
-            });
+            };
+            pieces.push((text, col, true));
             if let Some(ms) = self.tests.last_ms.filter(|_| e != -1) {
-                pieces.push(("  ·  ".into(), dim));
-                pieces.push((fmt_ms(ms), dim));
+                pieces.push((fmt_ms(ms), dim, false));
             }
         } else if counts.total() > 0 {
-            pieces.push((format!("{} passed", counts.passed), c.git_added));
+            pieces.push((format!("{} passed", counts.passed), c.git_added, true));
             if counts.failed > 0 {
-                pieces.push(("  ·  ".into(), dim));
-                pieces.push((format!("{} failed", counts.failed), c.error));
+                pieces.push((format!("{} failed", counts.failed), c.error, true));
             }
             if counts.skipped > 0 {
-                pieces.push(("  ·  ".into(), dim));
-                pieces.push((format!("{} skipped", counts.skipped), dim));
+                pieces.push((format!("{} skipped", counts.skipped), dim, true));
             }
             if let Some(ms) = self.tests.last_ms {
-                pieces.push(("  ·  ".into(), dim));
-                pieces.push((fmt_ms(ms), dim));
+                pieces.push((fmt_ms(ms), dim, false));
             }
         }
-        let total_w: i32 = pieces.iter().map(|(s, _)| self.tx.ui_width(s, false)).sum();
+        let gap = 6;
+        let widths: Vec<i32> =
+            pieces.iter().map(|(s, _, chip)| self.tx.ui_width(s, false) + if *chip { 16 } else { 0 }).collect();
+        let total_w: i32 = widths.iter().sum::<i32>() + gap * pieces.len().saturating_sub(1) as i32;
         let mut px = body.right() - total_w - 16;
         if px > x {
             if running {
                 spinner(cv, px - 14, body.y + TOOLBAR_H / 2, 5, c.accent_text, bg, self.tests.started, body);
             }
-            for (s, col) in &pieces {
-                let w = self.tx.ui_width(s, false);
-                self.tx.draw_ui(cv, px, body.y + (TOOLBAR_H - 18) / 2, s, *col, body, false);
-                px += w;
+            for ((s, col, chip), w) in pieces.iter().zip(widths) {
+                if *chip {
+                    let r = Rect::new(px, body.y + (TOOLBAR_H - CHIP_H) / 2, w, CHIP_H);
+                    cv.fill_round_clip(r, RAD, col.with_alpha(0x24), body);
+                    self.tx.draw_ui(cv, px + 8, r.y + (CHIP_H - 18) / 2, s, *col, body, false);
+                } else {
+                    self.tx.draw_ui(cv, px, body.y + (TOOLBAR_H - 18) / 2, s, *col, body, false);
+                }
+                px += w + gap;
             }
         }
 
