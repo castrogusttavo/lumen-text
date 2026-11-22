@@ -310,9 +310,147 @@ impl App {
     }
 }
 
+/// Hit regions of the find bar, shared by drawing, clicks, hover and the cursor.
+#[derive(Clone, Copy, Debug)]
+pub struct FindGeo {
+    pub card: Rect,
+    pub field: Rect,
+    pub case: Rect,
+    pub regex: Rect,
+    pub count: Rect,
+    pub prev: Rect,
+    pub next: Rect,
+    pub close: Rect,
+    pub rfield: Rect,
+    pub replace: Rect,
+    pub all: Rect,
+}
+
+/// Layout of the find bar floating in the top-right corner of the editor card `ed`.
+pub fn find_geo(ed: Rect, show_replace: bool) -> FindGeo {
+    let w = (ed.w - 40).clamp(320, 560);
+    let h = if show_replace { 78 } else { 42 };
+    let card = Rect::new(ed.right() - w - 14, ed.y + 8, w, h);
+    let x0 = card.right() - 196;
+    let (y, y2) = (card.y + 7, card.y + 43);
+    let field_w = w - 212;
+    let btn = |x: i32, y: i32, w: i32| Rect::new(x, y, w, 28);
+    FindGeo {
+        card,
+        field: btn(card.x + 8, y, field_w),
+        case: btn(x0, y, 24),
+        regex: btn(x0 + 26, y, 24),
+        count: btn(x0 + 54, y, 60),
+        prev: btn(x0 + 116, y, 24),
+        next: btn(x0 + 142, y, 24),
+        close: btn(x0 + 168, y, 24),
+        rfield: btn(card.x + 8, y2, field_w),
+        replace: btn(x0, y2, 68),
+        all: btn(x0 + 72, y2, 40),
+    }
+}
+
+impl FindGeo {
+    /// The clickable buttons of the bar (not the fields).
+    pub fn buttons(&self, show_replace: bool) -> Vec<Rect> {
+        let mut v = vec![self.case, self.regex, self.prev, self.next, self.close];
+        if show_replace {
+            v.extend([self.replace, self.all]);
+        }
+        v
+    }
+}
+
+impl App {
+    fn find_geo_now(&self) -> Option<FindGeo> {
+        let f = self.find.as_ref()?;
+        Some(find_geo(self.layout.editor, f.show_replace))
+    }
+
+    /// Mouse press on the find bar: buttons act, fields take focus, the rest of the card is inert
+    /// (so a click on it never reaches the text underneath). True when the press was taken.
+    pub fn find_click(&mut self, x: f64, y: f64) -> bool {
+        let Some(g) = self.find_geo_now() else { return false };
+        if !g.card.contains(x, y) {
+            return false;
+        }
+        let show = g.card.h > 50;
+        if g.close.contains(x, y) {
+            self.find = None;
+        } else if g.prev.contains(x, y) {
+            self.find_jump(false);
+        } else if g.next.contains(x, y) {
+            self.find_jump(true);
+        } else if g.case.contains(x, y) || g.regex.contains(x, y) {
+            if let Some(f) = self.find.as_mut() {
+                if g.case.contains(x, y) {
+                    f.case = !f.case;
+                } else {
+                    f.regex = !f.regex;
+                }
+            }
+        } else if show && g.replace.contains(x, y) {
+            self.replace_one();
+        } else if show && g.all.contains(x, y) {
+            self.replace_all();
+        } else if let Some(f) = self.find.as_mut() {
+            if g.field.contains(x, y) {
+                f.focused = true;
+                f.in_replace = false;
+                f.field.end();
+            } else if show && g.rfield.contains(x, y) {
+                f.focused = true;
+                f.in_replace = true;
+                f.replace.end();
+            }
+        }
+        true
+    }
+
+    /// Cursor over the find bar: hand on its buttons, I-beam on its fields, arrow elsewhere on it.
+    pub fn find_cursor(&self, x: f64, y: f64) -> Option<winit::window::CursorIcon> {
+        use winit::window::CursorIcon as C;
+        let g = self.find_geo_now()?;
+        if !g.card.contains(x, y) {
+            return None;
+        }
+        let show = g.card.h > 50;
+        Some(if g.buttons(show).iter().any(|r| r.contains(x, y)) {
+            C::Pointer
+        } else if g.field.contains(x, y) || (show && g.rfield.contains(x, y)) {
+            C::Text
+        } else {
+            C::Default
+        })
+    }
+
+    /// The button under the pointer (a redraw trigger: the bar paints its own hover state).
+    pub fn find_hover_target(&self) -> Option<(Rect, i32)> {
+        let g = self.find_geo_now()?;
+        let (x, y) = self.mouse;
+        let show = g.card.h > 50;
+        g.buttons(show).into_iter().find(|r| r.contains(x, y)).map(|r| (r, 6))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{COMPILES, find_regex, scan_matches};
+    use super::{COMPILES, find_geo, find_regex, scan_matches};
+    use crate::ui::Rect;
+
+    #[test]
+    fn find_bar_buttons_fit_inside_the_card() {
+        for w in [300, 700, 1600] {
+            for rep in [false, true] {
+                let g = find_geo(Rect::new(100, 80, w, 600), rep);
+                for r in g.buttons(rep) {
+                    assert!(r.x >= g.card.x && r.right() <= g.card.right(), "{r:?} in {:?}", g.card);
+                    assert!(r.bottom() <= g.card.bottom());
+                }
+                assert!(g.field.right() < g.case.x, "field and toggles must not overlap");
+            }
+        }
+    }
     use crate::buffer::Buffer;
 
     fn compiles() -> usize {

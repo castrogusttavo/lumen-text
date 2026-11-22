@@ -143,7 +143,7 @@ impl App {
         }
         crate::perf::lap!("topbar");
         if self.layout.tabbar.h > 0 {
-            self.draw_tabs(cv);
+            busy |= self.draw_tabs(cv, dt);
             self.draw_quick(cv);
         } else {
             self.layout.tabs.clear();
@@ -152,6 +152,7 @@ impl App {
         crate::perf::lap!("tabs");
         self.draw_breadcrumbs(cv);
         self.draw_diff(cv);
+        busy |= self.draw_diag_chip(cv, dt);
         crate::perf::lap!("breadcrumbs_diff");
         self.draw_rail(cv);
         if self.sidebar_open {
@@ -185,137 +186,6 @@ impl App {
         self.draw_toast(cv);
         crate::perf::lap!("overlays");
         busy | self.scroll_activity()
-    }
-
-    pub(super) fn draw_tabs(&mut self, cv: &mut Canvas) {
-        let c = self.theme.chrome;
-        let bar = self.layout.tabbar;
-        cv.fill(bar, c.tabbar_bg);
-        self.layout.tabs.clear();
-        let pane_docs = self.split_pane_docs();
-        // Geometry of every tab in strip coordinates, then scroll so the active one is visible.
-        let order = crate::app_ctxmenu::tab_order(&self.docs);
-        let mut geo: Vec<(usize, i32, i32)> = Vec::with_capacity(order.len());
-        let mut x = 6;
-        for &i in &order {
-            let w = self.tx.ui_width(&self.tab_display_name(i), false).min(TAB_NAME_MAX)
-                + 34
-                + 34
-                + 11 * pane_docs.iter().filter(|p| p.0 == i).count() as i32;
-            geo.push((i, x, w));
-            x += w;
-        }
-        let view = (bar.w - 12 - crate::app_quick::QUICK_W).max(1) as f64;
-        self.tabs_max = ((x - 6) as f64 - view).max(0.0);
-        self.inp.tabs.geo.clone_from(&geo);
-        let dragging = self.tab_dragging();
-        if self.tabs_seen != Some(self.active) {
-            self.tabs_seen = Some(self.active);
-            if let Some(&(_, tx0, tw)) = geo.iter().find(|(i, _, _)| *i == self.active) {
-                let (l, r) = (tx0 as f64 - 6.0, (tx0 + tw) as f64 + 6.0);
-                if l < self.tabs_scroll {
-                    self.tabs_scroll = l;
-                } else if r > self.tabs_scroll + view + 6.0 {
-                    self.tabs_scroll = r - view - 6.0;
-                }
-            }
-        }
-        self.tabs_scroll = self.tabs_scroll.clamp(0.0, self.tabs_max);
-        let off = self.tabs_scroll.round() as i32;
-        let strip = Rect::new(bar.x + 2, bar.y, bar.w - 4, bar.h);
-        for (i, tx0, w) in geo {
-            let d = &self.docs[i];
-            let r = Rect::new(bar.x + tx0 - off, bar.y, w, bar.h);
-            if r.right() < strip.x || r.x > strip.right() {
-                continue;
-            }
-            let active = i == self.active;
-            let fg = if active { c.tab_active_fg } else { c.tab_inactive_fg };
-            let ty = r.y + (bar.h - 18) / 2;
-            let lead = 34;
-            if active {
-                cv.fill_round_clip(Rect::new(r.x + 2, r.y + 5, r.w - 4, bar.h - 10), 8, c.tab_active_bg, strip);
-            } else if self.overlay.is_none()
-                && !dragging
-                && strip.contains(self.mouse.0, self.mouse.1)
-                && r.contains(self.mouse.0, self.mouse.1)
-            {
-                cv.fill_round_clip(
-                    Rect::new(r.x + 2, r.y + 5, r.w - 4, bar.h - 10),
-                    8,
-                    c.list_hover_bg.with_alpha(0xa0),
-                    strip,
-                );
-            }
-            let fname = self.tx.icons.file_icon(&d.name);
-            self.tx.icon(cv, &fname, r.x + 12, r.y + (bar.h - 16) / 2, 16, fg, strip);
-            let (label, name_w) = self.tab_label(i, active);
-            let d = &self.docs[i];
-            self.tx.draw_ui(cv, r.x + lead, ty, &label, fg, strip, active);
-            let close = Rect::new(r.right() - 28, r.y, 28, bar.h);
-            let (mx, my) = self.mouse;
-            let over_tab = strip.contains(mx, my) && r.contains(mx, my) && self.overlay.is_none() && !dragging;
-            let over_close = over_tab && close.contains(mx, my);
-            if over_tab {
-                // Hovering a tab (focused or not) reveals its close button; it gets its own
-                // background when the pointer is on it.
-                let cb = Rect::new(close.x + 4, r.y + (bar.h - 20) / 2, 20, 20);
-                if over_close {
-                    cv.fill_round_clip(cb, 6, self.theme.foreground.with_alpha(0x38), strip);
-                }
-                let ic = if over_close { c.tab_active_fg } else { c.tab_inactive_fg };
-                self.tx.icon(cv, "ui/close", close.x + 8, r.y + (bar.h - 12) / 2, 12, ic, strip);
-            } else if d.buf.is_dirty() || d.mb.as_ref().is_some_and(|m| m.is_dirty()) {
-                // Like Zed: the unsaved dot takes the close button's place.
-                cv.fill_round_clip(Rect::new(close.x + 10, r.y + bar.h / 2 - 4, 8, 8), 4, c.accent, strip);
-            } else if d.pinned {
-                self.tx.icon(cv, "ui/pin", close.x + 8, r.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, strip);
-            } else if active {
-                self.tx.icon(cv, "ui/close", close.x + 8, r.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, strip);
-            }
-            // Split editor: an underline and the pane number for every pane that shows this tab, in
-            // the accent color for the focused pane and gray for the others.
-            for (k, &(_, focused)) in pane_docs.iter().enumerate().filter(|(_, p)| p.0 == i) {
-                let (col, label) = if focused {
-                    (c.accent, c.accent_text)
-                } else {
-                    (c.tab_inactive_fg.with_alpha(0x80), c.tab_inactive_fg)
-                };
-                let seg = (r.w - 28) / pane_docs.iter().filter(|p| p.0 == i).count() as i32;
-                let nth = pane_docs.iter().take(k).filter(|p| p.0 == i).count() as i32;
-                cv.fill_clip(Rect::new(r.x + 14 + nth * seg, bar.bottom() - 5, (seg - 2).max(4), 2), col, strip);
-                self.tx.draw_ui(
-                    cv,
-                    r.x + lead + name_w + 6 + nth * 11,
-                    ty + 1,
-                    &(k + 1).to_string(),
-                    label,
-                    strip,
-                    focused,
-                );
-            }
-            self.layout.tabs.push((r.intersect(&strip), close.intersect(&strip), i));
-        }
-        // Soft edge fades hint that more tabs hide beyond the strip.
-        let bg = self.theme.chrome.tabbar_bg;
-        if self.tabs_scroll > 0.5 {
-            for k in 0..14 {
-                cv.fill_clip(
-                    Rect::new(strip.x + k, bar.y, 1, bar.h),
-                    bg.with_alpha((0xd0 - k * 14).max(0) as u8),
-                    strip,
-                );
-            }
-        }
-        if self.tabs_scroll < self.tabs_max - 0.5 {
-            for k in 0..14 {
-                cv.fill_clip(
-                    Rect::new(strip.right() - 1 - k, bar.y, 1, bar.h),
-                    bg.with_alpha((0xd0 - k * 14).max(0) as u8),
-                    strip,
-                );
-            }
-        }
     }
 
     /// The name a tab shows: the file name, with the parent folders in front when another open

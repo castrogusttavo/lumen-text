@@ -7,26 +7,35 @@ impl App {
         self.refresh_find();
         let Some(f) = &self.find else { return };
         let c = self.theme.chrome;
-        let ed = self.layout.editor;
-        let w = (ed.w - 40).clamp(280, 540);
-        let h = if f.show_replace { 78 } else { 42 };
-        let r = Rect::new(ed.right() - w - 14, ed.y + 8, w, h);
+        let g = super::find::find_geo(self.layout.editor, f.show_replace);
+        let r = g.card;
         cv.shadow(r, 10);
         cv.card(r, 10, c.widget_bg, c.border);
         let fg = self.theme.foreground;
         let dim = c.tab_inactive_fg;
-        let field_w = w - 168;
+        let (mx, my) = self.mouse;
+        let free = self.overlay.is_none();
         let field = |cv: &mut Canvas,
                      tx: &mut crate::ui::TextCtx,
-                     y: i32,
+                     b: Rect,
                      text: &str,
                      hint: &str,
                      cursor: usize,
                      focus: bool,
                      bad: bool,
                      selall: bool| {
-            let b = Rect::new(r.x + 8, y, field_w, 28);
-            cv.card(b, 7, c.input_bg, if focus { c.accent } else { c.border });
+            cv.card(
+                b,
+                7,
+                c.input_bg,
+                if focus {
+                    c.accent
+                } else if bad {
+                    c.error
+                } else {
+                    c.border
+                },
+            );
             let (shown, col) = if text.is_empty() { (hint, dim) } else { (text, if bad { c.error } else { fg }) };
             if selall {
                 let w = tx.ui_width(text, false);
@@ -42,7 +51,7 @@ impl App {
         field(
             cv,
             &mut self.tx,
-            r.y + 7,
+            g.field,
             &f.field.text,
             "Search",
             f.field.cursor,
@@ -55,25 +64,43 @@ impl App {
                 if f.field.text.is_empty() {
                     String::new()
                 } else {
-                    "no results".to_string()
+                    "No results".to_string()
                 }
             }
-            (n, Some(c)) => format!("{} de {}", c + 1, n),
+            (n, Some(c)) => format!("{} of {}", c + 1, n),
             (n, None) => format!("{n}"),
         };
-        let mut x = r.x + 8 + field_w + 10;
-        let ty = r.y + 7 + 5;
-        let toggle = |on: bool| if on { c.accent } else { dim };
-        self.tx.draw_ui(cv, x, ty, "Aa", toggle(f.case), r, true);
-        x += 28;
-        self.tx.draw_ui(cv, x, ty, ".*", toggle(f.regex), r, true);
-        x += 26;
-        self.tx.draw_ui(cv, x, ty, &count, dim, r, false);
+        // Toggles and buttons: ghost look, a tinted pill when on, hover feedback.
+        let hot = |b: Rect| free && b.contains(mx, my);
+        let back = |cv: &mut Canvas, b: Rect, on: bool| {
+            if on {
+                cv.fill_round(b.inset(2), 6, c.accent.with_alpha(0x30));
+            }
+            if hot(b) {
+                cv.fill_round(b.inset(2), 6, c.list_hover_bg.with_alpha(0xc0));
+            }
+        };
+        back(cv, g.case, f.case);
+        back(cv, g.regex, f.regex);
+        for b in [g.prev, g.next, g.close] {
+            back(cv, b, false);
+        }
+        let toggle = |on: bool| if on { c.accent_text } else { dim };
+        let ty = g.case.y + 5;
+        self.tx.draw_ui(cv, g.case.x + 5, ty, "Aa", toggle(f.case), g.case, true);
+        self.tx.draw_ui(cv, g.regex.x + 6, ty, ".*", toggle(f.regex), g.regex, true);
+        let cw = self.tx.ui_width(&count, false);
+        let cx = g.count.x + (g.count.w - cw).max(0) / 2;
+        self.tx.draw_ui(cv, cx, ty, &count, if f.valid { dim } else { c.error }, g.count, false);
+        for (b, icon) in [(g.prev, "ui/chevron_up"), (g.next, "ui/chevron_down"), (g.close, "ui/close")] {
+            let col = if hot(b) { c.tab_active_fg } else { dim };
+            self.tx.icon(cv, icon, b.x + (b.w - 14) / 2, b.y + (b.h - 14) / 2, 14, col, b);
+        }
         if f.show_replace {
             field(
                 cv,
                 &mut self.tx,
-                r.y + 43,
+                g.rfield,
                 &f.replace.text,
                 "Replace",
                 f.replace.cursor,
@@ -81,7 +108,12 @@ impl App {
                 false,
                 f.replace.sel_all,
             );
-            self.tx.draw_ui(cv, r.x + 8 + field_w + 10, r.y + 43 + 5, "Enter · Ctrl+Alt+Enter all", dim, r, false);
+            for (b, label) in [(g.replace, "Replace"), (g.all, "All")] {
+                let hb = b.inset(2);
+                cv.card(hb, 6, if hot(b) { c.list_hover_bg } else { c.widget_bg }, c.border);
+                let lw = self.tx.ui_width(label, false);
+                self.tx.draw_ui(cv, b.x + (b.w - lw) / 2, b.y + 5, label, fg, b, false);
+            }
         }
     }
 

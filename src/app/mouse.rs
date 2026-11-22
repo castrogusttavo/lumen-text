@@ -52,7 +52,8 @@ impl App {
         if button == MouseButton::Left && self.sidebar_edge_press(x, y) {
             return self.request_redraw();
         }
-        if self.rail_click(x, y)
+        if self.find_click(x, y)
+            || self.rail_click(x, y)
             || self.quick_click(x, y)
             || self.topbar_click(x, y)
             || self.fswatch_click(x, y)
@@ -330,6 +331,9 @@ impl App {
                 CursorIcon::Default
             };
         }
+        if let Some(c) = self.find_cursor(x, y) {
+            return c;
+        }
         if let Some(c) = self.hover_cursor(x, y) {
             return c;
         }
@@ -445,6 +449,9 @@ impl App {
             || self.sidebar_resizing()
         {
             return None;
+        }
+        if let Some(h) = self.find_hover_target() {
+            return Some(h);
         }
         if let Some((r, _)) = l.top_btns.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((*r, 8));

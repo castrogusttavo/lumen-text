@@ -526,7 +526,7 @@ impl App {
             ),
             TipKey::Git(h) => self.git_tip_text(h),
             TipKey::Quick(i) => {
-                let (title, cmd, detail) = crate::app_quick::TIPS[i.min(2)];
+                let (title, cmd, detail) = crate::app_quick::TIPS[i.min(crate::app_quick::TIPS.len() - 1)];
                 t(title, cmd.and_then(|c| self.shortcut_text(c)), Some(detail.to_string()))
             }
             TipKey::Rail(k) => {
