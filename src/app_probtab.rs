@@ -16,9 +16,11 @@ use crate::{
     ds,
     problems::FileGroup,
     theme::Rgba,
-    tool_ui,
     ui::{Canvas, Rect, TextCtx},
-    ui_empty::{Empty, draw_empty},
+    ui_kit::{
+        empty::{Empty, draw_empty},
+        shimmer,
+    },
 };
 use std::{collections::HashSet, path::PathBuf};
 use winit::event::MouseScrollDelta;
@@ -274,7 +276,7 @@ impl App {
         if self.lspx.ws.tab.groups.is_empty() {
             if self.lspx.ws.tab.checking {
                 let pad = Rect::new(area.x + ds::S4, area.y + ds::S4, (area.w - 2 * ds::S4).max(0), area.h);
-                cv.skeleton_lines(&self.theme, pad, 3, area, tool_ui::clock());
+                cv.skeleton_lines(&self.theme, pad, 3, area, shimmer::clock());
             } else {
                 let hint = if project { "Nothing to fix in the project" } else { "Nothing to fix in the open files" };
                 let e = Empty {

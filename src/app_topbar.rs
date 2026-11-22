@@ -648,14 +648,15 @@ impl App {
                     self.tx.draw_ui(cv, rr.x + 38, ly, &name, fg, rr, false);
                 }
                 Entry::Cmd(label, keys, _) => {
-                    let caps = crate::ui_modal::keycaps(keys);
-                    let kw = if caps.is_empty() { 0 } else { crate::ui_modal::keycaps_width(&mut self.tx, &caps) + 8 };
+                    let caps = crate::ui_kit::keycap::keycaps(keys);
+                    let kw =
+                        if caps.is_empty() { 0 } else { crate::ui_kit::keycap::keys_width(&mut self.tx, &caps) + 8 };
                     let name = fit(&mut self.tx, label, rr.w - 28 - kw);
                     self.tx.draw_ui(cv, rr.x + 14, ly, &name, fg, rr, false);
                     if !caps.is_empty() {
-                        let ky = y + (ROW - crate::ui_modal::KEY_H) / 2;
+                        let ky = y + (ROW - crate::ui_kit::keycap::KEY_H) / 2;
                         let kx = rr.right() - kw - 4;
-                        crate::ui_modal::draw_keycaps(cv, &mut self.tx, &c, kx, ky, &caps, 1.0, rr);
+                        crate::ui_kit::keycap::draw_keys_in(cv, &mut self.tx, &c, kx, ky, &caps, 1.0, rr);
                     }
                 }
                 Entry::Worktrees(n) => {

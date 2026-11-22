@@ -561,7 +561,7 @@ impl App {
             body = self.draw_http_strip(cv, body);
             if self.http_loading() {
                 let pad = Rect::new(body.x + ds::S4, body.y + ds::S4, (body.w - 2 * ds::S4).max(0), body.h);
-                cv.skeleton_lines(&self.theme, pad, 4, body, crate::tool_ui::clock());
+                cv.skeleton_lines(&self.theme, pad, 4, body, crate::ui_kit::shimmer::clock());
                 return;
             }
         }

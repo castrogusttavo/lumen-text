@@ -197,7 +197,7 @@ impl App {
                 let x = text_x + self.tx.ui_width(&prefix, false);
                 cv.fill_clip(Rect::new(x, ty, 1, 18), fg, f);
                 if f.w > 220 && p.field.text.is_empty() {
-                    ui_modal::draw_keycaps(
+                    crate::ui_kit::keycap::draw_keys_in(
                         cv,
                         &mut self.tx,
                         &c,

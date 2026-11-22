@@ -165,7 +165,7 @@ impl App {
                     if motion::reduced() {
                         cv.fill_round(Rect::new(cx - 3, cy - 3, 6, 6), 3, *col);
                     } else {
-                        crate::app_tests::spinner_t(cv, cx, cy, 5, *col, bg, crate::tool_ui::clock(), r);
+                        crate::app_tests::spinner_t(cv, cx, cy, 5, *col, bg, crate::ui_kit::shimmer::clock(), r);
                         busy = true;
                     }
                 }
