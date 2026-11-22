@@ -75,7 +75,8 @@ impl Fx {
     /// `idle` the seconds since the last key or output, `focused` whether the terminal has the
     /// keyboard (an unfocused cursor is a steady hollow box).
     pub fn frame(&self, now: Instant, bells: u64, idle: f32, focused: bool) -> Frame {
-        let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let s = &mut *guard;
         let dt = s.last.map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f64().min(0.1));
         s.last = Some(now);
         if s.bells_seen.is_some_and(|b| b != bells) {
