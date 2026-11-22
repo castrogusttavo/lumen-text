@@ -339,6 +339,8 @@ pub struct GitPanel {
     pub menu: Option<GpMenu>,
     /// Line counts per file; `None` until the first read arrives (nothing is drawn meanwhile).
     pub stats: Option<NumStats>,
+    /// Animated state (tab pill, fades, focus rings); advanced while drawing.
+    pub mo: super::motion::GpMotion,
 }
 
 /// What one refresh of the panel reads from git (on any thread; applied on the UI thread).
@@ -456,6 +458,7 @@ impl GitPanel {
             collapsed_dirs: std::collections::HashSet::new(),
             menu: None,
             stats: None,
+            mo: super::motion::GpMotion::default(),
         };
         p.refresh();
         p

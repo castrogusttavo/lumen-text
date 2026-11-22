@@ -1,3 +1,4 @@
+use super::draw_empty::EmptyBtn;
 use super::*;
 
 impl App {
@@ -39,13 +40,16 @@ impl App {
         w
     }
 
-    pub fn draw_gitpanel(&mut self, cv: &mut Canvas) {
-        let Some(mut gp) = self.gitpanel.take() else { return };
+    /// Draws the panel and advances its motion by `dt`; true while something still moves (a tab
+    /// pill gliding, a fade, a focus ring, a running remote command) so the window keeps redrawing.
+    pub fn draw_gitpanel(&mut self, cv: &mut Canvas, dt: f64) -> bool {
+        let Some(mut gp) = self.gitpanel.take() else { return false };
         self.gp_sync(&mut gp);
+        gp.mo.step(dt);
+        gp.mo.show(gp.tab);
         gp.hits.clear();
         let p = self.gitpanel_rect();
         let c = self.theme.chrome;
-        let dim = c.tab_inactive_fg;
         cv.fill(p, c.sidebar_bg);
         cv.fill(Rect::new(p.x, p.y, 1, p.h), c.border);
         // Resize handle: the left edge lights up under the pointer and while dragging.
@@ -77,28 +81,26 @@ impl App {
         let body =
             Rect::new(p.x + 1, comp_y + commit_h, p.w - 1, (p.h - HEAD_H - BRANCH_H - strip_h - commit_h).max(0));
         if gp.top.is_none() {
-            let msg = "This folder is not a git repository";
-            let w = self.tx.ui_width(msg, true);
-            self.tx.draw_ui(cv, p.x + (p.w - w) / 2, body.y + 40, msg, c.tab_active_fg, body, true);
-            let hint = "Initialize one to track changes, commit and push.";
-            let hw = self.tx.ui_width(hint, false);
-            self.tx.draw_ui(cv, p.x + (p.w - hw) / 2, body.y + 64, hint, dim, body, false);
-            let label = "Initialize repository";
-            let bw = self.tx.ui_width(label, false) + 28;
-            let b = Rect::new(p.x + (p.w - bw) / 2, body.y + 96, bw, 30);
-            let hot = self.hv(b);
-            cv.fill_round(b, 8, if hot { c.accent.shift(14) } else { c.accent });
-            self.tx.draw_ui(cv, b.x + 14, b.y + 6, label, c.on_accent, b, false);
-            gp.hits.push((b, Hit::Init));
+            let btn = [EmptyBtn { label: "Initialize repository", hit: Hit::Init, primary: true }];
+            let copy = ("No repository here", "Initialize one to track changes, commit and push.");
+            self.gp_empty_state(cv, &mut gp, body, ("ui/git_branch", c.accent_text), copy, &btn);
         } else if gp.tab == Tab::Changes {
             self.gp_draw_commit_area(cv, &mut gp, Rect::new(p.x + 1, comp_y, p.w - 1, commit_h));
             self.gp_draw_changes(cv, &mut gp, body);
         } else {
             self.gp_draw_history(cv, &mut gp, body);
         }
+        // After a tab switch the body fades in from the panel background.
+        let veil = gp.mo.veil_alpha();
+        if veil > 0 {
+            let top = by + BRANCH_H + strip_h;
+            cv.fill(Rect::new(p.x + 1, top, p.w - 1, (p.bottom() - top).max(0)), c.sidebar_bg.with_alpha(veil));
+        }
         self.gp_draw_menu(cv, &mut gp, p);
         gp.hover = if p.contains(self.mouse.0, self.mouse.1) { gp.hit_at(self.mouse.0, self.mouse.1) } else { None };
+        let busy = gp.mo.moving() || gp.job.is_some();
         self.gitpanel = Some(gp);
+        busy
     }
 
     /// Buttons of the force-push / strategy cards: (label, hit, colored as a warning).
@@ -216,6 +218,7 @@ impl App {
         }
         if let Some(job) = &gp.job {
             let secs = job.started.elapsed().as_secs();
+            let spin_t = job.started.elapsed().as_secs_f32();
             let head = format!("{}… {secs}s", job.op.busy());
             let hw = self.tx.ui_width(&head, true);
             self.tx.draw_ui(cv, area.x + 16, area.y + 5, &head, strong, area, true);
@@ -224,6 +227,13 @@ impl App {
             let prog = fit(&mut self.tx, &job.progress.clone(), room, false);
             self.tx.draw_ui(cv, area.x + 16 + hw + 10, area.y + 5, &prog, dim, area, false);
             self.gp_text_btn(cv, gp, area.right() - 8, area.y + 2, "Cancel", Hit::JobCancel, c.error);
+            // Indeterminate progress: a segment sweeps along a hairline track under the text.
+            let track = Rect::new(area.x + 16, area.bottom() - 4, area.w - 32, 2);
+            cv.fill_round(track, 1, c.border.with_alpha(0x90));
+            let (off, w) = super::motion::sweep(spin_t, track.w);
+            if w > 0 {
+                cv.fill_round_clip(Rect::new(track.x + off, track.y, w, track.h), 1, c.accent, track);
+            }
             return;
         }
         if let Some((text, ok, _)) = gp.sync_note.clone() {
