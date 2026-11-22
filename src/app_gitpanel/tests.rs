@@ -1123,7 +1123,8 @@ fn the_slot_docks_on_the_right_and_its_left_edge_resizes_it() {
     // Left edge: col-resize; inside: not; a press starts the drag, moves resize.
     let (ex, ey) = (slot.x as f64, (slot.y + 200) as f64);
     assert!(app.panel_on_edge(ex, ey) && !app.panel_on_edge((slot.x + 30) as f64, ey));
-    assert_eq!(app.aipanel_cursor(ex, ey), Some(winit::window::CursorIcon::ColResize));
+    app.mouse = (ex, ey);
+    assert_eq!(app.cursor_probe().0, winit::window::CursorIcon::ColResize);
     assert!(app.aipanel_mouse(ex, ey, 0) && app.ai.resizing);
     app.mouse = ((app.size.0 as i32 - crate::ds::GAP - 520) as f64, ey);
     assert!(app.aipanel_move());

@@ -361,6 +361,9 @@ pub struct AiState {
     /// The last click on a session tab (a second one soon after renames it).
     pub last_tab_click: Option<(u64, Instant)>,
     pub hits: Vec<(Rect, AiHit)>,
+    /// Buttons drawn dimmed because they cannot act now (Stop with nothing running, Restart
+    /// without an agent): the pointer says "not allowed" over them.
+    pub disabled: Vec<Rect>,
     /// Hover / slide / pulse state of the chrome.
     pub motion: super::motion::Motion,
     /// The button the primary mouse button is held on (pressed look).
@@ -395,6 +398,7 @@ impl Default for AiState {
             window_focused: true,
             last_tab_click: None,
             hits: Vec::new(),
+            disabled: Vec::new(),
             motion: Default::default(),
             pressed: None,
             resizing: false,

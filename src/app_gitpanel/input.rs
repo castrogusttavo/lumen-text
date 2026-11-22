@@ -290,6 +290,7 @@ impl App {
             // Any click closes the open dropdown; an item of it acts like the same button on the panel.
             let open_menu = gp.menu.take();
             let mut hit = gp.hit_at(x, y);
+            gp.pressed = hit;
             if let Some(Hit::MenuItem(n)) = hit {
                 hit = open_menu.and_then(|m| gp.menu_items(m).get(n).map(|it| it.hit));
             }
@@ -495,18 +496,5 @@ impl App {
         let changed = h != gp.hover;
         gp.hover = h;
         changed
-    }
-
-    /// Cursor over the panel: hand on clickable things, I-beam in the message box.
-    pub fn gitpanel_cursor(&self, x: f64, y: f64) -> Option<CursorIcon> {
-        let gp = self.gitpanel.as_ref()?;
-        if !self.gitpanel_rect().contains(x, y) {
-            return None;
-        }
-        Some(match gp.hit_at(x, y) {
-            Some(Hit::Msg | Hit::Filter) => CursorIcon::Text,
-            Some(_) => CursorIcon::Pointer,
-            None => CursorIcon::Default,
-        })
     }
 }

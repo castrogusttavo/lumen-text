@@ -47,8 +47,8 @@ impl App {
         for (tab, label, r, badge) in items {
             let active = gp.tab == tab;
             let hot = self.hv(r);
-            if !active && hot {
-                cv.fill_round(r, ds::R_ROW - 2, strong.with_alpha(0x12));
+            if !active {
+                self.gp_wash(cv, gp, r, ds::R_ROW - 2, Hit::Tab(tab));
             }
             let col = if active || hot { strong } else { dim };
             let lw = self.tx.ui_width(label, true);
@@ -79,8 +79,9 @@ impl App {
         // chevron for the rest (pull strategy). Only what can run now is clickable.
         let chev_w = 20;
         let chev = Rect::new(p.right() - 8 - chev_w, y, chev_w, 28);
-        if self.hv(chev) || gp.menu == Some(GpMenu::Sync) {
-            cv.fill_round(chev, 8, strong.with_alpha(0x1c));
+        self.gp_wash(cv, gp, chev, ds::R_ROW, Hit::Menu(GpMenu::Sync));
+        if gp.menu == Some(GpMenu::Sync) {
+            cv.fill_round(chev, ds::R_ROW, c.pressed_overlay);
         }
         self.tx.icon(cv, "ui/chevron_down", chev.x + 3, y + 7, 14, dim, chev);
         gp.hits.push((chev, Hit::Menu(GpMenu::Sync)));
@@ -108,8 +109,8 @@ impl App {
                 // Something to send / receive: the button carries its tone.
                 cv.fill_round(r, ds::R_CTRL + 2, tone.with_alpha(0x1a));
             }
-            if enabled && self.hv(r) {
-                cv.fill_round(r, ds::R_CTRL + 2, strong.with_alpha(0x1c));
+            if enabled {
+                self.gp_wash(cv, gp, r, ds::R_ROW, hit);
             }
             self.tx.icon(cv, icon, r.x + 8, y + 7, 14, col, r);
             if !cnt.is_empty() {
@@ -117,6 +118,8 @@ impl App {
             }
             if enabled {
                 gp.hits.push((r, hit));
+            } else {
+                gp.disabled.push(r);
             }
             right = r.x;
         }
@@ -136,8 +139,9 @@ impl App {
         let branch = fit(&mut self.tx, &branch, inner - used_repo, true);
         let tw = used_repo + self.tx.ui_width(&branch, true);
         let chip = Rect::new(p.x + 8, y, (8 + 14 + 6 + tw + 6 + 14 + 4).min(max_w), 28);
-        let edge = if self.hv(chip) { strong.with_alpha(0x40) } else { c.border.with_alpha(0x80) };
-        cv.card(chip, ds::R_CTRL + 2, c.input_bg, edge);
+        let edge = if self.hv(chip) { c.border_glow } else { c.border };
+        cv.card(chip, ds::R_ROW, c.input_bg, edge);
+        self.gp_wash(cv, gp, chip, ds::R_ROW, Hit::Branches);
         self.tx.icon(cv, "ui/git_branch", chip.x + 8, y + 7, 14, dim, chip);
         let tx0 = chip.x + 8 + 14 + 6;
         if show_repo {
@@ -159,10 +163,10 @@ impl App {
         // Focus ring: eases from the border to the accent and gains a soft glow.
         gp.mo.msg_ring.set(gp.msg_focus && gp.focused);
         let f = gp.mo.msg_ring.v();
-        let idle = if self.hv(bx) { strong.with_alpha(0x30) } else { c.border.with_alpha(0xa0) };
-        cv.ring(bx, 10, crate::anim::lerp_rgba(idle, c.accent.with_alpha(0xd0), f));
+        let idle = if self.hv(bx) { c.border_glow } else { c.border };
+        cv.ring(bx, ds::R_ROW + 2, crate::anim::lerp_rgba(idle, c.focus_ring, f));
         if f > 0.01 {
-            cv.ring(bx.inset(-2), 12, crate::anim::fade(c.accent, 0.3 * f));
+            cv.ring(bx.inset(-2), ds::R_ROW + 4, crate::anim::fade(c.focus_ring, 0.3 * f));
         }
         let b = Rect::new(bx.x, bx.y, bx.w, msg_h);
         gp.msg_box = b;
@@ -182,13 +186,20 @@ impl App {
         let blk = Rect::new(bx.right() - 6 - lw - cw, ry, lw + cw, 26);
         let main = Rect::new(blk.x, blk.y, lw, 26);
         let chev = Rect::new(main.right(), blk.y, cw, 26);
-        cv.fill_round(blk, 8, if ready { c.accent } else { c.accent.with_alpha(0x48) });
+        cv.fill_round(blk, ds::R_ROW, if ready { c.accent } else { c.accent.with_alpha(0x48) });
         let over = c.on_accent.with_alpha(0x2a);
+        let held = c.on_accent.with_alpha(0x44);
         if self.hv(main) {
-            cv.fill_round_clip(blk, 8, over, main);
+            let a = if gp.pressed == Some(Hit::CommitBtn) { held } else { over };
+            cv.fill_round_clip(blk, ds::R_ROW, a, main);
         }
         if self.hv(chev) || gp.menu == Some(GpMenu::Commit) {
-            cv.fill_round_clip(blk, 8, over, chev);
+            let a = if gp.pressed == Some(Hit::Menu(GpMenu::Commit)) || gp.menu == Some(GpMenu::Commit) {
+                held
+            } else {
+                over
+            };
+            cv.fill_round_clip(blk, ds::R_ROW, a, chev);
         }
         let text_col = if ready { c.on_accent } else { strong.with_alpha(0xc0) };
         cv.fill(Rect::new(main.right(), blk.y + 6, 1, 14), text_col.with_alpha(0x50));
@@ -262,16 +273,17 @@ impl App {
         let below = anchor.bottom() + 4;
         let y = if below + h <= p.bottom() - 4 { below } else { (anchor.y - 4 - h).max(p.y + 4) };
         let r = Rect::new(x, y, w, h);
-        cv.shadow(r, 10);
-        cv.fill_round(r, 10, c.widget_bg);
-        cv.ring(r, 10, c.border);
+        cv.float_card(r, ds::R_ROW + 2, &c, ds::Elev::Pop);
         // Clicks on the padding are swallowed (they only close the menu).
         gp.hits.push((r, Hit::MenuItem(usize::MAX)));
         for (i, it) in items.iter().enumerate() {
             let ir = Rect::new(r.x + 4, r.y + PAD + i as i32 * ROW, r.w - 8, ROW);
             let hov = self.hv(ir);
             if hov {
-                cv.fill_round(ir, 6, c.list_hover_bg);
+                cv.fill_round(ir, ds::R_CTRL, c.list_hover_bg);
+                if gp.pressed == Some(Hit::MenuItem(i)) {
+                    cv.fill_round(ir, ds::R_CTRL, c.pressed_overlay);
+                }
             }
             match it.checked {
                 Some(on) => {

@@ -453,15 +453,19 @@ impl App {
     pub(crate) fn draw_terminal(&mut self, cv: &mut Canvas, body: Rect) {
         self.terms.pane_rects.clear();
         if self.terms.panes.is_empty() {
-            self.tx.draw_ui(
-                cv,
-                body.x + 14,
-                body.y + 10,
-                "Terminal closed — Ctrl+` opens a new one",
-                self.theme.chrome.tab_inactive_fg,
-                body,
-                false,
-            );
+            // The shared empty state; the strip's "+" and the shortcut start a new terminal.
+            let keys = crate::app_tooltip::shortcut_in(&self.keymap.entries(), "NewTerminal");
+            let hint = match keys {
+                Some(k) => format!("Press {k} or use + to open a new one."),
+                None => "Use + to open a new one.".to_string(),
+            };
+            let spec = crate::ui_kit::empty::Empty {
+                icon: "ui/terminal",
+                title: "Terminal closed",
+                hint: &hint,
+                action: None,
+            };
+            crate::ui_kit::empty::draw_empty(&mut self.tx, cv, &self.theme, body, &spec, self.mouse, 1.0);
             return;
         }
         let panes = self.terms.panes.clone();

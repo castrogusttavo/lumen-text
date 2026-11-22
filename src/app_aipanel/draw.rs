@@ -1,5 +1,14 @@
 use super::*;
-use crate::{anim::fade, app_topbar::StatusBtn, ds, theme::Rgba};
+use crate::{
+    anim::fade,
+    app_topbar::StatusBtn,
+    ds,
+    theme::Rgba,
+    ui_kit::{
+        button::{BtnStyle, draw_button_a},
+        empty::{Empty, draw_empty, empty_height},
+    },
+};
 
 /// Secondary text size.
 const SMALL: f32 = 12.0;
@@ -10,6 +19,8 @@ const BARS: [f32; 6] = [0.62, 0.9, 0.78, 0.5, 0.84, 0.66];
 /// Height of one suggested prompt and of one agent row in the empty state.
 const PROMPT_H: i32 = 32;
 const AGENT_H: i32 = 46;
+/// Height of the buttons (the shared button's 30 px).
+const BTN_H: i32 = ds::HIT_MIN + ds::S1 + 2;
 
 /// Vertical plan of the empty state: whether the suggested prompts fit, and the total height.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,9 +29,14 @@ pub(crate) struct EmptyPlan {
     pub total: i32,
 }
 
-/// Hero (disc, title, sub), the primary button, the prompts when there is room, the agents, Refresh.
+/// Height of the hero: the shared empty state's tile, title and hint, with a gap on each side.
+fn hero_h() -> i32 {
+    empty_height(false) + 2 * ds::S2
+}
+
+/// Hero (tile, title, hint), the primary button, the prompts when there is room, the agents, Refresh.
 pub(crate) fn empty_plan(body_h: i32, any: bool, agents: usize, prompts: usize) -> EmptyPlan {
-    let hero = 48 + 16 + 24 + 32;
+    let hero = hero_h();
     let button = if any { 48 } else { 0 };
     let agents_h = 24 + agents as i32 * (AGENT_H + 6) + 12 + 30;
     let prompts_h = 24 + prompts as i32 * (PROMPT_H + 6) + 12;
@@ -59,6 +75,21 @@ impl App {
         }
     }
 
+    /// The neutral hover / pressed wash of a control: the theme's overlays, gliding in and out with
+    /// the pointer; holding the button on it adds the pressed overlay. Nothing moves while the
+    /// user asked for reduced motion (the glide snaps, see `anim::Hot`).
+    fn ai_wash(&self, cv: &mut Canvas, r: Rect, rad: i32, hit: AiHit) {
+        let c = self.theme.chrome;
+        let k = self.ai.motion.hot(hit);
+        if k <= 0.0 {
+            return;
+        }
+        cv.fill_round(r, rad, fade(c.hover_overlay, k));
+        if k > 0.5 && self.ai.pressed == Some(hit) {
+            cv.fill_round(r, rad, c.pressed_overlay);
+        }
+    }
+
     /// A status dot centered on (cx, cy): solid, with a soft ring that breathes while the agent
     /// starts or works.
     fn ai_dot(&self, cv: &mut Canvas, (cx, cy): (i32, i32), r: i32, status: Status, col: Rgba) {
@@ -74,12 +105,13 @@ impl App {
     fn ai_icon_btn(&mut self, cv: &mut Canvas, r: Rect, icon: &str, hit: Option<AiHit>) {
         let c = self.theme.chrome;
         if let Some(h) = hit {
-            self.ai_tint(cv, r, ds::R_ROW, h, c.tab_active_fg, 0x1c);
+            self.ai_wash(cv, r, ds::R_ROW, h);
         }
         let tint = if hit.is_some() { c.tab_inactive_fg } else { c.tab_inactive_fg.with_alpha(0x60) };
         self.tx.icon(cv, icon, r.x + (r.w - ds::ICON_M) / 2, r.y + (r.h - ds::ICON_M) / 2, ds::ICON_M, tint, r);
-        if let Some(h) = hit {
-            self.ai.hits.push((r, h));
+        match hit {
+            Some(h) => self.ai.hits.push((r, h)),
+            None => self.ai.disabled.push(r),
         }
     }
 
@@ -90,6 +122,7 @@ impl App {
         let (mx, my) = self.mouse;
         let hovered = if self.overlay.is_none() { self.ai.hit_at(mx, my).map(|(_, h)| h) } else { None };
         self.ai.hits.clear();
+        self.ai.disabled.clear();
         let shown = self.gitpanel.is_some() || self.ai.open;
         let working = self.ai.sessions.iter().any(|s| matches!(s.status(), Status::Starting | Status::Working));
         let empty = self.ai.open && self.ai.sessions.is_empty();
@@ -121,6 +154,8 @@ impl App {
             let r = Rect::new(x, strip.y + 6, w, 28);
             if active {
                 self.dock_pill(cv, strip, r);
+            } else {
+                self.ai_wash(cv, r, ds::R_ROW, hit);
             }
             let col = if active { strong } else { dim };
             self.tx.icon(cv, icon, r.x + 10, r.y + 6, 16, col, r);
@@ -218,7 +253,7 @@ impl App {
             let (status, unseen, icon, name) = (s.status(), s.track.unseen, s.agent.icon, s.name.clone());
             let hovered = tr.contains(mx, my) && self.overlay.is_none();
             if !active {
-                self.ai_tint(cv, tr, ds::R_ROW, AiHit::Session(i), strong, 0x14);
+                self.ai_wash(cv, tr, ds::R_ROW, AiHit::Session(i));
             }
             let dot = self.ai_status_color(status);
             self.ai_dot(cv, (tr.x + 12, tr.y + 14), 3, status, dot);
@@ -235,7 +270,7 @@ impl App {
             let k = self.ai.motion.hot(AiHit::Session(i)).max(self.ai.motion.hot(AiHit::CloseSession(i)));
             if active || hovered || k > 0.05 {
                 let cb = Rect::new(tr.right() - 22, tr.y + 6, 16, 16);
-                self.ai_tint(cv, cb, 4, AiHit::CloseSession(i), strong, 0x28);
+                self.ai_wash(cv, cb, ds::S1, AiHit::CloseSession(i));
                 self.tx.icon(cv, "ui/close", cb.x + 2, cb.y + 2, 12, fade(dim, if active { 1.0 } else { k }), cb);
                 self.ai.hits.push((cb, AiHit::CloseSession(i)));
             }
@@ -250,7 +285,7 @@ impl App {
         cv.fill(Rect::new(r.x, r.bottom() - 1, r.w, 1), c.border);
         let f = Rect::new(r.x + 8, r.y + 4, r.w - 16, r.h - 9);
         let on = self.ai.filter_focus && self.ai.focused;
-        cv.card(f, 7, c.widget_bg, if on { c.accent } else { c.border });
+        cv.card(f, ds::R_CTRL + 1, c.widget_bg, if on { c.focus_ring } else { c.border });
         self.ai.hits.push((f, AiHit::Filter));
         self.tx.icon(cv, "hugeicons/search", f.x + 8, f.y + (f.h - 14) / 2, 14, dim, f);
         let has = !self.ai.filter.text.is_empty();
@@ -260,7 +295,7 @@ impl App {
         let (txt, col) = if has { (self.ai.filter.text.clone(), fg) } else { ("Filter sessions…".to_string(), dim) };
         if self.ai.filter.sel_all && has {
             let w = self.tx.ui_width(&txt, false);
-            cv.fill_round_clip(Rect::new(tx - 2, f.y + 3, w + 4, f.h - 6), 4, c.accent.with_alpha(0x55), clip);
+            cv.fill_round_clip(Rect::new(tx - 2, f.y + 3, w + 4, f.h - 6), ds::S1, c.selection_accent, clip);
         }
         self.tx.draw_ui(cv, tx, f.y + (f.h - 18) / 2, &txt, col, clip, false);
         if on {
@@ -270,7 +305,7 @@ impl App {
         }
         if has {
             let b = Rect::new(f.right() - 24, f.y + (f.h - 20) / 2, 20, 20);
-            self.ai_tint(cv, b, 5, AiHit::FilterClear, c.tab_active_fg, 0x28);
+            self.ai_wash(cv, b, ds::R_CTRL, AiHit::FilterClear);
             self.tx.icon(cv, "ui/close", b.x + 4, b.y + 4, 12, dim, b);
             self.ai.hits.push((b, AiHit::FilterClear));
         }
@@ -284,7 +319,7 @@ impl App {
         let nw = self.tx.ui_width(name, true);
         let pill = Rect::new(h.x + 11, h.y + 8, 10 + 16 + 8 + nw + 8 + 12 + 10, 28);
         cv.fill_round(pill, ds::R_ROW, strong.with_alpha(0x0e));
-        self.ai_tint(cv, pill, ds::R_ROW, AiHit::Agent, strong, 0x14);
+        self.ai_wash(cv, pill, ds::R_ROW, AiHit::Agent);
         cv.ring(pill, ds::R_ROW, c.border);
         self.tx.icon(cv, icon, pill.x + 10, pill.y + 6, 16, strong, pill);
         self.tx.draw_ui(cv, pill.x + 34, pill.y + 5, name, strong, pill, true);
@@ -357,7 +392,7 @@ impl App {
             right = r.x - 4;
         }
         let b = Rect::new(right - 28, h.y + 8, 28, 28);
-        self.ai_tint(cv, b, ds::R_ROW, AiHit::Ide, c.tab_active_fg, 0x1c);
+        self.ai_wash(cv, b, ds::R_ROW, AiHit::Ide);
         let (icon, tint) =
             if connected { ("ui/link", c.git_added) } else { ("ui/disconnected", c.tab_inactive_fg.with_alpha(0x80)) };
         self.tx.icon(cv, icon, b.x + 6, b.y + 6, 16, tint, b);
@@ -378,9 +413,11 @@ impl App {
         let focused = self.ai.focused && !self.ai.filter_focus && self.overlay.is_none();
         let (fg, bg) = (self.theme.foreground, self.theme.background);
         let look = self.term_look(Which::Ai, focused, (inner.x, inner.y));
-        let clip = Rect::new(body.x, body.y + 1, body.w, body.h - 1);
-        // The terminal sits on a rounded surface inset from the panel edges.
-        let card = Rect::new(inner.x - 6, inner.y - 6, inner.w + 12, inner.h + 12);
+        // The terminal sits on a rounded surface inset from the panel edges; nothing of the grid
+        // is drawn outside it.
+        let card =
+            Rect::new(inner.x - FRAME_PAD, inner.y - FRAME_PAD, inner.w + 2 * FRAME_PAD, inner.h + 2 * FRAME_PAD);
+        let clip = card.inset(1);
         cv.fill(Rect::new(body.x, body.y + 1, body.w, (body.h - 1).max(0)), c.sidebar_bg);
         cv.card(card, ds::R_CARD, self.theme.background, c.border);
         let booting = self
@@ -452,31 +489,36 @@ impl App {
             return;
         }
         let card = Rect::new(body.x + (body.w - w) / 2, body.bottom() - 16 - 112, w, 112);
-        cv.shadow(card, 10);
-        cv.card(card, ds::R_CARD, c.widget_bg, c.border);
+        cv.float_card(card, ds::R_CARD, &c, ds::Elev::Pop);
         let icon_col = if code == 0 { c.tab_inactive_fg } else { c.error };
         self.tx.icon(cv, "ui/power", card.x + 16, card.y + 18, 16, icon_col, card);
         let title = crate::ui::fit_ellipsis(&mut self.tx, &format!("{name} exited"), w - 56, true);
         self.tx.draw_ui(cv, card.x + 42, card.y + 16, &title, c.tab_active_fg, card, true);
         let sub = if code == 0 { "Exit code 0".to_string() } else { format!("Exit code {code}") };
         self.tx.draw_ui_sized(cv, card.x + 42, card.y + 38, &sub, c.tab_inactive_fg, card, false, SMALL);
-        // Restart (accent) and New session.
+        // Restart (accent) and Choose agent, the shared buttons with the pointer's hover and press.
         let label = "Restart";
-        let bw = self.tx.ui_width(label, true) + 28;
-        let b = Rect::new(card.x + 42, card.bottom() - 16 - 30, bw, 30);
-        cv.fill_round(b, ds::R_ROW, c.accent);
-        self.ai_tint(cv, b, ds::R_ROW, AiHit::Restart, c.on_accent, 0x30);
-        self.tx.draw_ui(cv, b.x + 14, b.y + 6, label, c.on_accent, b, true);
-        self.ai.hits.push((b, AiHit::Restart));
+        let bw = self.tx.ui_width(label, true) + 2 * ds::S4;
+        let b = Rect::new(card.x + 42, card.bottom() - ds::S4 - BTN_H, bw, BTN_H);
+        self.ai_button(cv, b, label, BtnStyle::Primary, AiHit::Restart, 1.0);
         let pick = "Choose agent";
-        let pw = self.tx.ui_width(pick, false) + 24;
-        let pb = Rect::new(b.right() + 8, b.y, pw, 30);
-        if pb.right() <= card.right() - 12 {
-            self.ai_tint(cv, pb, ds::R_ROW, AiHit::Agent, c.tab_active_fg, 0x14);
-            cv.ring(pb, ds::R_ROW, c.border);
-            self.tx.draw_ui(cv, pb.x + 12, pb.y + 6, pick, c.tab_active_fg, pb, false);
-            self.ai.hits.push((pb, AiHit::Agent));
+        let pw = self.tx.ui_width(pick, true) + 2 * ds::S4;
+        let pb = Rect::new(b.right() + ds::S2, b.y, pw, BTN_H);
+        if pb.right() <= card.right() - ds::S3 {
+            self.ai_button(cv, pb, pick, BtnStyle::Secondary, AiHit::Agent, 1.0);
         }
+    }
+
+    /// A shared `ui_kit` button that is also a hit of the panel: hover from the glide, pressed
+    /// overlay while the button is held on it.
+    fn ai_button(&mut self, cv: &mut Canvas, r: Rect, label: &str, style: BtnStyle, hit: AiHit, a: f32) {
+        let c = self.theme.chrome;
+        let k = self.ai.motion.hot(hit);
+        draw_button_a(cv, &mut self.tx, &c, r, label, style, false, k > 0.5, a);
+        if k > 0.5 && self.ai.pressed == Some(hit) {
+            cv.fill_round(r, ds::R_ROW, fade(c.pressed_overlay, a));
+        }
+        self.ai.hits.push((r, hit));
     }
 
     /// Entrance progress of item `n` of the empty state and how far it still has to rise.
@@ -497,41 +539,25 @@ impl App {
         let x = body.x + (body.w - w) / 2;
         let mut y = body.y + ((body.h - plan.total) / 2).max(ds::S5);
         let mut n = 0;
-        // Icon in a soft accent disc.
+        // The shared empty state (icon tile, title, hint) rises and fades in as one item.
         let (e, dy) = self.ai_enter(n);
         n += 1;
-        let disc = Rect::new(body.x + (body.w - 48) / 2, y + dy, 48, 48);
-        cv.fill_round(disc, 24, fade(c.accent.with_alpha(0x1c), e));
-        self.tx.icon(cv, "ui/sparkle", disc.x + 14, disc.y + 14, ds::ICON_L, fade(c.accent_text, e), disc);
-        y += 48 + 16;
-        let (e, dy) = self.ai_enter(n);
-        n += 1;
-        let title = if any { "Start an agent" } else { "No agent CLI found" };
-        let tw = self.tx.ui_width(title, true);
-        self.tx.draw_ui(cv, body.x + (body.w - tw) / 2, y + dy, title, fade(strong, e), body, true);
-        y += 24;
-        let (e, dy) = self.ai_enter(n);
-        n += 1;
-        let sub = if any {
-            "It works on this workspace with you, in a real terminal."
+        let (title, hint) = if any {
+            ("Start an agent", "It works on this workspace, in a real terminal.")
         } else {
-            "Install one, then Refresh. It runs here with your own login."
+            ("No agent CLI found", "Install one, then Refresh.")
         };
-        let sub = crate::ui::fit_ellipsis(&mut self.tx, sub, w, false);
-        let sw = self.tx.ui_width_sized(&sub, false, SMALL);
-        self.tx.draw_ui_sized(cv, body.x + (body.w - sw) / 2, y + dy, &sub, fade(dim, e), body, false, SMALL);
-        y += 32;
+        let hero = Rect::new(body.x, y + dy, body.w, hero_h());
+        let spec = Empty { icon: "ui/sparkle", title, hint, action: None };
+        draw_empty(&mut self.tx, cv, &self.theme, hero, &spec, self.mouse, e);
+        y += hero.h;
         if any {
             let (e, dy) = self.ai_enter(n);
             n += 1;
-            let label = "New Agent";
-            let bw = 14 + 16 + 6 + self.tx.ui_width(label, true) + 16;
-            let b = Rect::new(body.x + (body.w - bw) / 2, y + dy, bw, 32);
-            cv.fill_round(b, 10, fade(c.accent, e));
-            self.ai_tint(cv, b, 10, AiHit::New, c.on_accent, 0x30);
-            self.tx.icon(cv, "ui/plus", b.x + 14, b.y + 8, 16, fade(c.on_accent, e), b);
-            self.tx.draw_ui(cv, b.x + 36, b.y + 7, label, fade(c.on_accent, e), b, true);
-            self.ai.hits.push((Rect::new(b.x, y, b.w, b.h), AiHit::New));
+            let label = "New agent";
+            let bw = (self.tx.ui_width(label, true) + 2 * ds::S5).min(w);
+            let b = Rect::new(body.x + (body.w - bw) / 2, y + dy, bw, BTN_H);
+            self.ai_button(cv, b, label, BtnStyle::Primary, AiHit::New, e);
             y += 48;
         }
         if plan.prompts {
@@ -544,7 +570,7 @@ impl App {
                 n += 1;
                 let r = Rect::new(x, y + dy, w, PROMPT_H);
                 cv.card(r, ds::R_ROW, fade(c.sidebar_bg, e), fade(c.border, e));
-                self.ai_tint(cv, r, ds::R_ROW, AiHit::Prompt(i), strong, 0x14);
+                self.ai_wash(cv, r, ds::R_ROW, AiHit::Prompt(i));
                 self.tx.icon(cv, icon, r.x + 12, r.y + 9, ds::ICON_S, fade(dim, e), r);
                 let text = crate::ui::fit_ellipsis(&mut self.tx, label, w - 34 - 32, false);
                 self.tx.draw_ui(cv, r.x + 34, r.y + 7, &text, fade(strong, e), r, false);
@@ -565,7 +591,7 @@ impl App {
             let r = Rect::new(x, y + dy, w, AGENT_H);
             let installed = self.ai.path_of(a).is_some();
             cv.card(r, ds::R_ROW, fade(c.sidebar_bg, e), fade(c.border, e));
-            self.ai_tint(cv, r, ds::R_ROW, AiHit::Install(i), strong, 0x14);
+            self.ai_wash(cv, r, ds::R_ROW, AiHit::Install(i));
             let tint = fade(if installed { strong } else { dim }, e);
             self.tx.icon(cv, a.icon, r.x + 14, r.y + 15, 16, tint, r);
             self.tx.draw_ui(cv, r.x + 42, r.y + 5, a.name, tint, r, true);
@@ -582,7 +608,7 @@ impl App {
         let label = "Refresh";
         let bw = 12 + 16 + 6 + self.tx.ui_width(label, false) + 14;
         let b = Rect::new(body.x + (body.w - bw) / 2, y + dy, bw, 30);
-        self.ai_tint(cv, b, ds::R_ROW, AiHit::Refresh, strong, 0x14);
+        self.ai_wash(cv, b, ds::R_ROW, AiHit::Refresh);
         cv.ring(b, ds::R_ROW, fade(c.border, e));
         self.tx.icon(cv, "ui/rotate_cw", b.x + 12, b.y + 7, 16, fade(strong, e), b);
         self.tx.draw_ui(cv, b.x + 34, b.y + 6, label, fade(strong, e), b, false);
@@ -630,7 +656,7 @@ mod plan_tests {
     fn plan_height_matches_the_items() {
         // hero + button + agents (header, rows, gap, refresh), no prompts.
         let p = empty_plan(0, true, 3, 4);
-        assert_eq!(p.total, 120 + 48 + 24 + 3 * (AGENT_H + 6) + 12 + 30);
+        assert_eq!(p.total, hero_h() + 48 + 24 + 3 * (AGENT_H + 6) + 12 + 30);
         assert_eq!(empty_plan(0, false, 3, 4).total, p.total - 48);
     }
 }

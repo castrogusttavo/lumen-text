@@ -1,5 +1,6 @@
 use super::draw_empty::EmptyBtn;
 use super::*;
+use crate::ds;
 
 impl App {
     // ───────────── drawing ─────────────
@@ -8,13 +9,24 @@ impl App {
         self.overlay.is_none() && r.contains(self.mouse.0, self.mouse.1)
     }
 
+    /// Hover / pressed wash of a control, from the theme's overlays: hovering tints it, holding the
+    /// button on it tints it further.
+    pub(super) fn gp_wash(&self, cv: &mut Canvas, gp: &GitPanel, r: Rect, rad: i32, hit: Hit) {
+        if !self.hv(r) {
+            return;
+        }
+        let c = self.theme.chrome;
+        cv.fill_round(r, rad, c.hover_overlay);
+        if gp.pressed == Some(hit) {
+            cv.fill_round(r, rad, c.pressed_overlay);
+        }
+    }
+
     pub(super) fn gp_icon_btn(&mut self, cv: &mut Canvas, gp: &mut GitPanel, r: Rect, icon: &str, hit: Hit) {
         let c = self.theme.chrome;
-        if self.hv(r) {
-            cv.fill_round(r, 8, c.tab_active_fg.with_alpha(0x1c));
-        }
+        self.gp_wash(cv, gp, r, ds::R_ROW, hit);
         let tint = if self.hv(r) { c.tab_active_fg } else { c.tab_inactive_fg };
-        self.tx.icon(cv, icon, r.x + (r.w - 16) / 2, r.y + (r.h - 16) / 2, 16, tint, r);
+        self.tx.icon(cv, icon, r.x + (r.w - ds::ICON_M) / 2, r.y + (r.h - ds::ICON_M) / 2, ds::ICON_M, tint, r);
         gp.hits.push((r, hit));
     }
 
@@ -30,11 +42,8 @@ impl App {
         tint: Rgba,
     ) -> i32 {
         let w = self.tx.ui_width(label, false) + 18;
-        let r = Rect::new(right - w, y, w, 24);
-        let hov = self.hv(r);
-        if hov {
-            cv.fill_round(r, 8, tint.with_alpha(0x26));
-        }
+        let r = Rect::new(right - w, y, w, ds::HIT_MIN);
+        self.gp_wash(cv, gp, r, ds::R_ROW, hit);
         self.tx.draw_ui(cv, r.x + 9, r.y + 3, label, tint, r, false);
         gp.hits.push((r, hit));
         w
@@ -48,6 +57,7 @@ impl App {
         gp.mo.step(dt);
         gp.mo.show(gp.tab);
         gp.hits.clear();
+        gp.disabled.clear();
         let p = self.gitpanel_rect();
         let c = self.theme.chrome;
         cv.fill(p, c.sidebar_bg);
@@ -82,8 +92,8 @@ impl App {
             Rect::new(p.x + 1, comp_y + commit_h, p.w - 1, (p.h - HEAD_H - BRANCH_H - strip_h - commit_h).max(0));
         if gp.top.is_none() {
             let btn = [EmptyBtn { label: "Initialize repository", hit: Hit::Init, primary: true }];
-            let copy = ("No repository here", "Initialize one to track changes, commit and push.");
-            self.gp_empty_state(cv, &mut gp, body, ("ui/git_branch", c.accent_text), copy, &btn);
+            let copy = ("No repository here", "Initialize one to track your changes.");
+            self.gp_empty_state(cv, &mut gp, body, "ui/git_branch", copy, &btn);
         } else if gp.tab == Tab::Changes {
             self.gp_draw_commit_area(cv, &mut gp, Rect::new(p.x + 1, comp_y, p.w - 1, commit_h));
             self.gp_draw_changes(cv, &mut gp, body);
