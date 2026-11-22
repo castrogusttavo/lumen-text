@@ -604,6 +604,13 @@ pub struct CtxMenu {
     pub ask: Option<crate::app_ask::Ask>,
 }
 
+impl CtxMenu {
+    /// A sheet (delete confirmation, unsaved changes, two-button question) rather than a popover.
+    pub fn is_sheet(&self) -> bool {
+        self.confirm.is_some() || self.unsaved.is_some() || self.ask.is_some()
+    }
+}
+
 // ───────────────────────── App integration ─────────────────────────
 
 impl App {
@@ -1191,8 +1198,7 @@ impl App {
             let many = cf.paths.len() > 1;
             let w = (sw - 40).clamp(280, 400);
             let r = Rect::new((sw - w) / 2, 70, w, 124);
-            cv.shadow(r, 12);
-            cv.card(r, 12, c.widget_bg, c.border);
+            self.modal_panel(cv, r, crate::ds::Elev::Modal);
             let title = clip_text(
                 &mut self.tx,
                 &if many { format!("Delete {name}?") } else { format!("Delete “{name}”?") },
@@ -1214,13 +1220,10 @@ impl App {
             let no_r = Rect::new(yes_r.x - 8 - bw, by, bw, bh);
             for (rect, label, is_yes) in [(no_r, "No", false), (yes_r, "Yes", true)] {
                 let focused = cf.yes == is_yes;
-                cv.card(rect, 8, c.widget_bg, c.border);
-                if focused {
-                    cv.fill_round(rect.inset(1), 7, tint);
-                }
-                let col = if is_yes { c.error } else { fg };
-                let tw = self.tx.ui_width(label, false);
-                self.tx.draw_ui(cv, rect.x + (rect.w - tw) / 2, rect.y + (bh - 18) / 2, label, col, rect, focused);
+                let style =
+                    if is_yes { crate::ui_modal::BtnStyle::Danger } else { crate::ui_modal::BtnStyle::Secondary };
+                let hot = rect.contains(self.mouse.0, self.mouse.1);
+                crate::ui_modal::draw_button(cv, &mut self.tx, &c, rect, label, style, focused, hot);
                 self.layout.overlay_rows.push((rect, is_yes as usize));
             }
             cf.rects = [no_r, yes_r];
@@ -1234,7 +1237,11 @@ impl App {
         for e in &m.entries {
             if let Entry::Item { label, key, .. } = e {
                 let lw = self.tx.ui_width(label, false);
-                let kw = if key.is_empty() { 0 } else { self.tx.ui_width(key, false) + 28 };
+                let kw = if key.is_empty() {
+                    0
+                } else {
+                    crate::ui_modal::keycaps_width(&mut self.tx, &crate::ui_modal::keycaps(key)) + 28
+                };
                 content_w = content_w.max(lw + kw);
             }
         }
@@ -1249,8 +1256,9 @@ impl App {
             (sh - h - 8).max(8)
         };
         let r = Rect::new(x, y, w, h);
-        cv.shadow(r, 12);
-        cv.card(r, 12, c.widget_bg, c.border);
+        // Fade in with a short rise: the pixels behind are kept and mixed back while it settles.
+        let snap = (self.modal.progress() < 0.999).then(|| cv.snap_region(r.inset(-crate::ds::S6)));
+        self.modal_panel(cv, r, crate::ds::Elev::Pop);
 
         let mut rects = Vec::new();
         let mut cy = r.y + PAD;
@@ -1263,7 +1271,7 @@ impl App {
                 Entry::Item { label, icon, key, danger, .. } => {
                     let rr = Rect::new(r.x + PAD, cy, r.w - 2 * PAD, ITEM_H);
                     if m.sel == Some(i) {
-                        cv.fill_round(rr, 7, tint);
+                        cv.fill_round(rr, crate::ds::R_CTRL + 1, tint);
                     }
                     let col = if *danger { c.error } else { fg };
                     self.tx.icon(
@@ -1277,8 +1285,10 @@ impl App {
                     );
                     self.tx.draw_ui(cv, rr.x + 36, cy + (ITEM_H - 18) / 2, label, col, rr, false);
                     if !key.is_empty() {
-                        let kw = self.tx.ui_width(key, false);
-                        self.tx.draw_ui(cv, rr.right() - 10 - kw, cy + (ITEM_H - 18) / 2, key, dim, rr, false);
+                        let keys = crate::ui_modal::keycaps(key);
+                        let kw = crate::ui_modal::keycaps_width(&mut self.tx, &keys);
+                        let ky = cy + (ITEM_H - crate::ui_modal::KEY_H) / 2;
+                        crate::ui_modal::draw_keycaps(cv, &mut self.tx, &c, rr.right() - 8 - kw, ky, &keys, 1.0, rr);
                     }
                     rects.push((rr, i));
                     self.layout.overlay_rows.push((rr, i));
@@ -1289,6 +1299,10 @@ impl App {
         m.rects = rects;
         m.card = r;
         self.overlay = Overlay::Ctx(m);
+        if let Some(snap) = snap {
+            let k = self.modal.progress();
+            cv.blend_over_snap(&snap, k, ((1.0 - k) * 4.0).round() as i32);
+        }
     }
 }
 

@@ -419,7 +419,6 @@ impl App {
         let Some(u) = m.unsaved.as_mut() else { return };
         let c = self.theme.chrome;
         let (fg, dim) = (self.theme.foreground, c.tab_inactive_fg);
-        let tint = fg.with_alpha(0x1c);
         let sw = self.size.0 as i32;
         let (title, body) = u.text();
         let labels: Vec<(Choice, &'static str)> = u.choices().into_iter().map(|ch| (ch, u.label(ch))).collect();
@@ -428,8 +427,7 @@ impl App {
         let w = (sw - 40).clamp(300, 480).max(buttons_w + 24).min((sw - 16).max(200));
         let h = 14 + 26 + body.len() as i32 * 20 + 14 + 30 + 12;
         let r = Rect::new((sw - w) / 2, 70, w, h);
-        cv.shadow(r, 12);
-        cv.card(r, 12, c.widget_bg, c.border);
+        self.modal_panel(cv, r, crate::ds::Elev::Modal);
         let t = fit_text(&mut self.tx, &title, r.w - 32, true);
         self.tx.draw_ui(cv, r.x + 16, r.y + 14, &t, fg, r, true);
         for (i, line) in body.iter().enumerate() {
@@ -442,17 +440,13 @@ impl App {
         for ((choice, label), bw) in labels.iter().zip(&widths) {
             let rect = Rect::new(x, by, *bw, bh);
             let focused = u.sel == *choice;
-            cv.card(rect, 8, c.widget_bg, c.border);
-            if focused {
-                cv.fill_round(rect.inset(1), 7, tint);
-            }
-            let col = match choice {
-                Choice::Discard => c.error,
-                Choice::Save => c.accent_text,
-                Choice::Cancel => fg,
+            let style = match choice {
+                Choice::Discard => crate::ui_modal::BtnStyle::Danger,
+                Choice::Save => crate::ui_modal::BtnStyle::Primary,
+                Choice::Cancel => crate::ui_modal::BtnStyle::Secondary,
             };
-            let tw = self.tx.ui_width(label, false);
-            self.tx.draw_ui(cv, rect.x + (rect.w - tw) / 2, rect.y + (bh - 18) / 2, label, col, rect, focused);
+            let hot = rect.contains(self.mouse.0, self.mouse.1);
+            crate::ui_modal::draw_button(cv, &mut self.tx, &c, rect, label, style, focused, hot);
             u.rects[*choice as usize] = rect;
             self.layout.overlay_rows.push((rect, *choice as usize));
             x += bw + 8;

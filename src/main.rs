@@ -197,6 +197,8 @@ mod textmate;
 mod theme;
 mod tree;
 mod ui;
+mod ui_modal;
+mod ui_toast;
 mod undo_store;
 mod update;
 mod vim;

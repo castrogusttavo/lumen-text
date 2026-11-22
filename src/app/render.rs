@@ -110,6 +110,8 @@ impl App {
         crate::perf::lap!("clear");
         self.regions.clear();
         let mut busy = self.input_frame(dt);
+        busy |= self.modal_frame(dt);
+        busy |= self.toast_frame(dt);
 
         // Editor card: the document draws inside, the border ring goes on top so the
         // rounded corners stay intact.
@@ -200,6 +202,7 @@ impl App {
         self.draw_onboarding(cv);
         self.draw_tooltip(cv);
         self.draw_toast(cv);
+        self.draw_toasts(cv);
         crate::perf::lap!("overlays");
         busy | self.scroll_activity() | self.layout.shell.moving()
     }

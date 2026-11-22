@@ -206,6 +206,9 @@ pub struct App {
     pub jump: Option<crate::app_jump::Jump>,
     /// Git work that outlives the panel: detached command, background counts, toast.
     pub gitbg: crate::app_gitbg::GitBg,
+    /// Entrance of the modal layer (backdrop, panel rise, list highlight) and the toast stack.
+    pub modal: crate::ui_modal::Fx,
+    pub toasts: crate::ui_toast::Toasts,
     /// Language / indentation / tab width the user picked per file (kept in the session).
     pub picks: std::collections::HashMap<PathBuf, crate::app_topbar::DocPick>,
 
@@ -404,6 +407,8 @@ impl App {
             chord: None,
             jump: None,
             gitbg: Default::default(),
+            modal: Default::default(),
+            toasts: Default::default(),
             picks: Default::default(),
             status: None,
             quit_armed: false,

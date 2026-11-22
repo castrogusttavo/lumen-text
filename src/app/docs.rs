@@ -4,12 +4,19 @@ impl App {
     // ── documents ──
 
     pub fn say(&mut self, msg: impl Into<String>) {
-        self.status = Some((msg.into(), Instant::now()));
+        let msg = msg.into();
+        // Failures also get a toast: the status line alone is easy to miss.
+        if let Some(kind) = crate::ui_toast::classify(&msg) {
+            self.notify(kind, &msg, None);
+        }
+        self.status = Some((msg, Instant::now()));
     }
 
     /// Like [`say`](Self::say), but the message stays visible `extra_secs` longer (warnings).
     pub fn say_for(&mut self, msg: impl Into<String>, extra_secs: u64) {
-        self.status = Some((msg.into(), Instant::now() + Duration::from_secs(extra_secs)));
+        let msg = msg.into();
+        self.notify(crate::ui_toast::ToastKind::Warn, &msg, None);
+        self.status = Some((msg, Instant::now() + Duration::from_secs(extra_secs)));
     }
 
     pub fn request_redraw(&self) {

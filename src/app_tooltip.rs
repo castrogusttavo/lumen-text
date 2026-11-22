@@ -25,7 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const TOOLTIP_DELAY: Duration = Duration::from_millis(450);
+pub const TOOLTIP_DELAY: Duration = Duration::from_millis(400);
 /// Length of the fade-in.
 pub const FADE: Duration = Duration::from_millis(120);
 const PAD_X: i32 = 10;
@@ -782,7 +782,8 @@ impl App {
         // Long subjects, paths and hints wrap instead of running off the window.
         let win = (self.size.0 as i32, self.size.1 as i32);
         let inner_max = (MAX_W.min(win.0 - 2 * WIN_M) - 2 * PAD_X).max(80);
-        let kw = text.keys.as_ref().map_or(0, |k| self.tx.ui_width(k, false) + 14);
+        let chips = text.keys.as_deref().map(crate::ui_modal::keycaps);
+        let kw = chips.as_ref().map_or(0, |k| crate::ui_modal::keycaps_width(&mut self.tx, k) + 10);
         let tx = &mut self.tx;
         let mut measure = |s: &str| tx.ui_width(s, false);
         let title = wrap_tip(&text.title, inner_max - kw, 3, &mut measure);
@@ -808,9 +809,9 @@ impl App {
         for (i, l) in title.iter().enumerate() {
             self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y + i as i32 * LINE, l, faded(c.tab_active_fg, alpha), r, false);
         }
-        if let (Some(k), Some(first)) = (&text.keys, title.first()) {
+        if let (Some(k), Some(first)) = (&chips, title.first()) {
             let fw = self.tx.ui_width(first, false);
-            self.tx.draw_ui(cv, r.x + PAD_X + fw + 14, r.y + PAD_Y, k, faded(c.tab_inactive_fg, alpha), r, false);
+            crate::ui_modal::draw_keycaps(cv, &mut self.tx, &c, r.x + PAD_X + fw + 10, r.y + PAD_Y - 1, k, alpha, r);
         }
         for (i, l) in rest.iter().enumerate() {
             self.tx.draw_ui(
