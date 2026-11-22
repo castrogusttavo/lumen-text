@@ -50,6 +50,7 @@ mod app_openapi;
 mod app_openapi_draw;
 mod app_overlay;
 mod app_panel;
+mod app_panelui;
 mod app_problems;
 mod app_projcfg;
 mod app_quick;

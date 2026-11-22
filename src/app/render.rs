@@ -25,6 +25,9 @@ impl App {
         self.layout.rail = Rect::new(0, top_h, lx, h - top_h);
         let sidebar_w = self.sidebar_w();
         let gap = self.shell_gap();
+        // The panel animates its own height (open, close, maximize); the shell only places it.
+        let avail = (h - gap - top_h - tab_h - bread_h).max(0);
+        let panel_h = self.panel_slide_h(avail);
         let sh = &self.layout.shell;
         let plan = crate::app_shell::Plan {
             win: (w, h),
@@ -34,7 +37,7 @@ impl App {
             dock_w: self.slot_rect().w,
             tab_h,
             bread_h,
-            panel_h: if self.panel.open { self.panel.height } else { 0 },
+            panel_h,
             gap,
             side_t: sh.side.value,
             dock_t: sh.dock.value,

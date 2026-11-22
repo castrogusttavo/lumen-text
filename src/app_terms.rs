@@ -431,9 +431,13 @@ impl App {
             self.tx.icon(cv, "ui/terminal", x + 8, y + (h - 14) / 2, 14, col, pill);
             self.tx.draw_ui(cv, x + 28, ty, &text, col, pill, active);
             let close = Rect::new(pill.right() - 4 - 18, y + (h - 18) / 2, 18, 18);
-            self.tx.icon(cv, "ui/close", close.x + 3, close.y + 3, 12, dim, pill);
             self.terms.hits.push((pill, TermHit::Tab(id)));
-            self.terms.hits.push((close, TermHit::Close(id)));
+            // The slot is always reserved (nothing shifts); the button shows on the active tab and on hover.
+            if active || pill.contains(self.mouse.0, self.mouse.1) {
+                let on_close = close.contains(self.mouse.0, self.mouse.1);
+                self.tx.icon(cv, "ui/close", close.x + 3, close.y + 3, 12, if on_close { strong } else { dim }, pill);
+                self.terms.hits.push((close, TermHit::Close(id)));
+            }
             x += w + 4;
         }
         let split_icon = if self.terms.panes.len() > 1 { "ui/square_minus" } else { "ui/split" };
@@ -486,9 +490,13 @@ impl App {
         let (fg, bg) = (self.theme.foreground, self.theme.background);
         let (ox, oy) = (body.x + 12, body.y + 4);
         let look = self.term_look(Which::Bottom(id), focused, (ox, oy));
+        // While the panel slides open / shut or maximizes, the shell keeps its size (no reflow churn).
+        let sliding = self.panel_animating();
         let Some(tab) = self.terms.get_mut(id) else { return };
         let term = &mut tab.term;
-        term.resize(rows, cols);
+        if !sliding {
+            term.resize(rows, cols);
+        }
         term.grid.colors = (fg, bg);
         term.set_focus(focused);
         crate::termview::draw(&mut self.tx, cv, term, ox, oy, body, &look);

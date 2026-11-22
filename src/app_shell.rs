@@ -147,7 +147,8 @@ pub fn solve(p: &Plan) -> Solved {
     let right = if p.dock_w > 0 { dock.x - g } else { p.win.0 - g };
     let ew = (right - x0).max(0);
     let avail = (body_h - p.tab_h - p.bread_h).max(0);
-    let panel_h = p.panel_h.min(avail / 2).max(0);
+    // The panel animates its own height and caps it (half the card, or most of it when maximized).
+    let panel_h = p.panel_h.min(avail).max(0);
     let card_h = avail - panel_h;
     let y_card = p.top + p.tab_h + p.bread_h;
     Solved {
@@ -370,7 +371,7 @@ mod tests {
         assert_eq!(s.card.bottom(), s.panel.y);
         assert_eq!(s.panel.bottom(), s.outer.bottom());
         let tall = solve(&Plan { panel_h: 5000, ..plan() });
-        assert!(tall.panel.h <= tall.outer.h / 2, "never more than half of the card");
+        assert!(tall.panel.h <= tall.outer.h, "never taller than the card");
     }
 
     #[test]

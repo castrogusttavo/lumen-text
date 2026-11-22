@@ -50,6 +50,8 @@ pub enum TipKey {
     /// A row of the file tree (index into `Tree::rows`).
     SideRow(usize),
     PanelTab(PanelTab),
+    /// A button of the bottom panel's header (or its empty state).
+    PanelBtn(crate::app_panelui::PanelBtn),
     /// A button or row of the Git panel (history rows included).
     Git(Hit),
     /// A row of the outline sidebar ("Outline"): index into the active document's symbols.
@@ -381,6 +383,9 @@ impl App {
         if let Some((r, t)) = l.panel_tabs.iter().find(|(r, _)| r.contains(x, y)) {
             return Some((TipKey::PanelTab(*t), *r, false));
         }
+        if let Some((r, b)) = self.panel_btn_at(x, y) {
+            return Some((TipKey::PanelBtn(b), r, false));
+        }
         if let Some((r, h)) = self.terms_hit_at(x, y) {
             return Some((TipKey::Term(h), r, false));
         }
@@ -459,6 +464,7 @@ impl App {
             TipKey::Ai(h) => self.aipanel_tip(h),
             TipKey::Tests(k) => self.tests_tip(k),
             TipKey::Term(h) => self.terms_tip(h),
+            TipKey::PanelBtn(b) => self.panel_btn_tip(b),
             TipKey::TermLink(_) => self.term_link_tip_text(),
             TipKey::Fs(k) => self.fswatch_tip(k),
             TipKey::SideFilter => self.sidebar_filter_tip(),
