@@ -22,16 +22,18 @@ impl App {
         let (top_h, tab_h, bread_h) = self.chrome_heights();
         self.layout.topbar = Rect::new(0, 0, w, top_h);
         let lx = self.rail_w();
-        self.layout.rail = Rect::new(0, top_h, lx, h - top_h);
+        let status_h = self.status_h();
+        self.layout.rail = Rect::new(0, top_h, lx, (h - top_h - status_h).max(0));
         let sidebar_w = self.sidebar_w();
         let gap = self.shell_gap();
         // The panel animates its own height (open, close, maximize); the shell only places it.
-        let avail = (h - gap - top_h - tab_h - bread_h).max(0);
+        let avail = (h - gap - top_h - status_h - tab_h - bread_h).max(0);
         let panel_h = self.panel_slide_h(avail);
         let sh = &self.layout.shell;
         let plan = crate::app_shell::Plan {
             win: (w, h),
             top: top_h,
+            bottom: status_h,
             rail: lx,
             side_w: sidebar_w,
             dock_w: self.slot_rect().w,
@@ -50,8 +52,8 @@ impl App {
         self.layout.card = self.zen_card(s.card);
         self.layout.editor = self.layout.card;
         self.layout.panel = s.panel;
-        // No bottom bar: a zero-height edge keeps what is anchored above it (cards, panels) in place.
-        self.layout.status = Rect::new(0, h, w, 0);
+        // The status bar under the cards (a zero-height edge when hidden keeps what is anchored above it).
+        self.layout.status = Rect::new(0, h - status_h, w, status_h);
         self.split_layout();
     }
 
@@ -163,6 +165,7 @@ impl App {
             self.layout.top_btns.clear();
         }
         crate::perf::lap!("topbar");
+        busy |= self.draw_statusbar(cv);
         if self.layout.tabbar.h > 0 {
             busy |= self.draw_tabs(cv, dt);
             self.draw_quick(cv);
@@ -259,14 +262,12 @@ impl App {
         if r.h == 0 {
             return; // zen mode, or no file and breadcrumbs switched off
         }
-        // Problems, cursor, indentation, language and encoding at the right end; the crumbs
-        // (when switched on) get the room to their left.
-        let edge = self.draw_bread_readouts(cv, r);
+        // The read-outs (problems, cursor, indentation, ...) live in the status bar.
         if !self.config.breadcrumbs {
             return;
         }
         let Some(d) = self.docs.get(self.active) else { return };
-        let r = Rect::new(r.x, r.y, (edge - 8 - r.x).max(0), r.h);
+        let r = Rect::new(r.x, r.y, (r.w - 8).max(0), r.h);
         let (dim, fg) = (c.tab_inactive_fg, c.tab_active_fg);
         let rel = d.path().map(|p| self.rel(p)).unwrap_or_else(|| d.name.clone());
         let (line, _) = d.buf.line_col(d.ed.head());

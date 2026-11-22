@@ -271,11 +271,13 @@ impl App {
         let r = self.layout.status;
         let y = r.y + (r.h - 18) / 2;
         let lw = self.tx.ui_width(&label, true);
-        let pill = Rect::new(x + 2, r.y + 4, lw + 18, r.h - 8);
+        // A slim bar (the status bar) gets a tighter pill; the text is clipped to the bar's height.
+        let inset = if r.h < 30 { 2 } else { 4 };
+        let pill = Rect::new(x + 2, r.y + inset, lw + 18, r.h - 2 * inset);
         let (tint, ink) =
             if v.mode == Mode::Insert { (c.accent, c.accent_text) } else { (c.tab_inactive_fg, c.status_fg) };
         cv.fill_round(pill, (pill.h / 2).min(10), tint.with_alpha(0x38));
-        self.tx.draw_ui(cv, pill.x + 9, y, &label, ink, pill, true);
+        self.tx.draw_ui(cv, pill.x + 9, y, &label, ink, Rect::new(pill.x, r.y, pill.w, r.h), true);
         pill.right() + 8
     }
 }
