@@ -25,6 +25,11 @@ pub const Z_FLOAT: u8 = 50;
 /// Modals and menus: nothing below this counts while one is open.
 pub const Z_MODAL: u8 = 100;
 
+/// The gutter strip minus what the markdown preview covers (it answers for itself).
+fn gutter_clear_of(g: Rect, md: Rect) -> Rect {
+    if g.intersect(&md).w > 0 { Rect::new(g.x, g.y, 0, 0) } else { g }
+}
+
 /// Grab band added on both sides of the editor split divider.
 const DIVIDER_SLOP: i32 = 4;
 
@@ -126,6 +131,30 @@ impl App {
         }
         for (r, _) in &l.completion_rows {
             reg.push(*r, Pointer, Z_FLOAT, "completion-row");
+        }
+        // The editor's own zones: the gutter is no text, the minimap is a hand.
+        if self.overlay.is_none()
+            && let Some(d) = self.docs.get(self.active)
+            && let Some((gutter, mini)) = d.zone_rects()
+        {
+            let gutter = if l.md.w > 0 { gutter_clear_of(gutter, l.md) } else { gutter };
+            reg.push(gutter, CursorIcon::Default, Z_BASE, "gutter");
+            if let Some(m) = mini {
+                reg.push(m, Pointer, Z_BASE, "minimap");
+            }
+            for r in d.click_rects() {
+                reg.push(r, Pointer, Z_BASE + 1, "editor-mark");
+            }
+        }
+        // Floating popups of the editor: the card is an arrow, its controls answer for themselves.
+        if let Some(c) = &self.completion {
+            reg.push(c.rect, CursorIcon::Default, Z_FLOAT - 1, "completion-card");
+            reg.push(c.docs_rect, CursorIcon::Default, Z_FLOAT - 1, "completion-docs");
+        }
+        if self.overlay.is_none() {
+            for (r, icon, z, label) in self.find_regions().into_iter().chain(self.hover_regions()) {
+                reg.push(r, icon, z, label);
+            }
         }
         if l.divider.w > 0 {
             let d = l.divider;

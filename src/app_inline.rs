@@ -491,7 +491,7 @@ impl App {
         let lw = self.tx.ui_width(label, false);
         let rect = Rect::new(x, r.y + 3, 8 + 14 + 6 + lw + 8, r.h - 6);
         if self.overlay.is_none() && rect.contains(self.mouse.0, self.mouse.1) {
-            cv.fill_round(rect, 6, c.list_hover_bg);
+            cv.fill_round(rect, crate::ds::R_CTRL, c.hover_overlay);
         }
         self.tx.icon(cv, b.icon(), rect.x + 8, r.y + (r.h - 14) / 2, 14, col, r);
         self.tx.draw_ui(cv, rect.x + 8 + 14 + 6, r.y + (r.h - 18) / 2, label, col, r, false);

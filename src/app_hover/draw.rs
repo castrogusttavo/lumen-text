@@ -88,7 +88,7 @@ impl App {
         }
         // selection (per character)
         for r in sel_rects(h, &mut self.tx) {
-            cv.fill_clip(Rect::new(view.x + r.x, oy + r.y, r.w, r.h), chrome.accent.with_alpha(0x40), clip);
+            cv.fill_clip(Rect::new(view.x + r.x, oy + r.y, r.w, r.h), chrome.selection_accent, clip);
         }
         let laid = &h.laid.as_ref().unwrap().1;
         for d in &laid.decos {
@@ -166,7 +166,7 @@ impl App {
                     let r = Rect::new(x - 5, y, wd + 10, FOOT_ROW - 2);
                     let hot = self.hv.hot == Some(Hit::Act(a));
                     if hot {
-                        cv.fill_round_clip(r, crate::ds::R_CTRL, pal.fg.with_alpha(0x1c), fclip);
+                        cv.fill_round_clip(r, crate::ds::R_CTRL, chrome.hover_overlay, fclip);
                     }
                     let col = if hot { pal.link } else { pal.dim };
                     self.tx.draw_ui(cv, x, y + 2, a.label(), col, fclip, false);

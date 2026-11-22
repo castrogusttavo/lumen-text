@@ -58,6 +58,11 @@ pub struct Completion {
     pub seed_len: usize,
     /// Fade-in; carried over when the list is refetched so typing does not make it blink.
     pub fade: crate::ui_popup::PopupFade,
+    /// Rows the last frame could show (the window of `scroll`); 10 until the first draw.
+    pub vis: usize,
+    /// Geometry of the last draw: the list card and the docs card beside it (empty when none).
+    pub rect: Rect,
+    pub docs_rect: Rect,
 }
 
 /// One `Ctrl+.` round. The menu opens with the first items there are and every later answer is
@@ -2205,6 +2210,9 @@ impl App {
             start,
             seed_len: prefix.chars().count(),
             fade,
+            vis: 10,
+            rect: Rect::default(),
+            docs_rect: Rect::default(),
         };
         self.refilter_completion_into(&mut c);
         self.completion = if c.filtered.is_empty() { None } else { Some(c) };
@@ -2303,6 +2311,10 @@ impl App {
 
     pub fn completion_key(&mut self, key: &Key) -> bool {
         let Some(c) = self.completion.as_mut() else { return false };
+        if c.filtered.is_empty() {
+            self.completion = None;
+            return false;
+        }
         match key {
             Key::Named(NamedKey::ArrowDown) => {
                 c.sel = (c.sel + 1) % c.filtered.len();
@@ -2317,8 +2329,8 @@ impl App {
         if let Some(c) = self.completion.as_mut() {
             if c.sel < c.scroll {
                 c.scroll = c.sel;
-            } else if c.sel >= c.scroll + 10 {
-                c.scroll = c.sel + 1 - 10;
+            } else if c.sel >= c.scroll + c.vis.max(1) {
+                c.scroll = c.sel + 1 - c.vis.max(1);
             }
         }
         true
@@ -2452,7 +2464,7 @@ impl App {
                 let sel = Rect::new(row_full.x, row_full.y + 1, row_full.w, row_full.h - 2);
                 cv.fill_round_clip(sel, ds::R_CTRL, chrome.list_active_bg, lclip);
                 let bar = Rect::new(sel.x + 1, sel.y + 5, 3, sel.h - 10);
-                cv.fill_round_clip(bar, 1, chrome.accent, lclip);
+                cv.fill_round_clip(bar, ds::S1 / 4, chrome.accent, lclip);
             }
             let (icon_col, lx) = (kind_color(it.kind, &self.theme), rr.x + COMP_ICON_COL);
             self.tx.icon(cv, crate::ui_popup::kind_icon(it.kind), rr.x + 9, yy + (COMP_ROW - 14) / 2, 14, icon_col, rr);
@@ -2480,8 +2492,12 @@ impl App {
         let docs = c.filtered.get(c.sel).map(|&i| (c.items[i].detail.clone(), item_doc(&c.items[i].raw)));
         let (total, pos) = (c.filtered.len(), c.scroll);
         self.layout.completion_rows = layout_rows;
-        if let Some((head, body)) = docs {
-            self.draw_completion_docs(cv, r, ed, &head, &body);
+        let docs_rect = match docs {
+            Some((head, body)) => self.draw_completion_docs(cv, r, ed, &head, &body),
+            None => Rect::default(),
+        };
+        if let Some(c) = self.completion.as_mut() {
+            (c.vis, c.rect, c.docs_rect) = (rows, r, docs_rect);
         }
         if total > rows {
             self.region_bar(
@@ -2502,9 +2518,9 @@ impl App {
     }
 
     /// The side card of the completion list: signature (`head`) and documentation (`body`).
-    fn draw_completion_docs(&mut self, cv: &mut Canvas, list: Rect, ed: Rect, head: &str, body: &str) {
+    fn draw_completion_docs(&mut self, cv: &mut Canvas, list: Rect, ed: Rect, head: &str, body: &str) -> Rect {
         if head.trim().is_empty() && body.trim().is_empty() {
-            return;
+            return Rect::default();
         }
         let chrome = self.theme.chrome;
         let inner = COMP_DOC_W - 2 * ds::S3;
@@ -2516,7 +2532,7 @@ impl App {
         let right = list.right() + 6;
         let x = if right + COMP_DOC_W <= ed.right() { right } else { list.x - 6 - COMP_DOC_W };
         if x < ed.x {
-            return;
+            return Rect::default();
         }
         let card = Rect::new(x, list.y, COMP_DOC_W, h);
         cv.pop_card(card, &chrome);
@@ -2531,6 +2547,7 @@ impl App {
             tx.draw_ui(cv, card.x + ds::S3, ty, l, chrome.tab_inactive_fg, clip, false);
             ty += COMP_DOC_LINE;
         }
+        card
     }
 }
 

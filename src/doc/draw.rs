@@ -5,13 +5,40 @@ pub const ZONE_MINIMAP: u8 = 1;
 pub const ZONE_GUTTER: u8 = 2;
 
 impl Doc {
+    /// The pointer zones of the last drawn frame as rects: (gutter, minimap). `None` while the tab
+    /// shows something other than text (image, SQL, OpenAPI, multibuffer), which owns its pointer.
+    pub fn zone_rects(&self) -> Option<(Rect, Option<Rect>)> {
+        let other = self.sql.is_some()
+            || self.mb.is_some()
+            || self.api.as_ref().is_some_and(|v| v.preview)
+            || self.img.as_ref().is_some_and(|v| v.preview);
+        if other || self.rect.w <= 0 {
+            return None;
+        }
+        let gutter = Rect::new(self.rect.x, self.rect.y, self.gutter_w(), self.rect.h);
+        Some((gutter, self.minimap_layout.as_ref().map(|l| l.rect)))
+    }
+
+    /// The clickable marks the last frame drew inside the text: fold "..." pills, code lenses,
+    /// merge-conflict actions and the inline blame.
+    pub fn click_rects(&self) -> Vec<Rect> {
+        let mut v: Vec<Rect> = self.fold_pills.iter().map(|(r, _)| *r).collect();
+        v.extend(self.lens_hits.iter().map(|(r, _)| *r));
+        v.extend(self.conflict_hits.iter().map(|(r, _, _)| *r));
+        v.extend(self.blame_hit);
+        v
+    }
+
     /// Which zone of the last drawn frame the point (x, y) is in (a bit set of `ZONE_*`).
     pub fn pointer_zone(&self, x: f64, y: f64) -> u8 {
-        if self.minimap_layout.as_ref().is_some_and(|l| l.rect.contains(x, y)) {
-            return ZONE_MINIMAP;
+        let Some((gutter, mini)) = self.zone_rects() else { return 0 };
+        if mini.is_some_and(|r| r.contains(x, y)) {
+            ZONE_MINIMAP
+        } else if gutter.contains(x, y) {
+            ZONE_GUTTER
+        } else {
+            0
         }
-        let g = Rect::new(self.rect.x, self.rect.y, self.gutter_w(), self.rect.h);
-        if g.contains(x, y) { ZONE_GUTTER } else { 0 }
     }
 
     // ── drawing ──

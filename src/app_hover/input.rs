@@ -136,15 +136,20 @@ impl App {
         true
     }
 
-    pub fn hover_cursor(&self, x: f64, y: f64) -> Option<CursorIcon> {
-        let h = self.hover.as_ref()?;
-        if !h.rect.contains(x, y) {
-            return None;
+    /// Pointer regions of the open hover card for the cursor registry: arrow on the card, I-beam
+    /// on the text, hand on links, actions and the scrollbar.
+    pub fn hover_regions(&self) -> Vec<(Rect, CursorIcon, u8, &'static str)> {
+        use crate::app_cursor::Z_FLOAT;
+        let Some(h) = self.hover.as_ref() else { return Vec::new() };
+        let mut v = vec![
+            (h.rect, CursorIcon::Default, Z_FLOAT, "hover-card"),
+            (h.view, CursorIcon::Text, Z_FLOAT + 1, "hover-text"),
+        ];
+        v.extend(h.hits.iter().map(|(r, _)| (*r, CursorIcon::Pointer, Z_FLOAT + 2, "hover-link")));
+        if let Some(b) = h.bar {
+            v.push((b.track, CursorIcon::Pointer, Z_FLOAT + 2, "hover-bar"));
         }
-        if h.hits.iter().any(|(r, _)| r.contains(x, y)) || h.bar.is_some_and(|b| b.track.contains(x, y)) {
-            return Some(CursorIcon::Pointer);
-        }
-        Some(if h.view.contains(x, y) { CursorIcon::Text } else { CursorIcon::Default })
+        v
     }
 
     /// Press: handled when inside the popup (links, actions, scrollbar, line selection); outside

@@ -36,8 +36,7 @@ impl App {
         let c = self.theme.chrome;
         let g = super::find::find_geo(self.layout.editor, f.show_replace);
         let r = g.card;
-        cv.shadow(r, 10);
-        cv.card(r, 10, c.widget_bg, c.border);
+        cv.float_card(r, ds::R_CARD, &c, Elev::Pop);
         let fg = self.theme.foreground;
         let dim = c.tab_inactive_fg;
         let (mx, my) = self.mouse;
@@ -53,20 +52,23 @@ impl App {
                      selall: bool| {
             cv.card(
                 b,
-                7,
+                ds::R_CTRL,
                 c.input_bg,
-                if focus {
-                    c.accent
-                } else if bad {
+                if bad {
                     c.error
+                } else if focus {
+                    c.focus_ring
                 } else {
                     c.border
                 },
             );
+            if focus && !bad {
+                cv.ring(b.inset(-1), ds::R_CTRL + 1, c.focus_ring.with_alpha(0x50));
+            }
             let (shown, col) = if text.is_empty() { (hint, dim) } else { (text, if bad { c.error } else { fg }) };
             if selall {
                 let w = tx.ui_width(text, false);
-                cv.fill_round(Rect::new(b.x + 7, b.y + 3, w + 4, 22), 4, c.accent.with_alpha(0x50));
+                cv.fill_round(Rect::new(b.x + 7, b.y + 3, w + 4, 22), ds::S1, c.selection_accent);
             }
             tx.draw_ui(cv, b.x + 9, b.y + 5, shown, col, b.inset(1), false);
             if focus {
@@ -99,19 +101,20 @@ impl App {
         };
         // Toggles and buttons: ghost look, a tinted pill when on, hover feedback.
         let hot = |b: Rect| free && b.contains(mx, my);
-        let back = |cv: &mut Canvas, b: Rect, on: bool| {
+        let (step_ok, rep_ok, all_ok) = self.find_enabled();
+        let back = |cv: &mut Canvas, b: Rect, on: bool, enabled: bool| {
             if on {
-                cv.fill_round(b.inset(2), 6, c.accent.with_alpha(0x30));
+                cv.fill_round(b.inset(2), ds::R_CTRL, c.selection_accent);
             }
-            if hot(b) {
-                cv.fill_round(b.inset(2), 6, c.list_hover_bg.with_alpha(0xc0));
+            if hot(b) && enabled {
+                cv.fill_round(b.inset(2), ds::R_CTRL, c.hover_overlay);
             }
         };
-        back(cv, g.case, f.case);
-        back(cv, g.regex, f.regex);
-        for b in [g.prev, g.next, g.close] {
-            back(cv, b, false);
-        }
+        back(cv, g.case, f.case, true);
+        back(cv, g.regex, f.regex, true);
+        back(cv, g.prev, false, step_ok);
+        back(cv, g.next, false, step_ok);
+        back(cv, g.close, false, true);
         let toggle = |on: bool| if on { c.accent_text } else { dim };
         let ty = g.case.y + 5;
         self.tx.draw_ui(cv, g.case.x + 5, ty, "Aa", toggle(f.case), g.case, true);
@@ -119,9 +122,19 @@ impl App {
         let cw = self.tx.ui_width(&count, false);
         let cx = g.count.x + (g.count.w - cw).max(0) / 2;
         self.tx.draw_ui(cv, cx, ty, &count, if f.valid { dim } else { c.error }, g.count, false);
-        for (b, icon) in [(g.prev, "ui/chevron_up"), (g.next, "ui/chevron_down"), (g.close, "ui/close")] {
-            let col = if hot(b) { c.tab_active_fg } else { dim };
-            self.tx.icon(cv, icon, b.x + (b.w - 14) / 2, b.y + (b.h - 14) / 2, 14, col, b);
+        let off = dim.with_alpha(0x70);
+        for (b, icon, on) in
+            [(g.prev, "ui/chevron_up", step_ok), (g.next, "ui/chevron_down", step_ok), (g.close, "ui/close", true)]
+        {
+            let col = if !on {
+                off
+            } else if hot(b) {
+                c.tab_active_fg
+            } else {
+                dim
+            };
+            let s = ds::ICON_S;
+            self.tx.icon(cv, icon, b.x + (b.w - s) / 2, b.y + (b.h - s) / 2, s, col, b);
         }
         if f.show_replace {
             field(
@@ -135,11 +148,14 @@ impl App {
                 false,
                 f.replace.sel_all,
             );
-            for (b, label) in [(g.replace, "Replace"), (g.all, "All")] {
+            for (b, label, on) in [(g.replace, "Replace", rep_ok), (g.all, "All", all_ok)] {
                 let hb = b.inset(2);
-                cv.card(hb, 6, if hot(b) { c.list_hover_bg } else { c.widget_bg }, c.border);
+                cv.card(hb, ds::R_CTRL, c.widget_bg, c.border);
+                if hot(b) && on {
+                    cv.fill_round(hb.inset(1), ds::R_CTRL - 1, c.hover_overlay);
+                }
                 let lw = self.tx.ui_width(label, false);
-                self.tx.draw_ui(cv, b.x + (b.w - lw) / 2, b.y + 5, label, fg, b, false);
+                self.tx.draw_ui(cv, b.x + (b.w - lw) / 2, b.y + 5, label, if on { fg } else { off }, b, false);
             }
         }
     }

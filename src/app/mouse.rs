@@ -341,15 +341,6 @@ impl App {
         if self.over_region_bar(x, y) {
             return (C::Default, "cascade:scrollbar");
         }
-        // Popups that float over the editor come before the chrome underneath them.
-        if self.overlay.is_none() {
-            if let Some(c) = self.find_cursor(x, y) {
-                return (c, "cascade:find");
-            }
-            if let Some(c) = self.hover_cursor(x, y) {
-                return (c, "cascade:hover-popup");
-            }
-        }
         // The registry: topmost region wins; an open modal hides everything but its own regions.
         if let Some(r) = self.cur.topmost(x, y, self.cursor_floor()) {
             return (r.icon, r.label);
@@ -432,12 +423,6 @@ impl App {
                 (C::Default, "cascade:sidebar-dead")
             };
         }
-        if let Some(d) = self.docs.get(self.active)
-            && let Some(m) = d.minimap_layout.as_ref()
-            && m.rect.contains(x, y)
-        {
-            return (C::Pointer, "cascade:minimap");
-        }
         if l.editor.contains(x, y) || self.split_in_other(x, y) {
             // No document: the welcome screen's dead areas are not text.
             if self.docs.get(self.active).is_none() {
@@ -451,10 +436,9 @@ impl App {
             {
                 return (C::Pointer, "cascade:hint-link"); // Ctrl over a hint with a target
             }
-            // Gutter (line numbers, fold chevrons, breakpoints) is not text.
-            let gutter_right = l.editor.x + 56;
-            return if x < gutter_right as f64 && l.editor.contains(x, y) {
-                (C::Default, "cascade:gutter")
+            // The gutter of the focused pane is a registry zone; the other panes answer here.
+            return if self.split_gutter_at(x, y) {
+                (C::Default, "cascade:gutter-other-pane")
             } else {
                 (C::Text, "cascade:editor-text")
             };
