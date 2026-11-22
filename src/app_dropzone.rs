@@ -13,7 +13,9 @@ use crate::{
     app::{App, Focus},
     app_ctxmenu::tab_order,
     app_split::{Pane, Split, Zone, focus_to, pick_replacement, remove_pane, zone_at, zone_rect},
+    ds,
     ui::{Canvas, Rect},
+    ui_viewer::march_phase,
 };
 use std::path::Path;
 
@@ -22,6 +24,17 @@ use std::path::Path;
 pub struct DropSpot {
     pub pane: usize,
     pub zone: Zone,
+}
+
+/// What a drop in `zone` does, for the label inside the drop target.
+pub fn zone_label(zone: Zone) -> &'static str {
+    match zone {
+        Zone::Left => "Split left",
+        Zone::Right => "Split right",
+        Zone::Top => "Split above",
+        Zone::Bottom => "Split below",
+        Zone::Center => "Open here",
+    }
 }
 
 impl App {
@@ -182,9 +195,19 @@ impl App {
         let c = self.theme.chrome;
         let card = self.layout.card;
         let pane = self.drop_pane_rect(spot.pane).intersect(&card);
-        let zr = zone_rect(pane, spot.zone).inset(3);
-        cv.fill_round_clip(zr, 8, c.accent.with_alpha(0x30), card);
-        cv.ring(zr, 8, c.accent.with_alpha(0xd0));
+        let zr = zone_rect(pane, spot.zone).inset(ds::S1);
+        cv.fill_round_clip(zr, ds::R_ROW, c.accent.with_alpha(0x30), card);
+        cv.dashed_ring(zr, ds::R_ROW, c.accent.with_alpha(0xd0), march_phase(ds::S6 as f32));
+        // What dropping here does, centered in the zone (when the zone is big enough).
+        let label = zone_label(spot.zone);
+        let lw = self.tx.ui_width(label, true) + 2 * ds::S3;
+        if zr.w > lw + ds::S4 && zr.h > 2 * ds::HIT_MIN {
+            let lr = Rect::new(zr.x + (zr.w - lw) / 2, zr.y + (zr.h - ds::HIT_MIN) / 2, lw, ds::HIT_MIN);
+            cv.card(lr, ds::R_CTRL, c.accent, c.accent);
+            self.tx.draw_ui(cv, lr.x + ds::S3, lr.y + (lr.h - 18) / 2, label, c.on_accent, lr, true);
+        }
+        // The dashes march: keep frames coming while the drag lasts.
+        self.request_redraw();
         // Ghost: icon and file name.
         let icon = self.tx.icons.file_icon(&name);
         let w = self.tx.ui_width(&name, false).min(260) + 44;
@@ -197,5 +220,19 @@ impl App {
         self.tx.icon(cv, &icon, r.x + 10, r.y + 6, 16, self.theme.foreground, r);
         self.tx.draw_ui(cv, r.x + 32, r.y + 5, &name, self.theme.foreground, r, false);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_zone_has_its_own_label() {
+        let all = [Zone::Left, Zone::Right, Zone::Top, Zone::Bottom, Zone::Center];
+        let mut labels: Vec<_> = all.into_iter().map(zone_label).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), 5);
     }
 }
