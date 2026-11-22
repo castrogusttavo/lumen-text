@@ -3,6 +3,7 @@
 //! (`schema`), example generation (`example`), response validation (`validate`), the spec lint
 //! (`lint`), the request builder (`request`) and the code snippets (`snippets`).
 
+pub mod copy;
 pub mod example;
 pub mod lint;
 pub mod request;

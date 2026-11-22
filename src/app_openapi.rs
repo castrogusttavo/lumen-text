@@ -13,11 +13,12 @@ use crate::{
     httpclient::{self, Resp as HttpResp},
     lsp::Wake,
     openapi::{
+        copy::{self, Flash},
         example,
         lint::{self, Finding},
         request::{self, Auth, Verdict},
         schema,
-        snippets::Req,
+        snippets::{self, Req},
         spec::{Operation, Spec},
         tree::{scalar_text, to_json},
     },
@@ -66,9 +67,22 @@ pub enum Hit {
     Server(usize),
     Scheme(Option<usize>),
     Eye,
+    /// A client of the code snippets (index into `snippets::TARGETS`).
     Lang(usize),
+    /// A language group of the picker: its remembered client, else its first.
+    LangGroup(&'static str),
     CopySnippet,
+    /// The received body (or the error).
     CopyBody,
+    /// The whole received answer (status, headers, body).
+    CopyResp,
+    /// Quick copy of the request as the target `n` (cURL / HTTPie).
+    CopyAs(usize),
+    CopyUrl,
+    CopyParams,
+    CopyReqHeaders,
+    /// Any block or field: the text and what it is (for the toast).
+    Copy(Arc<str>, &'static str),
     RespTab(usize),
     Resp(usize),
     Toggle(String),
@@ -206,11 +220,57 @@ pub struct ApiView {
     pub center_r: Rect,
     pub right_r: Rect,
     /// Text for the app to put on the clipboard.
-    pub copy: Option<String>,
+    pub copy: Option<(String, String)>,
+    /// The last copy, for the "Copied" flash on its button.
+    pub flash: Option<Flash>,
+    /// Copyable blocks of the last frame (Ctrl+C over one copies it).
+    pub blocks: Vec<(Rect, Hit)>,
+    /// The client last used in each language group.
+    pub lang_memo: HashMap<&'static str, usize>,
     /// Line the app should reveal in the source.
     pub jump: Option<usize>,
     pub want_source: bool,
 }
+
+/// Identity of the button behind a copy action (for the "Copied" flash).
+pub fn flash_key(h: &Hit) -> u64 {
+    match h {
+        Hit::Copy(t, _) => copy::key_of(t),
+        Hit::CopyAs(i) => copy::key_of(&format!("#as{i}")),
+        other => copy::key_of(&format!("#{other:?}")),
+    }
+}
+
+/// Where the last snippet target is remembered.
+#[cfg(not(test))]
+fn lang_file() -> Option<std::path::PathBuf> {
+    Some(crate::paths::state_home()?.join("lumen-text").join("openapi-snippet-target"))
+}
+
+/// The remembered snippet target (cURL the first time).
+#[cfg(not(test))]
+fn load_lang() -> usize {
+    let text = lang_file().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    (0..snippets::TARGETS.len()).find(|&i| snippets::label(i) == text.trim()).unwrap_or(0)
+}
+
+#[cfg(test)]
+fn load_lang() -> usize {
+    0
+}
+
+#[cfg(not(test))]
+fn save_lang(i: usize) {
+    if let Some(p) = lang_file() {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(p, snippets::label(i));
+    }
+}
+
+#[cfg(test)]
+fn save_lang(_: usize) {}
 
 fn byte_of(s: &str, ci: usize) -> usize {
     s.char_indices().nth(ci).map_or(s.len(), |(b, _)| b)
@@ -279,7 +339,7 @@ impl ApiView {
             body_geom: std::cell::Cell::new((Rect::default(), 8.0, 16)),
             auth: None,
             show_secret: false,
-            lang: 0,
+            lang: load_lang(),
             resp_tab: 0,
             try_pane: false,
             inflight: None,
@@ -293,9 +353,13 @@ impl ApiView {
             center_r: Rect::default(),
             right_r: Rect::default(),
             copy: None,
+            flash: None,
+            blocks: Vec::new(),
+            lang_memo: HashMap::new(),
             jump: None,
             want_source: false,
         };
+        v.lang_memo.insert(snippets::group_of(v.lang), v.lang);
         v.load(text);
         v
     }
@@ -513,14 +577,7 @@ impl ApiView {
     /// placeholders (the snippets).
     pub fn build_req(&self, strict: bool) -> Result<Req, String> {
         let op = self.op().ok_or("no operation selected")?;
-        let values: Vec<(String, String, String)> = op
-            .params
-            .iter()
-            .map(|p| {
-                let v = self.fields.get(&Self::field_id(&p.loc, &p.name)).map(|f| f.text.clone()).unwrap_or_default();
-                (p.loc.clone(), p.name.clone(), v)
-            })
-            .collect();
+        let values = self.param_rows();
         let base = self.fields.get("base").map(|f| f.text.clone()).unwrap_or_default();
         let ct = op
             .body
@@ -648,20 +705,22 @@ impl ApiView {
             Hit::Server(i) => self.pick_server(i),
             Hit::Scheme(i) => self.auth = i,
             Hit::Eye => self.show_secret = !self.show_secret,
-            Hit::Lang(i) => self.lang = i,
-            Hit::CopySnippet => {
-                if let Ok(r) = self.build_req(false) {
-                    self.copy = Some(crate::openapi::snippets::render(self.lang, &r));
-                }
+            Hit::Lang(i) => self.set_lang(i),
+            Hit::LangGroup(g) => {
+                let i = match self.lang_memo.get(g) {
+                    Some(&i) => i,
+                    None => snippets::of_group(g).first().copied().unwrap_or(0),
+                };
+                self.set_lang(i);
             }
-            Hit::CopyBody => {
-                if let Some(l) = &self.last {
-                    self.copy = Some(match &l.result {
-                        Ok(r) => r.text(),
-                        Err(e) => e.clone(),
-                    });
-                }
-            }
+            Hit::CopySnippet
+            | Hit::CopyBody
+            | Hit::CopyResp
+            | Hit::CopyAs(_)
+            | Hit::CopyUrl
+            | Hit::CopyParams
+            | Hit::CopyReqHeaders
+            | Hit::Copy(..) => self.run_copy(&hit),
             Hit::RespTab(i) => self.resp_tab = i,
             Hit::Resp(i) => {
                 self.resp_sel = i;
@@ -683,6 +742,104 @@ impl ApiView {
             Hit::Example => self.reset_body(),
         }
         true
+    }
+
+    fn set_lang(&mut self, i: usize) {
+        self.lang = i.min(snippets::TARGETS.len() - 1);
+        self.lang_memo.insert(snippets::group_of(self.lang), self.lang);
+        save_lang(self.lang);
+    }
+
+    /// The (location, name, value) of every parameter field of the selected operation.
+    pub fn param_rows(&self) -> Vec<(String, String, String)> {
+        let Some(op) = self.op() else { return Vec::new() };
+        op.params
+            .iter()
+            .map(|p| {
+                let v = self.fields.get(&Self::field_id(&p.loc, &p.name)).map(|f| f.text.clone()).unwrap_or_default();
+                (p.loc.clone(), p.name.clone(), v)
+            })
+            .collect()
+    }
+
+    /// What a copy action puts on the clipboard, and its name for the toast. `None` when there
+    /// is nothing to copy (no answer yet, no operation).
+    pub fn copy_text(&self, hit: &Hit) -> Option<(String, String)> {
+        let some = |t: String, w: &str| Some((t, w.to_string()));
+        match hit {
+            Hit::Copy(t, what) => some(t.to_string(), what),
+            Hit::CopySnippet => {
+                let r = self.build_req(false).ok()?;
+                some(snippets::render(self.lang, &r), &snippets::label(self.lang))
+            }
+            Hit::CopyAs(i) => {
+                let r = self.build_req(false).ok()?;
+                some(snippets::render(*i, &r), &snippets::label(*i))
+            }
+            Hit::CopyUrl => some(self.build_req(false).ok()?.url, "URL"),
+            Hit::CopyParams => {
+                let t = copy::params(&self.param_rows());
+                if t.is_empty() { None } else { some(t, "parameters") }
+            }
+            Hit::CopyReqHeaders => {
+                let r = self.build_req(false).ok()?;
+                if r.headers.is_empty() { None } else { some(copy::headers(&r.headers), "request headers") }
+            }
+            Hit::CopyBody => {
+                let l = self.last.as_ref()?;
+                match &l.result {
+                    Ok(r) => some(r.text(), "response body"),
+                    Err(e) => some(e.clone(), "error"),
+                }
+            }
+            Hit::CopyResp => {
+                let l = self.last.as_ref()?;
+                match &l.result {
+                    Ok(r) => {
+                        let status = format!("{} {}", r.status, r.reason);
+                        some(copy::response(status.trim(), &r.headers, &r.text()), "response")
+                    }
+                    Err(e) => some(e.clone(), "error"),
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Queue a copy for the app (clipboard + toast) and flash the button.
+    pub fn run_copy(&mut self, hit: &Hit) {
+        if let Some((text, what)) = self.copy_text(hit) {
+            self.flash = Some(Flash::new(flash_key(hit)));
+            self.copy = Some((text, what));
+        }
+    }
+
+    /// Ctrl+C: the focused field (its selection, else all of it), else the copyable block under
+    /// the mouse. False when there is nothing to copy.
+    pub fn copy_key(&mut self) -> bool {
+        if let Some(id) = self.focus.clone() {
+            let text = if id == "body" {
+                Some(self.body.clone())
+            } else {
+                self.field_mut(&id).map(|f| f.selected_text().unwrap_or_else(|| f.text.clone()))
+            };
+            return match text.filter(|t| !t.is_empty()) {
+                Some(t) => {
+                    self.copy = Some((t, "field".into()));
+                    true
+                }
+                None => false,
+            };
+        }
+        let (x, y) = self.mouse;
+        let hit = self.blocks.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| h.clone());
+        match hit {
+            Some(h) => {
+                self.run_copy(&h);
+                self.copy.is_some()
+            }
+            None => false,
+        }
     }
 
     fn field_mut(&mut self, id: &str) -> Option<&mut TextField> {
@@ -859,9 +1016,9 @@ impl App {
             Some(v) => (v.copy.take(), v.jump.take(), std::mem::take(&mut v.want_source)),
             None => return,
         };
-        if let Some(t) = copy {
+        if let Some((t, what)) = copy {
             self.clip.set(&t);
-            self.say("Copied");
+            self.say(format!("Copied {what}"));
         }
         if src {
             self.api_set_preview(false, None);
@@ -911,6 +1068,14 @@ impl App {
         );
         if self.api_active().is_none() {
             return false;
+        }
+        let copy = ctrl && matches!(&ev.key, Key::Character(c) if c.eq_ignore_ascii_case("c"));
+        if copy {
+            let done = self.api_active().is_some_and(|v| v.copy_key());
+            if done {
+                self.api_after();
+                return true;
+            }
         }
         let paste = ctrl && matches!(&ev.key, Key::Character(c) if c.eq_ignore_ascii_case("v"));
         if paste {
@@ -1020,6 +1185,38 @@ mod tests {
         }
         assert_eq!(Hit::Field("x".into()).cursor(), Cur::Text);
         assert_eq!(Hit::Divider.cursor(), Cur::Resize);
+    }
+
+    #[test]
+    fn copy_actions_have_a_pointer_and_text() {
+        for hit in [
+            Hit::Copy(Arc::from("x"), "x"),
+            Hit::CopyBody,
+            Hit::CopyResp,
+            Hit::CopyAs(0),
+            Hit::CopyUrl,
+            Hit::CopyParams,
+            Hit::CopyReqHeaders,
+            Hit::LangGroup("Python"),
+            Hit::Lang(3),
+        ] {
+            assert_eq!(hit.cursor(), Cur::Pointer, "{hit:?}");
+        }
+        let mut v = loaded(crate::openapi::spec::PETSTORE);
+        let show = v.spec.as_ref().unwrap().ops.iter().position(|o| o.op_id == "showPetById").unwrap();
+        v.select(Sel::Op(show));
+        v.fields.insert(ApiView::field_id("path", "petId"), TextField::with("42"));
+        let (url, _) = v.copy_text(&Hit::CopyUrl).unwrap();
+        assert_eq!(url, "https://api.example.com/v1/pets/42");
+        let (p, _) = v.copy_text(&Hit::CopyParams).unwrap();
+        assert_eq!(p, "[path] petId: 42");
+        let (c, what) = v.copy_text(&Hit::CopyAs(crate::openapi::snippets::CURL)).unwrap();
+        assert!(c.starts_with("curl 'https://api.example.com/v1/pets/42'") && what == "Shell · cURL", "{c}");
+        assert!(v.copy_text(&Hit::CopyBody).is_none(), "no answer yet");
+        v.run_copy(&Hit::CopyUrl);
+        assert!(v.copy.is_some() && v.flash.is_some_and(|f| f.on(flash_key(&Hit::CopyUrl))));
+        v.set_lang(9);
+        assert_eq!(v.lang_memo.get("Python"), Some(&9));
     }
 
     #[test]
