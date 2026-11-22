@@ -29,6 +29,7 @@ impl Node {
     pub fn new(val: Val, line: usize) -> Node {
         Node { val, line }
     }
+    #[cfg(test)]
     pub fn s(t: &str) -> Node {
         Node::new(Val::Str(t.to_string()), 0)
     }
