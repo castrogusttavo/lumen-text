@@ -321,12 +321,18 @@ impl App {
         for (y, g) in headers {
             let grp = &mb.groups[g];
             let n = grp.match_count();
-            let right = format!("{n} result{}", if n == 1 { "" } else { "s" });
-            let rw = tx.ui_width(&right, false);
-            let label = fit(tx, &grp.label, (area.w - 36 - rw).max(40), true);
+            let right = crate::ui_vwr::plural(n, "result", "results");
+            // Sticky-looking pill behind the file name, the count as an accent chip on the right.
+            let band = Rect::new(area.x, y, area.w, lh);
+            let cw = crate::ui_vwr::chip_w(tx, &right);
+            let chip_y = y + (lh - crate::ui_vwr::CHIP_H) / 2;
+            crate::ui_vwr::chip_right(cv, tx, (area.right() - 12, chip_y), &right, c.accent, c.sidebar_bg, band);
+            let label = fit(tx, &grp.label, (area.w - 48 - cw).max(40), true);
             let ty = y + (lh - 18) / 2;
-            tx.draw_ui(cv, area.x + 12, ty, &label, c.tab_active_fg, area, true);
-            tx.draw_ui(cv, area.right() - 12 - rw, ty, &right, dim, area, false);
+            let lw = tx.ui_width(&label, true);
+            let pill = Rect::new(area.x + 6, y + 1, lw + 2 * crate::ds::S3, (lh - 2).max(0));
+            cv.fill_round_clip(pill, crate::ds::R_CTRL, c.widget_bg, band);
+            tx.draw_ui(cv, pill.x + crate::ds::S3, ty, &label, c.tab_active_fg, pill, true);
         }
         false
     }

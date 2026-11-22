@@ -536,8 +536,19 @@ impl App {
         } else {
             format!("{done} of {n} conflict{} resolved", if n == 1 { "" } else { "s" })
         };
-        let ccol = if done == n && !mv.markers { c.git_added } else { dim };
-        self.tx.draw_ui(cv, head.x + 36 + nw + 12, head.y + 8, &counter, ccol, room, false);
+        let ccol = if done == n && !mv.markers { c.git_added } else { c.warning };
+        let cx = head.x + 36 + nw + 12;
+        if cx + 40 < room.right() {
+            crate::ui_vwr::chip(
+                cv,
+                &mut self.tx,
+                (cx, head.y + (HEAD_H - crate::ui_vwr::CHIP_H) / 2),
+                &counter,
+                ccol,
+                c.sidebar_bg,
+                room,
+            );
+        }
 
         // ── pane titles ──
         let mv = self.merge.as_ref().expect("merge view");
@@ -546,9 +557,19 @@ impl App {
         let (lt, rt) = (Rect::new(area.x, ty, half, TITLE_H), Rect::new(area.x + half, ty, area.w - half, TITLE_H));
         let titles = mv.titles.clone();
         for (r, title, col) in [(lt, &titles.0, col_in), (rt, &titles.1, col_cur)] {
-            cv.fill_round(Rect::new(r.x + 12, r.y + TITLE_H / 2 - 4, 8, 8), 4, col);
-            let t = crate::ui::fit_ellipsis(&mut self.tx, title, (r.w - 40).max(0), false);
-            self.tx.draw_ui_sized(cv, r.x + 26, r.y + 3, &t, dim, r, false, 12.0);
+            let side = if col == col_in { "Incoming" } else { "Current" };
+            let rest = title.strip_prefix(side).unwrap_or(title).trim_start_matches([' ', '\u{b7}']);
+            let t = crate::ui::fit_ellipsis(&mut self.tx, rest, (r.w - 100).max(0), false);
+            let sw = crate::ui_vwr::chip(
+                cv,
+                &mut self.tx,
+                (r.x + 12, r.y + (TITLE_H - crate::ui_vwr::CHIP_H) / 2),
+                side,
+                col,
+                bg,
+                r,
+            );
+            self.tx.draw_ui_sized(cv, r.x + 12 + sw + 8, r.y + 3, &t, dim, r, false, 12.0);
         }
         cv.fill(Rect::new(area.x, ty + TITLE_H - 1, area.w, 1), c.border);
 

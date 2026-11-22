@@ -193,6 +193,7 @@ mod textmate;
 mod theme;
 mod tree;
 mod ui;
+mod ui_vwr;
 mod undo_store;
 mod update;
 mod vim;
