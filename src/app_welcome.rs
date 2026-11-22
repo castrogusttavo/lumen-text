@@ -11,8 +11,10 @@ use crate::{
     app_overlay::Cmd,
     ds::{ICON_M, ICON_S, R_CARD, R_CTRL, R_ROW, S1, S2, S3, S4, S5},
     ui::{Canvas, Rect, ui_line},
-    ui_empty::{Empty, draw_empty},
-    ui_keycap::{draw_keys, keys_width, split_keys},
+    ui_kit::{
+        empty::{Empty, draw_empty},
+        keycap::{draw_keys, keycaps, keys_width},
+    },
 };
 use std::{
     cell::RefCell,
@@ -271,7 +273,7 @@ impl App {
     fn wel_actions(&mut self, cv: &mut Canvas, col: &Col, y: i32, n: &mut usize) -> i32 {
         let mut y = self.wel_label(cv, col, y, "Get started", n);
         for (icon, label, id, cmd) in ACTIONS {
-            let keys = self.shortcut_text(id).map(|s| split_keys(&s)).unwrap_or_default();
+            let keys = self.shortcut_text(id).map(|s| keycaps(&s)).unwrap_or_default();
             let row = Row { icon, label, sub: "", keys, right: "", h: ROW_A, hit: Hit::Cmd(cmd) };
             y = self.wel_row(cv, col, y, n, row);
         }
@@ -356,7 +358,7 @@ impl App {
         let mut right_w = 0;
         if !row.keys.is_empty() {
             right_w = keys_width(&mut self.tx, &row.keys);
-            draw_keys(&mut self.tx, cv, d.right() - S3 - right_w, d.y + (d.h - 18) / 2, &row.keys, c, k);
+            draw_keys(cv, &mut self.tx, &c, d.right() - S3 - right_w, d.y + (d.h - 18) / 2, &row.keys, k);
         } else if !row.right.is_empty() {
             let s = fit(&mut self.tx, row.right, col.w / 4, false);
             right_w = self.tx.ui_width(&s, false);
@@ -392,7 +394,7 @@ impl App {
         let (k, dy) = Self::wel_k(col, n);
         let (id, text) = TIPS[WEL.with(|w| w.borrow().tip) % TIPS.len()];
         let keys =
-            if id.is_empty() { Vec::new() } else { self.shortcut_text(id).map(|s| split_keys(&s)).unwrap_or_default() };
+            if id.is_empty() { Vec::new() } else { self.shortcut_text(id).map(|s| keycaps(&s)).unwrap_or_default() };
         let r = Rect::new(col.x, y, col.w, TIP_H);
         let d = Rect::new(r.x, r.y + dy, r.w, r.h);
         cv.fill_round(d, R_CARD, fade(c.sidebar_bg, k));
@@ -424,7 +426,7 @@ impl App {
         let ty = d.y + TIP_H - S3 - line;
         self.tx.draw_ui(cv, d.x + S3, ty, &t, fade(c.tab_active_fg, k), col.area, false);
         if kw > 0 {
-            draw_keys(&mut self.tx, cv, d.x + S3 + tw + S2, ty + (line - 18) / 2, &keys, c, k);
+            draw_keys(cv, &mut self.tx, &c, d.x + S3 + tw + S2, ty + (line - 18) / 2, &keys, k);
         }
         y + TIP_H
     }

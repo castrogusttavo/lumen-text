@@ -207,7 +207,6 @@ impl App {
         self.draw_overlay(cv);
         busy |= self.draw_onboarding(cv, dt);
         self.draw_tooltip(cv);
-        self.draw_toast(cv);
         self.draw_toasts(cv);
         crate::perf::lap!("overlays");
         busy |= self.settings_busy();

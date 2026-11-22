@@ -29,7 +29,7 @@ impl App {
             "theme": c.theme.clone().unwrap_or_else(|| self.theme.name.clone()),
             "theme_light": c.theme_light, "theme_dark": c.theme_dark, "tsgo_source": c.tsgo_source,
             "minimap": c.minimap, "minimap_style": c.minimap_style, "word_wrap": c.word_wrap, "sticky_scroll": c.sticky_scroll, "indent_guides": c.indent_guides,
-            "ui_scale": c.ui_scale, "scroll_speed": c.scroll_speed,
+            "ui_scale": c.ui_scale, "scroll_speed": c.scroll_speed, "reduce_motion": c.reduce_motion,
             "breadcrumbs": c.breadcrumbs, "git_blame": c.git_blame, "ram_display": c.ram_display,
             "status_problems": c.status_visible("problems"),
             "status_position": c.status_visible("position"), "status_indent": c.status_visible("indent"),
@@ -324,6 +324,11 @@ impl App {
                     }
                     self.follow_system_theme();
                 }
+            }
+            "reduce_motion" => {
+                self.config.reduce_motion = b.unwrap_or(false);
+                crate::motion::set(self.config.reduce_motion);
+                self.request_redraw();
             }
             "scroll_speed" => {
                 let v = v.as_f64().unwrap_or(1.0) as f32;

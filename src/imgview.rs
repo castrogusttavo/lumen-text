@@ -520,7 +520,8 @@ impl ImgView {
 
     fn message(&self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, rect: Rect, msg: &str) {
         let hint = if msg.starts_with("Loading") { "" } else { "Check the file, or open it as text" };
-        cv.empty_state(tx, &theme.chrome, rect, "ui/image", msg, hint);
+        let e = crate::ui_kit::empty::Empty { icon: "ui/image", title: msg, hint, action: None };
+        crate::ui_kit::empty::draw_empty(tx, cv, theme, rect, &e, (0.0, 0.0), 1.0);
     }
 
     /// The SVG "Preview | Source" switch, top right of the pane (drawn in both modes).

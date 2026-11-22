@@ -802,10 +802,16 @@ impl App {
         let mut cx = editor.x + 14 + self.tx.ui_width(&left, true) + ds::S3;
         for (n, sign, col) in [(added, '+', c.git_added), (removed, '-', c.git_deleted)] {
             let text = format!("{sign}{n}");
-            let w = self.tx.ui_width_sized(&text, true, 11.0) + 2 * ds::S2;
+            let w = crate::ui_kit::chip::chip_w(&mut self.tx, &text);
             if n > 0 && cx + w < editor.x + half - ds::S2 {
-                cx += cv.chip(&mut self.tx, (cx, editor.y + (head_h - 18) / 2), &text, col, col.with_alpha(0x22))
-                    + ds::S1;
+                cx += crate::ui_kit::chip::chip(
+                    cv,
+                    &mut self.tx,
+                    (cx, editor.y + (head_h - crate::ui_kit::chip::CHIP_H) / 2),
+                    &text,
+                    col,
+                    col.with_alpha(0x22),
+                ) + ds::S1;
             }
         }
         self.tx.draw_ui(

@@ -11,7 +11,7 @@ use crate::{
     ds::{ICON_L, ICON_S, R_CARD, R_CTRL, R_ROW, S1, S2, S3, S4, S5},
     theme::Rgba,
     ui::{Canvas, Rect, ui_line},
-    ui_keycap::{draw_keys, keys_width, split_keys},
+    ui_kit::keycap::{draw_keys, keycaps, keys_width},
 };
 
 const HEADER_H: i32 = 56;
@@ -126,7 +126,7 @@ impl App {
         self.tx.draw_ui(cv, S5 + mw + S2, (HEADER_H - line()) / 2, "Lumen", c.tab_active_fg, full, true);
 
         let label = "Skip tour";
-        let keys = split_keys("Esc");
+        let keys = keycaps("Esc");
         let (tw, kw) = (self.tx.ui_width(label, false), keys_width(&mut self.tx, &keys));
         let w = tw + kw + S2 + 2 * S3;
         let r = Rect::new(sw - S5 - w, (HEADER_H - 30) / 2, w, 30);
@@ -135,7 +135,7 @@ impl App {
         cv.ring(r, R_CTRL + 2, c.border);
         let fg = if hot { c.tab_active_fg } else { c.tab_inactive_fg };
         self.tx.draw_ui(cv, r.x + S3, r.y + (r.h - line()) / 2, label, fg, r, false);
-        draw_keys(&mut self.tx, cv, r.x + S3 + tw + S2, r.y + (r.h - 18) / 2, &keys, c, 1.0);
+        draw_keys(cv, &mut self.tx, &c, r.x + S3 + tw + S2, r.y + (r.h - 18) / 2, &keys, 1.0);
         st.rects.push((r, Hit::Skip));
     }
 
@@ -464,7 +464,7 @@ impl App {
         }
         if !ch.keys.is_empty() {
             let kw = keys_width(&mut self.tx, &ch.keys);
-            draw_keys(&mut self.tx, cv, rx - kw, r.y + (r.h - 18) / 2, &ch.keys, c, a);
+            draw_keys(cv, &mut self.tx, &c, rx - kw, r.y + (r.h - 18) / 2, &ch.keys, a);
             rx -= kw + S3;
         }
         let tx0 = tile.right() + S3;
@@ -614,7 +614,7 @@ impl App {
             false,
         ));
 
-        let shortcut = self.shortcut_text("ProjectMenu").map(|s| split_keys(&s)).unwrap_or_default();
+        let shortcut = self.shortcut_text("ProjectMenu").map(|s| keycaps(&s)).unwrap_or_default();
         for (i, (hit, icon, title, sub, strong)) in items.into_iter().enumerate() {
             let keys = match (st.pick == i, i) {
                 (true, _) => vec!["Enter".to_string()],

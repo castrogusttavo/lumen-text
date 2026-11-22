@@ -128,6 +128,13 @@ pub fn default_settings() -> Vec<SettingDef> {
             Number { min: 0.1, max: 5.0, step: 0.1 },
         ),
         d(
+            "reduce_motion",
+            "Appearance",
+            "Reduce motion",
+            "Turns animations into instant changes: no sliding panels, shimmer, pulses or blinking cursor. LUMEN_REDUCE_MOTION=1 does the same.",
+            Bool,
+        ),
+        d(
             "explorer_hide_gitignored",
             "Appearance",
             "Hide git-ignored files",
@@ -274,7 +281,7 @@ pub fn default_values() -> Value {
         "format_on_save": false, "updates": "auto", "auto_import": false, "lsp_narrow": false,
         "code_lens": false, "code_lens_refs": true, "code_lens_impls": true, "inlay_hints": false, "inlay_hints_params": true, "inlay_hints_types": true, "appearance": "fixed", "theme_chrome": "derived", "theme_light": "github-light-default",
         "theme_dark": "github-dark-default", "tsgo_source": "auto",
-        "minimap": true, "minimap_style": "subtle", "word_wrap": false, "sticky_scroll": true, "indent_guides": true, "ui_scale": 0, "scroll_speed": 1,
+        "minimap": true, "minimap_style": "subtle", "word_wrap": false, "sticky_scroll": true, "indent_guides": true, "ui_scale": 0, "scroll_speed": 1, "reduce_motion": false,
         "breadcrumbs": true, "git_blame": true, "ram_display": "long", "tab_width": "4", "git_pull_strategy": "ask",
         "explorer_hide_gitignored": true,
     });
@@ -453,7 +460,7 @@ pub(super) fn row_group(key: &str) -> (u8, &'static str) {
         "show_tabs" | "show_status_bar" | "zen_max_width" => (4, "Window"),
         "markdown_remote_images" => (5, "Markdown"),
         "appearance" | "theme" | "theme_light" | "theme_dark" | "theme_chrome" => (0, "Theme"),
-        "ui_scale" | "scroll_speed" => (1, "Interface"),
+        "ui_scale" | "scroll_speed" | "reduce_motion" => (1, "Interface"),
         "explorer_hide_gitignored" | "explorer_sort" | "explorer_folders_first" => (0, "Explorer"),
         "hot_exit" | "persistent_undo" => (1, "Recovery"),
         "enable_lsp" => (0, "Language servers"),

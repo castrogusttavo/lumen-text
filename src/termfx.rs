@@ -33,7 +33,8 @@ pub fn take_moving() -> bool {
 
 /// Is the cursor in the lit half of its blink, `idle` seconds after the last activity?
 pub fn blink_on(idle: f32) -> bool {
-    idle < SOLID_FOR || (((idle - SOLID_FOR) / HALF) as u32).is_multiple_of(2)
+    // Reduce motion: a steady cursor.
+    crate::motion::reduced() || idle < SOLID_FOR || (((idle - SOLID_FOR) / HALF) as u32).is_multiple_of(2)
 }
 
 /// What a draw needs from the effects.
@@ -104,7 +105,7 @@ impl Fx {
         if !s.focused {
             return (false, false);
         }
-        (blink_on(idle) != s.on, true)
+        (blink_on(idle) != s.on, !crate::motion::reduced())
     }
 }
 

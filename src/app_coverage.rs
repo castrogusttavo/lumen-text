@@ -158,10 +158,10 @@ impl App {
     /// Green from 80 %, yellow from 50 %, red below.
     pub fn coverage_color(&self, pct: f32) -> Rgba {
         let c = self.theme.chrome;
-        match crate::ui_vwr::Level::of(pct) {
-            crate::ui_vwr::Level::Good => c.git_added,
-            crate::ui_vwr::Level::Fair => c.warning,
-            crate::ui_vwr::Level::Poor => c.error,
+        match crate::ui_viewer::Level::of(pct) {
+            crate::ui_viewer::Level::Good => c.git_added,
+            crate::ui_viewer::Level::Fair => c.warning,
+            crate::ui_viewer::Level::Poor => c.error,
         }
     }
 
@@ -174,8 +174,8 @@ impl App {
         let label = format!("Coverage {pct:.0}%");
         let col = self.coverage_color(pct);
         let page = self.theme.chrome.status_bg;
-        let y = r.y + (r.h - crate::ui_vwr::CHIP_H) / 2;
-        let w = crate::ui_vwr::chip(cv, &mut self.tx, (x + 8, y), &label, col, page, r);
+        let y = r.y + (r.h - crate::ui_kit::chip::CHIP_H) / 2;
+        let w = crate::ui_kit::chip::chip_on(cv, &mut self.tx, (x + 8, y), &label, col, page, r);
         x + 8 + w + 8
     }
 }

@@ -11,7 +11,6 @@ use crate::{
     sqlview::{self, CellKind, Rows, Table},
     textarea::KeyAct,
     theme::Theme,
-    tool_ui,
     ui::{Canvas, HBar, Rect, TextCtx, VBar},
 };
 use std::{
@@ -260,7 +259,7 @@ impl SqlView {
         self.rect = rect;
         cv.fill(rect, theme.background);
         if self.no_sqlite {
-            tool_ui::empty_head(
+            crate::ui_kit::empty::empty_head(
                 cv,
                 tx,
                 theme,
@@ -299,7 +298,7 @@ impl SqlView {
                 tx.draw_ui(cv, r.x + 12, body.y + 30, "Nothing to browse yet.", c.tab_inactive_fg, body, false);
             } else {
                 let area = Rect::new(r.x + 12, body.y + 12, (r.w - 24).max(0), body.h);
-                cv.skeleton_lines(theme, area, 6, body, tool_ui::clock());
+                cv.skeleton_lines(theme, area, 6, body, crate::ui_kit::shimmer::clock());
             }
             return;
         }
@@ -431,18 +430,36 @@ impl SqlView {
                 return;
             }
             let hint = "Pick a table on the left, or type a SELECT above.";
-            let y = tool_ui::empty_head(cv, tx, theme, grid, grid, "ui/table", "Nothing selected", hint);
+            let y = crate::ui_kit::empty::empty_head(cv, tx, theme, grid, grid, "ui/table", "Nothing selected", hint);
             if let Some(t) = self.tables.first() {
                 let label = fit(tx, &format!("Open {}", t.name), 220, true);
                 let w = (tx.ui_width(&label, true) + 2 * ds::S5).max(120);
                 self.empty_r = Rect::new(grid.x + (grid.w - w) / 2, y, w, 32);
                 let hover = self.hover.is_some_and(|(hx, hy)| self.empty_r.contains(hx, hy));
-                tool_ui::primary_button(cv, tx, theme, self.empty_r, &label, hover);
+                crate::ui_kit::button::draw_button(
+                    cv,
+                    tx,
+                    &theme.chrome,
+                    self.empty_r,
+                    &label,
+                    crate::ui_kit::button::BtnStyle::Primary,
+                    false,
+                    hover,
+                );
             }
             return;
         };
         if res.cols.is_empty() {
-            tool_ui::empty_head(cv, tx, theme, grid, grid, "ui/table", "No rows", "The query returned nothing.");
+            crate::ui_kit::empty::empty_head(
+                cv,
+                tx,
+                theme,
+                grid,
+                grid,
+                "ui/table",
+                "No rows",
+                "The query returned nothing.",
+            );
             self.result = Some(res);
             return;
         }
@@ -517,7 +534,7 @@ impl SqlView {
     /// Loading: a header strip and rows of shimmering cells instead of a frozen blank grid.
     fn draw_grid_skeleton(&self, cv: &mut Canvas, theme: &Theme, grid: Rect) {
         let c = theme.chrome;
-        let t = tool_ui::clock();
+        let t = crate::ui_kit::shimmer::clock();
         cv.fill(Rect::new(grid.x, grid.y, grid.w, HEAD_H), c.tabbar_bg);
         let rows = ((grid.h - HEAD_H) / ROW_H).clamp(0, 14);
         let col_w = ((grid.w - 2 * CELL_PAD) / 4).max(COL_MIN);
@@ -526,7 +543,7 @@ impl SqlView {
             for ci in 0..4 {
                 let x = grid.x + CELL_PAD + ci * col_w;
                 let w = (col_w - 2 * CELL_PAD).max(20) * (60 + ((ri + ci * 3) % 4) * 10) / 100;
-                let r = Rect::new(x, y + (ROW_H - tool_ui::BAR_H) / 2, w, tool_ui::BAR_H);
+                let r = Rect::new(x, y + (ROW_H - crate::ui_kit::shimmer::BAR_H) / 2, w, crate::ui_kit::shimmer::BAR_H);
                 cv.skeleton_bar(theme, r, grid, t);
             }
         }

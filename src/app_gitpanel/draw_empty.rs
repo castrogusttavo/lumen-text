@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::ds;
+use crate::ui_kit::button::{BtnStyle, draw_button};
 
 /// One button of an empty state: label, what it does, primary (accent fill) or secondary.
 pub(super) struct EmptyBtn {
@@ -43,15 +44,8 @@ impl App {
             let bw = (self.tx.ui_width(b.label, b.primary) + 2 * ds::S4).min(body.w - 2 * ds::S3);
             let r = Rect::new(cx - bw / 2, y, bw, ds::HIT_MIN + ds::S1);
             let hot = self.hv(r);
-            if b.primary {
-                cv.fill_round(r, ds::R_CTRL + 2, if hot { c.accent.shift(14) } else { c.accent });
-            } else {
-                let edge = if hot { c.tab_active_fg.with_alpha(0x50) } else { c.border };
-                cv.card(r, ds::R_CTRL + 2, if hot { c.list_hover_bg } else { c.widget_bg }, edge);
-            }
-            let tc = if b.primary { c.on_accent } else { c.tab_active_fg };
-            let lw = self.tx.ui_width(b.label, b.primary);
-            self.tx.draw_ui(cv, r.x + (r.w - lw) / 2, r.y + (r.h - LINE) / 2, b.label, tc, r, b.primary);
+            let style = if b.primary { BtnStyle::Primary } else { BtnStyle::Secondary };
+            draw_button(cv, &mut self.tx, &c, r, b.label, style, false, hot);
             gp.hits.push((r, b.hit));
             y += r.h + ds::S2;
         }

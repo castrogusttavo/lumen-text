@@ -58,8 +58,8 @@ impl App {
         let w = content_w + 2 * PAD_X;
         let rows = footer_rows(&widths, gap, content_w);
         let foot_h = if acts.is_empty() { 0 } else { rows.len() as i32 * FOOT_ROW + 7 };
-        let chip = crate::ui_chip::kind_chip(h.kind).filter(|_| !h.name.is_empty());
-        let head_h = if chip.is_some() { crate::ui_chip::CHIP_H + crate::ds::S1 } else { 0 };
+        let chip = crate::ui_kit::chip::kind_chip(h.kind).filter(|_| !h.name.is_empty());
+        let head_h = if chip.is_some() { crate::ui_kit::chip::CHIP_H + crate::ds::S1 } else { 0 };
         let want_h = laid.h + 2 * PAD_Y + foot_h + head_h;
         let anchor = self.docs.get(self.active).and_then(|d| d.screen_pos(h.anchor.0)).unwrap_or(h.at);
         let (rect, below) = place(anchor, line_h() as i32, ed, w, want_h, h.side_below);
@@ -75,7 +75,7 @@ impl App {
         clamp_scroll(h);
 
         let fading = h.fade.k() < 1.0;
-        let backdrop = fading.then(|| cv.grab(crate::ui_popup::shadow_area(rect)));
+        let backdrop = fading.then(|| cv.snap_region(crate::ui_popup::shadow_area(rect)));
         cv.pop_card(rect, &chrome);
         let _laid = &h.laid.as_ref().unwrap().1;
         let oy = view.y - h.scroll.round() as i32;
@@ -84,7 +84,7 @@ impl App {
 
         if let Some((word, tone)) = chip {
             let at = (rect.x + PAD_X, rect.y + PAD_Y);
-            crate::ui_chip::draw_chip(cv, &mut self.tx, &chrome, at, word, tone, rect);
+            crate::ui_kit::chip::draw_chip(cv, &mut self.tx, &chrome, at, word, tone, rect);
         }
         // selection (per character)
         for r in sel_rects(h, &mut self.tx) {
@@ -179,7 +179,7 @@ impl App {
         }
         widths.clear();
         if let Some(b) = backdrop {
-            cv.fade_toward(&b, h.fade.k());
+            cv.blend_over_snap(&b, h.fade.k(), 0);
         }
     }
 }

@@ -441,12 +441,12 @@ impl App {
             let rect = Rect::new(x, by, *bw, bh);
             let focused = u.sel == *choice;
             let style = match choice {
-                Choice::Discard => crate::ui_modal::BtnStyle::Danger,
-                Choice::Save => crate::ui_modal::BtnStyle::Primary,
-                Choice::Cancel => crate::ui_modal::BtnStyle::Secondary,
+                Choice::Discard => crate::ui_kit::button::BtnStyle::Danger,
+                Choice::Save => crate::ui_kit::button::BtnStyle::Primary,
+                Choice::Cancel => crate::ui_kit::button::BtnStyle::Secondary,
             };
             let hot = rect.contains(self.mouse.0, self.mouse.1);
-            crate::ui_modal::draw_button(cv, &mut self.tx, &c, rect, label, style, focused, hot);
+            crate::ui_kit::button::draw_button(cv, &mut self.tx, &c, rect, label, style, focused, hot);
             u.rects[*choice as usize] = rect;
             self.layout.overlay_rows.push((rect, *choice as usize));
             x += bw + 8;

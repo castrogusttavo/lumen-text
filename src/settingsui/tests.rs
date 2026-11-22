@@ -1107,3 +1107,12 @@ fn a_conflict_is_flagged_on_both_rows_and_recording_pulses() {
     frame(&mut m);
     assert!(!m.animating(), "the conflict question is static");
 }
+
+#[test]
+fn reduce_motion_has_a_row_that_defaults_to_off() {
+    let defs = default_settings();
+    let def = defs.iter().find(|d| d.key == "reduce_motion").expect("reduce_motion row");
+    assert_eq!(def.kind, SettingKind::Bool);
+    assert_eq!(def.section, "Appearance");
+    assert_eq!(default_values()["reduce_motion"], json!(false));
+}

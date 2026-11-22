@@ -5,16 +5,17 @@
 //! * The entrance works on any drawing code without touching it: the region is copied before the
 //!   surface draws ([`Canvas::snap_region`]) and mixed back with the finished picture
 //!   ([`Canvas::blend_over_snap`]) by the entrance progress, shifted down by the rise.
-//! * Keycap chips ([`keycaps`], [`draw_keycaps`]) and the footer hint row of a panel.
+//! * The footer hint row of a panel (its keycaps and buttons live in `ui_kit`).
 //! * Semantics: Esc closes, Enter accepts (see `app_overlay::input`); the footer says so.
 
 use crate::{
-    anim::{self, Anim, dur},
+    anim::{Anim, dur},
     app::App,
     app_overlay::Overlay,
     ds::{self, Elev},
     theme::{Chrome, Rgba},
-    ui::{Canvas, Rect, TextCtx},
+    ui::{Canvas, Rect, TextCtx, ui_line},
+    ui_kit::keycap,
 };
 
 /// How far below its place a panel starts, in logical px.
@@ -22,10 +23,6 @@ pub const RISE: i32 = ds::S2;
 /// Strength of the backdrop dim (alpha, 0..255) in a dark / light theme.
 const DIM_DARK: f32 = 110.0;
 const DIM_LIGHT: f32 = 64.0;
-/// Height of a keycap chip, in logical px.
-pub const KEY_H: i32 = 20;
-const KEY_PAD: i32 = 6;
-const KEY_GAP: i32 = ds::S1 / 2;
 /// Height of the footer hint row of a panel.
 pub const FOOT_H: i32 = 30;
 /// A selection that jumps further than this many rows does not glide (typing re-ranks the list).
@@ -161,58 +158,6 @@ impl Canvas<'_> {
     }
 }
 
-/// The chips of a shortcut: "Ctrl+Shift+P" -> ["Ctrl", "Shift", "P"], "Ctrl+K Ctrl+S" -> four chips,
-/// a trailing "+" is the key itself ("Ctrl++").
-pub fn keycaps(combo: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for chord in combo.split_whitespace() {
-        let mut rest = chord;
-        while !rest.is_empty() {
-            if let Some(p) = rest.strip_prefix('+') {
-                // A "+" that is a key: the last one of "Ctrl++".
-                if p.is_empty() {
-                    out.push("+".to_string());
-                }
-                rest = p;
-                continue;
-            }
-            let end = rest.find('+').unwrap_or(rest.len());
-            out.push(rest[..end].to_string());
-            rest = &rest[end..];
-        }
-    }
-    out
-}
-
-/// Width taken by the chips `keys`.
-pub fn keycaps_width(tx: &mut TextCtx, keys: &[String]) -> i32 {
-    let w: i32 = keys.iter().map(|k| (tx.ui_width(k, false) + 2 * KEY_PAD).max(KEY_H)).sum();
-    w + KEY_GAP * keys.len().saturating_sub(1) as i32
-}
-
-/// Draw the chips with their top-left corner at (`x`, `y`), faded by `alpha`; returns their width.
-pub fn draw_keycaps(
-    cv: &mut Canvas,
-    tx: &mut TextCtx,
-    c: &Chrome,
-    x: i32,
-    y: i32,
-    keys: &[String],
-    alpha: f32,
-    clip: Rect,
-) -> i32 {
-    let mut cx = x;
-    for k in keys {
-        let w = (tx.ui_width(k, false) + 2 * KEY_PAD).max(KEY_H);
-        let chip = Rect::new(cx, y, w, KEY_H);
-        cv.card(chip, ds::R_CTRL, anim::fade(c.input_bg, alpha), anim::fade(c.border, alpha));
-        let tw = tx.ui_width(k, false);
-        tx.draw_ui(cv, chip.x + (w - tw) / 2, chip.y + 1, k, anim::fade(c.tab_inactive_fg, alpha), clip, false);
-        cx += w + KEY_GAP;
-    }
-    (cx - x - KEY_GAP).max(0)
-}
-
 impl App {
     /// Per frame: follow the open surface, aim the list highlight, advance the entrance.
     pub fn modal_frame(&mut self, dt: f64) -> bool {
@@ -261,67 +206,9 @@ impl App {
 
     /// Shadow and rounded card of a floating panel at elevation `e`; returns the inner rect.
     pub fn modal_panel(&self, cv: &mut Canvas, r: Rect, e: Elev) -> Rect {
-        let c = self.theme.chrome;
-        let ring = anim::lerp_rgba(c.border, self.theme.foreground, e.lift() as f32 / 128.0);
-        cv.shadow(r, ds::R_FLOAT);
-        cv.card(r, ds::R_FLOAT, c.widget_bg, ring);
+        cv.float_card(r, ds::R_FLOAT, &self.theme.chrome, e);
         r.inset(1)
     }
-}
-
-/// Look of a sheet button.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum BtnStyle {
-    /// The answer to give: accent fill.
-    Primary,
-    /// The other choices: quiet, bordered.
-    Secondary,
-    /// Destructive: error text, error fill when focused.
-    Danger,
-}
-
-/// One button of a confirmation sheet. `focused` is the keyboard default (Enter), `hot` the pointer.
-pub fn draw_button(
-    cv: &mut Canvas,
-    tx: &mut TextCtx,
-    c: &Chrome,
-    r: Rect,
-    label: &str,
-    style: BtnStyle,
-    focused: bool,
-    hot: bool,
-) {
-    let fg = c.tab_active_fg;
-    let text = match style {
-        BtnStyle::Primary => {
-            cv.card(r, ds::R_ROW, if hot { c.accent.mix(fg, 0.14) } else { c.accent }, c.accent);
-            c.on_accent
-        }
-        BtnStyle::Secondary => {
-            cv.card(r, ds::R_ROW, c.widget_bg, c.border);
-            if hot || focused {
-                cv.fill_round(r.inset(1), ds::R_ROW - 1, c.list_hover_bg);
-            }
-            fg
-        }
-        BtnStyle::Danger => {
-            cv.card(r, ds::R_ROW, c.widget_bg, c.error.with_alpha(0x90));
-            if focused {
-                cv.fill_round(r.inset(1), ds::R_ROW - 1, c.error);
-                if c.error.luminance() > 0.55 { Rgba(0, 0, 0, 255) } else { Rgba(255, 255, 255, 255) }
-            } else {
-                if hot {
-                    cv.fill_round(r.inset(1), ds::R_ROW - 1, c.error.with_alpha(0x28));
-                }
-                c.error
-            }
-        }
-    };
-    if focused {
-        cv.ring(r.inset(-2), ds::R_ROW + 2, c.accent_text.with_alpha(0xa0));
-    }
-    let tw = tx.ui_width(label, true);
-    tx.draw_ui(cv, r.x + (r.w - tw) / 2, r.y + (r.h - 18) / 2, label, text, r, true);
 }
 
 /// Footer hint row of a panel `r` (its last [`FOOT_H`] px): "key  action" pairs, left aligned.
@@ -329,11 +216,12 @@ pub fn draw_footer(cv: &mut Canvas, tx: &mut TextCtx, c: &Chrome, r: Rect, hints
     let row = Rect::new(r.x, r.bottom() - FOOT_H, r.w, FOOT_H);
     cv.fill(Rect::new(row.x + ds::S4, row.y, row.w - 2 * ds::S4, 1), c.border);
     let mut x = row.x + ds::S4;
-    let y = row.y + (FOOT_H - KEY_H) / 2 + 1;
+    let y = row.y + (FOOT_H - keycap::KEY_H) / 2 + 1;
+    let ty = row.y + (FOOT_H - ui_line() as i32) / 2 + 1;
     for (key, what) in hints {
-        let keys = keycaps(key);
-        x += draw_keycaps(cv, tx, c, x, y, &keys, 1.0, row) + ds::S2;
-        tx.draw_ui(cv, x, y + 1, what, c.tab_inactive_fg, row, false);
+        let keys = keycap::keycaps(key);
+        x += keycap::draw_keys(cv, tx, c, x, y, &keys, 1.0, row) + ds::S2;
+        tx.draw_ui(cv, x, ty, what, c.tab_inactive_fg, row, false);
         x += tx.ui_width(what, false) + ds::S4;
     }
 }
@@ -341,15 +229,6 @@ pub fn draw_footer(cv: &mut Canvas, tx: &mut TextCtx, c: &Chrome, r: Rect, hints
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shortcuts_split_into_chips() {
-        assert_eq!(keycaps("Ctrl+Shift+P"), ["Ctrl", "Shift", "P"]);
-        assert_eq!(keycaps("Ctrl++"), ["Ctrl", "+"]);
-        assert_eq!(keycaps("Ctrl+K Ctrl+S"), ["Ctrl", "K", "Ctrl", "S"]);
-        assert_eq!(keycaps("Esc"), ["Esc"]);
-        assert!(keycaps("").is_empty());
-    }
 
     #[test]
     fn entrance_restarts_per_surface_and_settles() {

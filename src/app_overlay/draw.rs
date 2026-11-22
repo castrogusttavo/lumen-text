@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
     ds::{self, Elev},
-    ui_modal::{self, FOOT_H, KEY_H},
+    ui_kit::keycap::KEY_H,
+    ui_modal::{self, FOOT_H},
 };
 
 /// Hints under every picker.
@@ -282,10 +283,17 @@ impl App {
                         continue;
                     }
                     let avail = rr.w - 28;
-                    let cmd_keys =
-                        if p.kind == PickKind::Commands { ui_modal::keycaps(&it.detail) } else { Vec::new() };
+                    let cmd_keys = if p.kind == PickKind::Commands {
+                        crate::ui_kit::keycap::keycaps(&it.detail)
+                    } else {
+                        Vec::new()
+                    };
                     let detail_w = if p.kind == PickKind::Commands {
-                        if cmd_keys.is_empty() { 0 } else { ui_modal::keycaps_width(&mut self.tx, &cmd_keys) + 20 }
+                        if cmd_keys.is_empty() {
+                            0
+                        } else {
+                            crate::ui_kit::keycap::keys_width(&mut self.tx, &cmd_keys) + 20
+                        }
                     } else if matches!(p.kind, PickKind::Themes | PickKind::Choice) && !it.detail.is_empty() {
                         self.tx.ui_width(&it.detail, false) + 20
                     } else {
@@ -360,7 +368,16 @@ impl App {
                             // The shortcut as keycap chips, right aligned.
                             let kw = detail_w - 20;
                             let ky = y + (ROW - KEY_H) / 2;
-                            ui_modal::draw_keycaps(cv, &mut self.tx, &c, rr.right() - kw - 12, ky, &cmd_keys, 1.0, rr);
+                            crate::ui_kit::keycap::draw_keys_in(
+                                cv,
+                                &mut self.tx,
+                                &c,
+                                rr.right() - kw - 12,
+                                ky,
+                                &cmd_keys,
+                                1.0,
+                                rr,
+                            );
                         } else {
                             let used =
                                 self.tx.ui_width(&pieces.iter().map(|(s, _)| s.as_str()).collect::<String>(), false);

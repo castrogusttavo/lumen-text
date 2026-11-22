@@ -515,8 +515,8 @@ impl App {
         let rest_w = g.rest.last().map(|l| self.tx.cells(l.chars().count()));
         let tail_empty = col >= d.buf.line_len(line);
         let (body, rest_rows) = (d.rect, g.rest.len());
-        let key_w = crate::ui_chip::chip_w(&mut self.tx, "Tab");
-        let pos = crate::ui_chip::ghost_keycap_pos(
+        let key_w = crate::ui_kit::keycap::keycap_w(&mut self.tx, "Tab");
+        let pos = crate::ui_kit::keycap::ghost_keycap_pos(
             caret,
             line_x0,
             first_w,
@@ -529,7 +529,7 @@ impl App {
         );
         if let Some(pos) = pos {
             let c = self.theme.chrome;
-            crate::ui_chip::draw_keycap(cv, &mut self.tx, &c, pos, "Tab", body);
+            crate::ui_kit::keycap::draw_keycap(cv, &mut self.tx, &c, pos, "Tab", body);
         }
     }
 

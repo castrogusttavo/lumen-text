@@ -55,6 +55,7 @@ All text colors are nudged to read on `canvas`, `raised` and the pressed overlay
 - Tooltips: 400 ms delay, name + shortcut chip. Keycaps drawn as small rounded chips.
 - Badges/counters: pill, `R_CTRL`, 10–11 px text.
 - Empty states: icon, one-line title, one-line hint, one primary action. Never a blank panel.
+- One implementation per concept lives in `src/ui_kit/` (`chip`, `keycap`, `button`, `empty`, `shimmer`, `card`): reuse it, never fork it. Popovers, menus, toasts and modals share `Canvas::float_card` (`raised` fill, `border_glow` rim).
 
 ## 4. Developer-experience principles
 1. **Keyboard first, mouse friendly.** Every clickable thing shows its shortcut in its tooltip; every

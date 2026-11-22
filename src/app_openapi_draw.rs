@@ -18,7 +18,6 @@ use crate::{
     },
     tasks::Segs,
     theme::{Chrome, Rgba, Theme},
-    tool_ui,
     ui::{Canvas, Rect, TextCtx, VBar, line_h, ui_size},
 };
 use std::sync::Arc;
@@ -541,7 +540,7 @@ impl ApiView {
             p.icon(icon, rect.x + (rect.w - ds::ICON_L) / 2, y - ds::ICON_L - ds::S3, ds::ICON_L, icol);
             if self.load_err.is_none() {
                 let sk = Rect::new(rect.x + (rect.w - 260) / 2, y + 44, 260, 0);
-                p.cv.skeleton_lines(th, sk, 3, rect, tool_ui::clock());
+                p.cv.skeleton_lines(th, sk, 3, rect, crate::ui_kit::shimmer::clock());
             }
             p.text(rect.x + (rect.w - tw) / 2, y, &title, col, true, sz(1.3));
             let w = (rect.w - 80).clamp(100, 600);
@@ -613,7 +612,16 @@ impl ApiView {
             let q = self.query.text.trim().to_string();
             let hint = p.fit(&format!("Nothing matches \"{q}\""), list.w - 2 * ds::S4, false, sz(0.9));
             let area = Rect::new(list.x, list.y, list.w, list.h.min(260));
-            let y = tool_ui::empty_head(p.cv, p.tx, th, area, list, "ui/magnifying_glass", "No endpoints", &hint);
+            let y = crate::ui_kit::empty::empty_head(
+                p.cv,
+                p.tx,
+                th,
+                area,
+                list,
+                "ui/magnifying_glass",
+                "No endpoints",
+                &hint,
+            );
             p.button(Rect::new(list.x + (list.w - 120) / 2, y, 120, 30), "Clear search", Hit::ClearSearch, true);
         }
         for row in self.nav.iter().skip(first) {
@@ -1218,7 +1226,7 @@ impl ApiView {
         let (Some(spec), Some(op)) = (self.spec.as_ref(), self.op()) else {
             let hint = "Pick an endpoint on the left to send a real request: server, parameters, auth and body, with the answer checked against the spec.";
             let area = Rect::new(r.x, y + ds::S4, r.w, 140);
-            let below = tool_ui::empty_head(
+            let below = crate::ui_kit::empty::empty_head(
                 p.cv,
                 p.tx,
                 p.th,
@@ -1428,7 +1436,7 @@ impl ApiView {
             y += label(p, x, y, "Response");
             let sk = Rect::new(x, y, w, 0);
             let clip = p.clip;
-            y += p.cv.skeleton_lines(p.th, sk, 4, clip, tool_ui::clock()) + 12;
+            y += p.cv.skeleton_lines(p.th, sk, 4, clip, crate::ui_kit::shimmer::clock()) + 12;
         } else if let Some(l) = self.last.as_ref().filter(|l| l.op == self.sel_op()) {
             y = self.response_card(p, l, x, w, y);
         }

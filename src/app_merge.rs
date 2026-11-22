@@ -539,10 +539,10 @@ impl App {
         let ccol = if done == n && !mv.markers { c.git_added } else { c.warning };
         let cx = head.x + 36 + nw + 12;
         if cx + 40 < room.right() {
-            crate::ui_vwr::chip(
+            crate::ui_kit::chip::chip_on(
                 cv,
                 &mut self.tx,
-                (cx, head.y + (HEAD_H - crate::ui_vwr::CHIP_H) / 2),
+                (cx, head.y + (HEAD_H - crate::ui_kit::chip::CHIP_H) / 2),
                 &counter,
                 ccol,
                 c.sidebar_bg,
@@ -560,10 +560,10 @@ impl App {
             let side = if col == col_in { "Incoming" } else { "Current" };
             let rest = title.strip_prefix(side).unwrap_or(title).trim_start_matches([' ', '\u{b7}']);
             let t = crate::ui::fit_ellipsis(&mut self.tx, rest, (r.w - 100).max(0), false);
-            let sw = crate::ui_vwr::chip(
+            let sw = crate::ui_kit::chip::chip_on(
                 cv,
                 &mut self.tx,
-                (r.x + 12, r.y + (TITLE_H - crate::ui_vwr::CHIP_H) / 2),
+                (r.x + 12, r.y + (TITLE_H - crate::ui_kit::chip::CHIP_H) / 2),
                 side,
                 col,
                 bg,

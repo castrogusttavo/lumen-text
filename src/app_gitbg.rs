@@ -1,6 +1,6 @@
 //! Git work that outlives the Git panel: the result of a fetch / pull / push whose panel was
-//! closed while it ran, the ahead / behind counts refreshed in the background, and the small toast
-//! that announces results.
+//! closed while it ran, the ahead / behind counts refreshed in the background, and the toast that
+//! announces results (through `App::notify`).
 //!
 //! * A command started from the panel lives in `GitPanel::job`. Closing the panel hands it over to
 //!   [`GitBg::detached`]; `App::git_bg_tick` keeps polling it and, when it ends, reports the result
@@ -15,6 +15,7 @@ use crate::{
     git,
     gitsync::{self, Fail, FailKind, Job, Op, SyncInfo},
     ui::{Canvas, Rect},
+    ui_toast::ToastKind,
 };
 use std::{
     collections::HashSet,
@@ -36,22 +37,6 @@ pub fn poll_every() -> Duration {
             .map_or(POLL_EVERY, Duration::from_millis)
     })
 }
-/// How long a toast stays (failures stay longer: they need reading).
-pub const TOAST_OK: Duration = Duration::from_secs(4);
-pub const TOAST_ERR: Duration = Duration::from_secs(8);
-
-pub struct Toast {
-    pub text: String,
-    pub ok: bool,
-    pub since: Instant,
-}
-
-impl Toast {
-    pub fn life(&self) -> Duration {
-        if self.ok { TOAST_OK } else { TOAST_ERR }
-    }
-}
-
 pub struct GitBg {
     /// A command whose panel was closed while it ran.
     pub detached: Option<Job>,
@@ -63,7 +48,6 @@ pub struct GitBg {
     /// The window has the keyboard focus (no polling in the background).
     pub focused: bool,
     pending: Option<Receiver<(PathBuf, SyncInfo)>>,
-    pub toast: Option<Toast>,
     /// Refreshes started so far (tests, diagnostics).
     pub polls: usize,
     /// The project is a linked git worktree of this main worktree (see `worktree::linked_main`);
@@ -164,7 +148,6 @@ impl Default for GitBg {
             next_poll: Instant::now(),
             focused: true,
             pending: None,
-            toast: None,
             polls: 0,
             worktree_main: None,
             bg: Vec::new(),
@@ -201,10 +184,11 @@ pub fn report_text(op: &Op, res: &Result<String, Fail>) -> (String, bool) {
 }
 
 impl App {
-    /// A toast under the status bar (and nothing else: callers also `say` when they want it kept).
+    /// A result toast (one toast system: this goes through `notify`). Callers also `say` when
+    /// they want the text kept in the status bar.
     pub fn toast(&mut self, text: impl Into<String>, ok: bool) {
-        self.gitbg.toast = Some(Toast { text: text.into(), ok, since: Instant::now() });
-        self.request_redraw();
+        let kind = if ok { ToastKind::Success } else { ToastKind::Error };
+        self.notify(kind, text.into(), None);
     }
 
     /// The panel is going away: a running command keeps going and is reported later.
@@ -268,17 +252,7 @@ impl App {
         if self.gitbg.focused && self.gitbg.pending.is_none() && !busy {
             want(self.gitbg.next_poll);
         }
-        // 4. Toast lifetime.
-        if let Some(t) = &self.gitbg.toast {
-            let end = t.since + t.life();
-            if end <= now {
-                self.gitbg.toast = None;
-                self.request_redraw();
-            } else {
-                want(end);
-            }
-        }
-        // 5. Blame cards, rebase plans, pull request.
+        // 4. Blame cards, rebase plans, pull request.
         self.git_ext_tick(now, want);
     }
 
@@ -364,27 +338,6 @@ impl App {
             false,
         );
         w
-    }
-
-    /// The toast, bottom right, just above the status bar.
-    pub fn draw_toast(&mut self, cv: &mut Canvas) {
-        let Some(t) = &self.gitbg.toast else { return };
-        let (text, ok, age) = (t.text.clone(), t.ok, t.since.elapsed());
-        let c = self.theme.chrome;
-        let max_w = (self.size.0 as i32 - 32).clamp(160, 440);
-        let line = crate::app_gitpanel::fit(&mut self.tx, &text, max_w - 36, false);
-        let w = (self.tx.ui_width(&line, false) + 36).min(max_w);
-        let h = 34;
-        let r = Rect::new(self.size.0 as i32 - w - 16, self.layout.status.y - h - 12, w, h);
-        let a = crate::app_tooltip::fade_alpha(age).max(0.0);
-        let faded = |col: crate::theme::Rgba| crate::theme::Rgba(col.0, col.1, col.2, (col.3 as f32 * a) as u8);
-        if a > 0.6 {
-            cv.shadow(r, 10);
-        }
-        cv.card(r, 10, faded(c.widget_bg), faded(c.border));
-        let bar = if ok { c.git_added } else { c.error };
-        cv.fill_round(Rect::new(r.x + 10, r.y + 9, 3, h - 18), 1, faded(bar));
-        self.tx.draw_ui(cv, r.x + 22, r.y + (h - 18) / 2, &line, faded(c.tab_active_fg), r, false);
     }
 }
 
@@ -479,11 +432,5 @@ mod tests {
             &Err(Fail { kind: FailKind::Conflict, text: "Conflitos".into() }),
         );
         assert!(t.starts_with("Pull: "), "{t}");
-    }
-
-    #[test]
-    fn toasts_expire_and_errors_last_longer() {
-        let t = |ok| Toast { text: "x".into(), ok, since: Instant::now() };
-        assert!(t(true).life() < t(false).life());
     }
 }

@@ -3,8 +3,9 @@
 //! few pure helpers for the content (matched-character runs, word wrapping, kind icons).
 //!
 //! The canvas has no group opacity, so the fade is done on the pixels: the popup area is saved
-//! before the popup is drawn ([`Canvas::grab`]) and, once it is drawn, blended back toward the
-//! saved pixels ([`Canvas::fade_toward`]). The caret line never moves: nothing is laid out again.
+//! before the popup is drawn (`Canvas::snap_region`) and, once it is drawn, blended back toward
+//! the saved pixels (`Canvas::blend_over_snap`, shared with the modal entrance). The caret line
+//! never moves: nothing is laid out again.
 
 use crate::anim::{Tween, dur};
 use crate::ds;
@@ -36,50 +37,10 @@ impl PopupFade {
     }
 }
 
-/// The pixels under a popup, saved so the popup can be blended in.
-pub struct Backdrop {
-    r: Rect,
-    px: Vec<u32>,
-}
-
-/// `a` toward `b` by `k / 256` (`k` in 0..=256), per channel of a `0x00RRGGBB` pixel.
-fn mix_px(a: u32, b: u32, k: u32) -> u32 {
-    let ch = |s: u32| (((a >> s) & 0xff) * (256 - k) + ((b >> s) & 0xff) * k) >> 8;
-    (ch(16) << 16) | (ch(8) << 8) | ch(0)
-}
-
 impl Canvas<'_> {
-    /// Save the pixels of logical rect `r` (clipped to the canvas).
-    pub fn grab(&self, r: Rect) -> Backdrop {
-        let d = self.to_dev(r).intersect(&Rect::new(0, 0, self.w, self.h));
-        let mut px = Vec::with_capacity((d.w * d.h).max(0) as usize);
-        for y in d.y..d.bottom() {
-            let at = (y * self.w + d.x) as usize;
-            px.extend_from_slice(&self.px[at..at + d.w as usize]);
-        }
-        Backdrop { r: d, px }
-    }
-
-    /// Blend what is on screen over `b`'s area with opacity `k` (0 shows only the saved pixels).
-    pub fn fade_toward(&mut self, b: &Backdrop, k: f32) {
-        let kk = (k.clamp(0.0, 1.0) * 256.0) as u32;
-        if kk >= 256 || b.r.w <= 0 {
-            return;
-        }
-        let w = b.r.w as usize;
-        for (row, y) in (b.r.y..b.r.bottom()).enumerate() {
-            let at = (y * self.w + b.r.x) as usize;
-            for (p, s) in self.px[at..at + w].iter_mut().zip(&b.px[row * w..row * w + w]) {
-                *p = mix_px(*s, *p, kk);
-            }
-        }
-    }
-
-    /// A floating editor popup: soft shadow, `R_CARD` card, and a faint accent ring (the glow).
+    /// A floating editor popup: the shared floating card at popover elevation.
     pub fn pop_card(&mut self, r: Rect, c: &Chrome) {
-        self.shadow(r, ds::R_CARD);
-        self.card(r, ds::R_CARD, c.widget_bg, c.border);
-        self.ring(r, ds::R_CARD, c.accent.with_alpha(0x1c));
+        self.float_card(r, ds::R_CARD, c, ds::Elev::Pop);
     }
 }
 
@@ -165,29 +126,6 @@ pub fn kind_icon(kind: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mix_endpoints_and_middle() {
-        assert_eq!(mix_px(0x102030, 0xf0e0d0, 0), 0x102030);
-        assert_eq!(mix_px(0x102030, 0xf0e0d0, 256), 0xf0e0d0);
-        assert_eq!(mix_px(0x000000, 0xfefefe, 128), 0x7f7f7f);
-    }
-
-    #[test]
-    fn fade_blends_only_the_grabbed_area() {
-        let mut buf = vec![0x000000u32; 16];
-        let mut cv = Canvas { px: &mut buf, w: 4, h: 4 };
-        let saved = cv.grab(Rect::new(1, 1, 2, 2));
-        for p in cv.px.iter_mut() {
-            *p = 0xff0000;
-        }
-        cv.fade_toward(&saved, 0.0);
-        assert_eq!(cv.px[0], 0xff0000, "outside the area is untouched");
-        assert_eq!(cv.px[5], 0, "inside shows the saved pixels");
-        cv.px[5] = 0xff0000;
-        cv.fade_toward(&saved, 1.0);
-        assert_eq!(cv.px[5], 0xff0000, "fully faded in is a no-op");
-    }
 
     #[test]
     fn fade_runs_from_zero_to_one() {

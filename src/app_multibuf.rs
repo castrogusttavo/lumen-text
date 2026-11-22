@@ -321,12 +321,20 @@ impl App {
         for (y, g) in headers {
             let grp = &mb.groups[g];
             let n = grp.match_count();
-            let right = crate::ui_vwr::plural(n, "result", "results");
+            let right = crate::ui_viewer::plural(n, "result", "results");
             // Sticky-looking pill behind the file name, the count as an accent chip on the right.
             let band = Rect::new(area.x, y, area.w, lh);
-            let cw = crate::ui_vwr::chip_w(tx, &right);
-            let chip_y = y + (lh - crate::ui_vwr::CHIP_H) / 2;
-            crate::ui_vwr::chip_right(cv, tx, (area.right() - 12, chip_y), &right, c.accent, c.sidebar_bg, band);
+            let cw = crate::ui_kit::chip::chip_w(tx, &right);
+            let chip_y = y + (lh - crate::ui_kit::chip::CHIP_H) / 2;
+            crate::ui_kit::chip::chip_on_right(
+                cv,
+                tx,
+                (area.right() - 12, chip_y),
+                &right,
+                c.accent,
+                c.sidebar_bg,
+                band,
+            );
             let label = fit(tx, &grp.label, (area.w - 48 - cw).max(40), true);
             let ty = y + (lh - 18) / 2;
             let lw = tx.ui_width(&label, true);

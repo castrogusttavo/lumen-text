@@ -227,10 +227,6 @@ impl App {
         if self.upd.card_rect.h > 0 {
             bottom = bottom.min(self.upd.card_rect.y - ds::S2);
         }
-        if self.gitbg.toast.is_some() {
-            // The git toast owns the lowest slot (34 px + 12 px above the window edge).
-            bottom = bottom.min(sh - 46 - ds::S2);
-        }
         let right = sw - ds::S4;
         let mut list = std::mem::take(&mut self.toasts.list);
         for t in list.iter_mut() {
@@ -255,7 +251,7 @@ impl App {
             if a > 0.6 {
                 cv.shadow(r, ds::R_CARD);
             }
-            cv.card(r, ds::R_CARD, f(c.widget_bg), f(c.border));
+            cv.card(r, ds::R_CARD, f(c.raised), f(c.border_glow));
             cv.fill_round(Rect::new(r.x + 1, r.y + ds::S3, 3, H - 2 * ds::S3), 1, f(tint));
             self.tx.icon(cv, t.kind.icon(), r.x + ds::S3, r.y + (H - ds::ICON_M) / 2, ds::ICON_M, f(tint), r);
             let tx0 = r.x + ds::S3 + ds::ICON_M + ds::S2;
@@ -264,7 +260,7 @@ impl App {
             t.close = Rect::new(edge, r.y + (H - CLOSE) / 2, CLOSE, CLOSE);
             let hc = t.hot_close.v();
             if hc > 0.0 {
-                cv.fill_round(t.close, ds::R_CTRL, f(anim::fade(c.list_hover_bg, hc)));
+                cv.fill_round(t.close, ds::R_CTRL, f(anim::fade(c.hover_overlay, hc)));
             }
             let ic = anim::lerp_rgba(c.tab_inactive_fg, c.tab_active_fg, hc);
             self.tx.icon(cv, "ui/close", t.close.x + 4, t.close.y + 4, ds::ICON_S - 2, f(ic), t.close);

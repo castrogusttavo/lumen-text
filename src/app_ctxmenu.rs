@@ -1220,10 +1220,13 @@ impl App {
             let no_r = Rect::new(yes_r.x - 8 - bw, by, bw, bh);
             for (rect, label, is_yes) in [(no_r, "No", false), (yes_r, "Yes", true)] {
                 let focused = cf.yes == is_yes;
-                let style =
-                    if is_yes { crate::ui_modal::BtnStyle::Danger } else { crate::ui_modal::BtnStyle::Secondary };
+                let style = if is_yes {
+                    crate::ui_kit::button::BtnStyle::Danger
+                } else {
+                    crate::ui_kit::button::BtnStyle::Secondary
+                };
                 let hot = rect.contains(self.mouse.0, self.mouse.1);
-                crate::ui_modal::draw_button(cv, &mut self.tx, &c, rect, label, style, focused, hot);
+                crate::ui_kit::button::draw_button(cv, &mut self.tx, &c, rect, label, style, focused, hot);
                 self.layout.overlay_rows.push((rect, is_yes as usize));
             }
             cf.rects = [no_r, yes_r];
@@ -1240,7 +1243,7 @@ impl App {
                 let kw = if key.is_empty() {
                     0
                 } else {
-                    crate::ui_modal::keycaps_width(&mut self.tx, &crate::ui_modal::keycaps(key)) + 28
+                    crate::ui_kit::keycap::keys_width(&mut self.tx, &crate::ui_kit::keycap::keycaps(key)) + 28
                 };
                 content_w = content_w.max(lw + kw);
             }
@@ -1285,10 +1288,19 @@ impl App {
                     );
                     self.tx.draw_ui(cv, rr.x + 36, cy + (ITEM_H - 18) / 2, label, col, rr, false);
                     if !key.is_empty() {
-                        let keys = crate::ui_modal::keycaps(key);
-                        let kw = crate::ui_modal::keycaps_width(&mut self.tx, &keys);
-                        let ky = cy + (ITEM_H - crate::ui_modal::KEY_H) / 2;
-                        crate::ui_modal::draw_keycaps(cv, &mut self.tx, &c, rr.right() - 8 - kw, ky, &keys, 1.0, rr);
+                        let keys = crate::ui_kit::keycap::keycaps(key);
+                        let kw = crate::ui_kit::keycap::keys_width(&mut self.tx, &keys);
+                        let ky = cy + (ITEM_H - crate::ui_kit::keycap::KEY_H) / 2;
+                        crate::ui_kit::keycap::draw_keys_in(
+                            cv,
+                            &mut self.tx,
+                            &c,
+                            rr.right() - 8 - kw,
+                            ky,
+                            &keys,
+                            1.0,
+                            rr,
+                        );
                     }
                     rects.push((rr, i));
                     self.layout.overlay_rows.push((rr, i));

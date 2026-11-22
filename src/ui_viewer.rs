@@ -1,5 +1,6 @@
-//! Shared chrome of the viewers (image, diff, merge, coverage...): a segmented control, small
-//! chips, a friendly empty state and the marching dashed outline of a drop target. Geometry
+//! Shared chrome of the viewers (image, diff, merge, coverage...): a segmented control, the
+//! marching dashed outline of a drop target and coverage levels (chips and empty states live in
+//! `ui_kit`). Geometry
 //! comes from `ds`, colors from the theme chrome, so every viewer wears the same clothes.
 
 use crate::{
@@ -69,9 +70,9 @@ impl Canvas<'_> {
         for (i, (label, w)) in labels.iter().zip(widths).enumerate() {
             let r = Rect::new(x, y, w, h);
             if i == active {
-                self.fill_round(r, ds::R_CTRL, c.accent.with_alpha(0x40));
+                self.fill_round(r, ds::R_CTRL, c.selection_accent);
             } else if hover == Some(i) {
-                self.fill_round(r, ds::R_CTRL, c.list_hover_bg);
+                self.fill_round(r, ds::R_CTRL, c.hover_overlay);
             }
             let fg = if i == active { c.accent_text } else { c.tab_inactive_fg };
             tx.draw_ui(self, x + ds::S3, y + (h - 18) / 2, label, fg, r, i == active);
@@ -80,41 +81,31 @@ impl Canvas<'_> {
         }
         out
     }
+}
 
-    /// Small pill with `text` at (x, y); returns its width. For counters like `+12` / `-3`.
-    pub fn chip(&mut self, tx: &mut TextCtx, (x, y): (i32, i32), text: &str, fg: Rgba, bg: Rgba) -> i32 {
-        const SIZE: f32 = 11.0;
-        let (w, h) = (tx.ui_width_sized(text, true, SIZE) + 2 * ds::S2, 18);
-        let r = Rect::new(x, y, w, h);
-        self.fill_round(r, ds::R_CTRL, bg);
-        tx.draw_ui_sized(self, x + ds::S2, y + (h - 14) / 2, text, fg, r, true, SIZE);
-        w
-    }
+/// How well covered a file is: green from 80 %, yellow from 50 %, red below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Good,
+    Fair,
+    Poor,
+}
 
-    /// Centered empty state of a viewer: icon in a soft disc, one-line title, one-line hint.
-    pub fn empty_state(&mut self, tx: &mut TextCtx, c: &Chrome, area: Rect, icon: &str, title: &str, hint: &str) {
-        let disc = 2 * ds::ICON_L + ds::S2;
-        let total = disc + ds::S3 + 20 + if hint.is_empty() { 0 } else { 20 };
-        let top = area.y + (area.h - total).max(0) / 2;
-        let d = Rect::new(area.x + (area.w - disc) / 2, top, disc, disc);
-        self.fill_round(d, disc / 2, c.accent.with_alpha(0x1c));
-        tx.icon(
-            self,
-            icon,
-            d.x + (disc - ds::ICON_L) / 2,
-            d.y + (disc - ds::ICON_L) / 2,
-            ds::ICON_L,
-            c.accent_text,
-            area,
-        );
-        let ty = d.bottom() + ds::S3;
-        let w = tx.ui_width(title, true);
-        tx.draw_ui(self, area.x + (area.w - w) / 2, ty, title, c.tab_active_fg, area, true);
-        if !hint.is_empty() {
-            let w = tx.ui_width(hint, false);
-            tx.draw_ui(self, area.x + (area.w - w) / 2, ty + 20, hint, c.tab_inactive_fg, area, false);
+impl Level {
+    pub fn of(pct: f32) -> Level {
+        if pct >= 80.0 {
+            Level::Good
+        } else if pct >= 50.0 {
+            Level::Fair
+        } else {
+            Level::Poor
         }
     }
+}
+
+/// "3 results" / "1 result".
+pub fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 #[cfg(test)]
@@ -129,5 +120,22 @@ mod tests {
         // The phase wraps around the period.
         assert_eq!(dash_spans(20, 6, 4, 13), dash_spans(20, 6, 4, 3));
         assert!(dash_spans(0, 6, 4, 0).is_empty());
+    }
+
+    #[test]
+    fn coverage_levels_follow_the_thresholds() {
+        assert_eq!(Level::of(100.0), Level::Good);
+        assert_eq!(Level::of(80.0), Level::Good);
+        assert_eq!(Level::of(79.9), Level::Fair);
+        assert_eq!(Level::of(50.0), Level::Fair);
+        assert_eq!(Level::of(49.9), Level::Poor);
+        assert_eq!(Level::of(0.0), Level::Poor);
+    }
+
+    #[test]
+    fn plurals() {
+        assert_eq!(plural(1, "result", "results"), "1 result");
+        assert_eq!(plural(0, "result", "results"), "0 results");
+        assert_eq!(plural(12, "conflict", "conflicts"), "12 conflicts");
     }
 }

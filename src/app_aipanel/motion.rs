@@ -61,7 +61,7 @@ impl Motion {
         self.ind_w.step(dt);
         self.skeleton.step(dt);
         self.focus.step(dt);
-        self.live = pulse;
+        self.live = pulse && !crate::motion::reduced();
         self.empty_t = if empty { self.empty_t + dt as f32 } else { 0.0 };
     }
 
@@ -131,11 +131,18 @@ impl Motion {
 
     /// Phase 0..1 of the status pulse.
     pub fn pulse(&self) -> f32 {
+        // Reduce motion: the ring rests half way instead of breathing.
+        if crate::motion::reduced() {
+            return 0.5;
+        }
         (self.clock % PULSE_PERIOD) / PULSE_PERIOD
     }
 
     /// Brightness 0..1 of skeleton bar `i`: a wave running down the bars.
     pub fn wave(&self, i: usize) -> f32 {
+        if crate::motion::reduced() {
+            return 0.5;
+        }
         0.5 + 0.5 * (self.clock * WAVE_SPEED - i as f32 * 0.8).sin()
     }
 

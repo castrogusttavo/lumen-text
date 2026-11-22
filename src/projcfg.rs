@@ -30,6 +30,7 @@ pub const LOCAL_FILE: &str = "config.local.json";
 pub const GLOBAL_ONLY: &[&str] = &[
     "ui_scale",
     "scroll_speed",
+    "reduce_motion",
     "updates",
     "accessibility",
     "sidebar_width",

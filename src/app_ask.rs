@@ -307,12 +307,12 @@ impl App {
             let rect = Rect::new(x, by, *bw, bh);
             let focused = a.yes == *is_yes;
             let style = match (is_yes, a.danger) {
-                (true, true) => crate::ui_modal::BtnStyle::Danger,
-                (true, false) => crate::ui_modal::BtnStyle::Primary,
-                _ => crate::ui_modal::BtnStyle::Secondary,
+                (true, true) => crate::ui_kit::button::BtnStyle::Danger,
+                (true, false) => crate::ui_kit::button::BtnStyle::Primary,
+                _ => crate::ui_kit::button::BtnStyle::Secondary,
             };
             let hot = rect.contains(self.mouse.0, self.mouse.1);
-            crate::ui_modal::draw_button(cv, &mut self.tx, &c, rect, label, style, focused, hot);
+            crate::ui_kit::button::draw_button(cv, &mut self.tx, &c, rect, label, style, focused, hot);
             a.rects[i] = rect;
             self.layout.overlay_rows.push((rect, i));
             x += bw + 8;

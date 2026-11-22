@@ -2429,7 +2429,7 @@ impl App {
         let fade_k = c.fade.k();
         let backdrop = (fade_k < 1.0).then(|| {
             let wide = Rect::new(r.x - COMP_DOC_W - 12, r.y, w + 2 * (COMP_DOC_W + 12), r.h);
-            cv.grab(crate::ui_popup::shadow_area(wide))
+            cv.snap_region(crate::ui_popup::shadow_area(wide))
         });
         cv.pop_card(r, &chrome);
         let fg = self.theme.foreground;
@@ -2492,7 +2492,7 @@ impl App {
             );
         }
         if let Some(b) = backdrop {
-            cv.fade_toward(&b, fade_k);
+            cv.blend_over_snap(&b, fade_k, 0);
         }
         busy
     }
