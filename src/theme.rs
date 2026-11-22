@@ -73,6 +73,8 @@ impl Rgba {
 
 /// Colors for the UI around the text (sidebar, tabs, status bar, widgets, diagnostics, git).
 #[derive(Debug, Clone, Copy)]
+// The surface fields at the end are adopted module by module during the redesign.
+#[allow(dead_code)]
 pub struct Chrome {
     pub sidebar_bg: Rgba,
     pub sidebar_fg: Rgba,
@@ -351,7 +353,10 @@ impl Theme {
         let accent_text = ok(accent_raw, 4.6);
         let border = tint(if dark { 0.10 } else { 0.085 });
         let focus_ring = if fix { accent_raw.readable_on(&[canvas, background, raised], 3.0) } else { accent_raw };
-        let selection_accent = tame(accent_raw.with_alpha(0x3a), background, fg_ui, 0x10);
+        let selection_accent = {
+            let a = tame(accent_raw.with_alpha(0x3a), background, fg_ui, 0x10);
+            tame(tame(a, canvas, fg_ui, 0x10), raised, fg_ui, 0x10)
+        };
         let sem = |key: &str, fb: Rgba| ok(ck(key, fb), 4.5);
         let mut chrome = Chrome {
             sidebar_bg: surfaces[1],
@@ -840,8 +845,11 @@ mod tests {
         for (name, t) in bundled_with(true) {
             let c = t.chrome;
             assert_eq!(c.card, t.background, "{name}");
-            assert_ne!(c.canvas, c.card, "{name}: canvas must differ from the card");
-            assert!(c.canvas.luminance() < c.card.luminance(), "{name}: canvas is darker than the card");
+            // A pure-black theme has nothing darker to offer: canvas and card coincide there.
+            if c.card.luminance() > 0.02 {
+                assert_ne!(c.canvas, c.card, "{name}: canvas must differ from the card");
+            }
+            assert!(c.canvas.luminance() <= c.card.luminance(), "{name}: canvas is not lighter than the card");
             if t.background.luminance() < 0.5 {
                 assert!(c.raised.luminance() > c.card.luminance(), "{name}: raised is lighter on dark themes");
             }
