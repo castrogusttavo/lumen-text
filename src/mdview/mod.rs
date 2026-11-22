@@ -825,7 +825,11 @@ impl MdView {
                     Op::Code { r, lang, lines, lh, top: ctop, key, math, err } => {
                         let sr = tr(*r);
                         let fill = if *math { pal.math_block() } else { pal.code };
-                        round_clip(cv, sr, CODE_RAD, fill, clip);
+                        if *math {
+                            round_clip(cv, sr, CODE_RAD, fill, clip);
+                        } else {
+                            card_clip(cv, sr, CODE_RAD, fill, pal.border, clip);
+                        }
                         if *math {
                             round_clip(cv, Rect::new(sr.x, sr.y + 6, 3, sr.h - 12), 1, pal.accent, clip);
                         }
@@ -838,14 +842,18 @@ impl MdView {
                             let first_w = lines
                                 .first()
                                 .map_or(0.0, |l| code_w(tx, &l.chars().take(max_chars).collect::<String>()));
-                            if CODE_PAD_X as f32 + first_w + 16.0 + (lw + 10) as f32 <= sr.w as f32 {
+                            if CODE_PAD_X as f32 + first_w + 24.0 + (lw + 14) as f32 <= sr.w as f32 {
+                                // A small chip, like the language tag of a code card.
+                                let lh = (SIZES[TINY] * 1.4).round() as i32;
+                                let chip = Rect::new(sr.right() - lw - 16, sr.y + 4, lw + 12, lh + 2);
+                                round_clip(cv, chip, 6, pal.bg.mix(pal.fg, 0.06), clip);
                                 tx.draw_ui_sized(
                                     cv,
-                                    sr.right() - lw - 10,
-                                    sr.y + 4,
+                                    chip.x + 6,
+                                    chip.y + 1,
                                     lang,
-                                    pal.faint,
-                                    clip.intersect(&sr),
+                                    pal.dim,
+                                    clip.intersect(&chip),
                                     false,
                                     SIZES[TINY],
                                 );

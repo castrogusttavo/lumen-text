@@ -8,7 +8,7 @@ use crate::{
     app::App,
     coverage::{self, Report},
     theme::Rgba,
-    ui::{Canvas, Rect},
+    ui::Canvas,
 };
 use std::{
     path::{Path, PathBuf},
@@ -158,12 +158,10 @@ impl App {
     /// Green from 80 %, yellow from 50 %, red below.
     pub fn coverage_color(&self, pct: f32) -> Rgba {
         let c = self.theme.chrome;
-        if pct >= 80.0 {
-            c.git_added
-        } else if pct >= 50.0 {
-            c.warning
-        } else {
-            c.error
+        match crate::ui_vwr::Level::of(pct) {
+            crate::ui_vwr::Level::Good => c.git_added,
+            crate::ui_vwr::Level::Fair => c.warning,
+            crate::ui_vwr::Level::Poor => c.error,
         }
     }
 
@@ -174,12 +172,11 @@ impl App {
         };
         let r = self.layout.status;
         let label = format!("Coverage {pct:.0}%");
-        let lw = self.tx.ui_width(&label, false);
         let col = self.coverage_color(pct);
-        cv.fill_round(Rect::new(x + 8, r.y + r.h / 2 - 3, 6, 6), 3, col);
-        let dim = self.theme.chrome.tab_inactive_fg;
-        self.tx.draw_ui(cv, x + 20, r.y + (r.h - 18) / 2, &label, dim, Rect::new(x, r.y, lw + 28, r.h), false);
-        x + 20 + lw + 12
+        let page = self.theme.chrome.status_bg;
+        let y = r.y + (r.h - crate::ui_vwr::CHIP_H) / 2;
+        let w = crate::ui_vwr::chip(cv, &mut self.tx, (x + 8, y), &label, col, page, r);
+        x + 8 + w + 8
     }
 }
 
