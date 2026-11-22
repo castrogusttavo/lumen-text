@@ -56,12 +56,19 @@ impl App {
         let w = content_w + 2 * PAD_X;
         let rows = footer_rows(&widths, gap, content_w);
         let foot_h = if acts.is_empty() { 0 } else { rows.len() as i32 * FOOT_ROW + 7 };
-        let want_h = laid.h + 2 * PAD_Y + foot_h;
+        let chip = crate::ui_chip::kind_chip(h.kind).filter(|_| !h.name.is_empty());
+        let head_h = if chip.is_some() { crate::ui_chip::CHIP_H + crate::ds::S1 } else { 0 };
+        let want_h = laid.h + 2 * PAD_Y + foot_h + head_h;
         let anchor = self.docs.get(self.active).and_then(|d| d.screen_pos(h.anchor.0)).unwrap_or(h.at);
         let (rect, below) = place(anchor, line_h() as i32, ed, w, want_h, h.side_below);
         h.side_below = Some(below);
         h.rect = rect;
-        let view = Rect::new(rect.x + PAD_X, rect.y + PAD_Y, rect.w - 2 * PAD_X, (rect.h - 2 * PAD_Y - foot_h).max(20));
+        let view = Rect::new(
+            rect.x + PAD_X,
+            rect.y + PAD_Y + head_h,
+            rect.w - 2 * PAD_X,
+            (rect.h - 2 * PAD_Y - foot_h - head_h).max(20),
+        );
         h.view = view;
         clamp_scroll(h);
 
@@ -72,6 +79,10 @@ impl App {
         let clip = Rect::new(rect.x + 1, view.y, rect.w - 2, view.h);
         let (vt, vb) = (h.scroll.round() as i32, h.scroll.round() as i32 + view.h);
 
+        if let Some((word, tone)) = chip {
+            let at = (rect.x + PAD_X, rect.y + PAD_Y);
+            crate::ui_chip::draw_chip(cv, &mut self.tx, &chrome, at, word, tone, rect);
+        }
         // selection (per character)
         for r in sel_rects(h, &mut self.tx) {
             cv.fill_clip(Rect::new(view.x + r.x, oy + r.y, r.w, r.h), chrome.accent.with_alpha(0x40), clip);

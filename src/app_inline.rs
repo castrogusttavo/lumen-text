@@ -499,6 +499,40 @@ impl App {
         rect.right() + 2
     }
 
+    /// The "Tab" keycap after the suggestion's ghost text: says what accepts it. Only where it
+    /// covers no code (nothing after the caret, or below the last ghost row) and fits the editor.
+    pub fn draw_inline_hint(&mut self, cv: &mut Canvas) {
+        if !self.inline_visible() {
+            return;
+        }
+        let Some(d) = self.docs.get(self.active) else { return };
+        let Some(g) = d.ghost.as_ref() else { return };
+        let head = d.ed.head();
+        let Some(caret) = d.screen_pos(head) else { return };
+        let (line, col) = d.buf.line_col(head);
+        let line_x0 = d.screen_pos(d.buf.line_start(line)).map_or(caret.0, |p| p.0);
+        let first_w = self.tx.cells(g.first.chars().count());
+        let rest_w = g.rest.last().map(|l| self.tx.cells(l.chars().count()));
+        let tail_empty = col >= d.buf.line_len(line);
+        let (body, rest_rows) = (d.rect, g.rest.len());
+        let key_w = crate::ui_chip::chip_w(&mut self.tx, "Tab");
+        let pos = crate::ui_chip::ghost_keycap_pos(
+            caret,
+            line_x0,
+            first_w,
+            rest_w,
+            crate::ui::line_h() as i32,
+            rest_rows,
+            key_w,
+            tail_empty,
+            body,
+        );
+        if let Some(pos) = pos {
+            let c = self.theme.chrome;
+            crate::ui_chip::draw_keycap(cv, &mut self.tx, &c, pos, "Tab", body);
+        }
+    }
+
     /// Click: sign in when Copilot is signed out, otherwise pause / resume.
     pub fn inline_status_click(&mut self) {
         if self.inline_badge() == Badge::SignedOut && !matches!(self.inline.copilot.auth, Auth::Waiting { .. }) {
