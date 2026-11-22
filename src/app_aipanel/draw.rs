@@ -58,10 +58,9 @@ impl App {
             None => self.ai.cur().map(|_| self.ai_status_look().1),
         }
         .filter(|_| !self.ai.open);
-        for (hit, icon, label, active) in [
-            (AiHit::TabGit, "ui/git_graph", "Git", !self.ai.open),
-            (AiHit::TabAi, "ui/sparkle", "AI", self.ai.open),
-        ] {
+        for (hit, icon, label, active) in
+            [(AiHit::TabGit, "ui/git_graph", "Git", !self.ai.open), (AiHit::TabAi, "ui/sparkle", "AI", self.ai.open)]
+        {
             let lw = self.tx.ui_width(label, active);
             let dot = hit == AiHit::TabAi && ai_dot.is_some();
             let w = 10 + 16 + 7 + lw + 12 + if dot { 12 } else { 0 };
