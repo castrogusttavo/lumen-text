@@ -157,7 +157,7 @@ impl App {
 
     /// Mouse press on the switch, the panel's edge, its buttons or the agent's terminal.
     pub fn aipanel_mouse(&mut self, x: f64, y: f64, button: u8) -> bool {
-        if self.gitpanel.is_none() && !self.ai.open && !self.gh_open() {
+        if self.gitpanel.is_none() && !self.ai.open {
             return false;
         }
         if button == 0 && self.ai_on_edge(x, y) {
@@ -169,12 +169,9 @@ impl App {
         let hit = self.ai.hit_at(x, y).map(|(_, h)| h);
         let in_strip = Rect::new(slot.x, slot.y, slot.w, SLOT_H).contains(x, y);
         if !self.ai.open {
-            // The Git or GitHub page is shown: only its switch is ours.
-            match hit {
-                Some(AiHit::TabAi) => self.ai_show(),
-                Some(AiHit::TabGh) => self.gh_show(),
-                Some(AiHit::TabGit) if self.gh_open() => self.open_git_panel(),
-                _ => {}
+            // The Git panel is shown: only its switch is ours.
+            if hit == Some(AiHit::TabAi) {
+                self.ai_show();
             }
             return in_strip;
         }
@@ -188,10 +185,6 @@ impl App {
             Some(AiHit::TabGit) => {
                 self.ai_hide();
                 self.open_git_panel();
-            }
-            Some(AiHit::TabGh) => {
-                self.ai_hide();
-                self.gh_show();
             }
             Some(AiHit::TabAi) | Some(AiHit::Status) => {}
             Some(AiHit::Close) => self.ai_hide(),
@@ -300,7 +293,7 @@ impl App {
         if self.ai.resizing || self.ai_on_edge(x, y) {
             return Some(CursorIcon::ColResize);
         }
-        if self.gitpanel.is_none() && !self.ai.open && !self.gh_open() {
+        if self.gitpanel.is_none() && !self.ai.open {
             return None;
         }
         if self.ai.hit_at(x, y).is_some() {
@@ -318,8 +311,7 @@ impl App {
         let (x, y) = self.mouse;
         let (r, h) = self.ai.hit_at(x, y)?;
         let active_tab = (h == AiHit::TabAi && self.ai.open)
-            || (h == AiHit::TabGit && !self.ai.open && !self.gh_open())
-            || (h == AiHit::TabGh && self.gh_open())
+            || (h == AiHit::TabGit && !self.ai.open)
             || h == AiHit::Session(self.ai.active);
         let radius = match h {
             AiHit::CloseSession(_) => 4,
@@ -340,7 +332,6 @@ impl App {
         let status = self.ai.cur().map_or(Status::Starting, Session::status);
         let (title, keys, detail): (String, Option<String>, Option<String>) = match h {
             AiHit::TabGit => ("Git".into(), keys("GitPanel"), Some("Changes and history".into())),
-            AiHit::TabGh => ("GitHub".into(), keys("GithubPanel"), Some("Pull requests, issues, Actions".into())),
             AiHit::TabAi => (
                 "AI".into(),
                 keys("AiPanel"),

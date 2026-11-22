@@ -1115,7 +1115,7 @@ fn the_slot_docks_on_the_right_and_its_left_edge_resizes_it() {
     assert_eq!(slot.right(), app.size.0 as i32, "flush with the window's right edge");
     assert_eq!(slot.w, app.gitpanel_w());
     assert_eq!(app.layout.editor.right(), closed_right - slot.w, "the editor gives up that width");
-    assert_eq!(app.gitpanel_rect().y, slot.y + crate::app_aipanel::SLOT_H, "under the Git | GitHub | AI switch");
+    assert_eq!(app.gitpanel_rect().y, slot.y + crate::app_aipanel::SLOT_H, "under the Git | AI switch");
     // Left edge: col-resize; inside: not; a press starts the drag, moves resize.
     let (ex, ey) = (slot.x as f64, (slot.y + 200) as f64);
     assert!(app.panel_on_edge(ex, ey) && !app.panel_on_edge((slot.x + 30) as f64, ey));
@@ -1127,13 +1127,8 @@ fn the_slot_docks_on_the_right_and_its_left_edge_resizes_it() {
     app.aipanel_release();
     assert!(!app.ai.resizing);
     assert_eq!(app.slot_rect().w, 520);
-    // GitHub is the third tab of the same slot: same edge, but never narrower than its minimum.
-    app.config.git_panel_width = 300;
-    app.gh_show();
-    assert_eq!(app.gitpanel_w(), GH_MIN_W);
-    assert_eq!(app.slot_rect().right(), app.size.0 as i32);
-    assert!(app.panel_on_edge(app.slot_rect().x as f64, ey));
+    // Automatic again: 30% of the window, 340..440 px.
     app.config.git_panel_width = 0;
-    assert!(app.gitpanel_w() > GH_MIN_W, "half the window when automatic");
+    assert_eq!(app.gitpanel_w(), auto_panel_width(app.size.0 as i32));
     std::fs::remove_dir_all(&dir).ok();
 }

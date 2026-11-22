@@ -701,7 +701,6 @@ impl App {
     pub fn mouse_up(&mut self) {
         self.hover_mouse_up();
         self.gitpanel_release();
-        self.ghpanel_release();
         self.aipanel_release();
         self.term_release();
         self.sidebar_edge_release();

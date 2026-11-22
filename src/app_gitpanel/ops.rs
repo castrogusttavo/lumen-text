@@ -13,17 +13,13 @@ impl App {
     }
 
     /// Width the panel takes when open (also valid while the panel state is taken out of `self`):
-    /// the stored width (dragged by the left edge), or 30% of the window, 340..440 px. The GitHub
-    /// tab needs room for its list and detail, so it is never narrower than `GH_MIN_W`, and its
-    /// automatic width is half the window.
+    /// the stored width (dragged by the left edge), or 30% of the window, 340..440 px.
     pub(super) fn gp_width(&self) -> i32 {
         let w = self.size.0 as i32;
-        let base = match self.config.git_panel_width {
-            0 if self.gh_open() => (w / 2).clamp(GH_MIN_W, GH_AUTO_MAX_W),
+        match self.config.git_panel_width {
             0 => auto_panel_width(w),
             n => clamp_panel_width(n, w),
-        };
-        if self.gh_open() { base.max(GH_MIN_W).min((w * 6 / 10).max(GP_MIN_W)) } else { base }
+        }
     }
 
     /// Is (x, y) on the draggable left edge of the shown panel (the switch above it included)?
@@ -35,9 +31,9 @@ impl App {
         Rect::new(s.x - GP_GRAB, s.y, 2 * GP_GRAB, s.h).contains(x, y)
     }
 
-    /// One of the Git, GitHub or AI tabs is shown in the right-hand slot.
+    /// One of the Git or AI tabs is shown in the right-hand slot.
     pub fn slot_shown(&self) -> bool {
-        self.gitpanel.is_some() || self.ai.open || self.gh_open()
+        self.gitpanel.is_some() || self.ai.open
     }
 
     /// Width taken from the editor area by the right-hand slot: 0 when closed.
@@ -45,7 +41,7 @@ impl App {
         if self.slot_shown() { self.gp_width() } else { 0 }
     }
 
-    /// The whole right-hand slot, as if open: the "Git | GitHub | AI" switch on top, then the panel.
+    /// The whole right-hand slot, as if open: the "Git | AI" switch on top, then the panel.
     pub fn slot_rect(&self) -> Rect {
         let w = self.gp_width();
         let (ww, hh) = (self.size.0 as i32, self.size.1 as i32);
@@ -80,9 +76,8 @@ impl App {
     }
 
     pub fn open_git_panel(&mut self) {
-        // The Git, GitHub and AI pages share the right-hand slot (the agent keeps running).
+        // The Git and AI panels share the right-hand slot (the agent keeps running).
         self.ai_hide();
-        self.gh_hide();
         self.refresh_git_status();
         let mut gp = Box::new(GitPanel::new(&self.git_root()));
         gp.wake = Some(self.wake());

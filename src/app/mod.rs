@@ -249,9 +249,6 @@ pub struct App {
     pub merge: Option<Box<crate::app_merge::MergeView>>,
     /// Git panel docked on the right (Changes / History).
     pub gitpanel: Option<Box<crate::app_gitpanel::GitPanel>>,
-    /// GitHub page (pull requests, issues, Actions, notifications through `gh`); kept after it is
-    /// hidden so its lists come back from the cache.
-    pub gh: Option<Box<crate::app_ghpanel::GhPanel>>,
     pub split: Option<Box<crate::app_split::Split>>,
     pub breakpoints: std::collections::BTreeMap<PathBuf, Vec<usize>>,
     pub dbg_last_stop: Option<(String, usize)>,
@@ -433,7 +430,6 @@ impl App {
             hist_root: if cfg!(test) { None } else { crate::localhist::default_root() },
             merge: None,
             gitpanel: None,
-            gh: None,
             split: None,
             breakpoints: Default::default(),
             dbg_last_stop: None,

@@ -64,10 +64,6 @@
   "id": "GitPanel"
  },
  {
-  "combo": "ctrl+alt+g",
-  "id": "GithubPanel"
- },
- {
   "combo": "ctrl+shift+a",
   "id": "AiPanel"
  },

@@ -91,7 +91,6 @@ pub fn status(s: &Signals) -> Status {
 pub enum AiHit {
     TabGit,
     TabAi,
-    TabGh,
     Agent,
     Status,
     /// `+` of the session tabs: start another session (choose the agent).

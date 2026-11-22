@@ -57,10 +57,6 @@ impl App {
             self.request_redraw();
             return false;
         }
-        if self.ghpanel_key(ev) {
-            self.request_redraw();
-            return false;
-        }
         if self.tests_key(ev) {
             self.request_redraw();
             return false;

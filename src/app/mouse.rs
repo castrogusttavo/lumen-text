@@ -48,9 +48,6 @@ impl App {
         if self.gitpanel_mouse(x, y) {
             return self.request_redraw();
         }
-        if self.ghpanel_mouse(x, y, if button == MouseButton::Middle { 1 } else { 0 }) {
-            return self.request_redraw();
-        }
         // The sidebar's right edge (resize) comes before its scrollbar, whose track overlaps it.
         if button == MouseButton::Left && self.sidebar_edge_press(x, y) {
             return self.request_redraw();
@@ -342,9 +339,6 @@ impl App {
         if let Some(c) = self.gitpanel_cursor(x, y) {
             return c;
         }
-        if let Some(c) = self.ghpanel_cursor(x, y) {
-            return c;
-        }
         if self.drop_dragging() {
             return CursorIcon::Grabbing;
         }
@@ -632,7 +626,7 @@ impl App {
             }
             return;
         }
-        if self.gitpanel_move() | self.ghpanel_move() {
+        if self.gitpanel_move() {
             self.request_redraw();
         }
         if self.split_drag(x, y) {
