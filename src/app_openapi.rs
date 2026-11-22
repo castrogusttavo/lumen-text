@@ -89,6 +89,8 @@ pub enum Hit {
     /// Jump to a line of the source.
     Source(usize),
     ShowSource,
+    /// Empty result list: wipe the search box.
+    ClearSearch,
     Divider,
     /// Narrow layout: `false` = reference, `true` = Try it.
     Pane(bool),
@@ -733,6 +735,10 @@ impl ApiView {
             }
             Hit::Source(line) => self.jump = Some(line),
             Hit::ShowSource => self.want_source = true,
+            Hit::ClearSearch => {
+                self.query = TextField::default();
+                self.rebuild_nav();
+            }
             Hit::Divider => self.drag = true,
             Hit::Pane(t) => self.try_pane = t,
             Hit::Media(i) => {
@@ -1279,6 +1285,19 @@ mod tests {
         v.rebuild_nav();
         assert_eq!(items(&v), 1);
         assert!(v.nav.windows(2).all(|w| w[1].y == w[0].y + w[0].h), "rows are stacked");
+    }
+
+    #[test]
+    fn clear_search_brings_the_list_back() {
+        let mut v = loaded(crate::openapi::spec::PETSTORE);
+        v.query = TextField::with("zzz-no-such-endpoint");
+        v.rebuild_nav();
+        assert!(v.nav.is_empty(), "nothing matches: the empty state shows");
+        v.rect = Rect::new(0, 0, 400, 300);
+        v.hits = vec![(Rect::new(10, 10, 50, 20), Hit::ClearSearch)];
+        assert_eq!(Hit::ClearSearch.cursor(), Cur::Pointer);
+        assert!(v.mouse_down(12.0, 12.0));
+        assert!(v.query.text.is_empty() && !v.nav.is_empty());
     }
 
     #[test]

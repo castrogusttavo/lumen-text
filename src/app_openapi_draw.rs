@@ -6,6 +6,7 @@
 
 use crate::{
     app_openapi::{ApiView, BODY_ROWS, Hit, NARROW, NavKind, Sel, flash_key, line_col},
+    ds,
     openapi::{
         copy::{self, Flash},
         example,
@@ -17,6 +18,7 @@ use crate::{
     },
     tasks::Segs,
     theme::{Chrome, Rgba, Theme},
+    tool_ui,
     ui::{Canvas, Rect, TextCtx, VBar, line_h, ui_size},
 };
 use std::sync::Arc;
@@ -224,12 +226,27 @@ impl<'a, 'b> P<'a, 'b> {
         self.text(x + 8, y + 2, label, fg, true, size);
         w
     }
+    /// Status chip: a colored dot, then `label`, in a pill tinted with the status class color.
+    fn status_chip(&mut self, x: i32, y: i32, label: &str, col: Rgba, size: f32) -> i32 {
+        let fg = col.readable_on(&[self.th.background], 4.5);
+        let h = lh(size) + 4;
+        let w = self.tw(label, true, size) + 16 + 12;
+        self.round(Rect::new(x, y, w, h), h / 2, col.with_alpha(0x2c));
+        self.round(Rect::new(x + 9, y + h / 2 - 3, 6, 6), 3, col);
+        self.text(x + 20, y + 2, label, fg, true, size);
+        w
+    }
+    /// A HugeIcons glyph in `col`, clipped to the column.
+    fn icon(&mut self, name: &str, x: i32, y: i32, size: i32, col: Rgba) {
+        let clip = self.clip;
+        self.tx.icon(self.cv, name, x, y, size, col, clip);
+    }
     /// Method badge of fixed width.
     fn badge(&mut self, x: i32, y: i32, method: &str, w: i32, size: f32) {
         let col = method_color(&self.c(), method);
         let label = method.to_uppercase();
         let h = lh(size) + 6;
-        self.round(Rect::new(x, y, w, h), 5, col.with_alpha(0x2c));
+        self.round(Rect::new(x, y, w, h), h / 2, col.with_alpha(0x2c));
         let fg = col.readable_on(&[self.th.background], 4.5);
         let tw = self.tw(&label, true, size);
         self.text(x + (w - tw) / 2, y + 3, &label, fg, true, size);
@@ -242,7 +259,7 @@ impl<'a, 'b> P<'a, 'b> {
         } else {
             (if hov { c.list_hover_bg } else { c.widget_bg }, c.tab_active_fg)
         };
-        self.round(r, 6, bg);
+        self.round(r, ds::R_CTRL, bg);
         let size = sz(0.95);
         let w = self.tw(label, true, size);
         self.text(r.x + (r.w - w) / 2, r.y + (r.h - lh(size)) / 2, label, fg, true, size);
@@ -308,12 +325,25 @@ impl<'a, 'b> P<'a, 'b> {
         } else {
             c.widget_bg.with_alpha(0xD0)
         };
-        self.round(r, 5, bg);
+        self.round(r, ds::R_CTRL, bg);
         let size = sz(0.78);
         let label = if on { "Copied" } else { "Copy" };
         let fg = if on { c.git_added.readable_on(&[self.th.background], 4.5) } else { c.tab_active_fg };
         let w = self.tw(label, true, size);
-        self.text(r.x + (r.w - w) / 2, r.y + (r.h - lh(size)) / 2, label, fg, true, size);
+        let icon = if on { "ui/check" } else { "ui/copy" };
+        let isz = ds::ICON_S - 2;
+        let iy = r.y + (r.h - isz) / 2;
+        let need = isz + ds::S1 + w;
+        if need + ds::S2 <= r.w {
+            let x0 = r.x + (r.w - need) / 2;
+            self.icon(icon, x0, iy, isz, fg);
+            self.text(x0 + isz + ds::S1, r.y + (r.h - lh(size)) / 2, label, fg, true, size);
+        } else if on {
+            // Too narrow for the word: the check mark alone says it.
+            self.icon(icon, r.x + (r.w - isz) / 2, iy, isz, fg);
+        } else {
+            self.text(r.x + (r.w - w) / 2, r.y + (r.h - lh(size)) / 2, label, fg, true, size);
+        }
         self.hit(r, hit);
     }
 
@@ -330,7 +360,8 @@ impl<'a, 'b> P<'a, 'b> {
         let size = sz(0.82);
         let on = self.flash.is_some_and(|f| f.on(flash_key(&hit)));
         let shown = if on { "Copied" } else { label };
-        let w = self.tw(label, true, size).max(self.tw("Copied", true, size)) + 18;
+        let isz = ds::ICON_S - 2;
+        let w = self.tw(label, true, size).max(self.tw("Copied", true, size)) + 18 + isz + ds::S1;
         let r = Rect::new(x, y, w, lh(size) + 8);
         let bg = if on {
             c.git_added.with_alpha(0x38)
@@ -339,10 +370,12 @@ impl<'a, 'b> P<'a, 'b> {
         } else {
             c.widget_bg.with_alpha(0xB0)
         };
-        self.round(r, 6, bg);
+        self.round(r, ds::R_CTRL, bg);
         let fg = if on { c.git_added.readable_on(&[self.th.background], 4.5) } else { c.tab_active_fg };
         let tw = self.tw(shown, true, size);
-        self.text(r.x + (w - tw) / 2, r.y + 4, shown, fg, true, size);
+        let x0 = r.x + (w - (isz + ds::S1 + tw)) / 2;
+        self.icon(if on { "ui/check" } else { "ui/copy" }, x0, r.y + (r.h - isz) / 2, isz, fg);
+        self.text(x0 + isz + ds::S1, r.y + 4, shown, fg, true, size);
         self.hit(r, hit);
         w + 6
     }
@@ -503,6 +536,13 @@ impl ApiView {
             let tw = p.tw(&title, true, sz(1.3));
             let col = p.c().tab_active_fg;
             let y = rect.y + (rect.h / 3).max(40);
+            let (icon, icol) =
+                if self.load_err.is_some() { ("ui/warning", th.chrome.warning) } else { ("ui/code", p.dim()) };
+            p.icon(icon, rect.x + (rect.w - ds::ICON_L) / 2, y - ds::ICON_L - ds::S3, ds::ICON_L, icol);
+            if self.load_err.is_none() {
+                let sk = Rect::new(rect.x + (rect.w - 260) / 2, y + 44, 260, 0);
+                p.cv.skeleton_lines(th, sk, 3, rect, tool_ui::clock());
+            }
             p.text(rect.x + (rect.w - tw) / 2, y, &title, col, true, sz(1.3));
             let w = (rect.w - 80).clamp(100, 600);
             let dim = p.dim();
@@ -569,6 +609,13 @@ impl ApiView {
         let scroll = self.nav_scroll as i32;
         let first = self.nav.partition_point(|row| row.y + row.h <= scroll);
         let Some(spec) = self.spec.as_ref() else { return };
+        if self.nav.is_empty() {
+            let q = self.query.text.trim().to_string();
+            let hint = p.fit(&format!("Nothing matches \"{q}\""), list.w - 2 * ds::S4, false, sz(0.9));
+            let area = Rect::new(list.x, list.y, list.w, list.h.min(260));
+            let y = tool_ui::empty_head(p.cv, p.tx, th, area, list, "ui/magnifying_glass", "No endpoints", &hint);
+            p.button(Rect::new(list.x + (list.w - 120) / 2, y, 120, 30), "Clear search", Hit::ClearSearch, true);
+        }
         for row in self.nav.iter().skip(first) {
             let y = list.y + row.y - scroll;
             if y >= list.bottom() {
@@ -579,10 +626,10 @@ impl ApiView {
             match &row.kind {
                 NavKind::Head { key, label, count, open } => {
                     if hov {
-                        p.fill(rr, c.list_hover_bg.with_alpha(0x70));
+                        p.round(rr.inset(ds::S1), ds::R_CTRL, c.list_hover_bg.with_alpha(0x70));
                     }
-                    let sign = if *open { "−" } else { "+" };
-                    p.text(rr.x + 16, y + 10, sign, c.tab_inactive_fg, true, sz(0.9));
+                    let chev = if *open { "ui/chevron_down" } else { "ui/chevron_right" };
+                    p.icon(chev, rr.x + 14, y + (rr.h - ds::ICON_S + 2) / 2, ds::ICON_S - 2, c.tab_inactive_fg);
                     let l = p.fit(label, rr.w - 90, true, sz(0.85));
                     p.text(rr.x + 34, y + 10, &l, c.tab_active_fg, true, sz(0.85));
                     let n = count.to_string();
@@ -592,11 +639,12 @@ impl ApiView {
                 }
                 NavKind::Item { label, sel } => {
                     let on = self.sel == *sel;
+                    let pill = Rect::new(rr.x + ds::S1, rr.y + 1, rr.w - 2 * ds::S1 - 8, rr.h - 2);
                     if on {
-                        p.fill(rr, c.list_active_bg);
-                        p.fill(Rect::new(rr.x, y + 4, 3, rr.h - 8), c.accent);
+                        p.round(pill, ds::R_CTRL, c.list_active_bg);
+                        p.round(Rect::new(pill.x, pill.y + 6, 3, pill.h - 12), 1, c.accent);
                     } else if hov {
-                        p.fill(rr, c.list_hover_bg);
+                        p.round(pill, ds::R_CTRL, c.list_hover_bg);
                     }
                     let fg = if on { c.tab_active_fg } else { c.sidebar_fg };
                     match sel {
@@ -1169,7 +1217,18 @@ impl ApiView {
         y += p.para(x, y, w, "Try it", c.tab_active_fg, true, sz(1.35)) + 6;
         let (Some(spec), Some(op)) = (self.spec.as_ref(), self.op()) else {
             let hint = "Pick an endpoint on the left to send a real request: server, parameters, auth and body, with the answer checked against the spec.";
-            return y + p.para(x, y, w, hint, c.tab_inactive_fg, false, sz(0.95));
+            let area = Rect::new(r.x, y + ds::S4, r.w, 140);
+            let below = tool_ui::empty_head(
+                p.cv,
+                p.tx,
+                p.th,
+                area,
+                p.clip,
+                "ui/send",
+                "Nothing to send yet",
+                "Choose an endpoint",
+            );
+            return below + p.para(x, below, w, hint, c.tab_inactive_fg, false, sz(0.9));
         };
         p.badge(x, y, &op.method, 56, sz(0.8));
         let pt = p.fit(&op.path, w - 70, true, sz(0.95));
@@ -1280,7 +1339,7 @@ impl ApiView {
         let named: Vec<_> =
             op.params.iter().filter(|q| matches!(q.loc.as_str(), "path" | "query" | "header" | "cookie")).collect();
         if !named.is_empty() {
-            p.pill(x + w - 82, y - 4, "Copy all", Hit::CopyParams);
+            p.pill(x + w - 98, y - 4, "Copy all", Hit::CopyParams);
             y += label(p, x, y, "Parameters");
             for q in named {
                 let nw = p.text(x, y, &q.name, c.tab_active_fg, true, sz(0.92));
@@ -1364,8 +1423,13 @@ impl ApiView {
         }
         y += 56;
 
-        // Response.
-        if let Some(l) = self.last.as_ref().filter(|l| l.op == self.sel_op()) {
+        // Response: a shimmering placeholder while the request is on its way.
+        if self.inflight.as_ref().is_some_and(|f| f.op == self.sel_op()) {
+            y += label(p, x, y, "Response");
+            let sk = Rect::new(x, y, w, 0);
+            let clip = p.clip;
+            y += p.cv.skeleton_lines(p.th, sk, 4, clip, tool_ui::clock()) + 12;
+        } else if let Some(l) = self.last.as_ref().filter(|l| l.op == self.sel_op()) {
             y = self.response_card(p, l, x, w, y);
         }
 
@@ -1407,7 +1471,7 @@ impl ApiView {
         ];
         let size = sz(0.82);
         for (name, hit) in quick {
-            let pw = p.tw(name, true, size).max(p.tw("Copied", true, size)) + 24;
+            let pw = p.tw(name, true, size).max(p.tw("Copied", true, size)) + 24 + ds::ICON_S + ds::S1;
             if cx + pw > x + w && cx > x {
                 cx = x;
                 y += lh(size) + 8 + 6;
@@ -1451,7 +1515,7 @@ impl ApiView {
         let col = status_color(&c, r.status);
         let status = format!("{} {}", r.status, r.reason);
         let mut cx = x;
-        cx += p.chip(cx, y, status.trim(), col.readable_on(&[p.th.background], 4.5), col.with_alpha(0x2c), sz(0.9)) + 8;
+        cx += p.status_chip(cx, y, status.trim(), col, sz(0.9)) + 8;
         let meta = format!("{} ms · {}", r.ms, crate::httpfile::human_size(r.body.len()));
         cx += p.text(cx, y + 3, &meta, c.tab_inactive_fg, false, sz(0.85)) + 10;
         match &l.verdict {
@@ -1481,8 +1545,8 @@ impl ApiView {
         }
         y += 34;
         if !l.req.url.is_empty() {
-            p.pill(x + w - 82, y - 6, "Copy all", Hit::CopyResp);
-            let line = p.fit(&format!("{} {}", l.req.method, l.req.url), w - 90, false, sz(0.8));
+            p.pill(x + w - 98, y - 6, "Copy all", Hit::CopyResp);
+            let line = p.fit(&format!("{} {}", l.req.method, l.req.url), w - 106, false, sz(0.8));
             p.text(x, y - 4, &line, c.tab_inactive_fg, false, sz(0.8));
             y += lh(sz(0.8));
         }
