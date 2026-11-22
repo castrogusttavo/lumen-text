@@ -328,7 +328,7 @@ impl App {
         if let Some(hand) = self.onboarding_cursor_hand() {
             return if hand { (C::Pointer, "cascade:onboarding-ctl") } else { (C::Default, "cascade:onboarding") };
         }
-        if self.upd.card.is_some() && self.upd.card_rect.contains(x, y) {
+        if self.overlay.is_none() && self.upd.card.is_some() && self.upd.card_rect.contains(x, y) {
             return if self.upd.rects.iter().any(|(r, _)| r.contains(x, y)) {
                 (C::Pointer, "cascade:update-btn")
             } else {

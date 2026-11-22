@@ -16,6 +16,8 @@ mod app_ctxmenu;
 mod app_cursor;
 #[cfg(test)]
 mod app_cursor_tests;
+#[cfg(test)]
+mod app_cursor_tests_overlays;
 mod app_debug;
 mod app_display;
 mod app_docker;

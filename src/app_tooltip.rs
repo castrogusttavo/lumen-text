@@ -829,9 +829,9 @@ impl App {
         };
         let r = Rect::new(x, y, w, h);
         if alpha > 0.6 {
-            cv.shadow(r, 8);
+            cv.shadow(r, crate::ds::R_ROW);
         }
-        cv.card(r, 8, faded(c.widget_bg, alpha), faded(c.border, alpha));
+        cv.card(r, crate::ds::R_ROW, faded(c.raised, alpha), faded(c.border_glow, alpha));
         for (i, l) in title.iter().enumerate() {
             self.tx.draw_ui(cv, r.x + PAD_X, r.y + PAD_Y + i as i32 * LINE, l, faded(c.tab_active_fg, alpha), r, false);
         }
