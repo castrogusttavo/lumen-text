@@ -2,6 +2,7 @@
 //! the branch row with the fetch / pull / push buttons, the commit composer, and the dropdowns they open.
 
 use super::*;
+use crate::ds;
 
 impl App {
     /// The Changes / History tabs on the left, refresh / actions / close on the right.
@@ -17,35 +18,50 @@ impl App {
             right -= 30;
         }
 
-        // Both sections are tabs of their own: Changes (with the count) and History.
-        let mut x = p.x + 6;
+        // Segmented pill: Changes (with the count) and History share one track; the active tab's
+        // pill glides between them. Every tab has the width of its bold label, so nothing shifts.
+        let n = gp.changes.len();
+        let pad = 3;
+        let mut items: Vec<(Tab, &str, Rect, String)> = Vec::new();
+        let mut x = p.x + 8 + pad;
         for (tab, label) in [(Tab::Changes, "Changes"), (Tab::History, "History")] {
-            let n = gp.changes.len();
             let badge = if tab == Tab::Changes && n > 0 { n.to_string() } else { String::new() };
-            let active = gp.tab == tab;
-            let lw = self.tx.ui_width(label, active);
+            let lw = self.tx.ui_width(label, true);
             let bw = if badge.is_empty() { 0 } else { (self.tx.ui_width(&badge, true) + 12).max(20) + 6 };
             let w = 10 + lw + bw + 10;
-            if x + w > right {
+            if x + w + pad > right - 4 {
                 break;
             }
-            let r = Rect::new(x, y, w, 28);
-            if active {
-                cv.fill_round(r, 8, strong.with_alpha(0x1e));
-            } else if self.hv(r) {
-                cv.fill_round(r, 8, strong.with_alpha(0x12));
+            items.push((tab, label, Rect::new(x, y + pad, w, 28 - 2 * pad), badge));
+            x += w + 2;
+        }
+        let Some(last) = items.last().map(|i| i.2) else { return };
+        let track = Rect::new(p.x + 8, y, last.right() + pad - (p.x + 8), 28);
+        cv.card(track, ds::R_ROW, c.input_bg, c.border.with_alpha(0x70));
+        if let Some(cur) = items.iter().find(|i| i.0 == gp.tab) {
+            gp.mo.place_tab(cur.2.x, cur.2.w);
+        }
+        let pill = Rect::new(gp.mo.tab_x.value.round() as i32, y + pad, gp.mo.tab_w.value.round() as i32, 28 - 2 * pad);
+        cv.fill_round(pill, ds::R_ROW - 2, c.widget_bg);
+        cv.ring(pill, ds::R_ROW - 2, strong.with_alpha(0x26));
+        for (tab, label, r, badge) in items {
+            let active = gp.tab == tab;
+            let hot = self.hv(r);
+            if !active && hot {
+                cv.fill_round(r, ds::R_ROW - 2, strong.with_alpha(0x12));
             }
-            let col = if active || self.hv(r) { strong } else { dim };
-            self.tx.draw_ui(cv, r.x + 10, r.y + 5, label, col, r, active);
+            let col = if active || hot { strong } else { dim };
+            let lw = self.tx.ui_width(label, true);
+            self.tx.draw_ui(cv, r.x + 10, r.y + 2, label, col, r, active);
             if !badge.is_empty() {
-                let pill = Rect::new(r.x + 10 + lw + 6, r.y + 6, bw - 6, 16);
-                cv.fill_round(pill, 8, if active { c.accent } else { strong.with_alpha(0x22) });
+                let bw = (self.tx.ui_width(&badge, true) + 12).max(20);
+                let b = Rect::new(r.x + 10 + lw + 6, r.y + 3, bw, 16);
+                cv.fill_round(b, 8, if active { c.accent } else { strong.with_alpha(0x22) });
                 let tw = self.tx.ui_width(&badge, true);
                 let tc = if active { c.on_accent } else { dim };
-                self.tx.draw_ui_sized(cv, pill.x + (pill.w - tw) / 2, pill.y + 1, &badge, tc, pill, true, 12.0);
+                self.tx.draw_ui_sized(cv, b.x + (b.w - tw) / 2, b.y + 1, &badge, tc, b, true, 12.0);
             }
             gp.hits.push((r, Hit::Tab(tab)));
-            x += w + 2;
         }
     }
 
@@ -79,9 +95,21 @@ impl App {
             let cw = if cnt.is_empty() { 0 } else { self.tx.ui_width(&cnt, true) + 3 };
             let w = 8 + 14 + cw + 6;
             let r = Rect::new(right - w, y, w, 28);
-            let col = if enabled { tone } else { dim.with_alpha(0x70) };
+            let col = if busy && hit == Hit::Fetch {
+                // A running command: the fetch icon breathes.
+                let t = gp.job.as_ref().map_or(0.0, |j| j.started.elapsed().as_secs_f32());
+                c.accent_text.with_alpha((255.0 * super::motion::pulse(t)) as u8)
+            } else if enabled {
+                tone
+            } else {
+                dim.with_alpha(0x70)
+            };
+            if enabled && n > 0 {
+                // Something to send / receive: the button carries its tone.
+                cv.fill_round(r, ds::R_CTRL + 2, tone.with_alpha(0x1a));
+            }
             if enabled && self.hv(r) {
-                cv.fill_round(r, 8, strong.with_alpha(0x1c));
+                cv.fill_round(r, ds::R_CTRL + 2, strong.with_alpha(0x1c));
             }
             self.tx.icon(cv, icon, r.x + 8, y + 7, 14, col, r);
             if !cnt.is_empty() {
@@ -108,9 +136,8 @@ impl App {
         let branch = fit(&mut self.tx, &branch, inner - used_repo, true);
         let tw = used_repo + self.tx.ui_width(&branch, true);
         let chip = Rect::new(p.x + 8, y, (8 + 14 + 6 + tw + 6 + 14 + 4).min(max_w), 28);
-        if self.hv(chip) {
-            cv.fill_round(chip, 8, strong.with_alpha(0x14));
-        }
+        let edge = if self.hv(chip) { strong.with_alpha(0x40) } else { c.border.with_alpha(0x80) };
+        cv.card(chip, ds::R_CTRL + 2, c.input_bg, edge);
         self.tx.icon(cv, "ui/git_branch", chip.x + 8, y + 7, 14, dim, chip);
         let tx0 = chip.x + 8 + 14 + 6;
         if show_repo {
@@ -129,12 +156,13 @@ impl App {
         let msg_h = gp.msg_h();
         let bx = Rect::new(area.x + COMPOSER_MARGIN, area.y + 6, area.w - 2 * COMPOSER_MARGIN, msg_h + COMPOSER_ROW_H);
         cv.fill_round(bx, 10, c.input_bg);
-        if gp.msg_focus {
-            cv.ring(bx, 10, c.accent.with_alpha(0xa0));
-        } else if self.hv(bx) {
-            cv.ring(bx, 10, strong.with_alpha(0x30));
-        } else {
-            cv.ring(bx, 10, c.border.with_alpha(0xa0));
+        // Focus ring: eases from the border to the accent and gains a soft glow.
+        gp.mo.msg_ring.set(gp.msg_focus && gp.focused);
+        let f = gp.mo.msg_ring.v();
+        let idle = if self.hv(bx) { strong.with_alpha(0x30) } else { c.border.with_alpha(0xa0) };
+        cv.ring(bx, 10, crate::anim::lerp_rgba(idle, c.accent.with_alpha(0xd0), f));
+        if f > 0.01 {
+            cv.ring(bx.inset(-2), 12, crate::anim::fade(c.accent, 0.3 * f));
         }
         let b = Rect::new(bx.x, bx.y, bx.w, msg_h);
         gp.msg_box = b;
@@ -171,7 +199,20 @@ impl App {
 
         // Between them: the notice of the last action, otherwise what is in scope.
         let x0 = sp.right() + 8;
-        let room = blk.x - 8 - x0;
+        let mut room = blk.x - 8 - x0;
+        // Subject length guidance: silent until the line gets long, then "N/72" in amber / red.
+        let sl = super::motion::subject_len(gp.msg.text());
+        let tone = match super::motion::subject_tone(sl) {
+            super::motion::SubjectTone::Ok => None,
+            super::motion::SubjectTone::Long => Some(c.warning),
+            super::motion::SubjectTone::Over => Some(c.error),
+        };
+        if let Some(col) = tone {
+            let t = format!("{sl}/{}", super::motion::SUBJECT_HARD);
+            let w = self.tx.ui_width_sized(&t, false, 11.0);
+            self.tx.draw_ui_sized(cv, x0 + room - w, ry + 6, &t, col, bx, false, 11.0);
+            room -= w + 8;
+        }
         if let Some((m, ok, t)) = gp.notice.clone()
             && t.elapsed().as_secs() < 12
         {

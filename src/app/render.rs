@@ -159,7 +159,7 @@ impl App {
         }
         crate::perf::lap!("sidebar");
         self.draw_panel(cv);
-        self.draw_gitpanel(cv);
+        busy |= self.draw_gitpanel(cv, dt);
         self.draw_aipanel(cv);
         if self.sidebar_open {
             self.draw_sidebar_edge(cv);

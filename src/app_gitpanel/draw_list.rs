@@ -1,6 +1,7 @@
 //! The Changes list: collapsible group headers with hover actions, folders, file rows with a status
 //! badge, line counts and hover actions, then the Stashes section (see `stash_ui`).
 
+use super::draw_empty::EmptyBtn;
 use super::*;
 
 impl App {
@@ -29,7 +30,7 @@ impl App {
 
     pub(super) fn gp_draw_changes(&mut self, cv: &mut Canvas, gp: &mut GitPanel, body: Rect) {
         let c = self.theme.chrome;
-        let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
+        let dim = c.tab_inactive_fg;
         let fh = gp.filter_h();
         if fh > 0 {
             self.gp_draw_filter(cv, gp, Rect::new(body.x, body.y, body.w, fh));
@@ -43,16 +44,9 @@ impl App {
             return;
         }
         if rows.is_empty() {
-            let cx = body.x + body.w / 2;
-            let badge = Rect::new(cx - 22, body.y + 36, 44, 44);
-            cv.fill_round(badge, 22, c.git_added.with_alpha(0x22));
-            self.tx.icon(cv, "ui/check", badge.x + 10, badge.y + 10, 24, c.git_added, body);
-            let msg = "Working tree clean";
-            let w = self.tx.ui_width(msg, true);
-            self.tx.draw_ui(cv, cx - w / 2, body.y + 92, msg, strong, body, true);
-            let sub = "No changes to commit";
-            let sw = self.tx.ui_width(sub, false);
-            self.tx.draw_ui(cv, cx - sw / 2, body.y + 114, sub, dim, body, false);
+            let btn = [EmptyBtn { label: "View history", hit: Hit::Tab(Tab::History), primary: false }];
+            let copy = ("Nothing to commit", "Working tree clean. Edit a file and it will show up here.");
+            self.gp_empty_state(cv, gp, body, ("ui/check", c.git_added), copy, &btn);
             return;
         }
         let total: i32 = rows.iter().map(|r| GitPanel::row_h(*r)).sum::<i32>() + 16;
@@ -83,7 +77,8 @@ impl App {
         let dim = c.tab_inactive_fg;
         let f = Rect::new(r.x + COMPOSER_MARGIN, r.y + 4, r.w - 2 * COMPOSER_MARGIN, r.h - 8);
         let on = gp.filter_focus && gp.focused;
-        cv.card(f, 7, c.widget_bg, if on { c.accent } else { c.border });
+        gp.mo.filter_ring.set(on);
+        cv.card(f, 7, c.widget_bg, crate::anim::lerp_rgba(c.border, c.accent, gp.mo.filter_ring.v()));
         gp.hits.push((f, Hit::Filter));
         self.tx.icon(cv, "hugeicons/search", f.x + 8, f.y + (f.h - 14) / 2, 14, dim, f);
         let has = !gp.filter.text.is_empty();
