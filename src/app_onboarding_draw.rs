@@ -504,7 +504,7 @@ impl App {
                 strong: false,
             };
             self.ob_choice(cv, &l, r, &ch);
-            reg(st, &l, r, Hit::Keymap(*id));
+            reg(st, &l, r, Hit::Keymap(id));
         }
     }
 
