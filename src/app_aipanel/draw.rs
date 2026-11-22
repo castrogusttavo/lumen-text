@@ -66,7 +66,7 @@ impl App {
             let w = 10 + 16 + 7 + lw + 12 + if dot { 12 } else { 0 };
             let r = Rect::new(x, strip.y + 6, w, 28);
             if active {
-                cv.fill_round(r, 8, strong.with_alpha(0x1e));
+                self.dock_pill(cv, strip, r);
             }
             let col = if active { strong } else { dim };
             self.tx.icon(cv, icon, r.x + 10, r.y + 6, 16, col, r);

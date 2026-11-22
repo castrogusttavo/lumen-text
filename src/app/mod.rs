@@ -44,7 +44,8 @@ pub const SIDEBAR_W: i32 = 256;
 pub const TAB_NAME_MAX: i32 = 200;
 pub const ROW_H: i32 = 28;
 pub const BREAD_H: i32 = 26;
-pub const CARD_M: i32 = 0; // flat layout: no gap around the editor
+/// Gap between the floating cards and around them (zen mode removes it).
+pub const CARD_M: i32 = crate::ds::GAP;
 #[allow(dead_code)]
 pub const CARD_R: i32 = 0;
 
@@ -106,6 +107,10 @@ pub struct Layout {
     pub other: Rect,
     pub divider: Rect,
     pub card: Rect,
+    /// The whole editor card (tab bar, breadcrumbs, document, bottom panel).
+    pub card_outer: Rect,
+    /// Motion state of the shell chrome (dock and sidebar slide, hover tints).
+    pub shell: crate::app_shell::Shell,
     pub status: Rect,
     pub panel: Rect,
     pub bread: Rect,

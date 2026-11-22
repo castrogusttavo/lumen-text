@@ -10,6 +10,8 @@
 use crate::{
     app::{App, KeyIn},
     app_overlay::Overlay,
+    app_shell::HotSlot,
+    ds,
     field::TextField,
     fuzzy::fuzzy,
     git,
@@ -340,8 +342,8 @@ impl App {
     pub fn draw_topbar(&mut self, cv: &mut Canvas) {
         let c = self.theme.chrome;
         let bar = self.layout.topbar;
-        cv.fill(bar, c.sidebar_bg);
-        cv.fill(Rect::new(bar.x, bar.bottom() - 1, bar.w, 1), c.border);
+        // The title bar sits on the canvas: no fill of its own, no rule under it.
+        cv.fill(bar, crate::app_shell::canvas_color(&self.theme));
         self.layout.top_btns.clear();
         let open = if let Overlay::TopMenu(m) = &self.overlay { Some(m.kind) } else { None };
         let mut x = bar.x + 10;
@@ -351,32 +353,31 @@ impl App {
         let name = project_name(&self.root);
         let nw = self.tx.ui_width(&name, true);
         let w = 12 + 16 + 8 + nw + 8 + 12 + 10;
-        let r = Rect::new(x, bar.y + 4, w, bar.h - 9);
-        if matches!(open, Some(MenuKind::Project | MenuKind::Browse)) {
-            cv.fill_round(r, 6, c.list_active_bg);
-        }
-        self.tx.icon(cv, "ui/folder", r.x + 10, iy, 16, c.tab_inactive_fg, bar);
+        let r = Rect::new(x, bar.y + 5, w, bar.h - 10);
+        let on = matches!(open, Some(MenuKind::Project | MenuKind::Browse));
+        let hot = self.hot_fill(cv, HotSlot::Top(0), r, ds::R_ROW, on, 0.45);
+        let dim = crate::anim::lerp_rgba(c.tab_inactive_fg, c.tab_active_fg, hot);
+        self.tx.icon(cv, "ui/folder", r.x + 10, iy, 16, dim, bar);
         self.tx.draw_ui(cv, r.x + 10 + 16 + 8, ty, &name, c.tab_active_fg, bar, true);
-        self.tx.icon(cv, "ui/chevron_down", r.right() - 22, bar.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, bar);
+        self.tx.icon(cv, "ui/chevron_down", r.right() - 22, bar.y + (bar.h - 12) / 2, 12, dim, bar);
         self.layout.top_btns.push((r, MenuKind::Project));
         x = r.right() + 6;
 
         if let Some(b) = self.branch.clone() {
             let bw = self.tx.ui_width(&b, false);
             let w = 12 + 14 + 8 + bw + 8 + 12 + 10;
-            let r = Rect::new(x, bar.y + 4, w, bar.h - 9);
-            if open == Some(MenuKind::Branch) {
-                cv.fill_round(r, 6, c.list_active_bg);
-            }
+            let r = Rect::new(x, bar.y + 5, w, bar.h - 10);
+            let hot = self.hot_fill(cv, HotSlot::Top(1), r, ds::R_ROW, open == Some(MenuKind::Branch), 0.45);
+            let dim = crate::anim::lerp_rgba(c.tab_inactive_fg, c.tab_active_fg, hot);
             // A linked worktree shows the worktree icon (the tooltip names its main worktree).
             let (icon, icol) = if self.gitbg.worktree_main.is_some() {
                 ("ui/git_worktree", c.accent_text)
             } else {
-                ("ui/git_branch", c.tab_inactive_fg)
+                ("ui/git_branch", dim)
             };
             self.tx.icon(cv, icon, r.x + 10, bar.y + (bar.h - 14) / 2, 14, icol, bar);
-            self.tx.draw_ui(cv, r.x + 10 + 14 + 8, ty, &b, c.tab_inactive_fg, bar, false);
-            self.tx.icon(cv, "ui/chevron_down", r.right() - 22, bar.y + (bar.h - 12) / 2, 12, c.tab_inactive_fg, bar);
+            self.tx.draw_ui(cv, r.x + 10 + 14 + 8, ty, &b, dim, bar, false);
+            self.tx.icon(cv, "ui/chevron_down", r.right() - 22, bar.y + (bar.h - 12) / 2, 12, dim, bar);
             self.layout.top_btns.push((r, MenuKind::Branch));
             x = r.right() + 6;
         }
@@ -964,9 +965,7 @@ impl App {
         let r = self.layout.status;
         let b = Rect::new(x, r.y + 3, 8 + 14 + 8, r.h - 6);
         if active {
-            cv.fill_round(b, 6, c.list_active_bg);
-        } else if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
-            cv.fill_round(b, 6, c.list_hover_bg);
+            cv.fill_round(b, ds::R_CTRL, c.list_active_bg);
         }
         self.tx.icon(cv, icon, b.x + 8, r.y + (r.h - 14) / 2, 14, tint, r);
         self.layout.status_btns.push((b, kind));
@@ -986,6 +985,7 @@ impl App {
             return;
         }
         self.layout.status = r;
+        let first_badge = self.layout.status_btns.len();
         let c = self.theme.chrome;
         let y = r.y + (r.h - 18) / 2;
         let dim = c.tab_inactive_fg;
@@ -1028,7 +1028,17 @@ impl App {
         x = self.draw_cov_status(cv, x);
         x = self.draw_pr_status(cv, x);
         // A badge that runs past the room is clipped away: it must not stay clickable either.
-        self.layout.status_btns.retain(|(b, _)| b.right() <= limit);
+        // (The memory read-out, pushed before the badges, keeps its place.)
+        let mut seen = 0;
+        self.layout.status_btns.retain(|(b, _)| {
+            seen += 1;
+            seen <= first_badge || b.right() <= limit
+        });
+        // The badges painted themselves: their hover is a veil that fades in over them.
+        let badges: Vec<(Rect, StatusBtn)> = self.layout.status_btns.iter().skip(first_badge).copied().collect();
+        for (b, kind) in badges {
+            self.hot_veil(cv, HotSlot::Chip(kind as usize), b, ds::R_CTRL);
+        }
         // A git command left running by a closed panel: spinner first, then the message.
         let x = x + self.draw_git_bg(cv, x, r, limit - 8 - x);
         // Transient message gets whatever room is left, ellipsized.
@@ -1056,10 +1066,9 @@ impl App {
         let short = self.config.ram_display == "short";
         let memtxt = self.memory_text();
         let w = if short { RAM_ICON_W } else { self.tx.ui_width(&memtxt, false) };
-        let b = Rect::new(bar.right() - 10 - w - 16, bar.y + 4, w + 16, bar.h - 9);
-        if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
-            cv.fill_round(b, 6, c.list_hover_bg);
-        }
+        let b = Rect::new(bar.right() - 10 - w - 16, bar.y + 5, w + 16, bar.h - 10);
+        let hot = self.hot_fill(cv, HotSlot::Top(2), b, ds::R_ROW, false, 0.0);
+        let dim = crate::anim::lerp_rgba(dim, c.tab_active_fg, hot);
         let ix = b.x + 8;
         if short {
             self.tx.icon(cv, "hugeicons/cpu", ix, bar.y + (bar.h - 14) / 2, 14, dim, bar);
@@ -1116,10 +1125,9 @@ impl App {
             if b.x < floor {
                 return x;
             }
-            if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
-                cv.fill_round(b, 5, c.list_hover_bg);
-            }
-            self.tx.draw_ui(cv, b.x + 6, y, text, dim, b, false);
+            let hot = self.hot_fill(cv, HotSlot::Chip(*kind as usize), b, ds::R_CTRL, false, 0.0);
+            let col = crate::anim::lerp_rgba(dim, c.tab_active_fg, hot);
+            self.tx.draw_ui(cv, b.x + 6, y, text, col, b, false);
             self.layout.status_btns.push((b, *kind));
             x = b.x - 2;
         }
@@ -1138,12 +1146,11 @@ impl App {
         if b.x < floor {
             return x;
         }
-        if self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1) {
-            cv.fill_round(b, 5, c.list_hover_bg);
-        }
+        let hot = self.hot_fill(cv, HotSlot::Chip(StatusBtn::Problems as usize), b, ds::R_CTRL, false, 0.0);
         let iy = r.y + (r.h - 12) / 2;
         if e == 0 && w == 0 {
-            self.tx.icon(cv, "ui/check", b.x + 6, r.y + (r.h - 14) / 2, 14, dim, r);
+            let ok = crate::anim::lerp_rgba(dim, c.tab_active_fg, hot);
+            self.tx.icon(cv, "ui/check", b.x + 6, r.y + (r.h - 14) / 2, 14, ok, r);
         } else {
             let (ec, wc) = (if e > 0 { c.error } else { dim }, if w > 0 { c.warning } else { dim });
             let mut px = b.x + 6;

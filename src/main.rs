@@ -58,6 +58,7 @@ mod app_remote;
 mod app_reopen;
 mod app_resmon;
 mod app_settings;
+mod app_shell;
 mod app_sidebar;
 mod app_snippets;
 mod app_split;
