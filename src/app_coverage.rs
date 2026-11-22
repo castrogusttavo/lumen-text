@@ -8,7 +8,7 @@ use crate::{
     app::App,
     coverage::{self, Report},
     theme::Rgba,
-    ui::{Canvas, Rect},
+    ui::Canvas,
 };
 use std::{
     path::{Path, PathBuf},
