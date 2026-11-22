@@ -357,6 +357,17 @@ impl App {
         Rect::new((w as i32 - pw) / 2, 70, pw, 0)
     }
 
+    /// Pointer over the text row of a picker or a prompt: the I-beam.
+    pub fn overlay_over_input(&self) -> bool {
+        let r = self.picker_rect();
+        let input = match &self.overlay {
+            Overlay::Picker(p) if p.kind != PickKind::Problems => Rect::new(r.x + 40, r.y, r.w - 40, INPUT_H),
+            Overlay::Prompt(_) => Rect::new(r.x + 12, r.y + 38, r.w - 24, 34),
+            _ => return false,
+        };
+        input.contains(self.mouse.0, self.mouse.1)
+    }
+
     pub fn overlay_mouse(&mut self, x: f64, y: f64) -> bool {
         if self.overlay.is_none() {
             return false;
@@ -394,7 +405,7 @@ impl App {
         if x < r.x as f64
             || x > r.right() as f64
             || y < r.y as f64
-            || y > (r.y + INPUT_H + extra + PICKER_ROWS as i32 * ROW + 12) as f64
+            || y > (r.y + INPUT_H + extra + PICKER_ROWS as i32 * ROW + 12 + crate::ui_modal::FOOT_H) as f64
         {
             self.dismiss_picker();
         }

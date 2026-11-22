@@ -286,7 +286,6 @@ impl App {
         let Some(a) = m.ask.as_mut() else { return };
         let c = self.theme.chrome;
         let (fg, dim) = (self.theme.foreground, c.tab_inactive_fg);
-        let tint = fg.with_alpha(0x1c);
         let sw = self.size.0 as i32;
         let labels = [("Cancel", false), (a.yes_label, true)];
         let widths: Vec<i32> = labels.iter().map(|(l, _)| (self.tx.ui_width(l, false) + 28).max(76)).collect();
@@ -294,8 +293,7 @@ impl App {
         let w = (sw - 40).clamp(300, 480).max(buttons_w + 24).min((sw - 16).max(200));
         let h = 14 + 26 + a.body.len() as i32 * 20 + 14 + 30 + 12;
         let r = Rect::new((sw - w) / 2, 70, w, h);
-        cv.shadow(r, 12);
-        cv.card(r, 12, c.widget_bg, c.border);
+        self.modal_panel(cv, r, crate::ds::Elev::Modal);
         let t = fit(&mut self.tx, &a.title, r.w - 32, true);
         self.tx.draw_ui(cv, r.x + 16, r.y + 14, &t, fg, r, true);
         for (i, line) in a.body.iter().enumerate() {
@@ -308,17 +306,13 @@ impl App {
         for (i, ((label, is_yes), bw)) in labels.iter().zip(&widths).enumerate() {
             let rect = Rect::new(x, by, *bw, bh);
             let focused = a.yes == *is_yes;
-            cv.card(rect, 8, c.widget_bg, c.border);
-            if focused {
-                cv.fill_round(rect.inset(1), 7, tint);
-            }
-            let col = match (is_yes, a.danger) {
-                (true, true) => c.error,
-                (true, false) => c.accent_text,
-                _ => fg,
+            let style = match (is_yes, a.danger) {
+                (true, true) => crate::ui_modal::BtnStyle::Danger,
+                (true, false) => crate::ui_modal::BtnStyle::Primary,
+                _ => crate::ui_modal::BtnStyle::Secondary,
             };
-            let tw = self.tx.ui_width(label, false);
-            self.tx.draw_ui(cv, rect.x + (rect.w - tw) / 2, rect.y + (bh - 18) / 2, label, col, rect, focused);
+            let hot = rect.contains(self.mouse.0, self.mouse.1);
+            crate::ui_modal::draw_button(cv, &mut self.tx, &c, rect, label, style, focused, hot);
             a.rects[i] = rect;
             self.layout.overlay_rows.push((rect, i));
             x += bw + 8;

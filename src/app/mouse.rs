@@ -33,6 +33,9 @@ impl App {
         if self.regions_press(x, y) {
             return self.request_redraw();
         }
+        if self.toast_mouse(x, y) {
+            return self.request_redraw();
+        }
         if self.onboarding_mouse(x, y) {
             return self.request_redraw();
         }
@@ -313,6 +316,9 @@ impl App {
                 CursorIcon::Default
             };
         }
+        if let Some(c) = self.toast_cursor() {
+            return c;
+        }
         if self.over_region_bar(x, y) {
             return CursorIcon::Default;
         }
@@ -326,6 +332,8 @@ impl App {
         if !self.overlay.is_none() {
             return if l.overlay_rows.iter().any(|(r, _)| r.contains(x, y)) {
                 CursorIcon::Pointer
+            } else if self.overlay_over_input() {
+                CursorIcon::Text
             } else {
                 CursorIcon::Default
             };

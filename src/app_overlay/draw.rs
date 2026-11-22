@@ -1,4 +1,26 @@
 use super::*;
+use crate::{
+    ds::{self, Elev},
+    ui_modal::{self, FOOT_H, KEY_H},
+};
+
+/// Hints under every picker.
+const PICK_HINTS: [(&str, &str); 3] = [("↑ ↓", "navigate"), ("Enter", "open"), ("Esc", "close")];
+
+/// What an empty list tells the person: (title, hint).
+fn empty_copy(kind: PickKind, query: &str) -> (&'static str, &'static str) {
+    match kind {
+        PickKind::ProjectSearch if query.is_empty() => {
+            ("Search the project", "Type to search every file. Alt+C case, Alt+W whole word, Alt+R regex")
+        }
+        PickKind::ProjectSearch => ("No results", "Try fewer letters, or loosen case, word and regex"),
+        PickKind::QuickOpen => {
+            ("No results", "Files by name. Start with @ for symbols, # for project symbols, : for a line")
+        }
+        PickKind::Commands => ("No results", "Commands read like “File: Save”. Try the area first, then the action"),
+        _ => ("No results", "Try fewer or different letters"),
+    }
+}
 
 impl App {
     // ───────────── drawing ─────────────
@@ -92,6 +114,8 @@ impl App {
         let dim = c.tab_inactive_fg;
         let base = self.picker_rect();
         self.regions.modal_from = self.regions.list.len();
+        self.draw_backdrop(cv);
+        let reveal = self.reveal_begin(cv);
         // (list area, total rows, scroll row) of the picker: its scrollbar is added after the borrow ends.
         let mut picker_bar: Option<(Rect, f64, f64)> = None;
         // Problems panel: the scope switch ("Open files" | "Whole project") in the input row.
@@ -106,12 +130,11 @@ impl App {
             Overlay::Ctx(_) => self.draw_ctxmenu(cv),
             Overlay::Font(_) => self.draw_fontpicker(cv),
             Overlay::Prompt(p) => {
-                let r = Rect::new(base.x, base.y, base.w, 86);
-                cv.shadow(r, 12);
-                cv.card(r, 12, c.widget_bg, c.border);
-                self.tx.draw_ui(cv, r.x + 16, r.y + 12, &p.title, dim, r, false);
+                let r = Rect::new(base.x, base.y, base.w, 86 + FOOT_H);
+                self.modal_panel(cv, r, Elev::Modal);
+                self.tx.draw_ui(cv, r.x + 16, r.y + 12, &p.title, c.tab_active_fg, r, true);
                 let input = Rect::new(r.x + 12, r.y + 38, r.w - 24, 34);
-                cv.card(input, 8, c.input_bg, c.accent);
+                cv.card(input, ds::R_ROW, c.input_bg, c.accent);
                 // New file / folder: the folder or the typed name's type icon, text shifted right of it.
                 let mut tx = input.x + 10;
                 if let Some(icon) = p.input_icon() {
@@ -126,6 +149,7 @@ impl App {
                 let prefix: String = p.field.text.chars().take(p.field.cursor).collect();
                 let x = tx + self.tx.ui_width(&prefix, false);
                 cv.fill_clip(Rect::new(x, input.y + 8, 1, 18), fg, input);
+                ui_modal::draw_footer(cv, &mut self.tx, &c, r, &[("Enter", "confirm"), ("Esc", "cancel")]);
             }
             Overlay::Picker(p) => {
                 let shown = p.filtered.len().min(PICKER_ROWS);
@@ -133,15 +157,14 @@ impl App {
                 let list_h = if calm {
                     128
                 } else if shown == 0 {
-                    44
+                    112
                 } else {
                     shown as i32 * ROW + 14
                 };
                 // Project search with the replace row: the list starts below it.
                 let top = INPUT_H + if p.rep.is_some() { preplace::REP_H } else { 0 };
-                let r = Rect::new(base.x, base.y, base.w, top + list_h);
-                cv.shadow(r, 16);
-                cv.card(r, 16, c.widget_bg, c.border);
+                let r = Rect::new(base.x, base.y, base.w, top + list_h + FOOT_H);
+                self.modal_panel(cv, r, Elev::Modal);
                 // Input row.
                 self.tx.icon(cv, "hugeicons/search", r.x + 18, r.y + (INPUT_H - 16) / 2, 16, dim, r);
                 let (shown_text, col) =
@@ -207,6 +230,13 @@ impl App {
                 // px, one more row shows at the bottom and everything is clipped to the list.
                 let off = self.region_off(crate::scrollreg::Reg::Picker, ROW);
                 let lclip = Rect::new(r.x, r.y + top, r.w, list_h);
+                if !p.filtered.is_empty() {
+                    // The highlight glides between rows; the accent bar marks the selected one.
+                    let glide = ((self.modal.sel.value - p.scroll as f32) * ROW as f32).round() as i32;
+                    let hl = Rect::new(r.x + 8, r.y + top + 6 + glide - off, r.w - 16, ROW);
+                    cv.fill_round_clip(hl, ds::R_ROW + 2, c.list_active_bg, lclip);
+                    cv.fill_round_clip(Rect::new(hl.x + 3, hl.y + 9, 3, ROW - 18), 1, c.accent, lclip);
+                }
                 for (k, (idx, pos)) in
                     p.filtered.iter().enumerate().skip(p.scroll).take(PICKER_ROWS + (off > 0) as usize)
                 {
@@ -214,18 +244,17 @@ impl App {
                     let y = r.y + top + 6 + (k - p.scroll) as i32 * ROW - off;
                     let row_full = Rect::new(r.x + 8, y, r.w - 16, ROW);
                     let rr = row_full.intersect(&lclip);
-                    if k == p.sel {
-                        cv.fill_round_clip(row_full, 10, c.list_active_bg, lclip);
-                    }
                     if let Some(h) = p.rep.as_ref().and_then(|rp| rp.hits.get(*idx)) {
                         preplace::draw_preview(cv, &mut self.tx, &self.theme, rr, y + (ROW - 18) / 2, h, &it.detail);
                         rows.push((rr, k));
                         continue;
                     }
                     let avail = rr.w - 28;
-                    let detail_w = if matches!(p.kind, PickKind::Commands | PickKind::Themes | PickKind::Choice)
-                        && !it.detail.is_empty()
-                    {
+                    let cmd_keys =
+                        if p.kind == PickKind::Commands { ui_modal::keycaps(&it.detail) } else { Vec::new() };
+                    let detail_w = if p.kind == PickKind::Commands {
+                        if cmd_keys.is_empty() { 0 } else { ui_modal::keycaps_width(&mut self.tx, &cmd_keys) + 20 }
+                    } else if matches!(p.kind, PickKind::Themes | PickKind::Choice) && !it.detail.is_empty() {
                         self.tx.ui_width(&it.detail, false) + 20
                     } else {
                         0
@@ -241,10 +270,15 @@ impl App {
                     {
                         skip += (label.len() - skip).div_ceil(8).max(1);
                     }
-                    let dir_end = if p.kind == PickKind::QuickOpen {
-                        label.iter().rposition(|ch| *ch == '/').map_or(0, |i| i + 1)
-                    } else {
-                        0
+                    // Paths dim their folders; commands dim their area ("File: ").
+                    let dir_end = match p.kind {
+                        PickKind::QuickOpen => label.iter().rposition(|ch| *ch == '/').map_or(0, |i| i + 1),
+                        PickKind::Commands => label
+                            .iter()
+                            .position(|ch| *ch == ':')
+                            .filter(|i| label.get(i + 1) == Some(&' '))
+                            .map_or(0, |i| i + 2),
+                        _ => 0,
                     };
                     // Match colour: the accent when it has a hue of its own, else the plain text colour.
                     let chroma = c.accent_text.0.max(c.accent_text.1).max(c.accent_text.2)
@@ -291,8 +325,10 @@ impl App {
                     }
                     if !it.detail.is_empty() {
                         if p.kind == PickKind::Commands {
-                            let dx = rr.right() - detail_w + 8;
-                            self.tx.draw_ui(cv, dx, ly, &it.detail, dim, rr, false);
+                            // The shortcut as keycap chips, right aligned.
+                            let kw = detail_w - 20;
+                            let ky = y + (ROW - KEY_H) / 2;
+                            ui_modal::draw_keycaps(cv, &mut self.tx, &c, rr.right() - kw - 12, ky, &cmd_keys, 1.0, rr);
                         } else {
                             let used =
                                 self.tx.ui_width(&pieces.iter().map(|(s, _)| s.as_str()).collect::<String>(), false);
@@ -324,13 +360,17 @@ impl App {
                     let hw = self.tx.ui_width(hint, false);
                     self.tx.draw_ui(cv, area.x + (area.w - hw) / 2, area.y + 80, hint, dim, area, false);
                 } else if p.filtered.is_empty() {
-                    let msg = if p.kind == PickKind::ProjectSearch && p.field.text.is_empty() {
-                        "Type to search the project"
-                    } else {
-                        "No results"
-                    };
-                    self.tx.draw_ui(cv, r.x + 16, r.y + top + 10, msg, dim, r, false);
+                    // Friendly empty state: an icon, what happened, and what to try.
+                    let area = Rect::new(r.x, r.y + top, r.w, list_h);
+                    let (title, hint) = empty_copy(p.kind, &p.field.text);
+                    self.tx.icon(cv, "hugeicons/search", area.x + (area.w - 24) / 2, area.y + 14, 24, dim, area);
+                    let tw = self.tx.ui_width(title, true);
+                    self.tx.draw_ui(cv, area.x + (area.w - tw) / 2, area.y + 46, title, c.tab_active_fg, area, true);
+                    let hint = crate::ui::fit_ellipsis(&mut self.tx, hint, area.w - 2 * ds::S5, false);
+                    let hw = self.tx.ui_width(&hint, false);
+                    self.tx.draw_ui(cv, area.x + (area.w - hw) / 2, area.y + 70, &hint, dim, area, false);
                 }
+                ui_modal::draw_footer(cv, &mut self.tx, &c, r, &PICK_HINTS);
             }
         }
         if let Some((area, total, pos)) = picker_bar {
@@ -344,6 +384,9 @@ impl App {
                 ROW as f64,
                 true,
             );
+        }
+        if let Some(snap) = reveal {
+            self.reveal_end(cv, snap);
         }
     }
 }

@@ -469,8 +469,7 @@ impl App {
             + if has_row { 14 + btn_h } else { 0 }
             + 14;
         let r = Rect::new(sw - w - 12, (self.layout.status.y - h - 10).max(0), w, h);
-        cv.shadow(r, 12);
-        cv.card(r, 12, c.widget_bg, c.border);
+        self.modal_panel(cv, r, crate::ds::Elev::Pop);
         // Title + close.
         for (i, t) in title_lines.iter().enumerate() {
             self.tx.draw_ui(cv, r.x + 16 + title_dx, r.y + 14 + i as i32 * 22, t, fg, r, true);

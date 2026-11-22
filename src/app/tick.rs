@@ -21,6 +21,7 @@ impl App {
         self.gitpanel_tick(now, &mut want);
         self.update_tick(now, &mut want);
         self.git_bg_tick(now, &mut want);
+        self.toast_tick(now, &mut want);
         self.fswatch_tick(now, &mut want);
         self.md_tick(now, &mut want);
         self.img_tick(now, &mut want);
