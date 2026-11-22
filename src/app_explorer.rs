@@ -35,7 +35,7 @@ impl App {
     }
 
     /// Open a file / toggle a folder: what a plain click on a row does.
-    fn activate_row(&mut self, i: usize) {
+    pub(crate) fn activate_row(&mut self, i: usize) {
         let Some(row) = self.tree.rows.get(i).cloned() else { return };
         if row.is_dir {
             self.tree.toggle(i);

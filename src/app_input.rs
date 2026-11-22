@@ -500,6 +500,7 @@ impl App {
                 self.tree.hscroll = max_h;
                 self.inp.tree_h.jump(max_h, max_h);
             }
+            busy |= self.sidebar_fx_frame(dt);
         }
         if self.panel.open {
             let max = self.panel.max_scroll(self.layout.panel.h - crate::app_panel::PANEL_HEADER);

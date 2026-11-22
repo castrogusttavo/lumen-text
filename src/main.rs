@@ -60,6 +60,8 @@ mod app_resmon;
 mod app_settings;
 mod app_shell;
 mod app_sidebar;
+mod app_sidebar_draw;
+mod app_sidebar_fx;
 mod app_snippets;
 mod app_split;
 mod app_sqlview;

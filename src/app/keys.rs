@@ -133,6 +133,11 @@ impl App {
             self.request_redraw();
             return false; // an unbound second stroke only cancels the chord
         }
+        // The explorer's filter field takes the typing while it is open (and `/` opens it).
+        if self.focus == Focus::Sidebar && self.sidebar_filter_key(ev) {
+            self.request_redraw();
+            return false;
+        }
         // The explorer's own keys (A, Shift+A, F2, Delete) win over the global table while it has the focus.
         if self.focus == Focus::Sidebar
             && let Some(id) = self.keymap.lookup_explorer(ctrl, shift, alt, &key).map(str::to_string)

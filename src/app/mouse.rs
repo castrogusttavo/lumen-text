@@ -94,6 +94,9 @@ impl App {
         }
         if self.sidebar_open && self.layout.sidebar.contains(x, y) {
             self.focus = Focus::Sidebar;
+            if button == MouseButton::Left && self.sidebar_click(x, y) {
+                return self.request_redraw();
+            }
             if y < (self.layout.sidebar.y + TAB_H) as f64 {
                 if let Some((_, m)) = self.layout.sidebar_tabs.iter().find(|(r, _)| r.contains(x, y)).copied() {
                     self.sidebar_mode = m;
@@ -342,6 +345,9 @@ impl App {
         if self.drop_dragging() {
             return CursorIcon::Grabbing;
         }
+        if let Some(c) = self.sidebar_cursor(x, y) {
+            return c;
+        }
         if self.sidebar_resizing() || self.sidebar_on_edge(x, y) {
             return CursorIcon::ColResize;
         }
@@ -480,19 +486,7 @@ impl App {
         if let Some(h) = self.sql_hover_target() {
             return Some(h);
         }
-        if self.sidebar_open && l.sidebar.contains(x, y) && y >= (l.sidebar.y + TAB_H) as f64 {
-            let rel = y - (l.sidebar.y + TAB_H) as f64 + self.tree.scroll;
-            let rows = if self.sidebar_mode == SidebarMode::Outline {
-                self.docs.get(self.active).map_or(0, |d| d.symbols.len())
-            } else {
-                self.tree.rows.len()
-            };
-            if rel >= 0.0 && ((rel / ROW_H as f64) as usize) < rows {
-                let k = (rel / ROW_H as f64) as i32;
-                let top = l.sidebar.y + TAB_H - self.tree.scroll as i32;
-                return Some((Rect::new(l.sidebar.x + 8, top + k * ROW_H + 1, l.sidebar.w - 17, ROW_H - 2), 7));
-            }
-        }
+        // The sidebar rows light up with their own gliding highlight (see `app_sidebar_draw`).
         None
     }
 
