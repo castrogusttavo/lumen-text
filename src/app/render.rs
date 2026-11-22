@@ -45,6 +45,8 @@ impl App {
             dock_t: sh.dock.value,
         };
         let s = crate::app_shell::solve(&plan);
+        // A closed sidebar has no hit area; while it slides shut the shell still knows where it is.
+        self.layout.shell.side_rect = s.sidebar;
         self.layout.sidebar = if self.sidebar_open { s.sidebar } else { Rect::new(lx, top_h, 0, s.sidebar.h) };
         self.layout.card_outer = s.outer;
         self.layout.tabbar = s.tabbar;
@@ -183,9 +185,9 @@ impl App {
         crate::perf::lap!("breadcrumbs_diff");
         if self.sidebar_open {
             self.draw_sidebar(cv);
+        } else if self.layout.shell.side.value > 0.001 {
+            self.draw_sidebar_closing(cv);
         }
-        // After the sidebar: while it slides in from under the rail, the rail stays on top.
-        self.draw_rail(cv);
         crate::perf::lap!("sidebar");
         self.draw_panel(cv);
         busy |= self.draw_gitpanel(cv, dt);
@@ -193,6 +195,9 @@ impl App {
         if self.sidebar_open {
             self.draw_sidebar_edge(cv);
         }
+        // Round the sidebar card, then the rail on top: the card slides in from under the rail.
+        self.trim_sidebar_card(cv);
+        self.draw_rail(cv);
         self.draw_cards(cv);
         self.draw_tree_drag(cv);
         self.draw_tab_drag(cv);
@@ -202,8 +207,8 @@ impl App {
         // "shadow") until the mouse moves again.
         self.hover_rect = self.hover_target();
         if let Some((r, rad)) = self.hover_rect {
-            let f = self.theme.foreground;
-            cv.fill_round(r, rad, f.with_alpha(if self.theme.background.luminance() < 0.5 { 0x16 } else { 0x12 }));
+            cv.fill_round(r, rad, self.theme.chrome.hover_overlay);
+            self.pressed_veil(cv, r, rad);
         }
         self.draw_inline_hint(cv);
         self.draw_find(cv);
@@ -246,6 +251,17 @@ impl App {
 
     pub(super) fn draw_sidebar(&mut self, cv: &mut Canvas) {
         self.draw_sidebar_ui(cv);
+    }
+
+    /// The sidebar while it slides shut: drawn where the shell has it, with no hit areas left behind.
+    fn draw_sidebar_closing(&mut self, cv: &mut Canvas) {
+        let keep = self.layout.sidebar;
+        self.layout.sidebar = self.layout.shell.side_rect;
+        self.draw_sidebar_ui(cv);
+        self.layout.sidebar = keep;
+        self.layout.sidebar_tabs.clear();
+        self.tree.fx.hits = Default::default();
+        self.sidebar_bar = None;
     }
 
     pub(crate) fn draw_sidebar_bar(&mut self, cv: &mut Canvas) {
@@ -298,7 +314,16 @@ impl App {
         let n = segs.len();
         for (i, (name, crumb)) in segs.into_iter().enumerate() {
             let last = i + 1 == n;
-            let w = self.tx.ui_width(&name, last);
+            // A segment that does not fit before the right edge ends in "…" instead of being cut.
+            let room = (r.right() - crate::ds::S2 - x).max(0);
+            let mut w = self.tx.ui_width(&name, last);
+            let name = if w > room {
+                let cut = crate::ui::fit_ellipsis(&mut self.tx, &name, room, last);
+                w = self.tx.ui_width(&cut, last);
+                cut
+            } else {
+                name
+            };
             self.tx.draw_ui(cv, x, y, &name, if last { fg } else { dim }, r, last);
             self.layout.crumbs.push((Rect::new(x - 4, pill_y, w + 8, pill_h), crumb));
             x += w;

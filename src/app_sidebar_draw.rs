@@ -30,7 +30,6 @@ impl App {
         let c = self.theme.chrome;
         let r = self.layout.sidebar;
         cv.fill(r, c.sidebar_bg);
-        cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), c.border);
         self.layout.sidebar_tabs.clear();
         self.sidebar_bar = None;
         self.tree.fx.hits = Hits::default();
@@ -51,8 +50,9 @@ impl App {
     fn draw_icon_btn(&mut self, cv: &mut Canvas, b: Rect, icon: &str, hot: f32, clip: Rect) {
         let c = self.theme.chrome;
         if hot > 0.01 {
-            cv.fill_round(b, ds::R_CTRL, fade(c.list_hover_bg, hot));
+            cv.fill_round(b, ds::R_CTRL, fade(c.hover_overlay, hot));
         }
+        self.pressed_veil(cv, b, ds::R_CTRL);
         let col = lerp_rgba(c.tab_inactive_fg, c.tab_active_fg, hot);
         self.tx.icon(cv, icon, b.x + (b.w - ds::ICON_S) / 2, b.y + (b.h - ds::ICON_S) / 2, ds::ICON_S, col, clip);
     }
@@ -117,8 +117,9 @@ impl App {
         }
         let hot = self.tree.fx.clear_hot.v();
         if hot > 0.01 {
-            cv.fill_round(clear, ds::R_CTRL, fade(c.list_hover_bg, hot));
+            cv.fill_round(clear, ds::R_CTRL, fade(c.hover_overlay, hot));
         }
+        self.pressed_veil(cv, clear, ds::R_CTRL);
         let x_col = lerp_rgba(c.tab_inactive_fg, c.tab_active_fg, hot);
         self.tx.icon(cv, "hugeicons/close", clear.x + 4, clear.y + 4, 12, x_col, f);
         // Text, selection and caret (the text scrolls left when it outgrows the field).

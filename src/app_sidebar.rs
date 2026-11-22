@@ -60,7 +60,7 @@ impl App {
     }
 
     /// The grab band around the sidebar's right edge (None when it is closed).
-    fn sidebar_edge(&self) -> Option<Rect> {
+    pub(crate) fn sidebar_edge(&self) -> Option<Rect> {
         let r = self.layout.sidebar;
         (self.sidebar_open && r.w > 0).then(|| Rect::new(r.right() - GRAB, r.y, 2 * GRAB, r.h))
     }

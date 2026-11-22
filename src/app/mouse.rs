@@ -626,6 +626,9 @@ impl App {
 
     pub fn mouse_move(&mut self) {
         let (x, y) = self.mouse;
+        if self.topmenu_hover() {
+            return self.request_redraw();
+        }
         if self.hover_mouse_move() {
             return self.request_redraw();
         }

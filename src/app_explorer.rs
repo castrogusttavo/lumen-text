@@ -353,8 +353,10 @@ impl App {
         let x = (self.mouse.0 as i32 + 14).min(sw - w - 6).max(6);
         let y = (self.mouse.1 as i32 + 16).min(sh - 34).max(6);
         let r = Rect::new(x, y, w, 26);
-        cv.shadow(r, 8);
-        cv.card(r, 8, c.widget_bg, if d.over.is_some() { c.accent } else { c.border });
+        cv.float_card(r, ds::R_ROW, &c, crate::ds::Elev::Pop);
+        if d.over.is_some() {
+            cv.ring(r, ds::R_ROW, c.focus_ring);
+        }
         let fg = if d.over.is_some() { self.theme.foreground } else { c.tab_inactive_fg };
         self.tx.draw_ui(cv, r.x + 12, r.y + 4, &label, fg, r, false);
     }

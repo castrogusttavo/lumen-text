@@ -564,8 +564,7 @@ impl App {
         let dim = c.tab_inactive_fg;
         let shown = m.filtered.len().min(MAX_ROWS);
         let r = self.menu_rect(&m, shown);
-        cv.shadow(r, 12);
-        cv.card(r, 12, c.widget_bg, c.border);
+        cv.float_card(r, ds::R_CARD, &c, crate::ds::Elev::Pop);
         // Search field.
         self.tx.icon(cv, "hugeicons/search", r.x + 16, r.y + (INPUT - 16) / 2, 16, c.accent, r);
         let hint = match m.kind {
@@ -602,7 +601,7 @@ impl App {
             let row_full = Rect::new(r.x + 6, y, r.w - 12, ROW);
             let rr = row_full.intersect(&lclip);
             if k == m.sel {
-                cv.fill_round_clip(row_full, 8, c.list_active_bg, lclip);
+                cv.fill_round_clip(row_full, ds::R_ROW, c.list_active_bg, lclip);
             }
             let ly = y + (ROW - 18) / 2;
             let iy = y + (ROW - 16) / 2;
@@ -749,6 +748,31 @@ impl App {
             }
         }
         true
+    }
+
+    /// The pointer moved while a menu hangs open. Over another title of the menu bar the open
+    /// menu switches to that title's (as in every desktop app); over a row it moves the
+    /// selection there. True when something changed.
+    pub fn topmenu_hover(&mut self) -> bool {
+        let (x, y) = self.mouse;
+        let Overlay::TopMenu(m) = &self.overlay else { return false };
+        let kind = m.kind;
+        if matches!(kind, MenuKind::Menu(_))
+            && let Some((b, k)) = self.layout.top_btns.iter().find(|(b, _)| b.contains(x, y)).copied()
+            && matches!(k, MenuKind::Menu(_))
+            && k != kind
+        {
+            self.open_topmenu(k, b);
+            return true;
+        }
+        let Overlay::TopMenu(m) = &mut self.overlay else { return false };
+        match m.rows.iter().find(|(r, _)| r.contains(x, y)) {
+            Some(&(_, k)) if m.sel != k => {
+                m.sel = k;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn topmenu_wheel(&mut self, delta: MouseScrollDelta) {

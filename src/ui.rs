@@ -426,10 +426,17 @@ impl Canvas<'_> {
 
     /// Antialiased 1px outline of a rounded rectangle, drawn over whatever is there.
     pub fn ring(&mut self, r: Rect, rad: i32, c: Rgba) {
+        let all = self.bounds();
+        self.ring_clip(r, rad, c, all);
+    }
+
+    /// [`ring`](Self::ring) restricted to `clip` (logical): the glow rim paints it in bands.
+    pub fn ring_clip(&mut self, r: Rect, rad: i32, c: Rgba, clip: Rect) {
         let d = self.to_dev(r);
         let hl = hairline();
         let rad = sc(rad).min(d.w / 2).min(d.h / 2).max(1);
-        let all = self.dev_bounds();
+        let dc = self.to_dev(clip);
+        let all = self.dev_bounds().intersect(&dc);
         self.fill_dev(Rect::new(d.x + rad, d.y, d.w - 2 * rad, hl), c, all);
         self.fill_dev(Rect::new(d.x + rad, d.bottom() - hl, d.w - 2 * rad, hl), c, all);
         self.fill_dev(Rect::new(d.x, d.y + rad, hl, d.h - 2 * rad), c, all);
@@ -447,6 +454,9 @@ impl Canvas<'_> {
                     let dist = (dx * dx + dy * dy).sqrt();
                     let outer = (rf - dist + 0.5).clamp(0.0, 1.0);
                     let inner = (rf - hl as f32 - dist + 0.5).clamp(0.0, 1.0);
+                    if !all.contains(x as f64, y as f64) {
+                        continue;
+                    }
                     let cov = (outer - inner).clamp(0.0, 1.0);
                     if cov > 0.0 {
                         self.dot_dev(x, y, Rgba(c.0, c.1, c.2, (c.3 as f32 * cov) as u8));
@@ -458,19 +468,28 @@ impl Canvas<'_> {
 
     /// Soft drop shadow under a rounded rectangle (call before drawing the card).
     pub fn shadow(&mut self, r: Rect, rad: i32) {
+        self.shadow_tint(r, rad, Rgba(0, 0, 0, 0x99));
+    }
+
+    /// [`shadow`](Self::shadow) in the theme's shadow tint (`Chrome::shadow`): its alpha says how
+    /// strong the shadow is (0x99 is the reference), so light themes get a lighter one.
+    pub fn shadow_tint(&mut self, r: Rect, rad: i32, tint: Rgba) {
         // Soft, wide, low-contrast shadow (macOS style): many faint layers, shifted down.
         // Every layer covers the part of the card that is inset by `rad` (and the card is drawn
         // over it afterwards), so that core is blended once instead of sixteen times.
+        let layer = (3.0 * tint.3 as f32 / 153.0).round().clamp(1.0, 8.0);
+        let col = |a: f32| Rgba(tint.0, tint.1, tint.2, a as u8);
         let clip = self.to_dev(self.bounds());
         let core = self.to_dev(Rect::new(r.x + rad, r.y + 8 + rad, r.w - 2 * rad, r.h - 2 * rad - 8));
         let core = (core.w > 0 && core.h > 0).then_some(core);
         for i in 1..=16 {
             let g = self.to_dev(Rect::new(r.x - i, r.y - i + 8, r.w + 2 * i, r.h + 2 * i));
-            self.round_dev_hole(g, sc(rad + i), Rgba(0, 0, 0, 3), clip, core);
+            self.round_dev_hole(g, sc(rad + i), col(layer), clip, core);
         }
         if let Some(k) = core {
-            // Sixteen layers of alpha 3 darken by 1 - (252/255)^16, about alpha 44.
-            self.fill_dev(k, Rgba(0, 0, 0, 44), clip);
+            // Sixteen layers of alpha `layer` darken by 1 - (1 - layer/255)^16 (about 44 for 3).
+            let a = 255.0 * (1.0 - (1.0 - layer / 255.0).powi(16));
+            self.fill_dev(k, col(a.round()), clip);
         }
     }
 }

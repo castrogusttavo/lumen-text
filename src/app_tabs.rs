@@ -166,7 +166,10 @@ impl App {
             let hv = hot.v();
             if over_close {
                 let cb = Rect::new(close.x + 4, r.y + (bar.h - 20) / 2, 20, 20);
-                cv.fill_round_clip(cb, ds::R_CTRL, self.theme.foreground.with_alpha(0x38), strip);
+                cv.fill_round_clip(cb, ds::R_CTRL, c.hover_overlay, strip);
+                if self.layout.shell.down {
+                    cv.fill_round_clip(cb, ds::R_CTRL, c.pressed_overlay, strip);
+                }
             }
             if hv > 0.01 {
                 let ic = if over_close { c.tab_active_fg } else { c.tab_inactive_fg };
@@ -264,7 +267,7 @@ impl App {
         // Left of the overlay scrollbar, a little below the top edge; settles 4 px as it fades in.
         let chip = Rect::new(rect.right() - 18 - body, rect.y + ds::S2 + ((1.0 - k) * 4.0) as i32, body, 22);
         let hot = self.overlay.is_none() && chip.contains(self.mouse.0, self.mouse.1);
-        cv.fill_round(chip, ds::R_CTRL, fade(self.theme.background.with_alpha(0xe6), k));
+        cv.fill_round(chip, ds::R_CTRL, fade(c.card.with_alpha(0xe6), k));
         cv.fill_round(chip, ds::R_CTRL, fade(c.list_hover_bg.with_alpha(if hot { 0xff } else { 0x60 }), k));
         cv.ring(chip, ds::R_CTRL, fade(c.border, k));
         let y = chip.y + (chip.h - 18) / 2;

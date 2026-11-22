@@ -704,15 +704,22 @@ impl ApplicationHandler<UserEvent> for App {
                 self.mouse_move();
                 self.update_cursor();
             }
-            WindowEvent::MouseInput { state, button, .. } => match (state, button) {
-                (ElementState::Pressed, MouseButton::Left | MouseButton::Middle | MouseButton::Right) => {
-                    self.mouse_down(button)
+            WindowEvent::MouseInput { state, button, .. } => {
+                // The pressed look of buttons follows the primary button.
+                if button == MouseButton::Left && self.layout.shell.down != (state == ElementState::Pressed) {
+                    self.layout.shell.down = state == ElementState::Pressed;
+                    self.request_redraw();
                 }
-                (ElementState::Pressed, MouseButton::Back | MouseButton::Forward) => self.mouse_side_button(button),
-                (ElementState::Released, MouseButton::Back | MouseButton::Forward) => {}
-                (ElementState::Released, _) => self.mouse_up(),
-                _ => {}
-            },
+                match (state, button) {
+                    (ElementState::Pressed, MouseButton::Left | MouseButton::Middle | MouseButton::Right) => {
+                        self.mouse_down(button)
+                    }
+                    (ElementState::Pressed, MouseButton::Back | MouseButton::Forward) => self.mouse_side_button(button),
+                    (ElementState::Released, MouseButton::Back | MouseButton::Forward) => {}
+                    (ElementState::Released, _) => self.mouse_up(),
+                    _ => {}
+                }
+            }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 let s = crate::ui::scale() as f64;
                 let delta = match delta {

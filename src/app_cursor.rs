@@ -150,6 +150,7 @@ impl App {
             }
             Overlay::Settings(_) | Overlay::None => {}
         }
+        self.shell_cursor_regions(&mut reg);
         self.cur = reg;
     }
 

@@ -9,6 +9,7 @@
 use crate::{
     anim::{Anim, Hot, dur, fade},
     app::{App, CARD_M},
+    app_cursor::{CursorReg, Z_BASE, Z_EDGE},
     ds,
     theme::{Rgba, Theme},
     ui::{Canvas, Rect, sc},
@@ -44,6 +45,10 @@ pub struct Shell {
     pub tab_x: Anim,
     pub tab_w: Anim,
     pub tab_seen: bool,
+    /// The primary mouse button is held: widgets under the pointer show their pressed look.
+    pub down: bool,
+    /// Where the sidebar card is while it slides, also while it closes (the layout rect is empty then).
+    pub side_rect: Rect,
     rail: [Hot; RAIL_BTNS],
     top: [Hot; TOP_BTNS],
     chip: [Hot; CHIPS],
@@ -58,6 +63,8 @@ impl Default for Shell {
             tab_x: Anim::new(0.0, dur::BASE),
             tab_w: Anim::new(0.0, dur::BASE),
             tab_seen: false,
+            down: false,
+            side_rect: Rect::default(),
             rail: Default::default(),
             top: Default::default(),
             chip: Default::default(),
@@ -164,11 +171,13 @@ pub fn solve(p: &Plan) -> Solved {
     }
 }
 
-/// The canvas the cards float on: the theme background, a step darker.
+/// The canvas the cards float on (`Chrome::canvas`: the theme background, a step darker).
 pub fn canvas_color(t: &Theme) -> Rgba {
-    let k = if t.background.luminance() < 0.5 { 0.38 } else { 0.06 };
-    t.background.mix(Rgba(0, 0, 0, 255), k)
+    t.chrome.canvas
 }
+
+/// Bands the glow rim is painted in, top to bottom.
+const RIM_BANDS: i32 = 10;
 
 impl Canvas<'_> {
     /// Round the corners of an already painted rectangle: the pixels outside the arc go back to
@@ -200,6 +209,32 @@ impl Canvas<'_> {
 }
 
 impl App {
+    /// Pointer regions of the shell that the layout lists do not carry: the dead columns of the
+    /// rail and the status bar answer the arrow, the sidebar's right edge the column resize, and
+    /// the sidebar header and empty-state controls their hand / beam.
+    pub(crate) fn shell_cursor_regions(&self, reg: &mut CursorReg) {
+        use winit::window::CursorIcon::{ColResize, Default as Arrow, Pointer, Text};
+        let l = &self.layout;
+        reg.push(l.rail, Arrow, Z_BASE / 2, "rail-dead");
+        reg.push(l.status, Arrow, Z_BASE / 2, "status-dead");
+        if !self.sidebar_open {
+            return;
+        }
+        if let Some(e) = self.sidebar_edge() {
+            reg.push(e, ColResize, Z_EDGE, "sidebar-edge");
+        }
+        let h = &self.tree.fx.hits;
+        if let Some(r) = h.field {
+            reg.push(r, Text, Z_BASE, "sidebar-filter");
+        }
+        for r in [h.search, h.clear].into_iter().flatten() {
+            reg.push(r, Pointer, Z_BASE + 1, "sidebar-button");
+        }
+        for (r, _) in &h.empty {
+            reg.push(*r, Pointer, Z_BASE, "sidebar-empty-action");
+        }
+    }
+
     /// Gap between the floating cards: none in zen mode.
     pub fn shell_gap(&self) -> i32 {
         if self.zen.active() { 0 } else { CARD_M }
@@ -236,8 +271,15 @@ impl App {
     pub fn hot_veil(&mut self, cv: &mut Canvas, slot: HotSlot, r: Rect, rad: i32) {
         let v = self.hot_amount(slot, r);
         if v > 0.01 {
-            let a = if self.theme.background.luminance() < 0.5 { 0x16 } else { 0x12 };
-            cv.fill_round(r, rad, fade(self.theme.foreground.with_alpha(a), v));
+            cv.fill_round(r, rad, fade(self.theme.chrome.hover_overlay, v));
+        }
+        self.pressed_veil(cv, r, rad);
+    }
+
+    /// The pressed look: the theme's pressed overlay over a widget while the button is held on it.
+    pub fn pressed_veil(&self, cv: &mut Canvas, r: Rect, rad: i32) {
+        if self.layout.shell.down && self.overlay.is_none() && r.contains(self.mouse.0, self.mouse.1) {
+            cv.fill_round(r, rad, self.theme.chrome.pressed_overlay);
         }
     }
 
@@ -252,9 +294,10 @@ impl App {
         } else {
             let k = rest + (1.0 - rest) * v;
             if k > 0.01 {
-                cv.fill_round(r, rad, fade(c.list_hover_bg, k));
+                cv.fill_round(r, rad, fade(c.hover_overlay, k));
             }
         }
+        self.pressed_veil(cv, r, rad);
         v
     }
 
@@ -276,31 +319,57 @@ impl App {
         cv.fill_round_clip(pill, ds::R_ROW, self.theme.chrome.tab_active_fg.with_alpha(0x1e), strip);
     }
 
+    /// The glow rim of a card: the soft border, then the accent glow fading from the top edge to
+    /// the bottom one (`glow_top` to `glow_bottom`), painted in horizontal bands.
+    pub fn card_rim(&self, cv: &mut Canvas, r: Rect, rad: i32) {
+        let c = self.theme.chrome;
+        cv.ring(r, rad, c.border_glow);
+        let band = (r.h / RIM_BANDS).max(1);
+        for i in 0..RIM_BANDS {
+            let y = r.y + i * band;
+            let h = if i == RIM_BANDS - 1 { r.bottom() - y } else { band };
+            let t = (i as f32 + 0.5) / RIM_BANDS as f32;
+            cv.ring_clip(r, rad, crate::anim::lerp_rgba(c.glow_top, c.glow_bottom, t), Rect::new(r.x, y, r.w, h));
+        }
+    }
+
+    /// The sidebar card's rounded corners and rim. It slides under the rail, so this runs before
+    /// the rail is drawn: the part hidden behind it is covered afterwards, and the corners stay
+    /// round for the whole slide, opening and closing.
+    pub fn trim_sidebar_card(&mut self, cv: &mut Canvas) {
+        let r = if self.sidebar_open { self.layout.sidebar } else { self.layout.shell.side_rect };
+        if self.shell_gap() == 0 || r.w <= 0 || self.layout.shell.side.value <= 0.001 {
+            return;
+        }
+        cv.round_off(r, ds::R_CARD, canvas_color(&self.theme));
+        self.card_rim(cv, r, ds::R_CARD);
+    }
+
     /// After the cards drew their (square) content: round their corners and ring them. The
-    /// editor card is the hero and gets the only shadow (drawn earlier, under everything).
+    /// editor card is the hero and gets the only shadow (drawn earlier, under everything). The
+    /// sidebar card is trimmed by [`trim_sidebar_card`](Self::trim_sidebar_card).
     pub fn draw_cards(&mut self, cv: &mut Canvas) {
         if self.shell_gap() == 0 {
             return;
         }
         let bg = canvas_color(&self.theme);
-        let border = self.theme.chrome.border;
         let mut cards = vec![self.layout.card_outer];
-        if self.sidebar_open && self.layout.sidebar.w > 0 && !self.layout.shell.side.moving() {
-            cards.push(self.layout.sidebar);
-        }
         if self.slot_shown() {
             cards.push(self.slot_rect());
         }
         for r in cards {
             cv.round_off(r, ds::R_CARD, bg);
-            cv.ring(r, ds::R_CARD, border);
+            self.card_rim(cv, r, ds::R_CARD);
         }
     }
 
-    /// The editor card's soft shadow, painted right after the canvas.
+    /// The editor card's body (`Chrome::card`) and its soft shadow in the theme's tint, painted
+    /// right after the canvas.
     pub fn draw_card_shadow(&mut self, cv: &mut Canvas) {
         if self.shell_gap() > 0 && self.layout.card_outer.w > 0 {
-            cv.shadow(self.layout.card_outer, ds::R_CARD);
+            let c = self.theme.chrome;
+            cv.shadow_tint(self.layout.card_outer, ds::R_CARD, c.shadow);
+            cv.fill(self.layout.card_outer, c.card);
         }
     }
 }

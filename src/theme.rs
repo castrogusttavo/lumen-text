@@ -73,8 +73,6 @@ impl Rgba {
 
 /// Colors for the UI around the text (sidebar, tabs, status bar, widgets, diagnostics, git).
 #[derive(Debug, Clone, Copy)]
-// The surface fields at the end are adopted module by module during the redesign.
-#[allow(dead_code)]
 pub struct Chrome {
     pub sidebar_bg: Rgba,
     pub sidebar_fg: Rgba,
