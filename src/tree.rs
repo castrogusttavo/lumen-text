@@ -68,6 +68,8 @@ pub struct Tree {
     /// Extra workspace folders after `root` (multi-root workspaces, see `workspace`). Empty = the
     /// usual single-root tree, rows start right under `root` with no header.
     extra: Vec<(PathBuf, crate::ignore_filter::IgnoreFilter)>,
+    /// Motion, filter and badge state of the sidebar (see `app_sidebar_fx`).
+    pub fx: crate::app_sidebar_fx::TreeFx,
 }
 
 /// How the explorer orders the entries of a folder (`explorer_sort`).
@@ -197,6 +199,7 @@ impl Tree {
             sort: SortMode::Name,
             folders_first: true,
             extra: Vec::new(),
+            fx: Default::default(),
         };
         t.expanded.insert(root);
         t.rebuild();

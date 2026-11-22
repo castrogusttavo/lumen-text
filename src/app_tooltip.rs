@@ -66,6 +66,8 @@ pub enum TipKey {
     TermLink(u32),
     /// The explorer's refresh button and the "Polling (NFS)" hint.
     Fs(crate::app_fswatch::FsTip),
+    /// The filter button of the explorer header.
+    SideFilter,
     /// A toolbar button of the Debug panel.
     Debug(crate::app_debug::Tool),
 }
@@ -394,6 +396,9 @@ impl App {
         if let Some((k, r)) = self.debug_tip_at(x, y) {
             return Some((TipKey::Debug(k), r, false));
         }
+        if let Some(r) = self.sidebar_filter_tip_at(x, y) {
+            return Some((TipKey::SideFilter, r, true));
+        }
         if let Some((k, r, below)) = self.fswatch_tip_at(x, y) {
             return Some((TipKey::Fs(k), r, below));
         }
@@ -456,6 +461,7 @@ impl App {
             TipKey::Term(h) => self.terms_tip(h),
             TipKey::TermLink(_) => self.term_link_tip_text(),
             TipKey::Fs(k) => self.fswatch_tip(k),
+            TipKey::SideFilter => self.sidebar_filter_tip(),
             TipKey::Debug(k) => self.debug_tip(k),
             TipKey::Outline(i) => match self.docs.get(self.active).and_then(|d| d.symbols.get(i)) {
                 Some(s) => t(&s.name, None, Some(format!("{} · line {}", symbol_kind_name(s.kind), s.sl + 1))),

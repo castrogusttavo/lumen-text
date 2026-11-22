@@ -343,99 +343,10 @@ impl App {
     }
 
     pub(super) fn draw_sidebar(&mut self, cv: &mut Canvas) {
-        let c = self.theme.chrome;
-        let r = self.layout.sidebar;
-        cv.fill(r, c.sidebar_bg);
-        cv.fill(Rect::new(r.right() - 1, r.y, 1, r.h), c.border);
-        self.layout.sidebar_tabs.clear();
-        self.sidebar_bar = None;
-        // One quiet title: the structure outline moved to the command palette.
-        self.tx.draw_ui(
-            cv,
-            r.x + 16,
-            r.y + (TAB_H - 18) / 2 + 2,
-            if self.sidebar_mode == SidebarMode::Outline { "Outline" } else { "Files" },
-            c.tab_inactive_fg,
-            r,
-            true,
-        );
-        self.draw_explorer_refresh(cv);
-        if self.sidebar_mode == SidebarMode::Outline {
-            self.draw_outline(cv);
-            return self.draw_sidebar_bar(cv);
-        }
-        let top = r.y + TAB_H;
-        let body = Rect::new(r.x, top, r.w - 1, r.h - TAB_H);
-        let first = (self.tree.scroll / ROW_H as f64).floor().max(0.0) as usize;
-        let off = -((self.tree.scroll as i32) % ROW_H);
-        let hx = -(self.tree.hscroll as i32);
-        let sidebar_focused = self.focus == Focus::Sidebar;
-        let active_path = self.docs.get(self.active).and_then(|d| d.path()).map(Path::to_path_buf);
-        let rows = ((body.h / ROW_H) + 2) as usize;
-        for (k, row) in self.tree.rows.iter().enumerate().skip(first).take(rows) {
-            let y = top + off + ((k - first) as i32) * ROW_H;
-            let rr = Rect::new(r.x + 8, y + 1, r.w - 17, ROW_H - 2);
-            let is_sel = self.tree.row_selected(k);
-            let is_active = active_path.as_deref() == Some(row.path.as_path());
-            if is_sel && sidebar_focused {
-                cv.fill_clip(Rect::new(rr.x, rr.y, rr.w, rr.h), c.list_active_bg, body);
-                let clip = body.intersect(&rr);
-                cv.fill_round(clip, 7, c.list_active_bg);
-            } else if is_active {
-                let clip = body.intersect(&rr);
-                cv.fill_round(clip, 7, c.list_hover_bg);
-            } else if self.overlay.is_none()
-                && body.contains(self.mouse.0, self.mouse.1)
-                && rr.contains(self.mouse.0, self.mouse.1)
-            {
-                cv.fill_round(body.intersect(&rr), 7, c.list_hover_bg.with_alpha(0xa0));
-            }
-            let indent = 18 + row.depth as i32 * 14;
-            // Zed-style: a chevron for folders, a type icon for files (tinted, so it follows the theme).
-            let cut = self.file_clip.is_cut(&row.path);
-            let icon_color = if is_active { c.tab_active_fg } else { c.tab_inactive_fg };
-            let dim = cut || row.ignored;
-            let icon_color = if dim { icon_color.with_alpha(0x60).over(c.sidebar_bg) } else { icon_color };
-            let iy = y + (ROW_H - 16) / 2;
-            if row.is_dir {
-                let chev = if row.expanded { "ui/chevron_down" } else { "ui/chevron_right" };
-                self.tx.icon(cv, chev, r.x + hx + indent - 4, y + (ROW_H - 14) / 2, 14, icon_color, body);
-                let folder = if row.expanded { "file/folder_open" } else { "file/folder" };
-                self.tx.icon(cv, folder, r.x + hx + indent + 14, iy, 16, icon_color, body);
-            } else {
-                let name = self.tx.icons.file_icon(&row.name);
-                self.tx.icon(cv, &name, r.x + hx + indent + 14, iy, 16, icon_color, body);
-            }
-            let badge = self.git_status.get(&row.path).copied();
-            let fg = if is_active { c.tab_active_fg } else { c.sidebar_fg };
-            let fg = if dim { fg.with_alpha(0x60).over(c.sidebar_bg) } else { fg };
-            // A name that does not fit before the git dot ends in "…"; scrolling right reveals it.
-            let text_x = r.x + hx + indent + 38;
-            // Line coverage of the file, when a report is loaded, just before the git dot.
-            let cov = if row.is_dir { None } else { self.coverage_pct_of(&row.path) };
-            let cov_label = cov.map(|p| format!("{p:.0}%"));
-            let cov_w = cov_label.as_deref().map_or(0, |l| self.tx.ui_width_sized(l, false, 11.0) + 6);
-            let room = crate::app_sidebar::name_room(r, text_x, false) - cov_w;
-            let name = crate::ui::fit_ellipsis(&mut self.tx, &row.name, room, false);
-            self.tx.draw_ui(cv, text_x, y + (ROW_H - 18) / 2, &name, fg, body, false);
-            if let (Some(p), Some(l)) = (cov, cov_label.as_deref()) {
-                let col = self.coverage_color(p).with_alpha(0xc0).over(c.sidebar_bg);
-                self.tx.draw_ui_sized(cv, r.right() - 30 - cov_w, y + (ROW_H - 15) / 2, l, col, body, false, 11.0);
-            }
-            if let Some(b) = badge {
-                // A quiet dot instead of a colored letter: modified / new / deleted.
-                let dot = match b {
-                    'D' => c.git_deleted,
-                    'M' | 'R' => c.git_modified,
-                    _ => c.git_added.with_alpha(0xa0),
-                };
-                cv.fill_round(body.intersect(&Rect::new(r.right() - 24, y + ROW_H / 2 - 3, 6, 6)), 3, dot);
-            }
-        }
-        self.draw_sidebar_bar(cv);
+        self.draw_sidebar_ui(cv);
     }
 
-    pub(super) fn draw_sidebar_bar(&mut self, cv: &mut Canvas) {
+    pub(crate) fn draw_sidebar_bar(&mut self, cv: &mut Canvas) {
         let r = self.layout.sidebar;
         let (total, visible) = self.sidebar_extent();
         let track = Rect::new(r.right() - 15, r.y + TAB_H, 14, r.h - TAB_H);
@@ -444,58 +355,6 @@ impl App {
             b.draw(cv, self.theme.foreground, self.sidebar_bar_hot, self.drag_bar.is_some_and(|(k, _)| k == 1));
         }
         self.draw_sidebar_hbar(cv);
-    }
-
-    pub(super) fn draw_outline(&mut self, cv: &mut Canvas) {
-        let c = self.theme.chrome;
-        let r = self.layout.sidebar;
-        let top = r.y + TAB_H;
-        let body = Rect::new(r.x, top, r.w - 1, r.h - TAB_H);
-        let Some(d) = self.docs.get(self.active) else { return };
-        if d.symbols.is_empty() {
-            let dim = c.tab_inactive_fg;
-            let lines = [
-                ("Functions, classes and types of the open file".to_string(), dim),
-                ("show up here once its language server is ready".to_string(), dim),
-            ];
-            return self.b_empty_state(cv, body, "ui/list_tree", dim, "No outline", &lines);
-        }
-        let (cur_line, _) = d.buf.line_col(d.ed.head());
-        let chain: Vec<usize> = d.symbol_chain(cur_line).iter().map(|s| s.sel_l).collect();
-        let first = (self.tree.scroll / ROW_H as f64).floor().max(0.0) as usize;
-        let off = -((self.tree.scroll as i32) % ROW_H);
-        let hx = -(self.tree.hscroll as i32);
-        let rows = (body.h / ROW_H + 2) as usize;
-        let syms: Vec<crate::doc::Sym> = d.symbols.iter().skip(first).take(rows).cloned().collect();
-        for (k, s) in syms.iter().enumerate() {
-            let y = top + off + k as i32 * ROW_H;
-            let rr = Rect::new(r.x + 8, y + 1, r.w - 17, ROW_H - 2);
-            if chain.contains(&s.sel_l) {
-                cv.fill_round(body.intersect(&rr), 7, c.list_hover_bg);
-            }
-            let x = r.x + hx + 18 + s.depth as i32 * 14;
-            let letter = match s.kind {
-                5 => "C",
-                6 => "m",
-                7 => "p",
-                8 => "f",
-                9 => "c",
-                10 => "E",
-                11 => "I",
-                12 => "ƒ",
-                13 => "v",
-                14 => "k",
-                2 => "M",
-                22 => "e",
-                23 => "S",
-                26 => "T",
-                _ => "·",
-            };
-            self.tx.draw_ui(cv, x, y + (ROW_H - 18) / 2, letter, c.accent_text, body, true);
-            let room = crate::app_sidebar::name_room(r, x + 18, true);
-            let name = crate::ui::fit_ellipsis(&mut self.tx, &s.name, room, false);
-            self.tx.draw_ui(cv, x + 18, y + (ROW_H - 18) / 2, &name, c.sidebar_fg, body, false);
-        }
     }
 
     pub(super) fn draw_breadcrumbs(&mut self, cv: &mut Canvas) {
