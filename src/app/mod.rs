@@ -274,6 +274,8 @@ pub struct App {
     pub lsp_watched: Vec<PathBuf>,
     pub dragging_minimap: bool,
     pub cursor_icon: CursorIcon,
+    /// Per-frame pointer regions and the debug title (see `app_cursor`).
+    pub cur: crate::app_cursor::CursorReg,
     pub hover_rect: Option<(Rect, i32)>,
     /// Welcome row under the pointer (redraws when it changes).
     pub welcome_hot: Option<usize>,
@@ -455,6 +457,7 @@ impl App {
             lsp_watched: Vec::new(),
             dragging_minimap: false,
             cursor_icon: CursorIcon::Default,
+            cur: Default::default(),
             hover_rect: None,
             welcome_hot: None,
             tooltip: None,

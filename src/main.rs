@@ -13,6 +13,9 @@ mod app_backup;
 mod app_build;
 mod app_coverage;
 mod app_ctxmenu;
+mod app_cursor;
+#[cfg(test)]
+mod app_cursor_tests;
 mod app_debug;
 mod app_display;
 mod app_docker;

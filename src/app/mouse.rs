@@ -299,123 +299,125 @@ impl App {
     }
 
     /// Conventional pointer: arrow on chrome, hand on clickable things, I-beam over text,
-    /// resize arrows on the split divider.
+    /// resize arrows on the dividers. See `app_cursor` for the per-frame region registry.
+    #[cfg(test)]
     pub(crate) fn cursor_for(&self) -> CursorIcon {
+        self.cursor_probe().0
+    }
+
+    /// The pointer shape and the reason for it (a registry label, or `cascade:<branch>` for what
+    /// is not registered yet): the debug aid `LUMEN_CURSOR_DEBUG=1` shows it in the title.
+    pub(crate) fn cursor_probe(&self) -> (CursorIcon, &'static str) {
+        use CursorIcon as C;
         let (x, y) = self.mouse;
         let l = &self.layout;
+        // Drags own the pointer wherever it goes.
         if self.dragging_minimap {
-            return CursorIcon::Pointer;
+            return (C::Pointer, "cascade:minimap-drag");
         }
         if self.dragging {
-            return CursorIcon::Text;
+            return (C::Text, "cascade:selection-drag");
         }
-        // The update / about card floats above everything: arrow on it, hand on its buttons and link.
+        if self.drop_dragging() {
+            return (C::Grabbing, "cascade:drop-drag");
+        }
+        if self.sidebar_resizing() || self.ai.resizing {
+            return (C::ColResize, "cascade:edge-drag");
+        }
+        // The onboarding tour, the update / about card and the toasts float above everything.
         if let Some(hand) = self.onboarding_cursor_hand() {
-            return if hand { CursorIcon::Pointer } else { CursorIcon::Default };
+            return if hand { (C::Pointer, "cascade:onboarding-ctl") } else { (C::Default, "cascade:onboarding") };
         }
         if self.upd.card.is_some() && self.upd.card_rect.contains(x, y) {
             return if self.upd.rects.iter().any(|(r, _)| r.contains(x, y)) {
-                CursorIcon::Pointer
+                (C::Pointer, "cascade:update-btn")
             } else {
-                CursorIcon::Default
+                (C::Default, "cascade:update-card")
             };
         }
         if let Some(c) = self.toast_cursor() {
-            return c;
+            return (c, "cascade:toast");
         }
         if self.over_region_bar(x, y) {
-            return CursorIcon::Default;
+            return (C::Default, "cascade:scrollbar");
         }
-        if let Overlay::TopMenu(m) = &self.overlay {
-            return if m.rows.iter().any(|(r, _)| r.contains(x, y)) {
-                CursorIcon::Pointer
-            } else {
-                CursorIcon::Default
-            };
+        // Popups that float over the editor come before the chrome underneath them.
+        if self.overlay.is_none() {
+            if let Some(c) = self.find_cursor(x, y) {
+                return (c, "cascade:find");
+            }
+            if let Some(c) = self.hover_cursor(x, y) {
+                return (c, "cascade:hover-popup");
+            }
+        }
+        // The registry: topmost region wins; an open modal hides everything but its own regions.
+        if let Some(r) = self.cur.topmost(x, y, self.cursor_floor()) {
+            return (r.icon, r.label);
+        }
+        if let Overlay::TopMenu(_) = &self.overlay {
+            return (C::Default, "cascade:topmenu");
         }
         if let Some(icon) = self.settings_cursor() {
-            return icon;
+            return (icon, "cascade:settings");
         }
         if !self.overlay.is_none() {
             return if l.overlay_rows.iter().any(|(r, _)| r.contains(x, y)) {
-                CursorIcon::Pointer
+                (C::Pointer, "cascade:overlay-row")
             } else if self.overlay_over_input() {
-                CursorIcon::Text
+                (C::Text, "cascade:overlay-input")
             } else {
-                CursorIcon::Default
+                (C::Default, "cascade:modal-backdrop")
             };
         }
-        if let Some(c) = self.find_cursor(x, y) {
-            return c;
-        }
-        if let Some(c) = self.hover_cursor(x, y) {
-            return c;
-        }
         if let Some(c) = self.term_cursor(x, y) {
-            return c;
+            return (c, "cascade:terminal");
         }
         if let Some(c) = self.aipanel_cursor(x, y) {
-            return c;
+            return (c, "cascade:ai-dock");
         }
         if let Some(c) = self.gitpanel_cursor(x, y) {
-            return c;
-        }
-        if self.drop_dragging() {
-            return CursorIcon::Grabbing;
+            return (c, "cascade:git-dock");
         }
         if let Some(c) = self.sidebar_cursor(x, y) {
-            return c;
+            return (c, "cascade:sidebar-header");
         }
-        if self.sidebar_resizing() || self.sidebar_on_edge(x, y) {
-            return CursorIcon::ColResize;
+        if self.sidebar_on_edge(x, y) {
+            return (C::ColResize, "cascade:sidebar-edge");
         }
         if self.drag_bar.is_some()
             || self.over_hbar(x, y)
             || self.sidebar_bar.is_some_and(|b| b.track.contains(x, y))
             || self.docs.get(self.active).and_then(|d| d.sb).is_some_and(|b| b.track.contains(x, y))
         {
-            return CursorIcon::Default;
+            return (C::Default, "cascade:scrollbar");
         }
         if let Some(c) = self.split_cursor(x, y) {
-            return c;
-        }
-        if l.divider.w > 0 && Rect::new(l.divider.x - 4, l.divider.y, l.divider.w + 8, l.divider.h).contains(x, y) {
-            return CursorIcon::ColResize;
+            return (c, "cascade:split");
         }
         if let Some(c) = self.md_cursor(x, y) {
-            return c;
+            return (c, "cascade:markdown");
         }
         if let Some(c) = self.img_cursor(x, y) {
-            return c;
+            return (c, "cascade:image");
         }
         if let Some(c) = self.mb_cursor(x, y) {
-            return c;
+            return (c, "cascade:multibuffer");
         }
         if let Some(c) = self.sql_cursor(x, y) {
-            return c;
+            return (c, "cascade:sql");
         }
         if let Some(c) = self.api_cursor(x, y) {
-            return c;
+            return (c, "cascade:openapi");
         }
-        if l.top_btns.iter().any(|(r, _)| r.contains(x, y))
-            || l.status_btns.iter().any(|(r, _)| r.contains(x, y))
-            || l.rail_btns.iter().any(|(r, _)| r.contains(x, y))
-            || l.quick.contains(x, y)
-            || l.welcome.iter().any(|(r, _)| r.contains(x, y))
-            || l.tabs.iter().any(|(r, _, _)| r.contains(x, y))
-            || l.sidebar_tabs.iter().any(|(r, _)| r.contains(x, y))
-            || l.crumbs.iter().any(|(r, _)| r.contains(x, y))
-            || l.panel_tabs.iter().any(|(r, _)| r.contains(x, y))
-            || self.panel_btn_at(x, y).is_some()
+        if self.panel_btn_at(x, y).is_some()
             || self.terms_hit_at(x, y).is_some()
             || self.tests_clickable_at(x, y)
             || self.build_clickable_at(x, y)
             || self.fswatch_clickable_at(x, y)
-            || l.completion_rows.iter().any(|(r, _)| r.contains(x, y))
             || self.diff_btn_at(x, y).is_some()
             || self.merge_btn_at(x, y)
         {
-            return CursorIcon::Pointer;
+            return (C::Pointer, "cascade:panel-or-diff-btn");
         }
         if l.sidebar.contains(x, y) {
             let rel = y - (l.sidebar.y + TAB_H) as f64 + self.tree.scroll;
@@ -425,38 +427,48 @@ impl App {
                 self.tree.rows.len()
             };
             return if y >= (l.sidebar.y + TAB_H) as f64 && rel >= 0.0 && ((rel / ROW_H as f64) as usize) < rows {
-                CursorIcon::Pointer
+                (C::Pointer, "cascade:sidebar-row")
             } else {
-                CursorIcon::Default
+                (C::Default, "cascade:sidebar-dead")
             };
         }
         if let Some(d) = self.docs.get(self.active)
             && let Some(m) = d.minimap_layout.as_ref()
             && m.rect.contains(x, y)
         {
-            return CursorIcon::Pointer;
+            return (C::Pointer, "cascade:minimap");
         }
         if l.editor.contains(x, y) || self.split_in_other(x, y) {
+            // No document: the welcome screen's dead areas are not text.
+            if self.docs.get(self.active).is_none() {
+                return (C::Default, "cascade:welcome-dead");
+            }
             if self.mods.control_key()
                 && self
                     .docs
                     .get(self.active)
                     .is_some_and(|d| d.hit_at(x, y).1.is_some_and(|h| d.hint_link(h).is_some()))
             {
-                return CursorIcon::Pointer; // Ctrl over a hint with a target
+                return (C::Pointer, "cascade:hint-link"); // Ctrl over a hint with a target
             }
             // Gutter (line numbers, fold chevrons, breakpoints) is not text.
             let gutter_right = l.editor.x + 56;
             return if x < gutter_right as f64 && l.editor.contains(x, y) {
-                CursorIcon::Default
+                (C::Default, "cascade:gutter")
             } else {
-                CursorIcon::Text
+                (C::Text, "cascade:editor-text")
             };
         }
         if l.panel.contains(x, y) {
-            return CursorIcon::Text;
+            // Output and the terminal are selectable text; the other tabs are lists and tools.
+            return match self.panel.tab {
+                crate::app_panel::PanelTab::Output | crate::app_panel::PanelTab::Terminal => {
+                    (C::Text, "cascade:panel-text")
+                }
+                _ => (C::Default, "cascade:panel-dead"),
+            };
         }
-        CursorIcon::Default
+        (C::Default, "cascade:dead-area")
     }
 
     /// The clickable item under the pointer (rect + corner radius) for the hover tint.
@@ -573,7 +585,8 @@ impl App {
             self.request_redraw();
         }
         self.update_tooltip();
-        let want = self.cursor_for();
+        let (want, why) = self.cursor_probe();
+        self.cursor_debug_title(want, why);
         if want != self.cursor_icon {
             self.cursor_icon = want;
             if let Some(g) = &self.gfx {
