@@ -699,6 +699,7 @@ impl App {
 
     /// Button released (anywhere): ends scrollbar drags and selection drags.
     pub fn mouse_up(&mut self) {
+        self.settings_pointer_up();
         self.hover_mouse_up();
         self.gitpanel_release();
         self.aipanel_release();

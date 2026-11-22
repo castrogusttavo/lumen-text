@@ -184,6 +184,7 @@ impl App {
         self.draw_tooltip(cv);
         self.draw_toast(cv);
         crate::perf::lap!("overlays");
+        busy |= self.settings_busy();
         busy | self.scroll_activity()
     }
 

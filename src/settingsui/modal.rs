@@ -28,6 +28,14 @@ pub(super) enum Hit {
     KbConfirm,
     KbCancel,
     Scope(crate::projcfg::Scope),
+    /// A slider's track (click or drag sets the value).
+    Slide(usize), // def
+    /// "Clear search" in the empty state of the settings list.
+    ClearSearch,
+    /// "Clear filter" in the empty state of the shortcuts list.
+    KbClearFilter,
+    /// Swallows clicks (the open dropdown's panel) without doing anything.
+    Block,
 }
 
 pub struct Modal {
@@ -43,6 +51,7 @@ pub struct Modal {
     pub scope: Option<crate::projcfg::Scope>,
     /// The page's defaults as built (the Project scope swaps in the user's values to reset to).
     pub user_defaults: Value,
+    pub(super) mo: Motion,
 }
 
 pub(super) const HEAD_H: i32 = 48;
@@ -60,6 +69,7 @@ impl Modal {
             list: None,
             scope: None,
             user_defaults: Value::Null,
+            mo: Motion::default(),
         }
     }
 
@@ -198,7 +208,22 @@ impl Modal {
                 }
                 Event::None
             }
-            Hit::Search | Hit::DropItem(_) => Event::None,
+            Hit::Search | Hit::DropItem(_) | Hit::Block => Event::None,
+            Hit::Slide(d) => {
+                self.settings.select_def(d);
+                self.mo.drag = Some(d);
+                self.slide_to(d, x)
+            }
+            Hit::ClearSearch => {
+                self.settings.search = TextField::default();
+                self.settings.search_changed();
+                Event::None
+            }
+            Hit::KbClearFilter => {
+                self.keybinds.filter = TextField::default();
+                self.keybinds.refilter();
+                Event::None
+            }
             Hit::Section(i) => {
                 self.settings.search = TextField::default();
                 self.settings.set_section(i);
@@ -264,6 +289,61 @@ impl Modal {
         }
     }
 
+    /// The hit region under a window position (the last drawn frame's), if the point is inside.
+    fn hit_at(&self, x: f64, y: f64) -> Option<Hit> {
+        if !self.rect.contains(x, y) {
+            return None;
+        }
+        self.hits.iter().rev().find(|(r, _)| r.contains(x, y)).map(|(_, h)| h.clone())
+    }
+
+    /// Value of the slider `def` for a pointer at window x (from the track of the last frame).
+    fn slide_to(&mut self, def: usize, x: f64) -> Event {
+        let Some(track) = self.mo.tracks.get(&def).copied() else { return Event::None };
+        let SettingKind::Number { min, max, step } = self.settings.defs[def].kind else { return Event::None };
+        let frac = (x - track.x as f64) / track.w.max(1) as f64;
+        self.settings.set_number(def, slider_value(min, max, step, frac))
+    }
+
+    /// The pointer moved to window position (x, y): updates hover (and the slider being dragged).
+    /// Returns the event of a drag and whether the modal must be redrawn.
+    pub fn pointer_move(&mut self, x: f64, y: f64) -> (Event, bool) {
+        self.mo.mouse = (x as i32, y as i32);
+        if let Some(d) = self.mo.drag {
+            return (self.slide_to(d, x), true);
+        }
+        let hit = self.hit_at(x, y);
+        if hit == self.mo.hover {
+            return (Event::None, false);
+        }
+        self.mo.hover = hit;
+        self.mo.hover_t = 0.0;
+        (Event::None, true)
+    }
+
+    /// The mouse button was released: a slider drag ends.
+    pub fn pointer_up(&mut self) {
+        self.mo.drag = None;
+    }
+
+    /// Mouse cursor for a window position: hand on clickable things, I-beam on inputs.
+    pub fn cursor_at(&self, x: f64, y: f64) -> winit::window::CursorIcon {
+        if self.mo.drag.is_some() {
+            return winit::window::CursorIcon::Grabbing;
+        }
+        self.hit_at(x, y).map_or(winit::window::CursorIcon::Default, |h| cursor_of(&h))
+    }
+
+    /// True while something still animates (the app keeps redrawing until it settles).
+    pub fn animating(&self) -> bool {
+        self.mo.busy
+    }
+
+    /// Folder with the bundled themes, for the colour swatches of the theme rows.
+    pub fn set_theme_dir(&mut self, dir: std::path::PathBuf) {
+        self.mo.theme_dir = Some(dir);
+    }
+
     pub fn draw(&mut self, cv: &mut Canvas, tx: &mut TextCtx, theme: &Theme, window: Rect) {
         let c = theme.chrome;
         let fg = theme.foreground;
@@ -271,27 +351,44 @@ impl Modal {
         let r = Self::rect_for(window);
         self.rect = r;
         self.hits.clear();
+        self.mo.begin_frame();
+        // Reduce motion (config `reduce_motion`): absent from the values means "off".
+        self.mo.reduce = self.settings.values.get("reduce_motion").and_then(Value::as_bool).unwrap_or(false);
         cv.shadow(r, 14);
         cv.card(r, 14, c.widget_bg, c.border);
 
-        // Header: page tabs + close button.
+        // Header: page tabs + close button. The active tab's pill slides to the new tab.
         let mut x = r.x + 18;
+        let mut tabs = Vec::new();
         for (page, icon, label) in
             [(Page::Settings, "settings", "Settings"), (Page::Keybinds, "keyboard", "Keyboard shortcuts")]
         {
             let active = self.page == page;
             let tw = tx.ui_width(label, active);
             let tab = Rect::new(x, r.y + 9, 16 + 8 + tw + 28, 30);
-            if active {
-                cv.fill_round(tab, 8, c.list_active_bg);
+            tabs.push((tab, page, icon, label, active));
+            x = tab.right() + 6;
+        }
+        if let Some((tab, ..)) = tabs.iter().find(|t| t.4) {
+            let (reduce, dt) = (self.mo.reduce, self.mo.dt);
+            let ax = Motion::glide(&mut self.mo.tab_x, tab.x as f32, reduce, dt, &mut self.mo.busy);
+            let aw = Motion::glide(&mut self.mo.tab_w, tab.w as f32, reduce, dt, &mut self.mo.busy);
+            cv.fill_round(Rect::new(ax.round() as i32, tab.y, aw.round() as i32, tab.h), 8, c.list_active_bg);
+        }
+        for (tab, page, icon, label, active) in tabs {
+            if !active && self.mo.is_hot(&Hit::Tab(page)) {
+                cv.fill_round(tab, 8, c.list_hover_bg);
             }
             tx.icon(cv, &format!("hugeicons/{icon}"), tab.x + 12, tab.y + 7, 16, if active { fg } else { dim }, tab);
             tx.draw_ui(cv, tab.x + 36, tab.y + 6, label, if active { fg } else { dim }, tab, active);
             self.hits.push((tab, Hit::Tab(page)));
-            x = tab.right() + 6;
         }
         let close = Rect::new(r.right() - 18 - 28, r.y + 10, 28, 28);
-        tx.icon(cv, "hugeicons/close", close.x + 6, close.y + 6, 16, dim, close);
+        let close_hot = self.mo.is_hot(&Hit::Close);
+        if close_hot {
+            cv.fill_round(close, 8, c.list_hover_bg);
+        }
+        tx.icon(cv, "hugeicons/close", close.x + 6, close.y + 6, 16, if close_hot { fg } else { dim }, close);
         self.hits.push((close, Hit::Close));
         // "User | Project": which file the Settings page edits.
         let mut right = close.x;
@@ -309,6 +406,8 @@ impl Modal {
                     let active = s == cur;
                     if active {
                         rr(cv, seg, 6, c.accent, r);
+                    } else if self.mo.is_hot(&Hit::Scope(s)) {
+                        rr(cv, seg, 6, c.list_hover_bg, r);
                     }
                     tx.draw_ui(
                         cv,
@@ -334,8 +433,17 @@ impl Modal {
 
         let body = Rect::new(r.x, r.y + HEAD_H + 1, r.w, r.h - HEAD_H - 1);
         self.list = match self.page {
-            Page::Settings => draw_settings(&mut self.settings, cv, tx, theme, body, &mut self.hits),
-            Page::Keybinds => draw_keybinds(&mut self.keybinds, cv, tx, theme, body, &mut self.hits),
+            Page::Settings => draw_settings(&mut self.settings, cv, tx, theme, body, &mut self.hits, &mut self.mo),
+            Page::Keybinds => draw_keybinds(&mut self.keybinds, cv, tx, theme, body, &mut self.hits, &mut self.mo),
         };
+        // Tooltip after the pointer rested on a control for a moment.
+        let tip = self.mo.hover.as_ref().and_then(|h| tip_text(h, &self.settings));
+        self.mo.end_frame(tip.is_some());
+        if let Some((text, combo)) = tip
+            && self.mo.hover_t >= TIP_DELAY
+            && self.mo.drag.is_none()
+        {
+            draw_tip(cv, tx, theme, self.mo.mouse, &text, combo, window);
+        }
     }
 }
