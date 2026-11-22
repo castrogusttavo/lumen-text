@@ -564,23 +564,6 @@ impl TextArea {
         true
     }
 
-    /// The caret as a byte offset into [`text`](Self::text).
-    pub fn caret_byte(&self) -> usize {
-        self.chars[..self.cursor].iter().map(|c| c.len_utf8()).sum()
-    }
-
-    /// Replace the text between two byte offsets of [`text`](Self::text) (one undo step); the
-    /// caret lands after the new text.
-    pub fn replace_bytes(&mut self, a: usize, b: usize, s: &str) {
-        let (a, b) = (a.min(self.text.len()), b.min(self.text.len()));
-        if !self.text.is_char_boundary(a) || !self.text.is_char_boundary(b) || a > b {
-            return;
-        }
-        let (ca, cb) = (self.text[..a].chars().count(), self.text[..b].chars().count());
-        let s = clean(s);
-        self.edit(ca, cb, &s, EditKind::Other);
-    }
-
     fn delete_selection(&mut self) -> bool {
         let (a, b) = self.selection();
         if a == b {
@@ -1059,18 +1042,5 @@ mod tests {
         t.layout(100.0, &mut mono);
         t.set_view(18.0, 54.0);
         assert_eq!(t.scroll, 0.0);
-    }
-
-    #[test]
-    fn byte_offsets_of_the_caret_and_replacements() {
-        let mut t = area("héllo @src world", 400.0);
-        assert_eq!(t.caret_byte(), "héllo @src world".len(), "the caret is at the end");
-        t.replace_bytes(7, 11, "@src/main.rs ");
-        assert_eq!(t.text(), "héllo @src/main.rs  world");
-        assert_eq!(t.caret_byte(), 7 + "@src/main.rs ".len());
-        t.replace_bytes(2, 3, "x");
-        assert_eq!(t.text(), "héllo @src/main.rs  world", "inside a character: refused");
-        assert!(t.undo());
-        assert_eq!(t.text(), "héllo @src world");
     }
 }

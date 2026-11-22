@@ -80,9 +80,15 @@ impl App {
             }
         }
         for s in &self.ai.sessions {
-            let started = s.term.as_ref().map(|t| t.started).or(s.chat.as_ref().map(|c| c.started));
-            if s.term.as_ref().is_some_and(|t| t.alive) || s.pid().is_some() {
-                push(Kind::Agent, s.name.clone(), Target::Agent(s.id), s.pid(), started.map(|t| t.elapsed()), false);
+            if s.term.alive {
+                push(
+                    Kind::Agent,
+                    s.name.clone(),
+                    Target::Agent(s.id),
+                    s.term.pid(),
+                    Some(s.term.started.elapsed()),
+                    false,
+                );
             }
         }
         if let Some(d) = &self.dbg {

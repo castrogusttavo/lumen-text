@@ -391,25 +391,6 @@ impl Clipboard {
         if t.is_empty() { Offer::Empty } else { Offer::Text(t) }
     }
 
-    /// The image on the clipboard (media type, bytes), when one is offered.
-    pub fn get_image(&mut self) -> Option<(&'static str, Vec<u8>)> {
-        let this = &*self;
-        let (prog, args) = typed_read(self.backend, None)?;
-        let out = this.tool(prog).args(args).stderr(Stdio::null()).output().ok()?;
-        let types = String::from_utf8_lossy(&out.stdout).into_owned();
-        for mime in ["image/png", "image/jpeg", "image/webp", "image/gif"] {
-            if !types.lines().any(|t| t.trim() == mime) {
-                continue;
-            }
-            let (prog, args) = typed_read(self.backend, Some(mime))?;
-            let out = this.tool(prog).args(args).stderr(Stdio::null()).output().ok()?;
-            if out.status.success() && !out.stdout.is_empty() {
-                return Some((mime, out.stdout));
-            }
-        }
-        None
-    }
-
     /// Files another program (or this one) copied to the system clipboard.
     pub fn get_files(&mut self) -> Option<FileList> {
         let this = &*self;
@@ -554,10 +535,6 @@ mod tests {
         std::fs::write(dir.join("mime"), "image/png\n").unwrap();
         std::fs::write(dir.join("data"), "\u{89}PNG").unwrap();
         assert_eq!(c.offer(), Offer::Image, "a screenshot: the agent reads it itself");
-        assert_eq!(c.get_image(), Some(("image/png", "\u{89}PNG".as_bytes().to_vec())), "the chat attaches it");
-        std::fs::write(dir.join("mime"), "text/plain\n").unwrap();
-        assert_eq!(c.get_image(), None, "no image offered");
-        std::fs::write(dir.join("mime"), "image/png\n").unwrap();
         std::fs::write(dir.join("mime"), "image/png\ntext/plain\n").unwrap();
         std::fs::write(dir.join("data"), "caption").unwrap();
         assert_eq!(c.offer(), Offer::Text("caption".into()), "text wins when there is some");

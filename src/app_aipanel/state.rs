@@ -16,8 +16,6 @@ pub enum Status {
     Done,
     /// The process ended (exit code; 128 + n for a signal).
     Exited(i32),
-    /// A structured chat session between turns, nothing asked yet.
-    Ready,
 }
 
 impl Status {
@@ -28,7 +26,6 @@ impl Status {
             Status::Waiting => "Waiting for you".into(),
             Status::Done => "Done".into(),
             Status::Exited(c) => format!("Exited ({c})"),
-            Status::Ready => "Ready".into(),
         }
     }
 }
@@ -118,38 +115,6 @@ pub enum AiHit {
     Filter,
     /// Its clear button.
     FilterClear,
-    /// The composer box (a click puts the keyboard in it).
-    Composer,
-    /// The round send button of the composer.
-    Send,
-    /// The stop button that replaces Send while the agent works and the box is empty (Esc to it).
-    Interrupt,
-    /// Composer chip: mention the file open in the editor.
-    AttachFile,
-    /// Composer chip: insert the editor's selection.
-    AttachSel,
-    /// Header menu: the sessions, the filter, rename, worktree sessions.
-    Menu,
-    /// Row `n` of the autocomplete menu above the composer (slash commands, `@` files).
-    MenuRow(usize),
-    /// Composer chip: the permission mode (a click picks one, Shift+Tab cycles).
-    Mode,
-    /// Composer chip: the model.
-    Model,
-    /// The remove button of attachment `n`.
-    Unattach(usize),
-}
-
-/// Something attached to the message being written: a file (mentioned by its path) or an image
-/// (pasted, or a picture file).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Attachment {
-    /// What the chip shows.
-    pub name: String,
-    /// The file (an image pasted from the clipboard is saved to a temporary one).
-    pub path: PathBuf,
-    /// Media type when it is an image the agent can look at.
-    pub image: Option<&'static str>,
 }
 
 /// What one session's process looked like at a moment (taken from its terminal).
@@ -252,20 +217,6 @@ impl Track {
         c.alert && matches!(self.status, Status::Waiting | Status::Done) && !self.notified
     }
 
-    /// A structured session's status, straight from its conversation.
-    pub fn set_chat(&mut self, s: Status, watching: bool) -> Change {
-        let was = self.status;
-        self.status = s;
-        let alert = was == Status::Working && s != Status::Working;
-        if alert {
-            self.unseen = !watching;
-        }
-        if s == Status::Working {
-            self.worked = true;
-        }
-        Change { changed: was != s, alert }
-    }
-
     /// The user typed: whatever it asked for is being answered, a new turn begins.
     pub fn on_input(&mut self) {
         self.attention = false;
@@ -286,10 +237,7 @@ pub struct Session {
     pub name: String,
     /// Where the agent runs: the project, or another folder such as a worktree of it.
     pub cwd: PathBuf,
-    /// The agent's terminal (agents without a structured mode, or terminal mode).
-    pub term: Option<Term>,
-    /// The structured conversation (Claude Code, Codex, Gemini), instead of a terminal.
-    pub chat: Option<Box<ChatSession>>,
+    pub term: Term,
     pub track: Track,
 }
 
@@ -298,45 +246,9 @@ impl Session {
         self.track.status
     }
 
-    /// Something runs for it: the terminal's process, or a turn in progress.
-    pub fn busy(&self) -> bool {
-        match (&self.term, &self.chat) {
-            (Some(t), _) => t.alive,
-            (_, Some(c)) => c.chat.working(),
-            _ => false,
-        }
-    }
-
-    /// The process id of what runs (resource monitor).
-    pub fn pid(&self) -> Option<u32> {
-        match (&self.term, &self.chat) {
-            (Some(t), _) if t.alive => t.pid(),
-            (_, Some(c)) => c.be.pid(),
-            _ => None,
-        }
-    }
-
-    /// What the agent is working on, for a notification.
-    pub fn task(&self) -> String {
-        match (&self.term, &self.chat) {
-            (Some(t), _) => title_task(&t.grid.title).to_string(),
-            (_, Some(c)) => c.last_prompt().chars().take(80).collect(),
-            _ => String::new(),
-        }
-    }
-
-    /// Fold the latest state (terminal or chat) into the status.
+    /// Fold the terminal's latest state into the status.
     pub fn refresh(&mut self, now: Instant, watching: bool) -> Change {
-        if let Some(c) = &self.chat {
-            let s = match c.chat.phase {
-                super::chat::Phase::Working => Status::Working,
-                super::chat::Phase::Waiting => Status::Waiting,
-                super::chat::Phase::Idle if c.chat.turns > 0 => Status::Done,
-                super::chat::Phase::Idle => Status::Ready,
-            };
-            return self.track.set_chat(s, watching);
-        }
-        let Some(t) = &self.term else { return Change::default() };
+        let t = &self.term;
         let o = Obs {
             alive: t.alive,
             exit: t.exit_code,
@@ -454,42 +366,10 @@ pub struct AiState {
     pub filter: TextField,
     /// Keys go to the filter field instead of the agent.
     pub filter_focus: bool,
-    /// The filter row is shown (it also shows while the filter holds text).
-    pub filter_open: bool,
-    /// The composer (not the agent's terminal) has the keyboard, within the focused panel.
-    pub composer_focus: bool,
-    /// What is being typed in the composer.
-    pub composer: crate::textarea::TextArea,
-    /// Messages sent from the composer (Up / Down in an empty box).
-    pub history: super::composer::History,
-    /// Where the composer's text starts on screen (set by the last frame; for clicks).
-    pub composer_origin: (i32, i32),
-    /// The composer's box and whole area, as of the last frame (the terminal gets what is left).
-    pub composer_box: Rect,
-    pub composer_area: i32,
-    /// Last click in the composer: when, where, and how many in a row (double / triple click).
-    pub composer_click: Option<(Instant, (i32, i32), u32)>,
-    /// The autocomplete menu above the composer (slash commands or files), when one is open.
-    pub menu: Option<super::menu::Menu>,
-    /// What the menu was last built for (text, caret): it is rebuilt only when that changes.
-    pub menu_for: (String, usize),
-    /// Esc closed the menu for this text: it stays closed until the text changes.
-    pub menu_closed: Option<String>,
-    /// Files and images attached to the message being written.
-    pub attachments: Vec<Attachment>,
-    /// The project's files for `@` mentions (root, when listed, relative paths).
-    pub files: Option<(PathBuf, Instant, Vec<String>)>,
-    /// Custom commands and skills found on disk (folder, commands).
-    pub found_cmds: Option<(PathBuf, Instant, Vec<super::slash::Cmd>)>,
     /// The IDE bridge (Claude Code's diffs, selection, diagnostics, hooks).
     pub bridge: super::bridge::Bridge,
-    /// The Enter that submits a message sent from the composer: (session, when).
-    pub pending_enter: Option<(u64, Instant)>,
     /// A prompt ("Explain" / "Fix with AI") waiting for its session to finish starting.
     pub pending_prompt: Option<(u64, String)>,
-    /// Claude Code, Codex and Gemini run in their structured mode with a native chat instead of a
-    /// terminal (off in tests, which drive stub agents in a terminal, and with LUMEN_AI_TERMINAL).
-    pub structured: bool,
     /// Desktop notifications "sent" (title, body): tests look here, nothing pops up.
     #[cfg(test)]
     pub sent: Vec<(String, String)>,
@@ -513,24 +393,8 @@ impl Default for AiState {
             resizing: false,
             filter: TextField::default(),
             filter_focus: false,
-            filter_open: false,
-            composer_focus: true,
-            composer: Default::default(),
-            history: Default::default(),
-            composer_origin: (0, 0),
-            composer_box: Rect::default(),
-            composer_area: super::COMPOSER_AREA_GUESS,
-            composer_click: None,
-            menu: None,
-            menu_for: (String::new(), 0),
-            menu_closed: None,
-            attachments: Vec::new(),
-            files: None,
-            found_cmds: None,
             bridge: Default::default(),
-            pending_enter: None,
             pending_prompt: None,
-            structured: !cfg!(test) && std::env::var_os("LUMEN_AI_TERMINAL").is_none(),
             #[cfg(test)]
             sent: Vec::new(),
         }
@@ -572,11 +436,11 @@ impl AiState {
 
     /// The terminal of the session shown.
     pub fn term(&self) -> Option<&Term> {
-        self.cur().and_then(|s| s.term.as_ref())
+        self.cur().map(|s| &s.term)
     }
 
     pub fn term_mut(&mut self) -> Option<&mut Term> {
-        self.cur_mut().and_then(|s| s.term.as_mut())
+        self.cur_mut().map(|s| &mut s.term)
     }
 
     /// The agent of the session shown, else the one picked last.

@@ -437,7 +437,7 @@ fn sessions_get_their_own_hooks_notifications_and_client() {
     assert_eq!(app.ai.bridge.expect, vec![s1, s2], "both wait for their Claude Code to connect");
 
     // Claude Code connects and says its pid: it is session 2's, whatever the order.
-    let pid2 = app.ai.sessions[1].term.as_ref().unwrap().pid().unwrap();
+    let pid2 = app.ai.sessions[1].term.pid().unwrap();
     let mut c = Fake::connect(port, &token);
     c.send(json!({"jsonrpc": "2.0", "method": "ide_connected", "params": {"pid": pid2}}));
     pump_until(&mut app, |a| a.ai.bridge.session_connected(s2));

@@ -176,8 +176,6 @@ fn ai_panel_runs_a_stub_agent_end_to_end() {
     app.ai.search = Some(vec![bin.clone()]);
     app.run_bound("AiPanel");
     assert!(app.ai.open && app.ai.focused, "the toggle shows and focuses the panel");
-    assert!(app.ai.composer_focus, "the composer has the keyboard first");
-    app.ai.composer_focus = false; // these keys are for the agent's own terminal
     assert_eq!(app.ai.agent().map(|a| a.id), Some("claude"));
     assert!(app.ai.term().is_some(), "the installed agent starts by itself");
     assert_eq!(app.ai.sessions.len(), 1);
@@ -200,7 +198,6 @@ fn ai_panel_runs_a_stub_agent_end_to_end() {
     assert!(enter.contains("[1b][5b][31][33][3b][32][75]"), "Shift+Enter is ESC [13;2u: {enter:?}");
     // Esc goes to the agent too (it interrupts), Ctrl+J is a newline for it.
     app.handle_key(&KeyIn { key: Key::Named(NamedKey::Escape), text: None });
-    app.ai.composer_focus = false; // Esc may bring the keyboard back to the composer: back to the terminal
     app.mods = winit::keyboard::ModifiersState::CONTROL;
     app.handle_key(&KeyIn { key: Key::Character("j".into()), text: None });
     app.mods = winit::keyboard::ModifiersState::empty();
@@ -380,7 +377,6 @@ fn a_long_paste_reaches_the_agent_whole() {
     app.size = (1200, 800);
     app.ai.search = Some(vec![bin.clone()]);
     app.ai_pick_new("codex");
-    app.ai.composer_focus = false;
     assert_eq!(app.ai.sessions.len(), 1);
     let screen = wait_screen(&mut app, "paste-ready");
     assert!(screen.contains("paste-ready"), "{screen:?}");
@@ -413,7 +409,6 @@ fn ctrl_v_leaves_images_to_the_agent_and_pastes_files_as_paths() {
     app.clip = crate::clipboard::Clipboard::with_fake_tools(&clipdir);
     app.ai.search = Some(vec![bin.clone()]);
     app.ai_pick_new("gemini");
-    app.ai.composer_focus = false;
     let first = wait_screen(&mut app, "stub-agent ready");
     assert!(first.contains("stub-agent ready"), "{first:?}");
     std::thread::sleep(Duration::from_millis(300));
@@ -600,74 +595,6 @@ fn problem_rows_of_the_list_and_failed_tests_become_prompts() {
     app.config.ai_prompt_context = 0;
     let t = app.ai_test_prompt(AskMode::Fix).unwrap();
     assert!(t.starts_with("Please fix"), "{t}");
-    drop(app);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-#[cfg(unix)]
-fn the_composer_sends_to_the_agent_and_keeps_a_history() {
-    use crate::app_unsaved::testkit::{lock, test_app, tmp};
-    let _g = lock();
-    let dir = tmp("ai-composer");
-    let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    stub(&bin, "claude", STUB_AGENT, true);
-    let mut app = test_app(&dir);
-    app.size = (1200, 800);
-    app.ai.search = Some(vec![bin.clone()]);
-    app.run_bound("AiPanel");
-    assert!(app.ai.composer_focus);
-    let first = wait_screen(&mut app, "stub-agent ready");
-    assert!(first.contains("stub-agent ready"), "{first:?}");
-    std::thread::sleep(Duration::from_millis(300));
-    let key = |app: &mut App, k: Key, text: Option<&str>| {
-        app.handle_key(&KeyIn { key: k, text: text.map(str::to_string) });
-    };
-    for c in ["h", "i"] {
-        key(&mut app, Key::Character(c.into()), Some(c));
-    }
-    assert_eq!(app.ai.composer.text(), "hi", "typing edits the composer, not the agent");
-    // Shift+Enter is a new line, Enter sends.
-    app.mods = winit::keyboard::ModifiersState::SHIFT;
-    key(&mut app, Key::Named(NamedKey::Enter), None);
-    app.mods = winit::keyboard::ModifiersState::empty();
-    assert_eq!(app.ai.composer.text(), "hi\n");
-    app.ai.composer.set_text("hi");
-    key(&mut app, Key::Named(NamedKey::Enter), None);
-    assert_eq!(app.ai.composer.text(), "", "sent: the box is empty again");
-    let end = Instant::now() + Duration::from_secs(15);
-    let mut screen = String::new();
-    while Instant::now() < end && !screen.contains("[68][69][0d]") {
-        app.pump_ai();
-        app.ai_tick(Instant::now(), &mut |_| {});
-        screen = app
-            .ai
-            .term()
-            .map(|t| (0..t.grid.rows).map(|r| t.grid.view_row_text(r, 0)).collect::<Vec<_>>().join(""))
-            .unwrap_or_default();
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(screen.contains("[68][69][0d]"), "the message, then Enter: {screen:?}");
-    // Up in the empty box brings the message back; Down gives the (empty) draft back.
-    key(&mut app, Key::Named(NamedKey::ArrowUp), None);
-    assert_eq!(app.ai.composer.text(), "hi");
-    key(&mut app, Key::Named(NamedKey::ArrowDown), None);
-    assert_eq!(app.ai.composer.text(), "");
-    // Tab hands the keyboard to the terminal; a click in the composer takes it back.
-    key(&mut app, Key::Named(NamedKey::Tab), None);
-    assert!(!app.ai.composer_focus);
-    let (w, h) = (1200, 800);
-    let mut px = vec![0u32; (w * h) as usize];
-    let mut cv = crate::ui::Canvas { px: &mut px, w, h };
-    app.render_into(&mut cv, 0.016);
-    for want in [AiHit::Composer, AiHit::Send, AiHit::AttachFile, AiHit::Agent, AiHit::Menu] {
-        assert!(app.ai.hits.iter().any(|(_, h)| *h == want), "{want:?} is laid out");
-    }
-    let b = app.ai.composer_box;
-    assert!(b.w > 0 && b.h > 0 && b.bottom() <= 800, "{b:?}");
-    assert!(app.aipanel_mouse((b.x + 20) as f64, (b.y + 12) as f64, 0));
-    assert!(app.ai.composer_focus, "a click in the box focuses it");
     drop(app);
     let _ = std::fs::remove_dir_all(&dir);
 }

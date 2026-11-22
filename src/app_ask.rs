@@ -187,7 +187,7 @@ impl App {
     /// Build & Run job.
     pub fn running_procs(&self) -> Vec<String> {
         let mut v: Vec<String> = self.terms.tabs.iter().filter_map(|t| t.term.foreground_job()).collect();
-        v.extend(self.ai.sessions.iter().filter(|s| s.busy()).map(|s| s.name.clone()));
+        v.extend(self.ai.sessions.iter().filter(|s| s.term.alive).map(|s| s.name.clone()));
         if self.panel.running.is_some() {
             v.push(self.panel.cmd.clone().unwrap_or_else(|| "task".into()));
         }

@@ -31,9 +31,6 @@ impl App {
             }
             return false;
         }
-        if self.ai.composer_focus && !self.ai.sessions.is_empty() {
-            return self.ai_composer_key(ev);
-        }
         if self.ai.term().is_none_or(|t| !t.alive) {
             // Empty state or a finished agent: Enter starts it again; anything else hands the
             // keyboard back to the editor (and still does what it does there).
@@ -63,15 +60,7 @@ impl App {
             }
             return true;
         }
-        // Esc goes to the agent (it interrupts); with nothing running to interrupt it also brings
-        // the keyboard back to the composer.
-        let esc = matches!(&ev.key, Key::Named(winit::keyboard::NamedKey::Escape)) && !ctrl && !shift && !alt;
-        let busy = self.ai.cur().is_some_and(|s| s.status() == Status::Working);
-        let consumed = self.term_type(Which::Ai, ev);
-        if esc && !busy && !self.ai.sessions.is_empty() {
-            self.ai.composer_focus = true;
-        }
-        consumed
+        self.term_type(Which::Ai, ev)
     }
 
     /// A key typed into the session filter field.
@@ -87,7 +76,6 @@ impl App {
             Key::Named(N::Escape) => {
                 if f.text.is_empty() {
                     self.ai.filter_focus = false;
-                    self.ai.filter_open = false;
                 } else {
                     *f = Default::default();
                 }
@@ -208,30 +196,6 @@ impl App {
             Some(AiHit::TabAi) | Some(AiHit::Status) => {}
             Some(AiHit::Close) => self.ai_hide(),
             Some(AiHit::Agent) => self.ai_choose_agent(),
-            Some(AiHit::Menu) => self.ai_menu(),
-            Some(AiHit::Composer) => self.ai_composer_press(x, y),
-            Some(AiHit::Send) => {
-                self.ai.composer_focus = true;
-                self.ai_send();
-            }
-            Some(AiHit::Interrupt) => self.ai_interrupt(),
-            Some(AiHit::AttachFile) => self.ai_attach_file(),
-            Some(AiHit::AttachSel) => self.ai_attach_selection(),
-            Some(AiHit::MenuRow(i)) => {
-                if let Some(m) = self.ai.menu.as_mut() {
-                    m.sel = i;
-                }
-                self.ai.composer_focus = true;
-                self.ai_menu_accept(true);
-            }
-            Some(AiHit::Mode) => self.ai_mode_menu(),
-            Some(AiHit::Model) => self.ai_model_menu(),
-            Some(AiHit::Unattach(i)) => {
-                if i < self.ai.attachments.len() {
-                    self.ai.attachments.remove(i);
-                }
-                self.ai.composer_focus = true;
-            }
             Some(AiHit::New) => self.ai_new_session_menu(),
             Some(AiHit::Restart) => self.ai_respawn(),
             Some(AiHit::Filter) => self.ai.filter_focus = true,
@@ -267,22 +231,8 @@ impl App {
                 }
             }
             None => {
-                if button == 0 && self.chat_press(x, y) {
-                    self.ai.composer_focus = true;
-                    return true;
-                }
-                if self.ai_is_chat() {
-                    self.ai.composer_focus = true;
-                    return true;
-                }
                 let alive = self.ai.term().is_some_and(|t| t.alive);
-                let in_term = y >= (self.aipanel_rect().y + self.ai_top_h()) as f64
-                    && y < (self.aipanel_rect().bottom() - self.ai_composer_h()) as f64;
-                if in_term && !self.ai.sessions.is_empty() {
-                    // A click in the agent's card gives it the keyboard.
-                    self.ai.composer_focus = false;
-                }
-                if alive && in_term {
+                if alive && y >= (self.aipanel_rect().y + self.ai_top_h()) as f64 {
                     self.term_press(Which::Ai, x, y, button);
                 }
             }
@@ -317,14 +267,6 @@ impl App {
         if !self.ai.open || !self.aipanel_rect().contains(x, y) {
             return false;
         }
-        if self.ai.composer_box.contains(x, y) && !self.ai.sessions.is_empty() {
-            let px = crate::scroller::wheel_px(delta, crate::ui::ui_line() as f64);
-            self.ai.composer.scroll_by(px as f32);
-            return true;
-        }
-        if self.ai_is_chat() {
-            return self.chat_wheel(delta);
-        }
         if self.ai.term().is_some() {
             self.term_wheel(Which::Ai, delta);
         }
@@ -333,12 +275,8 @@ impl App {
 
     /// Pointer moved: resizing by the left edge; true when the layout changed.
     pub fn aipanel_move(&mut self) -> bool {
-        let (x, y) = self.mouse;
-        if self.ai_composer_drag(x, y) {
-            return true;
-        }
         if !self.ai.resizing {
-            return self.chat_move(x, y);
+            return false;
         }
         // The slot is docked on the right, so its width is the distance to the window edge.
         let win = self.size.0 as i32;
@@ -352,8 +290,6 @@ impl App {
 
     /// Mouse released: an edge drag ends and the width is stored (shared with the Git panel).
     pub fn aipanel_release(&mut self) {
-        self.ai.composer.release();
-        self.chat_release();
         if std::mem::take(&mut self.ai.resizing) {
             self.config.save();
             self.request_redraw();
@@ -367,13 +303,8 @@ impl App {
         if self.gitpanel.is_none() && !self.ai.open && !self.gh_open() {
             return None;
         }
-        match self.ai.hit_at(x, y) {
-            Some((_, AiHit::Composer)) => return Some(CursorIcon::Text),
-            Some(_) => return Some(CursorIcon::Pointer),
-            None => {}
-        }
-        if let Some(c) = self.chat_cursor(x, y) {
-            return Some(c);
+        if self.ai.hit_at(x, y).is_some() {
+            return Some(CursorIcon::Pointer);
         }
         if !self.ai.open || !self.slot_rect().contains(x, y) {
             return None;
@@ -395,24 +326,12 @@ impl App {
             AiHit::Session(_) => 7,
             _ => 8,
         };
-        let own = matches!(
-            h,
-            AiHit::Status
-                | AiHit::Composer
-                | AiHit::Send
-                | AiHit::Interrupt
-                | AiHit::Agent
-                | AiHit::Mode
-                | AiHit::Model
-                | AiHit::MenuRow(_)
-                | AiHit::Unattach(_)
-        );
-        (!active_tab && !own).then_some((r, radius))
+        (!active_tab && !matches!(h, AiHit::Status)).then_some((r, radius))
     }
 
     /// The button under the pointer, for a tooltip.
     pub fn aipanel_tip_target(&self, x: f64, y: f64) -> Option<(Rect, AiHit)> {
-        self.ai.hit_at(x, y).filter(|(_, h)| !matches!(h, AiHit::Install(_) | AiHit::Composer | AiHit::MenuRow(_)))
+        self.ai.hit_at(x, y).filter(|(_, h)| !matches!(h, AiHit::Install(_)))
     }
 
     pub fn aipanel_tip(&self, h: AiHit) -> TipText {
@@ -449,12 +368,6 @@ impl App {
                 keys("AiCloseSession"),
                 Some("Ends the agent and everything it started".into()),
             ),
-            AiHit::Restart if self.ai_is_chat() => {
-                ("New conversation".into(), None, Some(format!("Start {name} over with an empty transcript")))
-            }
-            AiHit::Stop if self.ai_is_chat() => {
-                ("Stop".into(), None, Some(format!("Interrupt {name} (press again to end its process)")))
-            }
             AiHit::Restart => {
                 ("Restart agent".into(), None, Some(format!("Relaunch {name} (picks up login or config changes)")))
             }
@@ -479,31 +392,6 @@ impl App {
                     Some("Click to review · Ctrl+Enter accepts · Esc rejects".into()),
                 )
             }
-            AiHit::Send => ("Send message".into(), None, Some("Enter · Shift+Enter adds a line".into())),
-            AiHit::Interrupt => ("Interrupt".into(), None, Some(format!("Esc · stops what {name} is doing"))),
-            AiHit::AttachFile if self.ai_is_chat() => (
-                "Attach a file".into(),
-                None,
-                Some("Type @ and pick a file from the project, or paste / drop one".into()),
-            ),
-            AiHit::AttachFile => {
-                ("Attach file".into(), None, Some("Mention the file open in the editor (@path)".into()))
-            }
-            AiHit::Mode => (
-                format!("Mode: {}", self.ai_mode().label()),
-                Some("Shift+Tab".into()),
-                Some(self.ai_mode().detail().to_string()),
-            ),
-            AiHit::Model => ("Model".into(), None, Some("Pick the model, or type /model <name>".into())),
-            AiHit::Unattach(_) => ("Remove attachment".into(), None, None),
-            AiHit::MenuRow(_) => (String::new(), None, None),
-            AiHit::AttachSel => (
-                "Attach selection".into(),
-                keys("AiSendSelection"),
-                Some("Insert the selected code with its place".into()),
-            ),
-            AiHit::Menu => ("Sessions".into(), None, Some("Switch, filter, rename, new in a worktree".into())),
-            AiHit::Composer => (String::new(), None, None),
             AiHit::Filter => ("Filter sessions".into(), None, Some("Type to narrow the tabs by name or agent".into())),
             AiHit::FilterClear => ("Clear filter".into(), None, None),
             AiHit::Install(_) => (String::new(), None, None),
@@ -517,7 +405,7 @@ impl App {
 }
 
 /// Keys that only change modifier state.
-pub(super) fn is_modifier(n: winit::keyboard::NamedKey) -> bool {
+fn is_modifier(n: winit::keyboard::NamedKey) -> bool {
     use winit::keyboard::NamedKey as N;
     matches!(n, N::Control | N::Shift | N::Alt | N::AltGraph | N::Super | N::Meta | N::Hyper | N::CapsLock | N::NumLock)
 }
