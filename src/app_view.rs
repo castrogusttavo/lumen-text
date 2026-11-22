@@ -42,6 +42,8 @@ pub struct Zen {
     saved: Option<ZenSaved>,
     /// When the last plain Esc was pressed in zen mode.
     last_esc: Option<Instant>,
+    /// 0..1: the column's soft edges fade in after entering, out when leaving.
+    fade: crate::anim::Hot,
 }
 
 impl Zen {
@@ -60,7 +62,36 @@ pub fn zen_column(card: Rect, gutter: i32, cols: usize, cell_w: f32) -> Rect {
     Rect::new(card.x + (card.w - want) / 2, card.y, want, card.h)
 }
 
+/// Alpha of the hairline that frames the zen column, for a fade amount 0..1 and the theme border's
+/// own alpha: it never gets louder than the border itself.
+pub fn zen_edge_alpha(fade: f32, border_alpha: u8) -> u8 {
+    (border_alpha as f32 * fade.clamp(0.0, 1.0)).round() as u8
+}
+
 impl App {
+    /// Zen mode's finishing touch: two soft hairlines frame the centered column, fading in after the
+    /// bars are gone. Nothing is drawn outside zen mode or when the column fills the card. Returns
+    /// true while the fade runs.
+    pub fn draw_zen_chrome(&mut self, cv: &mut crate::ui::Canvas, dt: f64) -> bool {
+        if !self.zen.active() {
+            return false;
+        }
+        let busy = self.zen.fade.step(dt);
+        let (card, col) = (self.layout.card, self.layout.editor);
+        if self.split.is_some() || col.w >= card.w || col.w <= 0 {
+            return busy;
+        }
+        let border = self.theme.chrome.border;
+        let a = zen_edge_alpha(self.zen.fade.v(), border.3);
+        if a == 0 {
+            return busy;
+        }
+        let (y0, h) = (col.y + crate::ds::S4, (col.h - 2 * crate::ds::S4).max(0));
+        cv.fill_clip(Rect::new(col.x - 1, y0, 1, h), border.with_alpha(a), card);
+        cv.fill_clip(Rect::new(col.right(), y0, 1, h), border.with_alpha(a), card);
+        busy
+    }
+
     /// Heights of the top bar, tab bar and breadcrumb row for the current layout: zero for what
     /// zen mode or the View switches hide. (The read-outs live in the status bar, so the
     /// breadcrumb row is only there for the breadcrumbs.)
@@ -116,6 +147,7 @@ impl App {
             focus: self.focus,
         });
         self.zen.last_esc = None;
+        self.zen.fade.set(true);
         self.sidebar_open = false;
         self.panel.open = false;
         if git.is_some() {
@@ -138,6 +170,7 @@ impl App {
     pub fn zen_exit(&mut self) {
         let Some(s) = self.zen.saved.take() else { return };
         self.zen.last_esc = None;
+        self.zen.fade.0.snap(0.0);
         self.sidebar_open = s.sidebar_open;
         self.panel.open = s.panel_open;
         match s.git {
@@ -361,6 +394,14 @@ pub fn values(c: &crate::config::Config) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zen_edges_fade_with_the_border() {
+        assert_eq!(zen_edge_alpha(0.0, 200), 0);
+        assert_eq!(zen_edge_alpha(1.0, 200), 200);
+        assert_eq!(zen_edge_alpha(0.5, 200), 100);
+        assert_eq!(zen_edge_alpha(3.0, 90), 90);
+    }
     use crate::app_unsaved::testkit::{lock, test_app, tmp};
 
     fn frame(app: &mut App) {

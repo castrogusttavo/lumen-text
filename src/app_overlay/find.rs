@@ -361,7 +361,57 @@ impl FindGeo {
     }
 }
 
+/// A button of the find bar (tooltips).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FindBtn {
+    Case,
+    Regex,
+    Prev,
+    Next,
+    Close,
+    Replace,
+    All,
+}
+
+impl FindGeo {
+    /// The button at (x, y) and its rect.
+    pub fn button_at(&self, show_replace: bool, x: f64, y: f64) -> Option<(FindBtn, Rect)> {
+        let all = [
+            (FindBtn::Case, self.case),
+            (FindBtn::Regex, self.regex),
+            (FindBtn::Prev, self.prev),
+            (FindBtn::Next, self.next),
+            (FindBtn::Close, self.close),
+            (FindBtn::Replace, self.replace),
+            (FindBtn::All, self.all),
+        ];
+        let n = if show_replace { all.len() } else { 5 };
+        all[..n].iter().find(|(_, r)| r.contains(x, y)).map(|&(b, r)| (b, r))
+    }
+}
+
+impl FindBtn {
+    /// (title, shortcut, explanation)
+    pub fn tip(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            FindBtn::Case => ("Match case", "Alt+C", "Distinguish upper and lower case"),
+            FindBtn::Regex => ("Regular expression", "Alt+R", "Treat the query as a regex"),
+            FindBtn::Prev => ("Previous match", "Shift+F3", "Jump to the match before the cursor"),
+            FindBtn::Next => ("Next match", "F3", "Jump to the match after the cursor"),
+            FindBtn::Close => ("Close", "Esc", "Close the find bar"),
+            FindBtn::Replace => ("Replace", "Enter", "Replace the current match"),
+            FindBtn::All => ("Replace all", "Ctrl+Alt+Enter", "Replace every match in the file"),
+        }
+    }
+}
+
 impl App {
+    /// The find bar button under the pointer, for its tooltip.
+    pub fn find_tip_at(&self, x: f64, y: f64) -> Option<(FindBtn, Rect)> {
+        let g = self.find_geo_now()?;
+        g.button_at(g.card.h > 50, x, y)
+    }
+
     fn find_geo_now(&self) -> Option<FindGeo> {
         let f = self.find.as_ref()?;
         Some(find_geo(self.layout.editor, f.show_replace))
@@ -435,8 +485,21 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMPILES, find_geo, find_regex, scan_matches};
+    use super::{COMPILES, FindBtn, find_geo, find_regex, scan_matches};
     use crate::ui::Rect;
+
+    #[test]
+    fn buttons_resolve_for_tooltips() {
+        let g = find_geo(Rect::new(0, 0, 900, 600), false);
+        let (x, y) = (g.next.x as f64 + 2.0, g.next.y as f64 + 2.0);
+        assert_eq!(g.button_at(false, x, y).map(|b| b.0), Some(FindBtn::Next));
+        let (x, y) = (g.replace.x as f64 + 2.0, g.replace.y as f64 + 2.0);
+        assert!(g.button_at(false, x, y).is_none());
+        let g2 = find_geo(Rect::new(0, 0, 900, 600), true);
+        let (x, y) = (g2.all.x as f64 + 2.0, g2.all.y as f64 + 2.0);
+        assert_eq!(g2.button_at(true, x, y).map(|b| b.0), Some(FindBtn::All));
+        assert_eq!(FindBtn::Next.tip().1, "F3");
+    }
 
     #[test]
     fn find_bar_buttons_fit_inside_the_card() {

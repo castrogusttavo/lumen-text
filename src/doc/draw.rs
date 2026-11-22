@@ -1,6 +1,19 @@
 use super::*;
 
+/// Pointer zones of an editor (see `Doc::fx_zone`): over the minimap strip, over the gutter.
+pub const ZONE_MINIMAP: u8 = 1;
+pub const ZONE_GUTTER: u8 = 2;
+
 impl Doc {
+    /// Which zone of the last drawn frame the point (x, y) is in (a bit set of `ZONE_*`).
+    pub fn pointer_zone(&self, x: f64, y: f64) -> u8 {
+        if self.minimap_layout.as_ref().is_some_and(|l| l.rect.contains(x, y)) {
+            return ZONE_MINIMAP;
+        }
+        let g = Rect::new(self.rect.x, self.rect.y, self.gutter_w(), self.rect.h);
+        if g.contains(x, y) { ZONE_GUTTER } else { 0 }
+    }
+
     // ── drawing ──
 
     /// Draws the text into `rect` (`Doc::draw` in `imgview` picks this or the picture of an image
@@ -795,13 +808,28 @@ impl Doc {
         crate::perf::lap!("doc.diagnostics");
         // Gutter: numbers, fold chevrons, git bars, diagnostic markers.
         cv.fill(Rect::new(rect.x, rect.y, gutter_w, rect.h), theme.background);
+        // Pointer feedback (minimap slider, fold chevrons) glides; the zone comes from the mouse code.
+        let (zone, dragging_mm) = (self.fx_zone, self.mm_drag);
+        let fx_busy = self.mm_fx.step(zone & ZONE_MINIMAP != 0, dragging_mm, zone & ZONE_GUTTER != 0, o.dt);
+        // The current line's band continues through the gutter (the gutter fill above would hide it).
+        if sel.is_empty() && o.focused {
+            for (r, row) in rows.iter().enumerate() {
+                if row.line == cur_line && (live || row.sub == 0) {
+                    cv.fill_clip(Rect::new(rect.x, ry(r), gutter_w, lh), theme.line_highlight, rect);
+                }
+            }
+        }
         let digits = self.gutter_digits();
         if crate::display::show_line_numbers() {
             // One row per visual row: the number on the first row of a line, blank on the others.
             code.clear();
             for (r, row) in rows.iter().enumerate() {
                 if row.sub == 0 {
-                    let color = if row.line == cur_line { theme.line_number_active } else { theme.line_number };
+                    let color = if row.line == cur_line {
+                        theme.line_number_active
+                    } else {
+                        crate::anim::fade(theme.line_number, 0.78)
+                    };
                     code.push_fmt(format_args!("{:>digits$}", row.line + 1), color, 0);
                 }
                 code.end_row();
@@ -827,12 +855,15 @@ impl Doc {
             }
             let folded = self.view.folds.is_fold_start(row.line).is_some();
             if folded || self.is_foldable(row.line) {
+                // A folded region always shows its chevron; the open ones fade in with the pointer.
                 let (icon, color) = if folded {
                     ("ui/chevron_right", theme.line_number_active)
                 } else {
-                    ("ui/chevron_down", theme.line_number.with_alpha(0x80))
+                    ("ui/chevron_down", crate::anim::fade(theme.line_number.with_alpha(0xc0), self.mm_fx.gutter.v()))
                 };
-                tx.icon(cv, icon, rect.x + gw0 + 1, ry(r) + (lh - 10) / 2, 10, color, gclip);
+                if color.3 > 2 {
+                    tx.icon(cv, icon, rect.x + gw0 + 1, ry(r) + (lh - 10) / 2, 10, color, gclip);
+                }
             }
         }
         for m in &self.git {
@@ -843,13 +874,14 @@ impl Doc {
             };
             if m.kind == GitKind::Deleted {
                 if let Some(y) = line_y(m.line).or_else(|| (m.line == last).then(|| ry(rows.len()))) {
-                    cv.fill_clip(Rect::new(rect.x + gw0 - 8, y - 1, 6, 2), color, rect);
+                    cv.fill_round_clip(Rect::new(rect.x + gw0 - 7, y - 1, 5, 2), 1, color, rect);
                 }
             } else {
                 let i0 = rows.partition_point(|r| r.line < m.line);
                 let i1 = rows.partition_point(|r| r.line < m.line + m.len.max(1));
                 if i0 < i1 {
-                    cv.fill_clip(Rect::new(rect.x + gw0 - 6, ry(i0), 3, ry(i1 - 1) + lh - ry(i0)), color, rect);
+                    let bar = Rect::new(rect.x + gw0 - 5, ry(i0) + 1, 2, (ry(i1 - 1) + lh - ry(i0) - 2).max(2));
+                    cv.fill_round_clip(bar, 1, color, rect);
                 }
             }
         }
@@ -1021,6 +1053,9 @@ impl Doc {
                 if let Some(y) = line_y(bl) {
                     use crate::debug_model::BpGlyph;
                     let dot = Rect::new(rect.x + 2, y + (lh - 10) / 2, 10, 10);
+                    // A soft halo makes the dot read on any theme without growing it.
+                    let halo = Rect::new(dot.x - 2, dot.y - 2, 14, 14);
+                    cv.fill_round(halo, 7, c.error.with_alpha(0x26));
                     match self.bp_glyphs.get(k).copied().unwrap_or_default() {
                         BpGlyph::Normal => cv.fill_round(dot, 5, c.error),
                         // A hollow dot: the adapter could not place it.
@@ -1082,6 +1117,26 @@ impl Doc {
             if self.mm_cache.0 != key || self.mm_cache.1 != stamp {
                 self.mm_cache = (key, stamp, Default::default());
             }
+            // Git changes and the worst diagnostic of each line, as thin colored ticks on the strip.
+            let row_of = |line: usize| if live { self.view.map.row_of(line) } else { line };
+            let mut ticks: Vec<crate::minimap::Tick> = Vec::new();
+            for m in &self.git {
+                let color = match m.kind {
+                    GitKind::Added => c.git_added,
+                    GitKind::Modified => c.git_modified,
+                    GitKind::Deleted => c.git_deleted,
+                };
+                ticks.push(crate::minimap::Tick { row: row_of(m.line), len: m.len.max(1), color });
+            }
+            for (&line, &sev) in &worst {
+                let color = match sev {
+                    1 => c.error,
+                    2 => c.warning,
+                    _ => c.info,
+                };
+                ticks.push(crate::minimap::Tick { row: row_of(line), len: 1, color });
+            }
+            ticks.truncate(4000);
             let cache = &mut self.mm_cache.2;
             let mut infos = |i: usize| {
                 let (line, sub) = if live { self.view.map.line_at_row(i) } else { (i, 0) };
@@ -1109,7 +1164,8 @@ impl Doc {
                 info
             };
             let vis_rows = rect.h as f64 / lh_f as f64;
-            crate::minimap::draw_rows(
+            let look = crate::minimap::Look { hot: self.mm_fx.hot.v(), drag: self.mm_fx.drag.v(), ticks: &ticks };
+            crate::minimap::draw_rows_ex(
                 cv,
                 &l,
                 &mut infos,
@@ -1119,6 +1175,7 @@ impl Doc {
                 bg,
                 c.accent,
                 crate::minimap::style(),
+                &look,
             );
             cv.fill(Rect::new(l.rect.x, l.rect.y, 1, l.rect.h), c.border);
             self.minimap_layout = Some(l);
@@ -1158,7 +1215,7 @@ impl Doc {
         }
 
         tx.scratch.lines = lines;
-        pending || self.animating || self.caret_animating
+        pending || self.animating || self.caret_animating || fx_busy
     }
 }
 

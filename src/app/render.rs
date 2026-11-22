@@ -138,6 +138,7 @@ impl App {
         }
         if let Some(d) = self.docs.get_mut(self.active) {
             d.cell_w = self.tx.cell_w;
+            d.mm_drag = self.dragging_minimap;
             busy |= d.draw(
                 cv,
                 &mut self.tx,
@@ -151,6 +152,8 @@ impl App {
 
         busy |= self.draw_multibuf(cv, editor);
         self.draw_jump(cv);
+        busy |= self.draw_split_chrome(cv, dt);
+        busy |= self.draw_zen_chrome(cv, dt);
         self.zen_restore_minimaps(minimaps);
         crate::perf::lap!("doc.caret_end");
         busy |= self.draw_md(cv);
@@ -281,30 +284,27 @@ impl App {
         let parts: Vec<String> = rel.split('/').map(str::to_string).collect();
         let y = r.y + (r.h - 18) / 2;
         let mut x = r.x + 16;
-        let sep_w = self.tx.ui_width(">", false) + 12;
+        // Chevron separators (HugeIcons), a hover pill rect per segment, the last one emphasized.
+        let sep_w = crate::ds::ICON_S - 2 + 8;
+        let pill_h = 22.min(r.h);
+        let pill_y = r.y + (r.h - pill_h) / 2;
+        let mut segs: Vec<(String, Crumb)> = Vec::new();
         for (i, p) in parts.iter().enumerate() {
-            let w = self.tx.ui_width(p, false);
-            let last = i + 1 == parts.len();
-            self.tx.draw_ui(cv, x, y, p, if last && chain.is_empty() { fg } else { dim }, r, false);
-            self.layout
-                .crumbs
-                .push((Rect::new(x - 3, r.y, w + 6, r.h), Crumb::Path(self.root.join(parts[..=i].join("/")))));
-            x += w;
-            if !last || !chain.is_empty() {
-                self.tx.draw_ui(cv, x + 6, y, ">", dim.with_alpha(0x90), r, false);
-                x += sep_w;
-            }
-            if x > r.right() - 40 {
-                return;
-            }
+            segs.push((p.clone(), Crumb::Path(self.root.join(parts[..=i].join("/")))));
         }
-        for (i, (name, l, col)) in chain.iter().enumerate() {
-            let w = self.tx.ui_width(name, false);
-            self.tx.draw_ui(cv, x, y, name, if i + 1 == chain.len() { fg } else { dim }, r, false);
-            self.layout.crumbs.push((Rect::new(x - 3, r.y, w + 6, r.h), Crumb::Sym(*l, *col)));
+        for (name, l, col) in &chain {
+            segs.push((name.clone(), Crumb::Sym(*l, *col)));
+        }
+        let n = segs.len();
+        for (i, (name, crumb)) in segs.into_iter().enumerate() {
+            let last = i + 1 == n;
+            let w = self.tx.ui_width(&name, last);
+            self.tx.draw_ui(cv, x, y, &name, if last { fg } else { dim }, r, last);
+            self.layout.crumbs.push((Rect::new(x - 4, pill_y, w + 8, pill_h), crumb));
             x += w;
-            if i + 1 < chain.len() {
-                self.tx.draw_ui(cv, x + 6, y, ">", dim.with_alpha(0x90), r, false);
+            if !last {
+                let ic = crate::ds::ICON_S - 2;
+                self.tx.icon(cv, "ui/chevron_right", x + 4, r.y + (r.h - ic) / 2, ic, dim.with_alpha(0x80), r);
                 x += sep_w;
             }
             if x > r.right() - 40 {

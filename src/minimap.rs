@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 //! Code minimap: scaled-down overview of the file plus pointer math.
 
-use crate::theme::Rgba;
 use crate::ui::{Canvas, Rect};
+use crate::{anim::Hot, theme::Rgba};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How loud the minimap is (`minimap_style` in config.json).
@@ -174,6 +174,60 @@ pub fn drag_to_top_line(l: &Layout, y: f64, line_count: usize, visible_lines: us
     top.min(line_count.saturating_sub(visible_lines))
 }
 
+/// Pointer-driven feedback of the strip (and of the gutter next to the text): hover and drag amounts
+/// glide with `anim` instead of snapping.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Fx {
+    /// Pointer over the strip.
+    pub hot: Hot,
+    /// A drag of the viewport slider is running.
+    pub drag: Hot,
+    /// Pointer over the gutter (fold chevrons fade in).
+    pub gutter: Hot,
+}
+
+impl Fx {
+    /// Advance every amount toward its target; true while one still moves.
+    pub fn step(&mut self, hover_strip: bool, dragging: bool, hover_gutter: bool, dt: f64) -> bool {
+        self.hot.set(hover_strip || dragging);
+        self.drag.set(dragging);
+        self.gutter.set(hover_gutter);
+        let a = self.hot.step(dt);
+        let b = self.drag.step(dt);
+        let c = self.gutter.step(dt);
+        a | b | c
+    }
+}
+
+/// A thin colored tick on the strip (git change, diagnostic) at visual row `row`, `len` rows long.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tick {
+    pub row: usize,
+    pub len: usize,
+    pub color: Rgba,
+}
+
+/// Extras of [`draw_rows_ex`]: hover/drag amounts (0..1) of the slider and the markers.
+#[derive(Clone, Copy, Default)]
+pub struct Look<'a> {
+    pub hot: f32,
+    pub drag: f32,
+    pub ticks: &'a [Tick],
+}
+
+/// Alpha of the slider fill: the style's resting value, lifted by hover and drag.
+pub fn slider_alpha(base: u8, hot: f32, drag: f32) -> u8 {
+    (base as f32 + 22.0 * hot.clamp(0.0, 1.0) + 28.0 * drag.clamp(0.0, 1.0)).round().min(255.0) as u8
+}
+
+/// The marker of `tick` on the strip: a 3 px wide rounded sliver at the right edge, at least 2 px tall.
+pub fn tick_rect(l: &Layout, total: usize, t: &Tick) -> Rect {
+    let r = l.rect;
+    let y0 = r.y + (t.row.min(total) as f32 * l.line_px).round() as i32;
+    let h = ((t.len.max(1) as f32 * l.line_px).round() as i32).max(2);
+    Rect::new(r.right() - 4, y0, 3, h).intersect(&r)
+}
+
 pub fn draw(
     cv: &mut Canvas,
     l: &Layout,
@@ -228,6 +282,22 @@ pub fn draw_rows(
     viewport_tint: Rgba,
     style: Style,
 ) {
+    draw_rows_ex(cv, l, infos, line_count, vp_top, vp_rows, bg, viewport_tint, style, &Look::default())
+}
+
+/// [`draw_rows`] with a rounded slider that lights up on hover and drag, and colored ticks.
+pub fn draw_rows_ex(
+    cv: &mut Canvas,
+    l: &Layout,
+    infos: &mut dyn FnMut(usize) -> LineInfo,
+    line_count: usize,
+    vp_top: f64,
+    vp_rows: f64,
+    bg: Rgba,
+    viewport_tint: Rgba,
+    style: Style,
+    look: &Look,
+) {
     let r = l.rect;
     cv.fill_exact(r, bg.with_alpha(255), r);
     if line_count == 0 || r.w <= 0 || r.h <= 0 {
@@ -280,15 +350,23 @@ pub fn draw_rows(
             }
         }
     }
-    // Viewport
+    // Markers first, the slider over them (it is translucent, so they stay readable).
+    for t in look.ticks {
+        cv.fill_round_clip(tick_rect(l, line_count, t), 1, t.color.with_alpha(0xd0), r);
+    }
+    // Viewport: a rounded slider, brighter under the pointer and while dragged.
     let vp = viewport_rect(l, line_count, vp_top, vp_rows);
     if vp.h <= 0 {
         return;
     }
-    cv.fill_exact(vp, viewport_tint.with_alpha(style.viewport_alpha()), r);
-    let edge = viewport_tint.mix(Rgba(255, 255, 255, 255), 0.5).with_alpha(0);
-    cv.fill_clip(Rect::new(vp.x, vp.y, vp.w, 1), edge, r);
-    cv.fill_clip(Rect::new(vp.x, vp.bottom() - 1, vp.w, 1), edge, r);
+    let vp = Rect::new(vp.x + 1, vp.y, (vp.w - 2).max(1), vp.h);
+    let rad = 3.min(vp.h / 2);
+    cv.fill_round_clip(vp, rad, viewport_tint.with_alpha(slider_alpha(style.viewport_alpha(), look.hot, look.drag)), r);
+    if look.hot > 0.01 {
+        let edge =
+            viewport_tint.mix(Rgba(255, 255, 255, 255), 0.35).with_alpha((look.hot.clamp(0.0, 1.0) * 70.0) as u8);
+        cv.ring(vp, rad, edge);
+    }
 }
 
 #[cfg(test)]
@@ -540,5 +618,50 @@ mod tests {
         assert_eq!(drag_to_top_line(&l, 0.0, 100, 20), 0);
         assert_eq!(drag_to_top_line(&l, 399.0, 100, 20), 80);
         assert_eq!(drag_to_top_line(&l, 100.0, 10, 20), 0);
+    }
+
+    #[test]
+    fn slider_brightens_with_hover_and_drag() {
+        let rest = slider_alpha(22, 0.0, 0.0);
+        assert_eq!(rest, 22);
+        assert!(slider_alpha(22, 1.0, 0.0) > rest);
+        assert!(slider_alpha(22, 1.0, 1.0) > slider_alpha(22, 1.0, 0.0));
+        assert_eq!(slider_alpha(250, 1.0, 1.0), 255);
+    }
+
+    #[test]
+    fn ticks_sit_on_the_right_edge_and_stay_inside() {
+        let l = layout_for(Rect::new(0, 0, 200, 100), 90, 40);
+        let t = Tick { row: 10, len: 1, color: RED };
+        let r = tick_rect(&l, 40, &t);
+        assert_eq!(r.w, 3);
+        assert!(r.h >= 2);
+        assert_eq!(r.right(), l.rect.right() - 1);
+    }
+
+    #[test]
+    fn ticks_are_drawn() {
+        let (w, h) = (200, 100);
+        let mut px = vec![0u32; (w * h) as usize];
+        let l = layout_for(Rect::new(0, 0, 200, 100), 90, 10);
+        let mut cv = Canvas { px: &mut px, w, h };
+        let mut cb = |_| LineInfo { blank: true, ..info(0, 0) };
+        let ticks = [Tick { row: 2, len: 1, color: RED }];
+        let look = Look { hot: 0.0, drag: 0.0, ticks: &ticks };
+        draw_rows_ex(&mut cv, &l, &mut cb, 10, 8.0, 2.0, BG, BLUE, Style::Normal, &look);
+        let r = tick_rect(&l, 10, &ticks[0]);
+        let at = |x: i32, y: i32| px[(y * w + x) as usize];
+        assert_ne!(at(r.x + 1, r.y + r.h / 2), at(l.rect.x + 5, r.y + r.h / 2));
+    }
+
+    #[test]
+    fn fx_glides_and_settles() {
+        let mut fx = Fx::default();
+        assert!(!fx.step(false, false, false, 0.016));
+        assert!(fx.step(true, false, false, 0.016) || crate::motion::reduced());
+        for _ in 0..60 {
+            fx.step(true, true, true, 0.05);
+        }
+        assert!(fx.hot.v() > 0.99 && fx.drag.v() > 0.99 && fx.gutter.v() > 0.99);
     }
 }
