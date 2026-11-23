@@ -1074,6 +1074,19 @@ impl App {
     }
 
     /// Is (x, y) inside a pane that is not focused?
+    /// The point is in the gutter of an unfocused pane (line numbers, fold chevrons, breakpoints).
+    pub fn split_gutter_at(&self, x: f64, y: f64) -> bool {
+        let Some(sp) = self.split.as_ref() else { return false };
+        sp.rects.iter().enumerate().any(|(i, r)| {
+            i != sp.focus
+                && sp
+                    .panes
+                    .get(i)
+                    .and_then(|p| self.docs.get(p.doc))
+                    .is_some_and(|d| Rect::new(r.x, r.y, d.gutter_w(), r.h).contains(x, y))
+        })
+    }
+
     pub fn split_in_other(&self, x: f64, y: f64) -> bool {
         self.split
             .as_ref()

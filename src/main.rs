@@ -18,6 +18,7 @@ mod app_cursor;
 mod app_cursor_tests;
 #[cfg(test)]
 mod app_cursor_tests_shell;
+mod app_cursor_tests_editor;
 mod app_debug;
 mod app_display;
 mod app_docker;

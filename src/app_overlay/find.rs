@@ -412,7 +412,7 @@ impl App {
         g.button_at(g.card.h > 50, x, y)
     }
 
-    fn find_geo_now(&self) -> Option<FindGeo> {
+    pub(crate) fn find_geo_now(&self) -> Option<FindGeo> {
         let f = self.find.as_ref()?;
         Some(find_geo(self.layout.editor, f.show_replace))
     }
@@ -457,21 +457,38 @@ impl App {
         true
     }
 
-    /// Cursor over the find bar: hand on its buttons, I-beam on its fields, arrow elsewhere on it.
-    pub fn find_cursor(&self, x: f64, y: f64) -> Option<winit::window::CursorIcon> {
+    /// Which buttons of the bar can act right now: (prev / next, replace, replace all). With no
+    /// match there is nothing to step to or replace.
+    pub fn find_enabled(&self) -> (bool, bool, bool) {
+        self.find
+            .as_ref()
+            .map_or((false, false, false), |f| (!f.matches.is_empty(), f.current.is_some(), !f.matches.is_empty()))
+    }
+
+    /// Pointer regions of the find bar for the cursor registry: arrow on the card, I-beam on the
+    /// fields, hand on the buttons that can act, not-allowed on the ones that cannot.
+    pub fn find_regions(&self) -> Vec<(Rect, winit::window::CursorIcon, u8, &'static str)> {
+        use crate::app_cursor::Z_FLOAT;
         use winit::window::CursorIcon as C;
-        let g = self.find_geo_now()?;
-        if !g.card.contains(x, y) {
-            return None;
-        }
+        let Some(g) = self.find_geo_now() else { return Vec::new() };
         let show = g.card.h > 50;
-        Some(if g.buttons(show).iter().any(|r| r.contains(x, y)) {
-            C::Pointer
-        } else if g.field.contains(x, y) || (show && g.rfield.contains(x, y)) {
-            C::Text
-        } else {
-            C::Default
-        })
+        let (step, rep, all) = self.find_enabled();
+        let hand = |on: bool| if on { C::Pointer } else { C::NotAllowed };
+        let mut v = vec![
+            (g.card, C::Default, Z_FLOAT, "find-card"),
+            (g.field, C::Text, Z_FLOAT + 1, "find-field"),
+            (g.case, C::Pointer, Z_FLOAT + 1, "find-button"),
+            (g.regex, C::Pointer, Z_FLOAT + 1, "find-button"),
+            (g.prev, hand(step), Z_FLOAT + 1, "find-button"),
+            (g.next, hand(step), Z_FLOAT + 1, "find-button"),
+            (g.close, C::Pointer, Z_FLOAT + 1, "find-button"),
+        ];
+        if show {
+            v.push((g.rfield, C::Text, Z_FLOAT + 1, "find-field"));
+            v.push((g.replace, hand(rep), Z_FLOAT + 1, "find-button"));
+            v.push((g.all, hand(all), Z_FLOAT + 1, "find-button"));
+        }
+        v
     }
 
     /// The button under the pointer (a redraw trigger: the bar paints its own hover state).
