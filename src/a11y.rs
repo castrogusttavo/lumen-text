@@ -9,7 +9,7 @@
 //! a tree, the palette / pickers / prompts as a dialog with a list, the find bar, the terminal
 //! as text rows, and two live regions (the status toast and the announcer).
 
-use accesskit::{Live, Node, NodeId, Role, TextPosition, TextSelection, TreeId, TreeInfo, TreeUpdate};
+use accesskit::{Live, Node, NodeId, Role, TextPosition, TextSelection, Toggled, TreeId, TreeInfo, TreeUpdate};
 
 pub const ROOT: NodeId = NodeId(1);
 pub const TABS: NodeId = NodeId(2);
@@ -24,11 +24,25 @@ pub const DIALOG_LIST: NodeId = NodeId(10);
 pub const TERMINAL: NodeId = NodeId(11);
 pub const TOAST: NodeId = NodeId(12);
 pub const ANNOUNCER: NodeId = NodeId(13);
+pub const MENU_BAR: NodeId = NodeId(14);
+pub const RAIL: NodeId = NodeId(15);
+pub const DOCKS: NodeId = NodeId(16);
+pub const PANEL_TABS: NodeId = NodeId(17);
+pub const STATUS_BAR: NodeId = NodeId(18);
+pub const SECTIONS: NodeId = NodeId(19);
+pub const CONTROLS: NodeId = NodeId(20);
 
 const TAB_BASE: u64 = 1_000;
 const FILE_BASE: u64 = 10_000;
 const ITEM_BASE: u64 = 20_000;
 const TERM_BASE: u64 = 30_000;
+const MENU_BASE: u64 = 40_000;
+const RAIL_BASE: u64 = 41_000;
+const DOCK_BASE: u64 = 42_000;
+const PTAB_BASE: u64 = 43_000;
+const STATUS_BASE: u64 = 44_000;
+const SECTION_BASE: u64 = 45_000;
+const CONTROL_BASE: u64 = 46_000;
 const LINE_BASE: u64 = 1_000_000;
 
 /// Most explorer rows, dialog items and terminal rows put in the tree (windows around the focus).
@@ -107,6 +121,64 @@ pub struct DialogView {
     pub items: Vec<DialogItem>,
     /// Selected item (index into `items`).
     pub sel: Option<usize>,
+    /// Pages of a settings window, and its rows.
+    pub sections: Vec<Chip>,
+    pub controls: Vec<Control>,
+    /// A line that says what the window is for ("Step 2 of 5").
+    pub about: Option<String>,
+}
+
+/// One control of the chrome: a menu title, a status bar chip, a rail button, a panel or dock tab.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Chip {
+    pub label: String,
+    /// What the control shows or says beyond its name ("3 errors", "Ln 4, Col 2").
+    pub detail: String,
+    /// `Some` for a tab (is it the current one); `None` for a plain button.
+    pub selected: Option<bool>,
+    /// Opens a menu or a picker.
+    pub popup: bool,
+}
+
+impl Chip {
+    pub fn button(label: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self { label: label.into(), detail: detail.into(), selected: None, popup: false }
+    }
+
+    pub fn tab(label: impl Into<String>, detail: impl Into<String>, selected: bool) -> Self {
+        Self { label: label.into(), detail: detail.into(), selected: Some(selected), popup: false }
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub enum ControlKind {
+    Switch(bool),
+    /// A fixed list of options; the value is the chosen one.
+    Choice,
+    Number {
+        min: f64,
+        max: f64,
+        value: f64,
+    },
+    Text,
+}
+
+/// A row of the settings page: label, value, help and whether it differs from its default.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Control {
+    pub label: String,
+    pub help: String,
+    pub value: String,
+    pub kind: ControlKind,
+    pub modified: bool,
+    pub selected: bool,
+}
+
+/// A toast on screen; errors and warnings interrupt the screen reader.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct ToastView {
+    pub text: String,
+    pub urgent: bool,
 }
 
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -132,7 +204,15 @@ pub struct Snapshot {
     pub dialog: Option<DialogView>,
     pub terminal: Option<TermView>,
     pub toast: Option<String>,
+    pub toasts: Vec<ToastView>,
     pub recording: bool,
+    /// Title bar menus, activity rail, Git | AI dock tabs, bottom panel tabs and status bar chips,
+    /// each in reading order.
+    pub menu_bar: Vec<Chip>,
+    pub rail: Vec<Chip>,
+    pub docks: Vec<Chip>,
+    pub panel_tabs: Vec<Chip>,
+    pub status: Vec<Chip>,
 }
 
 // ── windows over long lists ──────────────────────────────────────────────────────────────────
@@ -236,11 +316,87 @@ fn push_text_rows(
     ids
 }
 
+/// A row of buttons or tabs as a group node with one child per chip; returns its id for the root.
+fn push_chips(nodes: &mut Vec<(NodeId, Node)>, group: NodeId, role: Role, label: &str, base: u64, chips: &[Chip]) {
+    let mut g = Node::new(role);
+    g.set_label(label);
+    let mut ids = Vec::with_capacity(chips.len());
+    for (i, c) in chips.iter().enumerate() {
+        let mut n = Node::new(match (role, c.selected) {
+            (Role::MenuBar, _) => Role::MenuItem,
+            (_, Some(_)) => Role::Tab,
+            _ => Role::Button,
+        });
+        n.set_label(c.label.clone());
+        if !c.detail.is_empty() {
+            n.set_description(c.detail.clone());
+        }
+        if let Some(sel) = c.selected {
+            n.set_selected(sel);
+        }
+        if c.popup {
+            n.set_has_popup(accesskit::HasPopup::Menu);
+        }
+        nodes.push((id(base, i), n));
+        ids.push(id(base, i));
+    }
+    g.set_children(ids);
+    nodes.push((group, g));
+}
+
+/// The rows of a settings page: one node per control with its role, label, value and help.
+fn push_controls(nodes: &mut Vec<(NodeId, Node)>, controls: &[Control]) -> Vec<NodeId> {
+    let mut ids = Vec::with_capacity(controls.len());
+    for (i, c) in controls.iter().enumerate() {
+        let role = match c.kind {
+            ControlKind::Switch(_) => Role::Switch,
+            ControlKind::Choice => Role::ComboBox,
+            ControlKind::Number { .. } => Role::SpinButton,
+            ControlKind::Text => Role::TextInput,
+        };
+        let mut n = Node::new(role);
+        n.set_label(c.label.clone());
+        let mut desc = c.help.clone();
+        if c.modified {
+            if !desc.is_empty() {
+                desc.push_str(". ");
+            }
+            desc.push_str("Changed from the default");
+        }
+        if !desc.is_empty() {
+            n.set_description(desc);
+        }
+        match &c.kind {
+            ControlKind::Switch(on) => n.set_toggled(Toggled::from(*on)),
+            ControlKind::Number { min, max, value } => {
+                n.set_numeric_value(*value);
+                n.set_min_numeric_value(*min);
+                n.set_max_numeric_value(*max);
+                n.set_value(c.value.clone());
+            }
+            ControlKind::Choice | ControlKind::Text => n.set_value(c.value.clone()),
+        }
+        n.set_selected(c.selected);
+        nodes.push((id(CONTROL_BASE, i), n));
+        ids.push(id(CONTROL_BASE, i));
+    }
+    ids
+}
+
 /// The whole accessibility tree for `s`. `said` is the text of the announcer live region.
 pub fn build(s: &Snapshot, said: &str) -> TreeUpdate {
     let mut nodes: Vec<(NodeId, Node)> = Vec::new();
     let mut kids: Vec<NodeId> = Vec::new();
     let mut focus = ROOT;
+
+    if !s.menu_bar.is_empty() {
+        push_chips(&mut nodes, MENU_BAR, Role::MenuBar, "Menu bar", MENU_BASE, &s.menu_bar);
+        kids.push(MENU_BAR);
+    }
+    if !s.rail.is_empty() {
+        push_chips(&mut nodes, RAIL, Role::Toolbar, "Activity bar", RAIL_BASE, &s.rail);
+        kids.push(RAIL);
+    }
 
     if !s.tabs.is_empty() {
         let mut list = Node::new(Role::TabList);
@@ -336,11 +492,38 @@ pub fn build(s: &Snapshot, said: &str) -> TreeUpdate {
         }
     }
 
+    if !s.docks.is_empty() {
+        push_chips(&mut nodes, DOCKS, Role::TabList, "Side panel", DOCK_BASE, &s.docks);
+        kids.push(DOCKS);
+    }
+    if !s.panel_tabs.is_empty() {
+        push_chips(&mut nodes, PANEL_TABS, Role::TabList, "Bottom panel", PTAB_BASE, &s.panel_tabs);
+        kids.push(PANEL_TABS);
+    }
+
     if let Some(d) = &s.dialog {
         let mut dlg = Node::new(Role::Dialog);
         dlg.set_label(d.title.clone());
         dlg.set_modal();
+        if let Some(a) = &d.about {
+            dlg.set_description(a.clone());
+        }
         let mut ids = Vec::new();
+        if !d.sections.is_empty() {
+            push_chips(&mut nodes, SECTIONS, Role::TabList, "Sections", SECTION_BASE, &d.sections);
+            ids.push(SECTIONS);
+        }
+        if !d.controls.is_empty() {
+            let rows = push_controls(&mut nodes, &d.controls);
+            if let Some(k) = d.controls.iter().position(|c| c.selected) {
+                focus = id(CONTROL_BASE, k);
+            }
+            let mut list = Node::new(Role::Group);
+            list.set_label("Settings");
+            list.set_children(rows);
+            nodes.push((CONTROLS, list));
+            ids.push(CONTROLS);
+        }
         if let Some(text) = &d.input {
             let mut input = Node::new(Role::TextInput);
             input.set_label(d.title.clone());
@@ -348,7 +531,9 @@ pub fn build(s: &Snapshot, said: &str) -> TreeUpdate {
             nodes.push((DIALOG_INPUT, input));
             ids.push(DIALOG_INPUT);
             focus = DIALOG_INPUT;
-        } else {
+        } else if d.controls.is_empty() {
+            focus = DIALOG;
+        } else if !d.controls.iter().any(|c| c.selected) {
             focus = DIALOG;
         }
         if !d.items.is_empty() {
@@ -401,12 +586,22 @@ pub fn build(s: &Snapshot, said: &str) -> TreeUpdate {
         }
     }
 
+    if !s.status.is_empty() {
+        push_chips(&mut nodes, STATUS_BAR, Role::Toolbar, "Status bar", STATUS_BASE, &s.status);
+        kids.push(STATUS_BAR);
+    }
+
     // Live regions stay in the tree even when empty: a region that appears already filled is
     // not announced by every screen reader.
     let mut toast = Node::new(Role::Status);
     toast.set_live(Live::Polite);
     toast.set_live_atomic();
-    toast.set_label(s.toast.clone().unwrap_or_default());
+    let mut said_toasts: Vec<&str> = s.toast.iter().map(String::as_str).collect();
+    said_toasts.extend(s.toasts.iter().map(|t| t.text.as_str()).filter(|t| s.toast.as_deref() != Some(*t)));
+    toast.set_label(said_toasts.join(". "));
+    if s.toasts.iter().any(|t| t.urgent) {
+        toast.set_live(Live::Assertive);
+    }
     nodes.push((TOAST, toast));
     kids.push(TOAST);
     let mut announcer = Node::new(Role::Status);
@@ -761,6 +956,158 @@ mod tests {
         let mut t = a.clone();
         t.editor.as_mut().unwrap().name = "other.rs".into();
         assert_eq!(announcement(Some(&a), &t), "Editor, other.rs");
+    }
+
+    fn chromed() -> Snapshot {
+        let mut s = snap(editor(&["x"], 0, 1, (0, 0)));
+        s.menu_bar = vec![Chip { popup: true, ..Chip::button("File", "") }, Chip::button("Edit", "")];
+        s.rail = vec![Chip::button("Explorer", "Ctrl+B"), Chip::button("Settings", "")];
+        s.docks = vec![Chip::tab("Git", "", false), Chip::tab("AI", "", true)];
+        s.panel_tabs = vec![Chip::tab("Output", "", false), Chip::tab("Problems", "2 errors, 1 warnings", true)];
+        s.status =
+            vec![Chip::button("Problems", "2 errors, 1 warning"), Chip::button("Go to line", "Line 3, column 4")];
+        s
+    }
+
+    #[test]
+    fn the_chrome_is_reachable_in_reading_order() {
+        let u = build(&chromed(), "");
+        let kids = node(&u, ROOT).children().to_vec();
+        let at = |n: NodeId| kids.iter().position(|k| *k == n).unwrap_or_else(|| panic!("{n:?} not under the window"));
+        // Menus and the rail come first, then the open files and the editor, the docks and the panel
+        // after them, the status bar last of the content, the live regions at the end.
+        assert!(at(MENU_BAR) < at(RAIL) && at(RAIL) < at(TABS) && at(TABS) < at(EDITOR));
+        assert!(at(EDITOR) < at(DOCKS) && at(DOCKS) < at(PANEL_TABS) && at(PANEL_TABS) < at(STATUS_BAR));
+        assert!(at(STATUS_BAR) < at(TOAST) && at(TOAST) < at(ANNOUNCER));
+        let bar = node(&u, MENU_BAR);
+        assert_eq!((bar.role(), bar.label()), (Role::MenuBar, Some("Menu bar")));
+        let file = node(&u, NodeId(MENU_BASE));
+        assert_eq!((file.role(), file.label()), (Role::MenuItem, Some("File")));
+        assert_eq!(file.has_popup(), Some(accesskit::HasPopup::Menu));
+        let rail = node(&u, NodeId(RAIL_BASE));
+        assert_eq!((rail.role(), rail.label(), rail.description()), (Role::Button, Some("Explorer"), Some("Ctrl+B")));
+        assert_eq!(node(&u, RAIL).role(), Role::Toolbar);
+        let ai = node(&u, NodeId(DOCK_BASE + 1));
+        assert_eq!((ai.role(), ai.is_selected()), (Role::Tab, Some(true)));
+        assert_eq!(node(&u, DOCKS).role(), Role::TabList);
+        let problems = node(&u, NodeId(PTAB_BASE + 1));
+        assert_eq!(
+            (problems.label(), problems.description(), problems.is_selected()),
+            (Some("Problems"), Some("2 errors, 1 warnings"), Some(true))
+        );
+        let chip = node(&u, NodeId(STATUS_BASE + 1));
+        assert_eq!(
+            (chip.role(), chip.label(), chip.description()),
+            (Role::Button, Some("Go to line"), Some("Line 3, column 4"))
+        );
+    }
+
+    #[test]
+    fn every_chrome_node_is_in_the_tree_once() {
+        let mut s = chromed();
+        s.dialog = Some(DialogView {
+            title: "Settings".into(),
+            sections: vec![Chip::tab("General", "", true), Chip::tab("Editor", "", false)],
+            controls: vec![Control {
+                label: "Word wrap".into(),
+                help: "Wrap long lines".into(),
+                value: "on".into(),
+                kind: ControlKind::Switch(true),
+                modified: false,
+                selected: true,
+            }],
+            ..Default::default()
+        });
+        s.area = Area::Dialog;
+        let u = build(&s, "");
+        let mut ids: Vec<u64> = u.nodes.iter().map(|(i, _)| i.0).collect();
+        let n = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), n, "duplicate node ids");
+        for (_, nd) in &u.nodes {
+            for c in nd.children() {
+                assert!(has(&u, *c), "missing child {c:?}");
+            }
+        }
+        assert!(has(&u, u.focus));
+    }
+
+    #[test]
+    fn settings_controls_expose_role_label_value_and_focus() {
+        let mut s = Snapshot::default();
+        let ctl = |label: &str, kind: ControlKind, value: &str, selected: bool| Control {
+            label: label.into(),
+            help: "help".into(),
+            value: value.into(),
+            kind,
+            modified: label == "Font size",
+            selected,
+        };
+        s.dialog = Some(DialogView {
+            title: "Settings".into(),
+            about: Some("3 results".into()),
+            sections: vec![Chip::tab("Editor", "", true)],
+            controls: vec![
+                ctl("Word wrap", ControlKind::Switch(false), "off", false),
+                ctl("Font size", ControlKind::Number { min: 8.0, max: 40.0, value: 15.0 }, "15", true),
+                ctl("Theme", ControlKind::Choice, "Lumen Dark", false),
+                ctl("Shell", ControlKind::Text, "/bin/zsh", false),
+            ],
+            ..Default::default()
+        });
+        s.area = Area::Dialog;
+        let u = build(&s, "");
+        let dlg = node(&u, DIALOG);
+        assert_eq!((dlg.role(), dlg.is_modal(), dlg.description()), (Role::Dialog, true, Some("3 results")));
+        let wrap = node(&u, NodeId(CONTROL_BASE));
+        assert_eq!(
+            (wrap.role(), wrap.label(), wrap.toggled()),
+            (Role::Switch, Some("Word wrap"), Some(Toggled::False))
+        );
+        let size = node(&u, NodeId(CONTROL_BASE + 1));
+        assert_eq!(
+            (size.role(), size.numeric_value(), size.min_numeric_value(), size.max_numeric_value()),
+            (Role::SpinButton, Some(15.0), Some(8.0), Some(40.0))
+        );
+        assert_eq!(size.description(), Some("help. Changed from the default"));
+        let theme = node(&u, NodeId(CONTROL_BASE + 2));
+        assert_eq!((theme.role(), theme.value()), (Role::ComboBox, Some("Lumen Dark")));
+        assert_eq!(node(&u, NodeId(CONTROL_BASE + 3)).role(), Role::TextInput);
+        assert_eq!(u.focus, NodeId(CONTROL_BASE + 1), "the focused row of the page has the focus");
+        let tab = node(&u, NodeId(SECTION_BASE));
+        assert_eq!((tab.role(), tab.is_selected()), (Role::Tab, Some(true)));
+    }
+
+    #[test]
+    fn a_dialog_without_controls_takes_the_focus_itself() {
+        let mut s = Snapshot::default();
+        s.dialog = Some(DialogView {
+            title: "Welcome to Lumen".into(),
+            about: Some("Step 2 of 5".into()),
+            ..Default::default()
+        });
+        s.area = Area::Dialog;
+        let u = build(&s, "");
+        assert_eq!(u.focus, DIALOG);
+        assert_eq!(node(&u, DIALOG).description(), Some("Step 2 of 5"));
+    }
+
+    #[test]
+    fn toasts_are_live_and_errors_interrupt() {
+        let mut s = Snapshot::default();
+        s.toasts = vec![ToastView { text: "Saved".into(), urgent: false }];
+        let u = build(&s, "");
+        assert_eq!((node(&u, TOAST).label(), node(&u, TOAST).live()), (Some("Saved"), Some(Live::Polite)));
+        s.toasts.push(ToastView { text: "Push failed".into(), urgent: true });
+        s.toast = Some("Push failed".into());
+        let u = build(&s, "");
+        assert_eq!(
+            node(&u, TOAST).label(),
+            Some("Push failed. Saved"),
+            "the status line and the toast are not said twice"
+        );
+        assert_eq!(node(&u, TOAST).live(), Some(Live::Assertive));
     }
 
     #[test]

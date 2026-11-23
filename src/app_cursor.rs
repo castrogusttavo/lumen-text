@@ -136,6 +136,18 @@ impl App {
                 "split-divider",
             );
         }
+        // The merge editor's "Mark resolved" is disabled while conflict markers remain: say so.
+        if let Some(mv) = &self.merge
+            && mv.markers
+            && mv.area.w > 0
+            && mv.area.h > 0
+        {
+            for (r, b) in &mv.btns {
+                if *b == crate::app_merge::MergeBtn::Resolve {
+                    reg.push(*r, CursorIcon::NotAllowed, Z_BASE + 1, "merge-resolve-disabled");
+                }
+            }
+        }
         // Open modals: their own rows. Settings answers per control (see `settings_cursor`).
         match &self.overlay {
             Overlay::TopMenu(m) => {

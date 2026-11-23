@@ -94,6 +94,16 @@ pub struct Toasts {
 }
 
 impl Toasts {
+    /// The toasts that are not leaving, oldest first, as (text, is it an error or a warning):
+    /// what the screen reader's live region says.
+    pub fn spoken(&self) -> Vec<(String, bool)> {
+        self.list
+            .iter()
+            .filter(|t| !t.leaving)
+            .map(|t| (t.text.clone(), matches!(t.kind, ToastKind::Warn | ToastKind::Error)))
+            .collect()
+    }
+
     /// Add a toast at `now`: the same message again only renews it; a fourth pushes the oldest out.
     pub fn push(&mut self, kind: ToastKind, text: &str, action: Option<(&str, Cmd)>, now: Instant) {
         let text = text.replace('\n', " ");
