@@ -18,7 +18,10 @@ mod app_cursor;
 mod app_cursor_tests;
 #[cfg(test)]
 mod app_cursor_tests_shell;
+#[cfg(test)]
 mod app_cursor_tests_editor;
+#[cfg(test)]
+mod app_cursor_tests_docks;
 mod app_debug;
 mod app_display;
 mod app_docker;

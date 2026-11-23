@@ -4,6 +4,7 @@ impl App {
     /// Mouse button released: ends a text selection in the message box.
     pub fn gitpanel_release(&mut self) {
         let selected = self.gitpanel.as_mut().is_some_and(|gp| {
+            gp.pressed = None;
             gp.msg_auto = None;
             gp.msg.release()
         });

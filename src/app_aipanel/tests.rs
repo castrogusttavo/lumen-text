@@ -221,7 +221,8 @@ fn ai_panel_runs_a_stub_agent_end_to_end() {
     assert_eq!(app.layout.editor.right() + crate::ds::GAP, p.x, "and the editor makes room for it");
     let edge = p.x as f64;
     assert!(app.ai_on_edge(edge, (p.y + 40) as f64), "the left edge is the resize handle");
-    assert_eq!(app.aipanel_cursor(edge, (p.y + 40) as f64), Some(winit::window::CursorIcon::ColResize));
+    app.mouse = (edge, (p.y + 40) as f64);
+    assert_eq!(app.cursor_probe().0, winit::window::CursorIcon::ColResize);
     // Hiding keeps the agent alive; the badge appears when it rings while hidden.
     app.run_bound("AiPanel"); // focused -> hide
     assert!(!app.ai.open);

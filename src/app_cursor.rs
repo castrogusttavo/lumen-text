@@ -180,7 +180,9 @@ impl App {
             Overlay::Settings(_) | Overlay::None => {}
         }
         self.shell_cursor_regions(&mut reg);
+        self.dock_cursor_collect(&mut reg);
         self.cur = reg;
+        self.cursor_refresh();
     }
 
     /// `LUMEN_CURSOR_DEBUG=1`: show the pointer shape and its region in the window title.

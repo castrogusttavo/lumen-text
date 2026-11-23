@@ -39,6 +39,7 @@ use winit::{
 };
 
 mod actions;
+pub(crate) mod cursor;
 mod draw;
 mod draw_empty;
 mod draw_graph;

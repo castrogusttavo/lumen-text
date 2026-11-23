@@ -296,30 +296,10 @@ impl App {
         }
     }
 
-    pub fn aipanel_cursor(&self, x: f64, y: f64) -> Option<CursorIcon> {
-        if self.ai.resizing || self.ai_on_edge(x, y) {
-            return Some(CursorIcon::ColResize);
-        }
-        if self.gitpanel.is_none() && !self.ai.open {
-            return None;
-        }
-        if let Some((_, h)) = self.ai.hit_at(x, y) {
-            return Some(if h == AiHit::Filter { CursorIcon::Text } else { CursorIcon::Pointer });
-        }
-        if !self.ai.open || !self.slot_rect().contains(x, y) {
-            return None;
-        }
-        let body = y >= (self.aipanel_rect().y + self.ai_top_h()) as f64 && self.ai.term().is_some();
-        Some(if body { CursorIcon::Text } else { CursorIcon::Default })
-    }
-
     /// Hover tint target (the app draws it): buttons, the switch's inactive tab.
     pub fn aipanel_hover_target(&self) -> Option<(Rect, i32)> {
-        let (x, y) = self.mouse;
-        let (r, h) = self.ai.hit_at(x, y)?;
-        let active_tab = (h == AiHit::TabAi && self.ai.open) || (h == AiHit::TabGit && !self.ai.open);
-        // Only the Git | AI switch still uses the app-wide tint: everything below it glides its own.
-        (!active_tab && matches!(h, AiHit::TabGit | AiHit::TabAi)).then_some((r, 8))
+        // Everything of the dock, the Git | AI switch included, glides its own hover and pressed wash.
+        None
     }
 
     /// The button under the pointer, for a tooltip.

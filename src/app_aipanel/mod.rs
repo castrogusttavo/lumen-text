@@ -34,7 +34,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use winit::{event::MouseScrollDelta, keyboard::Key, window::CursorIcon};
+use winit::{event::MouseScrollDelta, keyboard::Key};
 
 mod agents;
 pub mod bridge;
@@ -60,8 +60,12 @@ pub(crate) const TABS_H: i32 = 36;
 pub(crate) const HEAD_H: i32 = 44;
 /// Height of the session filter row under the tabs.
 pub(crate) const FILTER_H: i32 = 36;
-/// Inner padding around the agent's terminal.
-pub(crate) const PAD: i32 = 12;
+/// Gap between the panel's edges and the terminal's rounded frame.
+pub(crate) const FRAME_M: i32 = crate::ds::S2;
+/// Padding between that frame and the terminal's grid (same rhythm as the gap outside it).
+pub(crate) const FRAME_PAD: i32 = crate::ds::S2;
+/// Distance from the panel's edge to the terminal's grid.
+pub(crate) const PAD: i32 = FRAME_M + FRAME_PAD;
 /// Two clicks on a session tab this close together rename it.
 const DOUBLE_CLICK_MS: u128 = 450;
 

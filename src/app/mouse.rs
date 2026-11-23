@@ -363,12 +363,6 @@ impl App {
         if let Some(c) = self.term_cursor(x, y) {
             return (c, "cascade:terminal");
         }
-        if let Some(c) = self.aipanel_cursor(x, y) {
-            return (c, "cascade:ai-dock");
-        }
-        if let Some(c) = self.gitpanel_cursor(x, y) {
-            return (c, "cascade:git-dock");
-        }
         if let Some(c) = self.sidebar_cursor(x, y) {
             return (c, "cascade:sidebar-header");
         }

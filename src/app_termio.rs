@@ -578,6 +578,64 @@ impl App {
         }
     }
 
+    /// Screen rects of the link under the pointer: a detected URL / `path:line`, and the run of an
+    /// OSC 8 link on the pointer's row.
+    pub fn term_link_rects(&self) -> Vec<crate::ui::Rect> {
+        let mut v: Vec<crate::ui::Rect> = self.term_link_tip().map(|(r, _)| r).into_iter().collect();
+        if let Some((w, id)) = self.termio.hover_link {
+            let (x, y) = self.mouse;
+            if let (Some((row, col)), Some((ox, oy)), Some(t)) =
+                (self.term_cell(w, x, y), self.termio.origin(w), self.term_ref(w))
+            {
+                let on = |c: usize| t.grid.view_cell(row, c, t.scroll_offset).link == id;
+                let (mut c0, mut c1) = (col, col + 1);
+                while c0 > 0 && on(c0 - 1) {
+                    c0 -= 1;
+                }
+                while c1 < t.grid.cols && on(c1) {
+                    c1 += 1;
+                }
+                let (cw, lh) = (self.tx.cell_w, crate::ui::line_h() as i32);
+                v.push(crate::ui::Rect::new(
+                    ox + (c0 as f32 * cw) as i32,
+                    oy + row as i32 * lh,
+                    ((c1 - c0) as f32 * cw) as i32,
+                    lh,
+                ));
+            }
+        }
+        v
+    }
+
+    /// Cursor registry entries of the terminals: the strip's buttons and the text beam over each
+    /// pane of the bottom panel, and a hand on the link under the pointer (it wins over the beam).
+    pub fn term_cursor_collect(&self, reg: &mut crate::app_cursor::CursorReg) {
+        use crate::app_cursor::{Z_BASE, Z_FLOAT};
+        use winit::window::CursorIcon::{Pointer, Text};
+        if self.panel.open && self.panel.tab == crate::app_panel::PanelTab::Terminal {
+            for (r, _) in &self.terms.hits {
+                reg.push(*r, Pointer, Z_BASE, "term-tab");
+            }
+            for (r, _) in &self.terms.pane_rects {
+                reg.push(*r, Text, Z_BASE - 1, "terminal");
+            }
+            if self.terms.panes.is_empty() {
+                // The "Terminal closed" empty state: nothing to select.
+                let p = self.layout.panel;
+                let top = crate::app_panel::PANEL_HEADER + 1;
+                reg.push(
+                    crate::ui::Rect::new(p.x, p.y + top, p.w, (p.h - top).max(0)),
+                    winit::window::CursorIcon::Default,
+                    Z_BASE - 1,
+                    "terminal-empty",
+                );
+            }
+        }
+        for r in self.term_link_rects() {
+            reg.push(r, Pointer, Z_FLOAT, "terminal-link");
+        }
+    }
+
     /// Pointer over a terminal grid: a hand on a hovered link (underlined, Ctrl+click opens it),
     /// the text beam elsewhere on the bottom panel's terminals. `None` outside them.
     pub fn term_cursor(&self, x: f64, y: f64) -> Option<winit::window::CursorIcon> {

@@ -3,6 +3,7 @@
 
 use super::draw_empty::EmptyBtn;
 use super::*;
+use crate::ds;
 
 impl App {
     /// Small icon button of a row (a 22 px square), shown while the row is hovered; its hit is cut
@@ -16,7 +17,7 @@ impl App {
             _ => c.tab_active_fg,
         };
         if hh {
-            cv.fill_round_clip(r, 6, base.with_alpha(0x26), vis);
+            cv.fill_round_clip(r, ds::R_CTRL, base.with_alpha(if gp.pressed == Some(hit) { 0x3c } else { 0x26 }), vis);
         }
         let tint = if hh || matches!(hit, Hit::Merge(_)) { base } else { c.tab_inactive_fg };
         self.tx.icon(cv, icon, r.x + (r.w - 16) / 2, r.y + (r.h - 16) / 2, 16, tint, vis);
@@ -29,8 +30,6 @@ impl App {
     }
 
     pub(super) fn gp_draw_changes(&mut self, cv: &mut Canvas, gp: &mut GitPanel, body: Rect) {
-        let c = self.theme.chrome;
-        let dim = c.tab_inactive_fg;
         let fh = gp.filter_h();
         if fh > 0 {
             self.gp_draw_filter(cv, gp, Rect::new(body.x, body.y, body.w, fh));
@@ -38,15 +37,14 @@ impl App {
         let body = Rect::new(body.x, body.y + fh, body.w, (body.h - fh).max(0));
         let rows = gp.rows();
         if rows.is_empty() && !gp.filter.text.is_empty() {
-            let msg = "No matching files";
-            let w = self.tx.ui_width(msg, false);
-            self.tx.draw_ui(cv, body.x + (body.w - w) / 2, body.y + 36, msg, dim, body, false);
+            let copy = ("No matching files", "Try another name.");
+            self.gp_empty_state(cv, gp, body, "ui/filter_funnel", copy, &[]);
             return;
         }
         if rows.is_empty() {
             let btn = [EmptyBtn { label: "View history", hit: Hit::Tab(Tab::History), primary: false }];
-            let copy = ("Nothing to commit", "Working tree clean. Edit a file and it will show up here.");
-            self.gp_empty_state(cv, gp, body, ("ui/check", c.git_added), copy, &btn);
+            let copy = ("Nothing to commit", "Working tree clean. Edits show up here.");
+            self.gp_empty_state(cv, gp, body, "ui/check", copy, &btn);
             return;
         }
         let total: i32 = rows.iter().map(|r| GitPanel::row_h(*r)).sum::<i32>() + 16;
@@ -78,7 +76,7 @@ impl App {
         let f = Rect::new(r.x + COMPOSER_MARGIN, r.y + 4, r.w - 2 * COMPOSER_MARGIN, r.h - 8);
         let on = gp.filter_focus && gp.focused;
         gp.mo.filter_ring.set(on);
-        cv.card(f, 7, c.widget_bg, crate::anim::lerp_rgba(c.border, c.accent, gp.mo.filter_ring.v()));
+        cv.card(f, ds::R_CTRL + 1, c.widget_bg, crate::anim::lerp_rgba(c.border, c.focus_ring, gp.mo.filter_ring.v()));
         gp.hits.push((f, Hit::Filter));
         self.tx.icon(cv, "hugeicons/search", f.x + 8, f.y + (f.h - 14) / 2, 14, dim, f);
         let has = !gp.filter.text.is_empty();
@@ -89,7 +87,7 @@ impl App {
             if has { (gp.filter.text.clone(), self.theme.foreground) } else { ("Filter changes".to_string(), dim) };
         if gp.filter.sel_all && has {
             let w = self.tx.ui_width(&txt, false);
-            cv.fill_round_clip(Rect::new(tx - 2, f.y + 3, w + 4, f.h - 6), 4, c.accent.with_alpha(0x55), clip);
+            cv.fill_round_clip(Rect::new(tx - 2, f.y + 3, w + 4, f.h - 6), 4, c.selection_accent, clip);
         }
         self.tx.draw_ui(cv, tx, f.y + (f.h - 18) / 2, &txt, col, clip, false);
         if on {
@@ -99,9 +97,7 @@ impl App {
         }
         if has {
             let b = Rect::new(f.right() - 24, f.y + (f.h - 20) / 2, 20, 20);
-            if self.hv(b) {
-                cv.fill_round(b, 5, c.tab_active_fg.with_alpha(0x18));
-            }
+            self.gp_wash(cv, gp, b, ds::R_CTRL, Hit::FilterClear);
             self.tx.icon(cv, "ui/close", b.x + 4, b.y + 4, 12, dim, b);
             gp.hits.push((b, Hit::FilterClear));
         }

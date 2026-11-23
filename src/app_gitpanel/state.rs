@@ -269,7 +269,12 @@ pub struct GitPanel {
     pub files: Vec<CommitFile>,
     pub open_file: Option<usize>,
     pub hits: Vec<(Rect, Hit)>,
+    /// Controls drawn dimmed because they cannot run now (fetch / pull / push): the pointer says
+    /// "not allowed" over them.
+    pub disabled: Vec<Rect>,
     pub hover: Option<Hit>,
+    /// The control the primary button is held on (pressed look).
+    pub pressed: Option<Hit>,
     /// Message box as drawn (its height follows the text).
     pub msg_box: Rect,
     pub sig: u64,
@@ -419,7 +424,9 @@ impl GitPanel {
             files: Vec::new(),
             open_file: None,
             hits: Vec::new(),
+            disabled: Vec::new(),
             hover: None,
+            pressed: None,
             msg_box: Rect::default(),
             sig: 0,
             hist_sig: 0,
