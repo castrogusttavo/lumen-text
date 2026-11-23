@@ -25,6 +25,7 @@ pub enum RailBtn {
     Outline,
     Docker,
     Terminal,
+    Build,
     Debug,
     Settings,
 }
@@ -32,7 +33,8 @@ pub enum RailBtn {
 impl RailBtn {
     /// Top group, then bottom group.
     pub const TOP: [RailBtn; 5] = [RailBtn::Files, RailBtn::Search, RailBtn::Git, RailBtn::Ai, RailBtn::Outline];
-    pub const BOTTOM: [RailBtn; 4] = [RailBtn::Docker, RailBtn::Terminal, RailBtn::Debug, RailBtn::Settings];
+    pub const BOTTOM: [RailBtn; 5] =
+        [RailBtn::Docker, RailBtn::Terminal, RailBtn::Build, RailBtn::Debug, RailBtn::Settings];
 
     pub fn icon(self) -> &'static str {
         match self {
@@ -41,8 +43,9 @@ impl RailBtn {
             RailBtn::Git => "ui/git_branch",
             RailBtn::Ai => "ui/sparkle",
             RailBtn::Outline => "ui/list_tree",
-            RailBtn::Docker => "ui/box",
+            RailBtn::Docker => "hugeicons/container",
             RailBtn::Terminal => "ui/terminal",
+            RailBtn::Build => "hugeicons/hammer",
             RailBtn::Debug => "ui/debug",
             RailBtn::Settings => "ui/settings",
         }
@@ -55,8 +58,9 @@ impl RailBtn {
             RailBtn::Git => "Source control",
             RailBtn::Ai => "AI",
             RailBtn::Outline => "Outline",
-            RailBtn::Docker => "Docker",
+            RailBtn::Docker => "Containers",
             RailBtn::Terminal => "Terminal",
+            RailBtn::Build => "Build",
             RailBtn::Debug => "Debug",
             RailBtn::Settings => "Settings",
         }
@@ -82,6 +86,10 @@ impl App {
 
     fn rail_active(&self, b: RailBtn) -> bool {
         use crate::app_panel::PanelTab;
+        // The AI page covers everything else but the Git dock: only those two buttons stay lit.
+        if self.ai.open && !matches!(b, RailBtn::Ai | RailBtn::Git) {
+            return false;
+        }
         match b {
             RailBtn::Files => self.sidebar_open && self.sidebar_mode == SidebarMode::Files,
             RailBtn::Outline => self.sidebar_open && self.sidebar_mode == SidebarMode::Outline,
@@ -89,6 +97,7 @@ impl App {
             RailBtn::Ai => self.ai.open,
             RailBtn::Docker => self.panel.open && self.panel.tab == PanelTab::Docker,
             RailBtn::Terminal => self.panel.open && self.panel.tab == PanelTab::Terminal,
+            RailBtn::Build => self.panel.open && self.panel.tab == PanelTab::Build,
             RailBtn::Debug => self.panel.open && self.panel.tab == PanelTab::Debug,
             RailBtn::Search | RailBtn::Settings => false,
         }
@@ -147,10 +156,15 @@ impl App {
             return true;
         };
         use crate::app_panel::PanelTab;
+        // Any other button leaves the AI page (the agents keep running).
+        let from_ai = self.ai.open && !matches!(kind, RailBtn::Ai | RailBtn::Settings | RailBtn::Git);
+        if from_ai {
+            self.ai_hide();
+        }
         match kind {
             RailBtn::Files | RailBtn::Outline => {
                 let mode = if kind == RailBtn::Files { SidebarMode::Files } else { SidebarMode::Outline };
-                if self.sidebar_open && self.sidebar_mode == mode {
+                if !from_ai && self.sidebar_open && self.sidebar_mode == mode {
                     self.sidebar_open = false;
                     self.focus = crate::app::Focus::Editor;
                 } else {
@@ -181,6 +195,13 @@ impl App {
                     self.toggle_panel();
                 } else {
                     self.open_terminal();
+                }
+            }
+            RailBtn::Build => {
+                if self.rail_active(kind) {
+                    self.toggle_panel();
+                } else {
+                    self.build_open_panel();
                 }
             }
             RailBtn::Debug => {

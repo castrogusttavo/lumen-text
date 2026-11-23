@@ -48,6 +48,8 @@ pub enum Action {
     AiAgent(String),
     /// AI panel: a new session of this agent.
     AiNew(String),
+    /// AI page: a new native chat session of this agent.
+    AiNewChat(String),
     Theme(String),
     UndoBranch(usize),
     GitShow(PathBuf, String, String),

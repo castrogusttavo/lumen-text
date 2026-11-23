@@ -24,7 +24,7 @@ impl App {
         }
         self.hover = None;
         self.dismiss_tooltip();
-        if self.tab_drag_key(&ev.key) {
+        if self.tab_drag_key(&ev.key) || self.term_strip_drag_key(&ev.key) || self.ai_drag_key(&ev.key) {
             return false;
         }
         let key = ev.key.clone();
@@ -541,7 +541,7 @@ impl App {
             .tabs
             .iter()
             .filter_map(|t| t.term.live_group())
-            .chain(self.ai.sessions.iter().filter_map(|s| s.term.live_group()))
+            .chain(self.ai.sessions.iter().filter_map(|s| s.term.as_ref().and_then(|t| t.live_group())))
             .chain(self.panel.running.as_ref().and_then(|r| u32::try_from(r.pid).ok()))
             .chain(self.build.job_group())
             .collect();

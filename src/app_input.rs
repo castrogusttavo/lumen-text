@@ -705,6 +705,8 @@ impl App {
         self.term_release();
         self.sidebar_edge_release();
         self.tab_drag_release();
+        self.term_strip_drag_release();
+        self.ai_drag_release();
         self.tree_drag_release();
         self.diff_release();
         self.dragging_minimap = false;

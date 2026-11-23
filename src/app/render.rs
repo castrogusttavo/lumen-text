@@ -17,7 +17,8 @@ impl App {
 
     pub(crate) fn compute_layout(&mut self) {
         let (w, h) = (self.size.0 as i32, self.size.1 as i32);
-        let sb = if self.sidebar_open { self.sidebar_w() } else { 0 };
+        let page = self.ai_page_active();
+        let sb = if self.sidebar_open && !page { self.sidebar_w() } else { 0 };
         // Zen mode and the View toggles can hide the top bar, tab bar and breadcrumbs.
         let (top_h, tab_h, bread_h) = self.chrome_heights();
         self.layout.topbar = Rect::new(0, 0, w, top_h);
@@ -25,11 +26,11 @@ impl App {
         self.layout.rail = Rect::new(0, top_h, lx, h - top_h);
         self.layout.sidebar = Rect::new(lx, top_h, sb, h - top_h);
         let sb = sb + lx;
-        let rw = self.gitpanel_w();
+        let rw = if page { (w - lx).max(0) } else { self.gitpanel_w() };
         self.layout.tabbar = Rect::new(sb, top_h, w - sb - rw, tab_h);
         self.layout.bread = Rect::new(sb, top_h + tab_h, (w - sb - rw).max(0), bread_h);
         let avail = (h - top_h - tab_h - bread_h).max(0);
-        let panel_h = if self.panel.open { self.panel.height.min(avail / 2).max(0) } else { 0 };
+        let panel_h = if self.panel.open && !page { self.panel.height.min(avail / 2).max(0) } else { 0 };
         let gap = if panel_h > 0 { CARD_M } else { 0 };
         let card_h = (avail - CARD_M - panel_h - gap).max(0);
         self.layout.card = Rect::new(sb + CARD_M, top_h + tab_h + bread_h, (w - sb - 2 * CARD_M - rw).max(0), card_h);
@@ -154,18 +155,20 @@ impl App {
         self.draw_diff(cv);
         crate::perf::lap!("breadcrumbs_diff");
         self.draw_rail(cv);
-        if self.sidebar_open {
+        if self.sidebar_open && !self.ai_page_active() {
             self.draw_sidebar(cv);
         }
         crate::perf::lap!("sidebar");
         self.draw_panel(cv);
         self.draw_gitpanel(cv);
         self.draw_aipanel(cv);
-        if self.sidebar_open {
+        if self.sidebar_open && !self.ai_page_active() {
             self.draw_sidebar_edge(cv);
         }
         self.draw_tree_drag(cv);
         self.draw_tab_drag(cv);
+        self.draw_term_strip_drag(cv);
+        self.draw_ai_drag(cv);
         crate::perf::lap!("panels");
         // Re-aim the hover tint at what is under the pointer in this frame's layout: a closed or
         // switched tab, a deleted row or a toggled panel must not leave the old tint behind (a
@@ -359,7 +362,6 @@ impl App {
             r,
             true,
         );
-        self.draw_explorer_refresh(cv);
         if self.sidebar_mode == SidebarMode::Outline {
             self.draw_outline(cv);
             return self.draw_sidebar_bar(cv);

@@ -80,13 +80,13 @@ impl App {
             }
         }
         for s in &self.ai.sessions {
-            if s.term.alive {
+            if s.alive() {
                 push(
                     Kind::Agent,
                     s.name.clone(),
                     Target::Agent(s.id),
-                    s.term.pid(),
-                    Some(s.term.started.elapsed()),
+                    s.term.as_ref().and_then(|t| t.pid()).or_else(|| s.chat.as_ref().and_then(|c| c.backend.pid())),
+                    Some(s.started().elapsed()),
                     false,
                 );
             }

@@ -19,7 +19,8 @@ const NO_MARKS: &str = "no finished command to use yet (bash, zsh and fish repor
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Which {
     Bottom(u32),
-    Ai,
+    /// An AI session, by id (several can be on screen side by side).
+    Ai(u64),
 }
 
 /// A mouse drag that started in a terminal.
@@ -80,14 +81,14 @@ impl App {
     pub fn term_ref(&self, w: Which) -> Option<&Term> {
         match w {
             Which::Bottom(id) => self.terms.get(id).map(|t| &t.term),
-            Which::Ai => self.ai.term(),
+            Which::Ai(id) => self.ai.sessions.iter().find(|s| s.id == id).and_then(|s| s.term.as_ref()),
         }
     }
 
     pub fn term_mut(&mut self, w: Which) -> Option<&mut Term> {
         match w {
             Which::Bottom(id) => self.terms.get_mut(id).map(|t| &mut t.term),
-            Which::Ai => self.ai.term_mut(),
+            Which::Ai(id) => self.ai.sessions.iter_mut().find(|s| s.id == id).and_then(|s| s.term.as_mut()),
         }
     }
 
@@ -170,8 +171,8 @@ impl App {
         if self.panel.open && self.panel.tab == crate::app_panel::PanelTab::Terminal {
             v.extend(self.terms.panes.iter().map(|id| Which::Bottom(*id)));
         }
-        if self.ai.open && self.ai.term().is_some() {
-            v.push(Which::Ai);
+        if self.ai.open {
+            v.extend(self.ai.groups.iter().map(|g| Which::Ai(g.active)));
         }
         v
     }
@@ -552,7 +553,13 @@ impl App {
     /// Per-event hook: a synchronized-output hold that ran out gets the screen drawn.
     pub fn term_tick(&mut self, want: &mut impl FnMut(std::time::Instant)) {
         let mut redraw = false;
-        let all = self.terms.tabs.iter().map(|t| Which::Bottom(t.id)).chain([Which::Ai]).collect::<Vec<_>>();
+        let all = self
+            .terms
+            .tabs
+            .iter()
+            .map(|t| Which::Bottom(t.id))
+            .chain(self.ai.sessions.iter().map(|s| Which::Ai(s.id)))
+            .collect::<Vec<_>>();
         for w in all {
             if let Some(t) = self.term_mut(w) {
                 let (expired, next) = t.grid.sync_check();

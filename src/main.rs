@@ -5,6 +5,7 @@
 mod a11y;
 mod app;
 mod app_a11y;
+mod app_aidrag;
 mod app_aipanel;
 mod app_ask;
 mod app_assist;
@@ -63,6 +64,7 @@ mod app_split;
 mod app_sqlview;
 mod app_structural;
 mod app_tabdrag;
+mod app_termdrag;
 mod app_termio;
 mod app_terms;
 mod app_tests;

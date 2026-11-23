@@ -451,7 +451,7 @@ impl App {
         if self.ai.root != self.root {
             self.ai_close_all();
         }
-        let alive = self.ai.cur().is_some_and(|s| s.term.alive);
+        let alive = self.ai.cur().is_some_and(|s| s.alive());
         if !alive {
             match self.ai_default_agent().or(AGENTS.first()) {
                 Some(a) if self.ai.path_of(a).is_some() => {
@@ -459,7 +459,7 @@ impl App {
                         self.ai_new_session(a, None)
                     } else {
                         self.ai_restart(None);
-                        self.ai.cur().is_some_and(|s| s.term.alive)
+                        self.ai.cur().is_some_and(|s| s.alive())
                     };
                     if !started {
                         return;

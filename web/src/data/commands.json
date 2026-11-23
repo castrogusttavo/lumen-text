@@ -295,7 +295,7 @@
   "id": "BuildPanel"
  },
  {
-  "label": "Docker: Show panel",
+  "label": "Containers: Show panel",
   "shortcut": "",
   "id": "DockerPanel"
  },
@@ -368,6 +368,11 @@
   "label": "AI: Stop Agent",
   "shortcut": "",
   "id": "AiStop"
+ },
+ {
+  "label": "AI: Restart Agent",
+  "shortcut": "",
+  "id": "AiRestart"
  },
  {
   "label": "AI: Choose Agent…",

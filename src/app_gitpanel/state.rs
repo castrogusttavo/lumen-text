@@ -6,6 +6,8 @@ use super::*;
 pub enum Tab {
     Changes,
     History,
+    /// The branch's pull request: checks and review comments.
+    Checks,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -79,6 +81,27 @@ pub enum Hit {
     FilterClear,
     /// "Initialize repository" of a folder that is not one yet.
     Init,
+    /// "Create PR": opens the new pull request form.
+    PrOpen,
+    /// Leaves the form.
+    PrCancel,
+    /// Writes the title and description from the branch's commits.
+    PrGenerate,
+    PrTitle,
+    PrBody,
+    /// "Create pull request" and its draft variant.
+    PrCreate,
+    PrCreateDraft,
+    /// The base branch row of the form (read-only).
+    PrBase,
+    /// Hands the review comments to the AI to fix.
+    PrFix,
+    /// The search button of the header: focuses the filter box.
+    Search,
+    /// The "COMMITTED ON BRANCH" header: fold / unfold the list.
+    BranchHead,
+    /// A commit of the branch: fold / unfold its files.
+    BranchCommit(usize),
 }
 
 /// The dropdowns of the panel.
@@ -90,6 +113,8 @@ pub enum GpMenu {
     Sync,
     /// The chevron of the Commit button (amend, commit & push, ...).
     Commit,
+    /// The chevron of the Create pull request button (draft).
+    Pr,
 }
 
 /// One entry of a dropdown.
@@ -207,12 +232,19 @@ pub enum Row {
     Stash(usize),
     /// A file of the expanded stash.
     SFile(usize),
+    /// "COMMITTED ON BRANCH n" header, one of those commits, and a file of it (commit, file).
+    BranchHead,
+    BranchCommit(usize),
+    BranchFile(usize, usize),
 }
 
-pub(super) const HEAD_H: i32 = 40;
+/// The panel's header: the row of tabs and the row of actions (Create PR, search, more).
+pub(super) const HEAD_H: i32 = 80;
 /// The "Filter changes" box above the lists.
 pub(super) const FILTER_H: i32 = 36;
-pub(super) const BRANCH_H: i32 = 34;
+pub(super) const BRANCH_H: i32 = 50;
+/// The new pull request form: header, title, description, base row, button, error line.
+pub(super) const FORM_H: i32 = 36 + 44 + 8 + 96 + 8 + 28 + 8 + 38 + 22;
 /// One line of the result / progress strip under the branch row.
 pub(super) const STRIP_LINE: i32 = 17;
 /// Height of the "publish this branch?" prompt.
@@ -223,10 +255,13 @@ pub(super) const SEC_H: i32 = 30;
 pub(super) const COMMIT_H: i32 = 44;
 pub(super) const STASH_H: i32 = 42;
 pub(super) const CFILE_H: i32 = 28;
-/// Height of the composer's button row (sparkle, scope, Commit) under the message.
-pub(super) const COMPOSER_ROW_H: i32 = 34;
-/// Composer around the message box: gap above, the button row, gap below.
-pub(super) const COMMIT_CHROME_H: i32 = 6 + COMPOSER_ROW_H + 8;
+/// Height of what sits under the message box: a gap, the full-width Commit button.
+pub(super) const COMPOSER_ROW_H: i32 = 8 + 32;
+/// Composer around the message box: gap above, the button row, and the small caption (what the
+/// commit takes) with its gap below.
+pub(super) const COMMIT_CHROME_H: i32 = 6 + COMPOSER_ROW_H + 20;
+/// Room kept at the right of the message's first lines for the sparkle button.
+pub(super) const MSG_SPARKLE_W: i32 = 30;
 /// Margin between the panel edge and the composer box.
 pub(super) const COMPOSER_MARGIN: i32 = 8;
 /// Smallest row height of the message box.
@@ -339,6 +374,23 @@ pub struct GitPanel {
     pub menu: Option<GpMenu>,
     /// Line counts per file; `None` until the first read arrives (nothing is drawn meanwhile).
     pub stats: Option<NumStats>,
+    /// The branch on top of its base (commits and files), read on a worker.
+    pub branch: Option<BranchInfo>,
+    pub branch_at: Option<Instant>,
+    /// The pull request of the branch (Checks tab).
+    pub detail: PrDetail,
+    /// The new pull request form, when it is open.
+    pub form: Option<PrForm>,
+    /// Answers of the pull request workers.
+    pub pr_ch: (std::sync::mpsc::Sender<PrMsg>, std::sync::mpsc::Receiver<PrMsg>),
+    /// Scroll of the Checks tab.
+    pub scroll_pr: f64,
+    pub max_scroll_pr: f64,
+    /// The URL of a pull request just created, to open once the panel is back in the App.
+    pub pending_url: Option<String>,
+    /// "COMMITTED ON BRANCH" folded, and the commits whose files are folded away.
+    pub branch_folded: bool,
+    pub branch_commits_folded: std::collections::HashSet<usize>,
 }
 
 /// What one refresh of the panel reads from git (on any thread; applied on the UI thread).
@@ -456,6 +508,16 @@ impl GitPanel {
             collapsed_dirs: std::collections::HashSet::new(),
             menu: None,
             stats: None,
+            branch: None,
+            branch_at: None,
+            detail: PrDetail::default(),
+            form: None,
+            pr_ch: std::sync::mpsc::channel(),
+            scroll_pr: 0.0,
+            max_scroll_pr: 0.0,
+            pending_url: None,
+            branch_folded: false,
+            branch_commits_folded: std::collections::HashSet::new(),
         };
         p.refresh();
         p
@@ -592,7 +654,8 @@ impl GitPanel {
 
     /// Height of the filter box above the lists: only when there is something to filter.
     pub fn filter_h(&self) -> i32 {
-        if self.tab == Tab::Changes && (!self.changes.is_empty() || !self.filter.text.is_empty()) {
+        if self.tab == Tab::Changes && self.form.is_none() && (!self.changes.is_empty() || !self.filter.text.is_empty())
+        {
             FILTER_H
         } else {
             0
@@ -601,6 +664,9 @@ impl GitPanel {
 
     /// Height of the commit area pinned to the bottom of the Changes tab.
     pub fn commit_area_h(&self) -> i32 {
+        if self.form.is_some() {
+            return FORM_H;
+        }
         COMMIT_CHROME_H + self.msg_h()
     }
 
@@ -687,6 +753,10 @@ impl GitPanel {
                 }
                 v.extend([pull, push, MenuItem::new("Pull strategy...", "ui/git_branch", Hit::PullChoose)]);
             }
+            GpMenu::Pr => {
+                v.push(MenuItem::new("Create pull request", "ui/git_branch", Hit::PrCreate));
+                v.push(MenuItem::new("Create draft pull request", "ui/git_branch", Hit::PrCreateDraft));
+            }
             GpMenu::Commit => {
                 v.push(MenuItem::new("Commit & push", "ui/arrow_up", Hit::CommitPush));
                 let mut am = MenuItem::new("Amend last commit", "ui/git_commit", Hit::Amend);
@@ -761,6 +831,8 @@ impl GitPanel {
     pub fn rows(&self) -> Vec<Row> {
         let mut v = Vec::new();
         match self.tab {
+            // The new pull request form shows the branch's commits and nothing else.
+            Tab::Changes if self.form.is_some() => self.branch_rows(&mut v),
             Tab::Changes => {
                 for g in [Group::Staged, Group::Changes, Group::Untracked] {
                     let idx: Vec<usize> =
@@ -782,6 +854,7 @@ impl GitPanel {
                         }
                     }
                 }
+                self.branch_rows(&mut v);
                 // Stashes after the changes; the header also offers "Stash…" when there is
                 // something to stash.
                 if !self.stashes.is_empty() {
@@ -800,13 +873,34 @@ impl GitPanel {
                 }
             }
             Tab::History => v.extend((0..self.hist_len()).filter_map(|k| self.hist_row(k))),
+            Tab::Checks => {}
         }
         v
     }
 
+    /// "COMMITTED ON BRANCH n": the commits the branch has over its base, each with its files.
+    fn branch_rows(&self, v: &mut Vec<Row>) {
+        let Some(b) = self.branch.as_ref().filter(|b| !b.commits.is_empty()) else { return };
+        if !self.filter.text.is_empty() {
+            return;
+        }
+        v.push(Row::BranchHead);
+        if self.branch_folded {
+            return;
+        }
+        for (i, c) in b.commits.iter().enumerate() {
+            v.push(Row::BranchCommit(i));
+            if !self.branch_commits_folded.contains(&i) {
+                v.extend((0..c.files.len()).map(|j| Row::BranchFile(i, j)));
+            }
+        }
+    }
+
     pub fn row_h(r: Row) -> i32 {
         match r {
-            Row::Header(_) | Row::StashHead => SEC_H,
+            Row::Header(_) | Row::StashHead | Row::BranchHead => SEC_H,
+            Row::BranchCommit(_) => 34,
+            Row::BranchFile(..) => FILE_H,
             Row::Folder(..) => FOLDER_H,
             Row::File(_) | Row::NoChanges => FILE_H,
             Row::Commit(_) => COMMIT_H,
@@ -820,6 +914,7 @@ impl GitPanel {
         match self.tab {
             Tab::Changes => self.rows().len(),
             Tab::History => self.hist_len(),
+            Tab::Checks => 0,
         }
     }
 
@@ -827,6 +922,7 @@ impl GitPanel {
         match self.tab {
             Tab::Changes => self.rows().get(k).copied(),
             Tab::History => self.hist_row(k),
+            Tab::Checks => None,
         }
     }
 
@@ -835,6 +931,7 @@ impl GitPanel {
         match self.tab {
             Tab::Changes => self.rows().iter().position(|x| *x == r),
             Tab::History => self.hist_index(r),
+            Tab::Checks => None,
         }
     }
 
@@ -843,6 +940,7 @@ impl GitPanel {
         match self.tab {
             Tab::Changes => self.rows().iter().take(k).map(|r| Self::row_h(*r)).sum(),
             Tab::History => self.hist_top(k),
+            Tab::Checks => 0,
         }
     }
 
@@ -850,6 +948,7 @@ impl GitPanel {
         match self.tab {
             Tab::Changes => self.rows().into_iter().map(Self::row_h).sum::<i32>() + 16,
             Tab::History => self.hist_top(self.hist_len()) + 16,
+            Tab::Checks => 0,
         }
     }
 

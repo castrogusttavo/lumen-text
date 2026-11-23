@@ -22,6 +22,9 @@ By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Contrib
    cargo run --release -- path/to/project path/to/file.ts:10:3
    ```
 
+For a live dev loop (rebuild and relaunch on every save) run `tools/dev.sh [args]`; it needs `cargo install cargo-watch --locked`
+and `LUMEN_DEV_PROFILE=dev` trades UI speed for faster builds. `settings.json` changes are reloaded without any restart.
+
 `config::assets_dir()` finds `assets/` through `$LUMEN_ASSETS`, then next to the binary, then `~/.local/share/lumen-text/assets`;
 when running from the repository set `LUMEN_ASSETS=$PWD/assets` if the editor cannot find its grammars.
 

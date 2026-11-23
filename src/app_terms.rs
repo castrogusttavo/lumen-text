@@ -68,6 +68,8 @@ pub struct Terms {
     pub pane_rects: Vec<(Rect, u32)>,
     /// Last click on a tab, for the double click that renames it.
     last_click: Option<(u32, Instant)>,
+    /// A press on a tab that may become a drag (`app_termdrag`).
+    pub drag: Option<crate::app_termdrag::TermDrag>,
 }
 
 /// Show `id`: focus it when it is already in a pane, else it takes the focused pane's place.
@@ -345,6 +347,8 @@ impl App {
                 self.show_terminals();
                 if double {
                     self.prompt_rename_terminal(id);
+                } else {
+                    self.term_strip_drag_press(id, x, y);
                 }
             }
             TermHit::Close(id) => self.close_terminal_request_id(id),

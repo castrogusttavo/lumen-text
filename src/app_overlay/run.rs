@@ -118,6 +118,7 @@ impl App {
             Cmd::GitChanges => self.open_git_changes(),
             Cmd::GitPanel => self.toggle_git_panel(),
             Cmd::AiPanel => self.ai_toggle(),
+            Cmd::AiRestart => self.ai_respawn(),
             Cmd::AiNewSession => self.ai_new_session_menu(),
             Cmd::AiStop => self.ai_stop(),
             Cmd::AiChooseAgent => self.ai_choose_agent(),

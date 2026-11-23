@@ -41,6 +41,7 @@ impl App {
         }
         if matches!(key, Key::Named(NamedKey::Escape)) {
             if gp.menu.take().is_some()
+                || gp.form.take().is_some()
                 || gp.confirm.take().is_some()
                 || gp.publish.take().is_some()
                 || gp.force.take().is_some()
@@ -63,6 +64,9 @@ impl App {
         // Anything bound to a command (Ctrl+P, Ctrl+Shift+G, ...) keeps working, except the
         // editing keys of the message box (Ctrl+A / C / X / V / Z / Y, word moves...).
         let bound = (ctrl || alt) && self.keymap.lookup(ctrl, shift, alt, key).is_some();
+        if gp.form.is_some() && gp.tab == Tab::Changes {
+            return self.gp_form_key(gp, ev, bound);
+        }
         if gp.msg_focus && gp.tab == Tab::Changes {
             return self.gp_msg_key(gp, ev, bound);
         }
@@ -186,6 +190,53 @@ impl App {
         true
     }
 
+    /// A key while the pull request form is open: Tab switches between the title and the description,
+    /// Enter in the title goes to the description, Ctrl+Enter creates, the rest edits the box.
+    fn gp_form_key(&mut self, gp: &mut GitPanel, ev: &KeyIn, bound: bool) -> bool {
+        let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
+        let Some(f) = gp.form.as_mut() else { return false };
+        if matches!(ev.key, Key::Named(NamedKey::Tab)) && !ctrl && !alt {
+            f.focus = if f.focus == FormField::Title { FormField::Body } else { FormField::Title };
+            return true;
+        }
+        if matches!(ev.key, Key::Named(NamedKey::Enter)) {
+            if ctrl {
+                gp.submit_form(false);
+                return true;
+            }
+            if f.focus == FormField::Title {
+                f.focus = FormField::Body;
+                return true;
+            }
+        }
+        let tx = &mut self.tx;
+        let area = if f.focus == FormField::Title { &mut f.title } else { &mut f.body };
+        area.relayout(&mut |s: &str| tx.ui_char_xs(s, false, None));
+        match area.key(&ev.key, ctrl, shift, alt) {
+            KeyAct::Handled => return true,
+            KeyAct::Copy(t) => {
+                self.clip.set(&t);
+                return true;
+            }
+            KeyAct::Paste => {
+                let t = self.clip.get();
+                let t = if f.focus == FormField::Title { t.replace(['\n', '\r'], " ") } else { t };
+                area.insert(&t);
+                return true;
+            }
+            KeyAct::Ignored => {}
+        }
+        let text = ev.text.as_deref().filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+        let altgr = ctrl && alt && text.is_some() && !bound;
+        if (ctrl || alt) && !altgr {
+            return Self::gp_pass(gp);
+        }
+        if let Some(t) = text {
+            area.type_text(t);
+        }
+        true
+    }
+
     /// A key while the message box has the focus. `bound`: the key runs a command elsewhere.
     fn gp_msg_key(&mut self, gp: &mut GitPanel, ev: &KeyIn, bound: bool) -> bool {
         let (ctrl, shift, alt) = (self.mods.control_key(), self.mods.shift_key(), self.mods.alt_key());
@@ -279,6 +330,8 @@ impl App {
         let mut undo = false;
         let mut merge_path: Option<PathBuf> = None;
         let mut branch_anchor: Option<Rect> = None;
+        let mut open_url: Option<String> = None;
+        let mut ai_prompt: Option<String> = None;
         if !inside {
             gp.focused = false;
             gp.msg_focus = false;
@@ -307,6 +360,10 @@ impl App {
                 Some(Hit::Tab(t)) => {
                     gp.tab = t;
                     gp.cursor = 0;
+                    if t == Tab::Checks {
+                        gp.scroll_pr = 0.0;
+                        gp.detail.loaded = false;
+                    }
                     if t == Tab::History && gp.commits.is_empty() {
                         gp.load_more();
                     }
@@ -357,6 +414,41 @@ impl App {
                 Some(Hit::MenuItem(_)) => {}
                 Some(Hit::Branches) => branch_anchor = Some(Rect::new(p.x + 8, p.y + HEAD_H, p.w / 2, BRANCH_H)),
                 Some(Hit::Generate) => gp.generate_message(),
+                Some(Hit::Search) => {
+                    gp.tab = Tab::Changes;
+                    gp.filter_focus = true;
+                }
+                Some(Hit::BranchHead) => gp.branch_folded = !gp.branch_folded,
+                Some(Hit::BranchCommit(i)) => {
+                    if !gp.branch_commits_folded.remove(&i) {
+                        gp.branch_commits_folded.insert(i);
+                    }
+                }
+                Some(Hit::PrOpen) => gp.open_form(),
+                Some(Hit::PrCancel) => gp.form = None,
+                Some(Hit::PrGenerate) => gp.generate_pr(),
+                Some(Hit::PrTitle | Hit::PrBody) => {
+                    let title = matches!(hit, Some(Hit::PrTitle));
+                    if let Some(f) = gp.form.as_mut() {
+                        f.focus = if title { FormField::Title } else { FormField::Body };
+                        let b = if title { f.title_box } else { f.body_box };
+                        let (ox, oy) = (b.x + 12, b.y + if title { 11 } else { 10 });
+                        let tx = &mut self.tx;
+                        let area = if title { &mut f.title } else { &mut f.body };
+                        area.relayout(&mut |s: &str| tx.ui_char_xs(s, false, None));
+                        area.press((x - ox as f64) as f32, (y - oy as f64) as f32, 1, self.mods.shift_key());
+                    }
+                }
+                Some(Hit::PrCreate) => gp.submit_form(false),
+                Some(Hit::PrCreateDraft) => gp.submit_form(true),
+                Some(Hit::PrBase) => {
+                    if gp.form.is_none()
+                        && let Some(i) = gp.detail.info.as_ref()
+                    {
+                        open_url = Some(i.url.clone());
+                    }
+                }
+                Some(Hit::PrFix) => ai_prompt = gp.detail.info.as_ref().map(fix_prompt),
                 Some(Hit::Filter) => {}
                 Some(Hit::FilterClear) => {
                     gp.filter = TextField::default();
@@ -455,6 +547,12 @@ impl App {
         if let Some(a) = branch_anchor {
             self.open_topmenu(crate::app_topbar::MenuKind::Branch, a);
         }
+        if let Some(u) = open_url {
+            crate::paths::open_url(&u);
+        }
+        if let Some(t) = ai_prompt {
+            self.ai_ask(&t);
+        }
         inside
     }
 
@@ -469,6 +567,19 @@ impl App {
         if gp.tab == Tab::Changes && gp.msg_box.contains(x, y) && gp.msg.max_scroll() > 0.0 {
             let px = crate::scroller::wheel_px(delta, Self::gp_msg_line() as f64);
             gp.msg.scroll_by(px as f32);
+            return true;
+        }
+        if gp.tab == Tab::Checks {
+            let px = crate::scroller::wheel_px(delta, crate::ui::line_h() as f64);
+            gp.scroll_pr = (gp.scroll_pr + px).clamp(0.0, gp.max_scroll_pr);
+            return true;
+        }
+        if let Some(f) = gp.form.as_mut()
+            && f.body_box.contains(x, y)
+            && f.body.max_scroll() > 0.0
+        {
+            let px = crate::scroller::wheel_px(delta, 18.0);
+            f.body.scroll_by(px as f32);
             return true;
         }
         let px = crate::scroller::wheel_px(delta, crate::ui::line_h() as f64);
@@ -504,9 +615,23 @@ impl App {
             return None;
         }
         Some(match gp.hit_at(x, y) {
-            Some(Hit::Msg | Hit::Filter) => CursorIcon::Text,
+            Some(Hit::Msg | Hit::Filter | Hit::PrTitle | Hit::PrBody) => CursorIcon::Text,
+            Some(Hit::PrBase) if gp.form.is_some() => CursorIcon::Default,
             Some(_) => CursorIcon::Pointer,
             None => CursorIcon::Default,
         })
     }
+}
+
+/// What "fix with AI" tells the agent: the pull request and every review comment on it.
+fn fix_prompt(pr: &PrInfo) -> String {
+    let mut s = format!("Inspect and fix the review feedback for PR #{} ({}).\n", pr.number, pr.title);
+    for c in &pr.comments {
+        let place = if c.place.is_empty() { String::new() } else { format!(" on {}", c.place) };
+        s.push_str(&format!("\n- {}{}: {}", c.author, place, clean_markdown(&c.body).replace('\n', " ")));
+        for r in &c.replies {
+            s.push_str(&format!("\n  - reply from {}: {}", r.author, clean_markdown(&r.body).replace('\n', " ")));
+        }
+    }
+    s
 }

@@ -23,7 +23,7 @@ impl App {
     }
 
     /// Visible part of a row of height `h` at `y` inside `body`.
-    fn gp_vis(body: Rect, y: i32, h: i32) -> Rect {
+    pub(super) fn gp_vis(body: Rect, y: i32, h: i32) -> Rect {
         Rect::new(body.x, y.max(body.y), body.w, ((y + h).min(body.bottom()) - y.max(body.y)).max(0))
     }
 
@@ -40,6 +40,12 @@ impl App {
             let msg = "No matching files";
             let w = self.tx.ui_width(msg, false);
             self.tx.draw_ui(cv, body.x + (body.w - w) / 2, body.y + 36, msg, dim, body, false);
+            return;
+        }
+        if rows.is_empty() && gp.form.is_some() {
+            let msg = "No commits on this branch yet";
+            let w = self.tx.ui_width(msg, false);
+            self.tx.draw_ui(cv, body.x + (body.w - w) / 2, body.y + 30, msg, dim, body, false);
             return;
         }
         if rows.is_empty() {
@@ -69,6 +75,9 @@ impl App {
                 Row::Header(g) => self.gp_draw_group_row(cv, gp, g, y, body),
                 Row::Folder(g, first) => self.gp_draw_folder_row(cv, gp, (g, first), y, body),
                 Row::File(i) => self.gp_draw_file_row(cv, gp, i, k, y, body),
+                Row::BranchHead => self.gp_draw_branch_head(cv, gp, y, body),
+                Row::BranchCommit(i) => self.gp_draw_branch_commit(cv, gp, i, y, body),
+                Row::BranchFile(i, j) => self.gp_draw_branch_file(cv, gp, i, j, y, body),
                 r => self.gp_draw_stash_row(cv, gp, r, k, y, body),
             }
             y += h;
@@ -128,15 +137,15 @@ impl App {
         gp.hits.push((hrow.intersect(&vis), Hit::Toggle(g)));
         let chev = if gp.collapsed.contains(&g) { "ui/chevron_right" } else { "ui/chevron_down" };
         self.tx.icon(cv, chev, body.x + 10, y + (h - 16) / 2, 16, dim, vis);
-        let ty = y + (h - 18) / 2;
-        self.tx.draw_ui(cv, body.x + 30, ty, g.title(), strong, body, true);
-        let tw = self.tx.ui_width(g.title(), true);
-        let cnt = n.to_string();
-        let nw = self.tx.ui_width(&cnt, true);
-        let cw = (nw + 12).max(20);
-        let pill = Rect::new(body.x + 30 + tw + 8, y + (h - 16) / 2, cw, 16);
-        cv.fill_round_clip(pill, 8, strong.with_alpha(0x1c), body);
-        self.tx.draw_ui_sized(cv, pill.x + (cw - nw) / 2, pill.y + 1, &cnt, dim, body, true, 12.0);
+        // Small caps like the section headers of a source-control list: "STAGED CHANGES  2".
+        let title = match g {
+            Group::Staged => "STAGED CHANGES".to_string(),
+            _ => g.title().to_uppercase(),
+        };
+        let ty = y + (h - 16) / 2 + 1;
+        self.tx.draw_ui_sized(cv, body.x + 30, ty, &title, dim, body, true, 12.0);
+        let tw = self.tx.ui_width_sized(&title, true, 12.0);
+        self.tx.draw_ui_sized(cv, body.x + 30 + tw + 8, ty, &n.to_string(), dim.with_alpha(0xb0), body, false, 12.0);
         if !hov {
             return;
         }
@@ -263,8 +272,8 @@ impl App {
             let text = letter.to_string();
             let lw = self.tx.ui_width(&text, true);
             let tint = code_color(&c, ch.code);
+            // A plain bold letter, coloured by the kind of change.
             let chip = Rect::new(right - 20, y + (h - 18) / 2, 18, 18);
-            cv.fill_round_clip(chip, 6, tint.with_alpha(0x26), vis);
             self.tx.draw_ui(cv, chip.x + (18 - lw) / 2, chip.y, &text, tint, chip.intersect(&vis), true);
             if let Some((a, d)) = stat_parts {
                 let aw = self.tx.ui_width_sized(&a, false, 11.0);

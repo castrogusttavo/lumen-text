@@ -31,9 +31,10 @@ impl App {
         Rect::new(s.x - GP_GRAB, s.y, 2 * GP_GRAB, s.h).contains(x, y)
     }
 
-    /// One of the Git or AI tabs is shown in the right-hand slot.
+    /// The Git panel is docked on the right (beside the AI page too: the checks and review comments
+    /// of a pull request stay in view next to the agent).
     pub fn slot_shown(&self) -> bool {
-        self.gitpanel.is_some() || self.ai.open
+        self.gitpanel.is_some()
     }
 
     /// Width taken from the editor area by the right-hand slot: 0 when closed.
@@ -41,7 +42,7 @@ impl App {
         if self.slot_shown() { self.gp_width() } else { 0 }
     }
 
-    /// The whole right-hand slot, as if open: the "Git | AI" switch on top, then the panel.
+    /// The whole right-hand slot, as if open.
     pub fn slot_rect(&self) -> Rect {
         let w = self.gp_width();
         let (ww, hh) = (self.size.0 as i32, self.size.1 as i32);
@@ -50,19 +51,17 @@ impl App {
         Rect::new(ww - w, top, w, (hh - top - bottom).max(0))
     }
 
-    /// Panel rectangle (as if open): the slot under its switch.
+    /// Panel rectangle (as if open): the whole slot.
     pub fn gitpanel_rect(&self) -> Rect {
-        let s = self.slot_rect();
-        let sw = crate::app_aipanel::SLOT_H;
-        Rect::new(s.x, s.y + sw, s.w, (s.h - sw).max(0))
+        self.slot_rect()
     }
 
     /// Ctrl+Shift+G / palette: open, or focus, or close when it already has the focus.
     pub fn toggle_git_panel(&mut self) {
-        match self.gitpanel.as_mut() {
+        // Like the rail button: open, or close when it is already open.
+        match self.gitpanel {
             None => self.open_git_panel(),
-            Some(gp) if gp.focused => self.close_git_panel(),
-            Some(gp) => gp.focused = true,
+            Some(_) => self.close_git_panel(),
         }
     }
 
@@ -76,8 +75,6 @@ impl App {
     }
 
     pub fn open_git_panel(&mut self) {
-        // The Git and AI panels share the right-hand slot (the agent keeps running).
-        self.ai_hide();
         self.refresh_git_status();
         let mut gp = Box::new(GitPanel::new(&self.git_root()));
         gp.wake = Some(self.wake());
@@ -123,6 +120,16 @@ impl App {
             gp.sig = sig;
             // On a worker: the frame is drawn with what the panel has, the answer redraws it.
             gp.refresh_bg();
+        }
+        // The branch's commits follow HEAD (and are read the first time).
+        if hist != gp.hist_sig || gp.branch_at.is_none() {
+            gp.request_branch();
+        }
+        if gp.pump_pr() {
+            self.request_redraw();
+        }
+        if let Some(url) = gp.pending_url.take() {
+            crate::paths::open_url(&url);
         }
         if hist != gp.hist_sig {
             gp.hist_sig = hist;
@@ -392,6 +399,14 @@ impl App {
         if gp.pump_refresh() {
             self.request_redraw();
         }
+        // The branch's commits, the pull request or its creation arrived from their workers: the
+        // wake that brought them here is the only one, so they are folded in (and drawn) now.
+        if gp.pump_pr() {
+            self.request_redraw();
+        }
+        if let Some(url) = gp.pending_url.take() {
+            crate::paths::open_url(&url);
+        }
         if let Some(job) = gp.job.as_mut() {
             let before = job.progress.len();
             match job.poll() {
@@ -519,6 +534,14 @@ impl App {
             Row::Header(g) => self.gp_toggle_group(gp, g),
             Row::Folder(g, i) => self.gp_toggle_dir(gp, g, i),
             Row::StashHead | Row::NoChanges => {}
+            Row::BranchHead => gp.branch_folded = !gp.branch_folded,
+            Row::BranchCommit(i) => {
+                if !gp.branch_commits_folded.remove(&i) {
+                    gp.branch_commits_folded.insert(i);
+                }
+            }
+            // A file of a branch commit: its diff against the base is a later step.
+            Row::BranchFile(..) => {}
         }
     }
 

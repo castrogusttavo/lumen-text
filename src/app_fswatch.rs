@@ -11,14 +11,14 @@
 //! * **Polling fallback.** Folders on NFS, SMB, FUSE, 9p, FAT/exFAT... (see [`crate::fstype`]) or
 //!   that inotify refused (watch limit) are polled by [`crate::poller::Poller`]: the open files and
 //!   the expanded folders only, every `watcher_poll_ms`. The status bar says "Polling (NFS)".
-//! * **Refresh on demand and on focus.** "File: Refresh explorer and git status" (palette, and the
-//!   button in the explorer header) re-reads everything. Getting the focus back checks the open
+//! * **Refresh on demand and on focus.** "File: Refresh explorer and git status" (palette, or its
+//!   shortcut) re-reads everything. Getting the focus back checks the open
 //!   files' mtimes, the git signature and the expanded folders' mtimes, and refreshes what moved.
 //! * **No lost refreshes.** A burst of events right after a refresh used to be dropped by the
 //!   400 ms throttle; it is now deferred to the end of the window instead.
 
 use crate::{
-    app::{App, SidebarMode, TAB_H},
+    app::App,
     fstype::Untrusted,
     poller::Poller,
     ui::{Canvas, Rect},
@@ -114,7 +114,6 @@ pub fn dirs_sig<'a>(dirs: impl Iterator<Item = &'a Path>) -> u64 {
 /// Which explorer item the pointer is on (tooltips).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FsTip {
-    Refresh,
     Polling,
 }
 
@@ -139,7 +138,6 @@ pub struct FsWatch {
     tree_due: Option<Instant>,
     /// `dirs_sig` of the expanded folders when the window lost the focus.
     blur_tree: Option<u64>,
-    pub refresh_btn: Option<Rect>,
     pub poll_hint: Option<Rect>,
     /// Refreshes caused by a change under `.git`, and the ones where `HEAD` moved (tests).
     pub git_refreshes: usize,
@@ -380,24 +378,6 @@ impl App {
 
     // ───────────── drawing, pointer ─────────────
 
-    /// The refresh button at the right of the explorer header ("Files").
-    pub fn draw_explorer_refresh(&mut self, cv: &mut Canvas) {
-        self.fswatch.refresh_btn = None;
-        if self.sidebar_mode != SidebarMode::Files {
-            return;
-        }
-        let c = self.theme.chrome;
-        let r = self.layout.sidebar;
-        let b = Rect::new(r.right() - 1 - 10 - 26, r.y + (TAB_H - 26) / 2 + 2, 26, 26);
-        let hot = self.overlay.is_none() && b.contains(self.mouse.0, self.mouse.1);
-        if hot {
-            cv.fill_round(b, 6, c.list_hover_bg);
-        }
-        let col = if hot { c.tab_active_fg } else { c.tab_inactive_fg };
-        self.tx.icon(cv, "ui/rotate_cw", b.x + 6, b.y + 6, 14, col, r);
-        self.fswatch.refresh_btn = Some(b);
-    }
-
     /// "Polling (NFS)" in the left group of the status bar while something is polled.
     pub fn draw_fswatch_status(&mut self, cv: &mut Canvas, x: i32) -> i32 {
         self.fswatch.poll_hint = None;
@@ -418,13 +398,6 @@ impl App {
     }
 
     fn fswatch_hit(&self, x: f64, y: f64) -> Option<(FsTip, Rect)> {
-        if let Some(b) = self.fswatch.refresh_btn
-            && self.sidebar_open
-            && self.sidebar_mode == SidebarMode::Files
-            && b.contains(x, y)
-        {
-            return Some((FsTip::Refresh, b));
-        }
         if let Some(b) = self.fswatch.poll_hint
             && self.fswatch.poller.is_some()
             && b.contains(x, y)
@@ -434,7 +407,7 @@ impl App {
         None
     }
 
-    /// A click on the refresh button or on the polling hint (both refresh).
+    /// A click on the polling hint (refreshes).
     pub fn fswatch_click(&mut self, x: f64, y: f64) -> bool {
         if self.fswatch_hit(x, y).is_none() {
             return false;
@@ -449,17 +422,11 @@ impl App {
 
     /// Tooltip target: (what, where, below the target?).
     pub fn fswatch_tip_at(&self, x: f64, y: f64) -> Option<(FsTip, Rect, bool)> {
-        self.fswatch_hit(x, y).map(|(k, r)| (k, r, k == FsTip::Refresh))
+        self.fswatch_hit(x, y).map(|(k, r)| (k, r, false))
     }
 
     pub fn fswatch_tip(&self, k: FsTip) -> crate::app_tooltip::TipText {
         match k {
-            FsTip::Refresh => crate::app_tooltip::TipText {
-                title: "Refresh explorer and git status".into(),
-                keys: self.shortcut_text("RefreshExplorer"),
-                detail: Some("Re-read the files, the branch and the changes from disk".into()),
-                more: Vec::new(),
-            },
             FsTip::Polling => {
                 let why = self.fswatch.reason.map(|r| r.why()).unwrap_or_default();
                 let n = self.fswatch.polled.len();

@@ -18,7 +18,7 @@ const WANT = {
   bookmark: 'Bookmark01Icon', command: 'CommandIcon', code: 'SourceCodeIcon', save: 'FloppyDiskIcon', reset: 'ReloadIcon',
   text: 'TextFontIcon', zoom_in: 'ZoomInAreaIcon', zoom_out: 'ZoomOutAreaIcon', sidebar: 'SidebarLeftIcon', layout: 'LayoutTwoColumnIcon',
   keyboard_cmd: 'KeyboardIcon', globe: 'GlobalIcon', sparkles: 'SparklesIcon', flash: 'FlashIcon', bell: 'Notification01Icon',
-  cpu: 'CpuIcon', more: 'MoreHorizontalIcon', arrow_left_right: 'ArrowLeftRightIcon', cursor: 'CursorTextIcon', tag: 'Tag01Icon', database: 'DatabaseIcon',
+  container: 'ContainerIcon', arrow_up: 'ArrowUp02Icon', hammer: 'Hammer01Icon', cpu: 'CpuIcon', more: 'MoreHorizontalIcon', arrow_left_right: 'ArrowLeftRightIcon', cursor: 'CursorTextIcon', tag: 'Tag01Icon', database: 'DatabaseIcon',
 };
 const files = new Set(readdirSync(dir));
 const attr = { strokeWidth: 'stroke-width', strokeLinecap: 'stroke-linecap', strokeLinejoin: 'stroke-linejoin', fillRule: 'fill-rule', clipRule: 'clip-rule', strokeOpacity: 'stroke-opacity', fillOpacity: 'fill-opacity' };

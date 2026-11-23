@@ -320,6 +320,7 @@ impl App {
             Action::BuildTarget(id) => self.build_set_target(&id),
             Action::AiAgent(id) => self.ai_pick(&id),
             Action::AiNew(id) => self.ai_pick_new(&id),
+            Action::AiNewChat(id) => self.ai_pick_new_chat(&id),
             Action::Run(cmd) => {
                 let title = cmd.clone();
                 self.run_task(&cmd, &title)
