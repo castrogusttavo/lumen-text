@@ -285,8 +285,16 @@ fn main() -> ExitCode {
     let theme = match theme::Theme::load(&theme_path) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("theme error ({}): {e}", theme_path.display());
-            return ExitCode::FAILURE;
+            // A missing or broken configured theme (e.g. a name from a newer release) must not stop the app from opening.
+            eprintln!("theme error ({}): {e}; using {}", theme_path.display(), config::DEFAULT_THEME);
+            let fallback = config::assets_dir().join("themes").join(format!("{}.json", config::DEFAULT_THEME));
+            match theme::Theme::load(&fallback) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("theme error ({}): {e}", fallback.display());
+                    return ExitCode::FAILURE;
+                }
+            }
         }
     };
 
