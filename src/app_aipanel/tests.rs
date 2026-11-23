@@ -210,14 +210,13 @@ fn ai_panel_runs_a_stub_agent_end_to_end() {
     let mut cv = crate::ui::Canvas { px: &mut px, w, h };
     app.render_into(&mut cv, 0.016);
     let p = app.aipanel_rect();
-    assert!(p.w > 0 && app.ai.hits.iter().any(|(_, h)| *h == AiHit::Stop), "header buttons are laid out");
+    assert!(p.w > 0 && app.ai.hits.iter().any(|(_, h)| *h == AiHit::Menu(0)), "the strip buttons are laid out");
     assert!(app.ai.hits.iter().any(|(_, h)| *h == AiHit::Session(0)), "the session's tab is drawn");
-    assert!(app.ai.hits.iter().any(|(_, h)| *h == AiHit::New), "and the + for another one");
-    assert_eq!(p.right(), app.size.0 as i32, "the AI panel docks on the right edge of the window");
-    assert_eq!(app.layout.editor.right(), p.x, "and the editor makes room for it");
-    let edge = p.x as f64;
-    assert!(app.ai_on_edge(edge, (p.y + 40) as f64), "the left edge is the resize handle");
-    assert_eq!(app.aipanel_cursor(edge, (p.y + 40) as f64), Some(winit::window::CursorIcon::ColResize));
+    assert!(app.ai.hits.iter().any(|(_, h)| *h == AiHit::New(0)), "and the + for another one");
+    assert_eq!(p.right(), app.size.0 as i32, "the AI page reaches the right edge of the window");
+    assert_eq!(p.x, app.rail_w(), "and starts at the rail");
+    assert_eq!(app.layout.editor.w, 0, "the editor is hidden behind the page");
+    assert!(!app.ai_on_edge(p.x as f64, (p.y + 40) as f64), "a page has no resize handle");
     // Hiding keeps the agent alive; the badge appears when it rings while hidden.
     app.run_bound("AiPanel"); // focused -> hide
     assert!(!app.ai.open);
@@ -231,13 +230,14 @@ fn ai_panel_runs_a_stub_agent_end_to_end() {
     }
     let st = app.ai.cur().map(Session::status);
     assert!(matches!(st, Some(Status::Exited(_))), "{st:?}");
-    // The Git panel and the AI panel share the slot: opening one hides the other.
+    // The AI page and the Git dock are separate: opening Git leaves the page, and the page covers
+    // the dock (which stays open underneath) when it comes back.
     app.ai_show();
     assert!(app.ai.open);
     app.open_git_panel();
     assert!(!app.ai.open && app.gitpanel.is_some());
     app.ai_show();
-    assert!(app.ai.open && app.gitpanel.is_none());
+    assert!(app.ai.open && app.gitpanel.is_some() && !app.slot_shown(), "the page covers the Git dock");
     drop(app);
     let _ = std::fs::remove_dir_all(&dir);
 }

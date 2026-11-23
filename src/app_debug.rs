@@ -1329,6 +1329,20 @@ impl App {
         }
     }
 
+    /// Is there a button or row of the Debug panel under (x, y)? (The hand cursor; the input rows
+    /// are text fields and keep the arrow.)
+    pub fn debug_clickable_at(&self, x: f64, y: f64) -> bool {
+        if !self.panel.open || self.panel.tab != PanelTab::Debug || !self.overlay.is_none() {
+            return false;
+        }
+        self.layout
+            .debug_hits
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(x, y))
+            .is_some_and(|(_, h)| !matches!(h, DebugHit::ConsoleInput | DebugHit::WatchInput))
+    }
+
     /// Hover tint (rect, radius) for the list row under the pointer.
     pub fn debug_hover_target(&self) -> Option<(Rect, i32)> {
         if !self.panel.open || self.panel.tab != PanelTab::Debug || !self.overlay.is_none() {

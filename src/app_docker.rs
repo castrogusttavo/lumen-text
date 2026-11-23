@@ -1,4 +1,4 @@
-//! Docker panel (bottom panel tab): containers and images from the `docker` CLI, with Start / Stop /
+//! Docker panel (bottom panel tab): containers and images from the `docker` (or `podman`) CLI, with Start / Stop /
 //! Restart / Remove and Logs on each row. Every docker call runs on a worker thread and answers
 //! over a channel drained from the tick, so the UI never waits on the daemon. Logs go to the
 //! Output panel (`run_task`). Parsing and the CLI calls are in `docker`.
@@ -153,10 +153,10 @@ impl App {
             args.push(&id);
             let res = match docker::run(&args) {
                 Ok(_) => Ok(()),
-                Err(Fail::Missing) => Err("docker not found".to_string()),
+                Err(Fail::Missing) => Err(format!("{} not found", docker::engine())),
                 Err(Fail::Failed(e)) => Err(e),
             };
-            let _ = tx.send(Msg::Done(format!("docker: {name} {}", verb.done()), res));
+            let _ = tx.send(Msg::Done(format!("{}: {name} {}", docker::engine(), verb.done()), res));
             wake();
         });
     }
@@ -164,9 +164,12 @@ impl App {
     /// The last 500 log lines in the Output panel.
     fn docker_logs(&mut self, id: &str, name: &str) {
         if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return self.say("docker: unexpected container id");
+            return self.say(format!("{}: unexpected container id", docker::engine()));
         }
-        self.run_task(&format!("docker logs --tail 500 {id}"), &format!("Docker logs: {name}"));
+        self.run_task(
+            &format!("{} logs --tail 500 {id}", docker::engine()),
+            &format!("{} logs: {name}", docker::engine_name()),
+        );
         self.panel.tab = PanelTab::Output;
     }
 
@@ -193,7 +196,7 @@ impl App {
                     self.docker.busy = self.docker.busy.saturating_sub(1);
                     match res {
                         Ok(()) => self.say(msg),
-                        Err(e) => self.say(format!("docker: {e}")),
+                        Err(e) => self.say(format!("{}: {e}", docker::engine())),
                     }
                     self.docker.again = true;
                 }
@@ -237,6 +240,14 @@ impl App {
             Some(Hit::Logs(id, name)) => self.docker_logs(&id, &name),
             None => {}
         }
+    }
+
+    /// Is there a button under (x, y)? (The hand cursor.)
+    pub fn docker_clickable_at(&self, x: f64, y: f64) -> bool {
+        self.overlay.is_none()
+            && self.panel.open
+            && self.panel.tab == PanelTab::Docker
+            && self.docker.hits.iter().any(|(r, _)| r.contains(x, y))
     }
 
     // ───────────── drawing ─────────────
@@ -289,22 +300,36 @@ impl App {
 
         // Calm empty states.
         if !self.docker.loaded {
-            return self.b_empty_state(cv, area, "ui/box", dim, "Loading Docker…", &[]);
+            return self.b_empty_state(
+                cv,
+                area,
+                "hugeicons/container",
+                dim,
+                &format!("Loading {}…", docker::engine_name()),
+                &[],
+            );
         }
         match self.docker.fail.clone() {
             Some(Fail::Missing) => {
-                let lines = [("Install Docker and make sure the docker command is on your PATH.".to_string(), dim)];
-                return self.b_empty_state(cv, area, "ui/box", dim, "Docker not found", &lines);
+                let lines = [("Install Docker or Podman and make sure its command is on your PATH.".to_string(), dim)];
+                return self.b_empty_state(cv, area, "hugeicons/container", dim, "Docker or Podman not found", &lines);
             }
             Some(Fail::Failed(e)) => {
-                let lines = [(e, dim), ("Start Docker, then press Refresh.".to_string(), dim)];
-                return self.b_empty_state(cv, area, "ui/box", dim, "Docker is not running", &lines);
+                let lines = [(e, dim), (format!("Start {}, then press Refresh.", docker::engine_name()), dim)];
+                return self.b_empty_state(
+                    cv,
+                    area,
+                    "hugeicons/container",
+                    dim,
+                    &format!("{} is not running", docker::engine_name()),
+                    &lines,
+                );
             }
             None => {}
         }
         if self.docker.containers.is_empty() && self.docker.images.is_empty() {
             let lines = [("Containers and images show up here once you create them.".to_string(), dim)];
-            return self.b_empty_state(cv, area, "ui/box", dim, "No containers", &lines);
+            return self.b_empty_state(cv, area, "hugeicons/container", dim, "No containers", &lines);
         }
 
         // Containers, then images, scrolled together.

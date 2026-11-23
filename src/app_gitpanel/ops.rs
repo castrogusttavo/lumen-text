@@ -31,9 +31,9 @@ impl App {
         Rect::new(s.x - GP_GRAB, s.y, 2 * GP_GRAB, s.h).contains(x, y)
     }
 
-    /// One of the Git or AI tabs is shown in the right-hand slot.
+    /// The Git panel is docked on the right (the AI page, when open, covers it).
     pub fn slot_shown(&self) -> bool {
-        self.gitpanel.is_some() || self.ai.open
+        self.gitpanel.is_some() && !self.ai.open
     }
 
     /// Width taken from the editor area by the right-hand slot: 0 when closed.
@@ -41,7 +41,7 @@ impl App {
         if self.slot_shown() { self.gp_width() } else { 0 }
     }
 
-    /// The whole right-hand slot, as if open: the "Git | AI" switch on top, then the panel.
+    /// The whole right-hand slot, as if open.
     pub fn slot_rect(&self) -> Rect {
         let w = self.gp_width();
         let (ww, hh) = (self.size.0 as i32, self.size.1 as i32);
@@ -50,19 +50,25 @@ impl App {
         Rect::new(ww - w, top, w, (hh - top - bottom).max(0))
     }
 
-    /// Panel rectangle (as if open): the slot under its switch.
+    /// Panel rectangle (as if open): the whole slot.
     pub fn gitpanel_rect(&self) -> Rect {
-        let s = self.slot_rect();
-        let sw = crate::app_aipanel::SLOT_H;
-        Rect::new(s.x, s.y + sw, s.w, (s.h - sw).max(0))
+        self.slot_rect()
     }
 
     /// Ctrl+Shift+G / palette: open, or focus, or close when it already has the focus.
     pub fn toggle_git_panel(&mut self) {
-        match self.gitpanel.as_mut() {
+        // From the AI page the shortcut brings the Git dock back (it stays open underneath).
+        if self.ai.open {
+            self.ai_hide();
+            if self.gitpanel.is_none() {
+                self.open_git_panel();
+            }
+            return;
+        }
+        // Like the rail button: open, or close when it is already open.
+        match self.gitpanel {
             None => self.open_git_panel(),
-            Some(gp) if gp.focused => self.close_git_panel(),
-            Some(gp) => gp.focused = true,
+            Some(_) => self.close_git_panel(),
         }
     }
 
@@ -76,7 +82,7 @@ impl App {
     }
 
     pub fn open_git_panel(&mut self) {
-        // The Git and AI panels share the right-hand slot (the agent keeps running).
+        // The AI page and the Git dock are separate: opening Git leaves the AI page (the agents keep running).
         self.ai_hide();
         self.refresh_git_status();
         let mut gp = Box::new(GitPanel::new(&self.git_root()));
@@ -123,6 +129,16 @@ impl App {
             gp.sig = sig;
             // On a worker: the frame is drawn with what the panel has, the answer redraws it.
             gp.refresh_bg();
+        }
+        // The branch's commits follow HEAD (and are read the first time).
+        if hist != gp.hist_sig || gp.branch_at.is_none() {
+            gp.request_branch();
+        }
+        if gp.pump_pr() {
+            self.request_redraw();
+        }
+        if let Some(url) = gp.pending_url.take() {
+            crate::paths::open_url(&url);
         }
         if hist != gp.hist_sig {
             gp.hist_sig = hist;
@@ -518,7 +534,9 @@ impl App {
             Row::SFile(j) => self.gp_open_diff_stash(gp, j),
             Row::Header(g) => self.gp_toggle_group(gp, g),
             Row::Folder(g, i) => self.gp_toggle_dir(gp, g, i),
-            Row::StashHead | Row::NoChanges => {}
+            Row::StashHead | Row::NoChanges | Row::BranchHead => {}
+            // A commit or file of the branch: opened on GitHub is a later step; nothing to do yet.
+            Row::BranchCommit(_) | Row::BranchFile(..) => {}
         }
     }
 

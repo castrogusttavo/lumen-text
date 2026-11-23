@@ -37,12 +37,22 @@ use std::{
 use winit::{event::MouseScrollDelta, keyboard::Key, window::CursorIcon};
 
 mod agents;
+mod backend;
 pub mod bridge;
 #[cfg(test)]
 mod bridge_tests;
+mod chat;
+mod chat_tab;
+mod chat_ui;
 mod draw;
 mod explain;
 mod input;
+mod mention;
+mod menu;
+mod proto_claude;
+mod proto_codex;
+mod proto_gemini;
+mod slash;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -51,14 +61,8 @@ pub use agents::*;
 pub use explain::Mode as AskMode;
 pub use state::*;
 
-/// Height of the "Git | AI" switch on top of the right-hand slot.
-pub const SLOT_H: i32 = 40;
 /// Height of the row of session tabs (shown while any session exists).
 pub(crate) const TABS_H: i32 = 36;
-/// Height of the AI panel's header (agent, status, session buttons).
-pub(crate) const HEAD_H: i32 = 44;
-/// Height of the session filter row under the tabs.
-pub(crate) const FILTER_H: i32 = 36;
 /// Inner padding around the agent's terminal.
 pub(crate) const PAD: i32 = 12;
 /// Two clicks on a session tab this close together rename it.
@@ -110,21 +114,30 @@ pub fn paste_payload(text: &str, bracketed: bool) -> Vec<u8> {
 }
 
 impl App {
-    /// The panel's area under the switch (the same place the Git panel uses).
+    /// The AI page: the whole window right of the rail (the explorer, the editor and the Git dock are
+    /// hidden meanwhile, not closed).
     pub(crate) fn aipanel_rect(&self) -> Rect {
-        self.gitpanel_rect()
+        let (w, h) = (self.size.0 as i32, self.size.1 as i32);
+        let (top, bottom) = (self.layout.topbar.h, self.layout.status.h);
+        let lx = self.rail_w();
+        Rect::new(lx, top, (w - lx).max(0), (h - top - bottom).max(0))
     }
 
-    /// Height of what sits above the agent's terminal: the session tabs and their filter (when any sessions) and the header.
+    /// Height of what sits above an agent's terminal: its group's strip of tabs.
     pub(crate) fn ai_top_h(&self) -> i32 {
-        HEAD_H + if self.ai.sessions.is_empty() { 0 } else { TABS_H + FILTER_H }
+        TABS_H
     }
 
-    /// Where the agent's terminal goes (inside the padding).
+    /// Roughly where an agent's terminal goes (the first draw fits it): a pane of the page.
     fn ai_inner_rect(&self) -> Rect {
         let p = self.aipanel_rect();
-        let top = self.ai_top_h().max(HEAD_H + TABS_H + FILTER_H);
-        Rect::new(p.x + 1 + PAD, p.y + top + PAD, p.w - 1 - 2 * PAD, (p.h - top - 2 * PAD).max(0))
+        let w = if self.ai.groups.len() > 1 { p.w / 2 } else { p.w };
+        Rect::new(p.x + PAD, p.y + TABS_H + PAD, (w - 2 * PAD).max(0), (p.h - TABS_H - 2 * PAD).max(0))
+    }
+
+    /// The AI is shown as a page that covers the explorer and the editor.
+    pub fn ai_page_active(&self) -> bool {
+        self.ai.open
     }
 
     /// Look for agent CLIs (once, or again with `force`).
@@ -166,9 +179,6 @@ impl App {
     /// Show the panel (the Git panel steps aside) with the keyboard on the agent; starts one if
     /// no session exists yet.
     pub fn ai_show(&mut self) {
-        if self.gitpanel.is_some() {
-            self.close_git_panel();
-        }
         self.ai.open = true;
         self.ai.focused = true;
         self.focus = Focus::Editor;
@@ -230,6 +240,7 @@ impl App {
             ("TERM_PROGRAM", Some("lumen-text")),
             ("CLAUDECODE", None),
             ("CLAUDE_CODE_ENTRYPOINT", None),
+            ("CLAUDE_CODE_CHILD_SESSION", None),
             ("CLAUDE_CODE_SSE_PORT", None),
             ("LUMEN_AI_SESSION", Some(sid.as_str())),
         ];
@@ -274,8 +285,17 @@ impl App {
         if let Some(t) = self.ai.term_mut() {
             t.set_focus(false);
         }
-        self.ai.sessions.push(Session { id, agent: a, name, cwd, term, track: Track::default() });
+        self.ai.sessions.push(Session {
+            id,
+            agent: a,
+            name,
+            cwd,
+            term: Some(term),
+            chat: None,
+            track: Track::default(),
+        });
         self.ai.active = self.ai.sessions.len() - 1;
+        self.ai.sync_groups();
         self.ai.root = self.root.clone();
         self.request_redraw();
         true
@@ -302,6 +322,12 @@ impl App {
 
     /// Restart the session shown (same tab, name and folder), with agent `a` instead of its own.
     pub fn ai_restart(&mut self, a: Option<&'static Agent>) {
+        if let Some(c) = self.ai.cur_mut().and_then(|s| s.chat.as_mut()) {
+            // A chat starts over: the process ends and the conversation is cleared.
+            c.backend.reset(&mut c.chat);
+            c.laid = None;
+            return;
+        }
         self.ai_detect(true);
         let Some(s) = self.ai.cur_mut() else { return };
         let (id, cwd, old) = (s.id, s.cwd.clone(), s.agent);
@@ -324,7 +350,8 @@ impl App {
             s.name = format!("{}{}", a.name, &s.name[old.name.len()..]);
         }
         s.agent = a;
-        s.term = term;
+        s.term = Some(term);
+        s.chat = None;
         s.track = Track::default();
         self.request_redraw();
     }
@@ -343,6 +370,10 @@ impl App {
 
     /// Stop: hang up the agent's process group (the last screen stays, with a Restart button).
     pub fn ai_stop(&mut self) {
+        if let Some(c) = self.ai.cur_mut().and_then(|s| s.chat.as_mut()) {
+            c.backend.interrupt(&mut c.chat);
+            return;
+        }
         if let Some(t) = self.ai.term_mut()
             && t.alive
         {
@@ -353,7 +384,7 @@ impl App {
     /// Close session `i`, asking first when its agent still runs.
     pub fn ai_close_request(&mut self, i: usize) {
         match self.ai.sessions.get(i) {
-            Some(s) if s.term.alive => {
+            Some(s) if s.alive() => {
                 let q = crate::app_ask::procs_question(
                     std::slice::from_ref(&s.name),
                     crate::app_ask::AskAction::CloseAiSession(s.id),
@@ -369,11 +400,23 @@ impl App {
         if i >= self.ai.sessions.len() {
             return;
         }
+        // Closing the tab that has the keyboard hands it to a neighbour in the same group.
+        let gid = self.ai.sessions[i].id;
+        let mate = self.ai.group_of(gid).filter(|_| i == self.ai.active).and_then(|g| {
+            let tabs = &self.ai.groups[g].tabs;
+            let at = tabs.iter().position(|t| *t == gid)?;
+            tabs.get(at + 1).or_else(|| at.checked_sub(1).and_then(|j| tabs.get(j))).copied()
+        });
         let s = self.ai.sessions.remove(i);
         self.ai.bridge.forget_session(s.id);
         if self.ai.active > i || self.ai.active >= self.ai.sessions.len() {
             self.ai.active = self.ai.active.saturating_sub(1);
         }
+        if let Some(a) = mate.and_then(|id| self.ai.index_of(id)) {
+            self.ai.active = a;
+        }
+        self.ai.groups.iter_mut().for_each(|g| g.tabs.retain(|t| *t != s.id));
+        self.ai.sync_groups();
         if let Some(c) = self.ai.cur() {
             self.ai.last_agent = Some(c.agent);
         }
@@ -387,6 +430,7 @@ impl App {
             self.ai.bridge.forget_session(s.id);
         }
         self.ai.active = 0;
+        self.ai.groups.clear();
     }
 
     /// Show session `i`.
@@ -400,8 +444,65 @@ impl App {
             t.set_focus(false);
         }
         self.ai.active = i;
+        self.ai.sync_groups();
         self.ai_seen();
         self.request_redraw();
+    }
+
+    /// Two groups of tabs side by side, or back to one. Splitting starts a new session (the usual
+    /// agent) in the second group; unsplitting keeps every tab, merged into the first group.
+    pub fn ai_split(&mut self) {
+        if self.ai.sessions.is_empty() {
+            return self.ai_show();
+        }
+        self.ai.sync_groups();
+        if self.ai.groups.len() > 1 {
+            let extra = self.ai.groups.remove(1);
+            self.ai.groups[0].tabs.extend(extra.tabs);
+            self.ai.focus = 0;
+            self.ai.sync_groups();
+            return self.request_redraw();
+        }
+        match self.ai_default_agent() {
+            Some(a) if self.ai.path_of(a).is_some() => {
+                // The second group is a native chat when the agent has one (the Orca layout:
+                // terminal on one side, chat on the other), else another terminal.
+                self.ai.split_next = true;
+                let ok = if backend::Kind::of(a.id).is_some() {
+                    self.ai_new_chat(a, None)
+                } else {
+                    self.ai_new_session(a, None)
+                };
+                if !ok {
+                    self.ai.split_next = false;
+                }
+            }
+            Some(a) => self.ai_not_installed(a),
+            None => self.say("no agent CLI found on PATH"),
+        }
+    }
+
+    /// The `...` of group `g`: what can be done with the session it shows.
+    pub fn ai_group_menu(&mut self, g: usize) {
+        use crate::app_overlay::{Action, Cmd, Item};
+        if let Some(id) = self.ai.groups.get(g).map(|gr| gr.active)
+            && let Some(i) = self.ai.index_of(id)
+        {
+            self.ai_activate(i);
+        }
+        let item = |label: &str, detail: &str, c: Cmd| Item {
+            label: label.to_string(),
+            detail: detail.to_string(),
+            action: Action::Cmd(c),
+        };
+        let items = vec![
+            item("Restart agent", "Relaunch it (picks up login or config changes)", Cmd::AiRestart),
+            item("Stop agent", "Hang up the agent and everything it started", Cmd::AiStop),
+            item("Rename session…", "", Cmd::AiRenameSession),
+            item("Choose agent…", "Claude Code, Gemini CLI or Codex CLI", Cmd::AiChooseAgent),
+            item("Close session", "", Cmd::AiCloseSession),
+        ];
+        self.open_locations("Session", items);
     }
 
     /// "AI: Next Session Waiting for You": show the next session whose agent asks for an answer.
@@ -491,7 +592,22 @@ impl App {
 
     /// "AI: New Session" / the tabs' `+`: pick the agent of another session.
     pub fn ai_new_session_menu(&mut self) {
-        let items = self.ai_agent_items(crate::app_overlay::Action::AiNew);
+        let mut items = self.ai_agent_items(crate::app_overlay::Action::AiNew);
+        // Agents with a structured mode also start as a native chat.
+        let chats: Vec<crate::app_overlay::Item> = items
+            .iter()
+            .filter(|i| !i.detail.starts_with("not installed"))
+            .filter_map(|i| {
+                let a = AGENTS.iter().find(|a| a.name == i.label)?;
+                backend::Kind::of(a.id)?;
+                Some(crate::app_overlay::Item {
+                    label: format!("{} · chat", a.name),
+                    detail: "Native chat (the agent's structured mode)".to_string(),
+                    action: crate::app_overlay::Action::AiNewChat(a.id.to_string()),
+                })
+            })
+            .collect();
+        items.extend(chats);
         self.open_locations("New agent session", items);
     }
 
@@ -510,7 +626,7 @@ impl App {
         if self.ai.path_of(a).is_none() {
             return self.ai_not_installed(a);
         }
-        let running_same = self.ai.cur().map(|s| s.agent.id == a.id && s.term.alive);
+        let running_same = self.ai.cur().map(|s| s.agent.id == a.id && s.alive());
         match running_same {
             Some(true) => {}
             Some(false) => self.ai_restart(Some(a)),
@@ -545,8 +661,9 @@ impl App {
     /// Clipboard writes (OSC 52) and notifications (OSC 9 / 777) of session `i`'s agent.
     fn ai_effects(&mut self, i: usize) {
         let Some(s) = self.ai.sessions.get_mut(i) else { return };
-        let clip = s.term.grid.clipboard.take();
-        let notices = std::mem::take(&mut s.term.grid.notices);
+        let Some(t) = s.term.as_mut() else { return };
+        let clip = t.grid.clipboard.take();
+        let notices = std::mem::take(&mut t.grid.notices);
         if !notices.is_empty() {
             s.track.attention = true;
         }
@@ -584,7 +701,7 @@ impl App {
             Status::Done => "Done",
             _ => return,
         };
-        let task = title_task(&s.term.grid.title);
+        let task = s.term.as_ref().map_or(String::new(), |t| title_task(&t.grid.title).to_string());
         let body = if task.is_empty() { what.to_string() } else { format!("{what} — {task}") };
         s.track.notified = true;
         let title = s.name.clone();
@@ -599,11 +716,12 @@ impl App {
         let now = Instant::now();
         let mut redraw = false;
         for i in 0..self.ai.sessions.len() {
-            let changed = self.ai.sessions[i].term.pump();
+            let changed = self.ai.sessions[i].pump();
             self.ai_effects(i);
             // A hidden panel (or a session in the background) costs nothing: only a status
             // change (its dot, the badge) is drawn.
-            redraw |= changed && self.ai.open && i == self.ai.active;
+            let shown = self.ai.groups.iter().any(|g| g.active == self.ai.sessions[i].id);
+            redraw |= changed && self.ai.open && shown;
             redraw |= self.ai_refresh(i, now);
         }
         if redraw {
@@ -618,12 +736,23 @@ impl App {
         let mut redraw = false;
         for i in 0..self.ai.sessions.len() {
             redraw |= self.ai_refresh(i, now);
+            // A chat only needs the clock while it works (its spinner) or an interrupt is pending.
+            let shown = self.ai.open && self.ai.groups.iter().any(|g| g.active == self.ai.sessions[i].id);
+            if let Some(c) = self.ai.sessions[i].chat.as_mut() {
+                if let Some(at) = c.tick(now) {
+                    want(at);
+                }
+                if shown && c.chat.working() {
+                    want(now + ms(120));
+                    redraw = true;
+                }
+            }
             let s = &self.ai.sessions[i];
             match (s.status(), s.track.last_activity) {
                 (Status::Working | Status::Starting, Some(a)) => {
                     want(a + ms(if s.track.attention { ATTENTION_MS } else { IDLE_MS }));
                 }
-                (Status::Starting, None) => want(s.term.started + ms(STARTUP_MS)),
+                (Status::Starting, None) => want(s.started() + ms(STARTUP_MS)),
                 _ => {}
             }
         }

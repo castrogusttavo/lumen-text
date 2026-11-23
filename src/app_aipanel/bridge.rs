@@ -214,7 +214,7 @@ impl App {
         self.ai
             .sessions
             .iter()
-            .find(|s| s.term.alive && s.term.pid().is_some_and(|p| same_or_child(pid, p)))
+            .find(|s| s.term.as_ref().is_some_and(|t| t.alive && t.pid().is_some_and(|p| same_or_child(pid, p))))
             .map(|s| s.id)
     }
 
@@ -280,7 +280,7 @@ impl App {
             Event::Closed(c) => {
                 // A session whose agent still runs may reconnect: its next client is it again.
                 if let Some(sid) = self.ai.bridge.on_closed(c)
-                    && self.ai.index_of(sid).is_some_and(|i| self.ai.sessions[i].term.alive)
+                    && self.ai.index_of(sid).is_some_and(|i| self.ai.sessions[i].alive())
                 {
                     self.ai.bridge.expect_session(sid);
                 }

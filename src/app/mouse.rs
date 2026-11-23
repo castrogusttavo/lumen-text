@@ -299,6 +299,9 @@ impl App {
         if self.dragging_minimap {
             return CursorIcon::Pointer;
         }
+        if self.term_strip_dragging() || self.ai_dragging() {
+            return CursorIcon::Grabbing;
+        }
         if self.dragging {
             return CursorIcon::Text;
         }
@@ -383,6 +386,8 @@ impl App {
             || l.crumbs.iter().any(|(r, _)| r.contains(x, y))
             || l.panel_tabs.iter().any(|(r, _)| r.contains(x, y))
             || self.terms_hit_at(x, y).is_some()
+            || self.docker_clickable_at(x, y)
+            || self.debug_clickable_at(x, y)
             || self.tests_clickable_at(x, y)
             || self.build_clickable_at(x, y)
             || self.fswatch_clickable_at(x, y)
@@ -482,6 +487,7 @@ impl App {
         if let Some(h) = self.build_hover_target() {
             return Some(h);
         }
+
         if let Some(h) = self.sql_hover_target() {
             return Some(h);
         }
@@ -597,6 +603,9 @@ impl App {
             return self.request_redraw();
         }
         if self.aipanel_move() {
+            return self.request_redraw();
+        }
+        if self.term_strip_drag_move() || self.ai_drag_move() {
             return self.request_redraw();
         }
         if self.term_drag_move() {

@@ -86,18 +86,18 @@ pub fn status(s: &Signals) -> Status {
     if s.worked { Status::Done } else { Status::Waiting }
 }
 
-/// Clickable things of the panel (and of the Git | AI switch above it).
+/// Clickable things of the AI page.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AiHit {
-    TabGit,
-    TabAi,
     Agent,
-    Status,
-    /// `+` of the session tabs: start another session (choose the agent).
-    New,
+    /// `+` of group `g`'s tabs: start another session there (choose the agent).
+    New(usize),
+    /// `...` of group `g`: restart, stop, rename, change agent, close the session shown.
+    Menu(usize),
     Restart,
-    Stop,
     Close,
+    /// Two groups of tabs side by side (or back to one).
+    Split,
     /// Copy the install command of agent `n` (empty state).
     Install(usize),
     /// Look for installed agents again.
@@ -110,10 +110,13 @@ pub enum AiHit {
     Session(usize),
     /// The close button of session tab `n`.
     CloseSession(usize),
-    /// The session filter field above the terminal.
-    Filter,
-    /// Its clear button.
-    FilterClear,
+}
+
+/// A set of session tabs with a strip of its own; `active` is the one shown.
+#[derive(Clone, Debug, Default)]
+pub struct Group {
+    pub tabs: Vec<u64>,
+    pub active: u64,
 }
 
 /// What one session's process looked like at a moment (taken from its terminal).
@@ -211,6 +214,20 @@ impl Track {
         Change { changed: was != s, alert }
     }
 
+    /// A chat tab's status comes straight from its turn (no output heuristic).
+    pub fn observe_status(&mut self, s: Status, watching: bool) -> Change {
+        if s == Status::Working {
+            self.worked = true;
+        }
+        let was = self.status;
+        self.status = s;
+        let alert = was == Status::Working && s != Status::Working;
+        if alert {
+            self.unseen = !watching;
+        }
+        Change { changed: was != s, alert }
+    }
+
     /// Worth a desktop notification: it just finished or asked, and none went out this turn.
     pub fn wants_notice(&self, c: Change) -> bool {
         c.alert && matches!(self.status, Status::Waiting | Status::Done) && !self.notified
@@ -236,7 +253,10 @@ pub struct Session {
     pub name: String,
     /// Where the agent runs: the project, or another folder such as a worktree of it.
     pub cwd: PathBuf,
-    pub term: Term,
+    /// The agent's own terminal (a terminal tab); `None` in a chat tab.
+    pub term: Option<Term>,
+    /// The native chat (a chat tab); `None` in a terminal tab.
+    pub chat: Option<Box<super::chat_tab::ChatTab>>,
     pub track: Track,
 }
 
@@ -245,9 +265,35 @@ impl Session {
         self.track.status
     }
 
-    /// Fold the terminal's latest state into the status.
+    /// The agent still runs (a chat tab always does: its process lives between turns only when needed).
+    pub fn alive(&self) -> bool {
+        self.chat.is_some() || self.term.as_ref().is_some_and(|t| t.alive)
+    }
+
+    pub fn started(&self) -> Instant {
+        match (&self.term, &self.chat) {
+            (Some(t), _) => t.started,
+            (None, Some(c)) => c.started,
+            _ => Instant::now(),
+        }
+    }
+
+    /// Drain what the agent printed; true when the screen changed.
+    pub fn pump(&mut self) -> bool {
+        match (&mut self.term, &mut self.chat) {
+            (Some(t), _) => t.pump(),
+            (None, Some(c)) => c.pump(),
+            _ => false,
+        }
+    }
+
+    /// Fold the agent's latest state into the status.
     pub fn refresh(&mut self, now: Instant, watching: bool) -> Change {
-        let t = &self.term;
+        if let Some(c) = &self.chat {
+            let s = c.phase_status(self.track.worked);
+            return self.track.observe_status(s, watching);
+        }
+        let Some(t) = &self.term else { return Change::default() };
         let o = Obs {
             alive: t.alive,
             exit: t.exit_code,
@@ -339,6 +385,17 @@ pub fn same_or_child(pid: u32, ancestor: u32) -> bool {
 pub struct AiState {
     /// The panel is the visible half of the right-hand slot.
     pub open: bool,
+    /// The groups of tabs on screen, left to right: one, or two side by side. Every session is in
+    /// exactly one group (`sync_groups` keeps it so).
+    pub groups: Vec<Group>,
+    /// The group with the keyboard.
+    pub focus: usize,
+    /// The groups as drawn last: (rect with its strip, group index).
+    pub pane_rects: Vec<(Rect, usize)>,
+    /// The next session started goes into a new group beside the focused one.
+    pub split_next: bool,
+    /// A press on a session tab that may become a drag (`app_aidrag`).
+    pub drag: Option<crate::app_aidrag::AiDrag>,
     /// Keys go to the agent.
     pub focused: bool,
     /// Every agent running (or ended, its last screen kept) in the panel: one tab each.
@@ -378,6 +435,11 @@ impl Default for AiState {
     fn default() -> Self {
         AiState {
             open: false,
+            groups: Vec::new(),
+            focus: 0,
+            pane_rects: Vec::new(),
+            split_next: false,
+            drag: None,
             focused: false,
             sessions: Vec::new(),
             active: 0,
@@ -409,6 +471,56 @@ pub fn session_matches(name: &str, agent: &str, q: &str) -> bool {
 
 impl AiState {
     /// Indices of the sessions the filter lets through (all of them when it is empty).
+    /// Keep `groups` valid. `active` (the session with the keyboard) is the source of truth for
+    /// focus: its group takes the focus and shows it; a session no group holds yet joins the focused
+    /// group (or a new one beside it after "split"). Every session is in one group, empty groups go.
+    pub fn sync_groups(&mut self) {
+        let ids: Vec<u64> = self.sessions.iter().map(|s| s.id).collect();
+        let mut seen: Vec<u64> = Vec::new();
+        for g in &mut self.groups {
+            g.tabs.retain(|t| ids.contains(t) && !seen.contains(t));
+            seen.extend(g.tabs.iter().copied());
+        }
+        self.groups.retain(|g| !g.tabs.is_empty());
+        self.groups.truncate(2);
+        let Some(cur) = self.sessions.get(self.active).map(|s| s.id) else {
+            self.groups.clear();
+            self.focus = 0;
+            self.split_next = false;
+            return;
+        };
+        if self.groups.is_empty() {
+            self.groups.push(Group::default());
+        }
+        self.focus = self.focus.min(self.groups.len() - 1);
+        // Sessions nobody holds yet.
+        for id in &ids {
+            if !seen.contains(id) && !self.groups.iter().any(|g| g.tabs.contains(id)) {
+                if self.split_next && self.groups.len() == 1 && *id == cur && !self.groups[0].tabs.is_empty() {
+                    self.groups.push(Group::default());
+                    self.focus = 1;
+                }
+                let at = self.focus;
+                self.groups[at].tabs.push(*id);
+            }
+        }
+        self.split_next = false;
+        if let Some(gi) = self.groups.iter().position(|g| g.tabs.contains(&cur)) {
+            self.focus = gi;
+            self.groups[gi].active = cur;
+        }
+        for g in &mut self.groups {
+            if !g.tabs.contains(&g.active) {
+                g.active = g.tabs[0];
+            }
+        }
+    }
+
+    /// The group that holds session `id`.
+    pub fn group_of(&self, id: u64) -> Option<usize> {
+        self.groups.iter().position(|g| g.tabs.contains(&id))
+    }
+
     pub fn visible(&self) -> Vec<usize> {
         (0..self.sessions.len())
             .filter(|&i| session_matches(&self.sessions[i].name, self.sessions[i].agent.name, &self.filter.text))
@@ -435,11 +547,11 @@ impl AiState {
 
     /// The terminal of the session shown.
     pub fn term(&self) -> Option<&Term> {
-        self.cur().map(|s| &s.term)
+        self.cur().and_then(|s| s.term.as_ref())
     }
 
     pub fn term_mut(&mut self) -> Option<&mut Term> {
-        self.cur_mut().map(|s| &mut s.term)
+        self.cur_mut().and_then(|s| s.term.as_mut())
     }
 
     /// The agent of the session shown, else the one picked last.

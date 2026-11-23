@@ -64,7 +64,7 @@ pub enum TipKey {
     Term(crate::app_terms::TermHit),
     /// A URL or `path:line:col` link in terminal text (the key tells links apart).
     TermLink(u32),
-    /// The explorer's refresh button and the "Polling (NFS)" hint.
+    /// The "Polling (NFS)" hint.
     Fs(crate::app_fswatch::FsTip),
     /// A toolbar button of the Debug panel.
     Debug(crate::app_debug::Tool),
@@ -517,7 +517,9 @@ impl App {
             TipKey::PanelTab(PanelTab::Tests) => {
                 t("Tests", self.shortcut_text("TestAll"), Some("Run tests and browse the results".into()))
             }
-            TipKey::PanelTab(PanelTab::Docker) => t("Docker", None, Some("Containers and images".into())),
+            TipKey::PanelTab(PanelTab::Docker) => {
+                t("Containers", None, Some("Docker or Podman containers and images".into()))
+            }
             TipKey::PanelTab(PanelTab::Debug) => t("Debug", None, Some("Stack, variables and output".into())),
             TipKey::PanelTab(PanelTab::Build) => t(
                 "Build & Run",

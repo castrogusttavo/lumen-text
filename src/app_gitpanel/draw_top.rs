@@ -4,49 +4,59 @@
 use super::*;
 
 impl App {
-    /// The Changes / History tabs on the left, refresh / actions / close on the right.
+    /// Two rows: the tabs (Changes, History, Checks as icons) with the close button, then the
+    /// actions: Create PR (or the pull request's number), search and the "..." menu.
     pub(super) fn gp_draw_header(&mut self, cv: &mut Canvas, gp: &mut GitPanel, p: Rect) {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
-        let y = p.y + (HEAD_H - 28) / 2;
-        let mut right = p.right() - 8;
-        for (icon, hit) in
-            [("ui/close", Hit::Close), ("ui/ellipsis", Hit::Menu(GpMenu::Actions)), ("ui/rotate_cw", Hit::Refresh)]
-        {
-            self.gp_icon_btn(cv, gp, Rect::new(right - 28, y, 28, 28), icon, hit);
-            right -= 30;
-        }
-
-        // Both sections are tabs of their own: Changes (with the count) and History.
-        let mut x = p.x + 6;
-        for (tab, label) in [(Tab::Changes, "Changes"), (Tab::History, "History")] {
-            let n = gp.changes.len();
-            let badge = if tab == Tab::Changes && n > 0 { n.to_string() } else { String::new() };
+        let y = p.y + (40 - 28) / 2;
+        self.gp_icon_btn(cv, gp, Rect::new(p.right() - 8 - 28, y, 28, 28), "ui/close", Hit::Close);
+        // Icon tabs, spread across the row like the rail of an app: the active one tinted.
+        let tabs = [
+            (Tab::Changes, "ui/git_branch", gp.changes.len()),
+            (Tab::History, "ui/clock", 0),
+            (Tab::Checks, "ui/list_todo", 0),
+        ];
+        let avail = p.w - 16 - 36;
+        let slot = (avail / tabs.len() as i32).clamp(44, 72);
+        let mut x = p.x + 8;
+        for (tab, icon, n) in tabs {
+            let r = Rect::new(x, y, slot - 4, 28);
             let active = gp.tab == tab;
-            let lw = self.tx.ui_width(label, active);
-            let bw = if badge.is_empty() { 0 } else { (self.tx.ui_width(&badge, true) + 12).max(20) + 6 };
-            let w = 10 + lw + bw + 10;
-            if x + w > right {
-                break;
-            }
-            let r = Rect::new(x, y, w, 28);
             if active {
                 cv.fill_round(r, 8, strong.with_alpha(0x1e));
             } else if self.hv(r) {
                 cv.fill_round(r, 8, strong.with_alpha(0x12));
             }
             let col = if active || self.hv(r) { strong } else { dim };
-            self.tx.draw_ui(cv, r.x + 10, r.y + 5, label, col, r, active);
-            if !badge.is_empty() {
-                let pill = Rect::new(r.x + 10 + lw + 6, r.y + 6, bw - 6, 16);
-                cv.fill_round(pill, 8, if active { c.accent } else { strong.with_alpha(0x22) });
-                let tw = self.tx.ui_width(&badge, true);
-                let tc = if active { c.on_accent } else { dim };
-                self.tx.draw_ui_sized(cv, pill.x + (pill.w - tw) / 2, pill.y + 1, &badge, tc, pill, true, 12.0);
+            self.tx.icon(cv, icon, r.x + (r.w - 16) / 2, r.y + 6, 16, col, r);
+            if n > 0 && tab == Tab::Changes {
+                // A small dot says there is something to commit.
+                cv.fill_round(Rect::new(r.x + r.w / 2 + 6, r.y + 5, 7, 7), 3, c.accent);
             }
             gp.hits.push((r, Hit::Tab(tab)));
-            x += w + 2;
+            x += slot;
         }
+        cv.fill(Rect::new(p.x + 1, p.y + 40, p.w - 1, 1), c.border.with_alpha(0x70));
+
+        // Second row: the pull request pill, search, more.
+        let y2 = p.y + 40 + (40 - 28) / 2;
+        let mut right = p.right() - 8;
+        self.gp_icon_btn(cv, gp, Rect::new(right - 28, y2, 28, 28), "ui/ellipsis", Hit::Menu(GpMenu::Actions));
+        right -= 30;
+        self.gp_icon_btn(cv, gp, Rect::new(right - 28, y2, 28, 28), "hugeicons/search", Hit::Search);
+        let existing = self.gitbg.pr.snap.as_ref().and_then(|s| s.info.as_ref()).map(|i| i.number);
+        let (label, hit) = match existing {
+            Some(n) => (format!("PR #{n}"), Hit::Tab(Tab::Checks)),
+            None => ("Create PR".to_string(), Hit::PrOpen),
+        };
+        let lw = self.tx.ui_width(&label, true);
+        let pill = Rect::new(p.x + 10, y2, 8 + 16 + 6 + lw + 14, 28);
+        let hot = self.hv(pill);
+        cv.fill_round(pill, 14, strong.with_alpha(if hot { 0x30 } else { 0x20 }));
+        self.tx.icon(cv, "ui/git_branch", pill.x + 9, pill.y + 6, 16, strong, pill);
+        self.tx.draw_ui(cv, pill.x + 8 + 16 + 6, pill.y + 4, &label, strong, pill, true);
+        gp.hits.push((pill, hit));
     }
 
     /// Branch chip (repo / branch, opens the branch switcher) and the sync button on its right.
@@ -119,73 +129,102 @@ impl App {
         self.tx.draw_ui(cv, tx0 + used_repo, y + 5, &branch, strong, chip, true);
         self.tx.icon(cv, "ui/chevron_down", chip.right() - 4 - 14, y + 7, 14, dim, chip);
         gp.hits.push((chip, Hit::Branches));
+
+        // Under the chip: where the branch goes (its upstream, else the base of a pull request).
+        let target = gp.sync.upstream.clone().or_else(|| gp.branch.as_ref().map(|b| b.base.clone()));
+        if let Some(t) = target {
+            let line = format!("→ {t}");
+            let txt = fit(&mut self.tx, &line, (p.w - 28).max(0), false);
+            self.tx.draw_ui_sized(cv, p.x + 12, by + 33, &txt, dim.with_alpha(0xa0), p, false, 12.0);
+        }
+
+        // What the working tree changes in all: +added -removed, when there is room beside the chip.
+        let (mut add, mut del) = (0u32, 0u32);
+        if let Some(st) = gp.stats.as_ref() {
+            for ch in &gp.changes {
+                if let Some(s) = st.of(ch) {
+                    add += s.add.unwrap_or(0);
+                    del += s.del.unwrap_or(0);
+                }
+            }
+        }
+        let mut sx = chip.right() + 4;
+        for (text, col) in [(format!("+{add}"), c.git_added), (format!("-{del}"), c.error)] {
+            let w = self.tx.ui_width_sized(&text, false, 12.0);
+            if (add > 0 || del > 0) && sx + w <= main.x - 4 {
+                self.tx.draw_ui_sized(cv, sx, y + 7, &text, col.with_alpha(0xcc), p, false, 12.0);
+                sx += w + 6;
+            }
+        }
     }
 
-    /// The commit composer: a rounded box with the message, and under it the sparkle button, what
-    /// the commit takes (with its +N / -N) and the Commit button with its options.
+    /// The commit composer: a rounded box with the message and the sparkle (write one) in its corner,
+    /// under it the Commit button across the width (its options behind the chevron), and a small
+    /// caption with what the commit takes (or the result of the last action).
     pub(super) fn gp_draw_commit_area(&mut self, cv: &mut Canvas, gp: &mut GitPanel, area: Rect) {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
         let msg_h = gp.msg_h();
-        let bx = Rect::new(area.x + COMPOSER_MARGIN, area.y + 6, area.w - 2 * COMPOSER_MARGIN, msg_h + COMPOSER_ROW_H);
-        cv.fill_round(bx, 10, c.input_bg);
+        let bx = Rect::new(area.x + COMPOSER_MARGIN, area.y + 6, area.w - 2 * COMPOSER_MARGIN, msg_h);
+        cv.fill_round(bx, 12, c.input_bg);
         if gp.msg_focus {
-            cv.ring(bx, 10, c.accent.with_alpha(0xa0));
+            cv.ring(bx, 12, c.accent.with_alpha(0xa0));
         } else if self.hv(bx) {
-            cv.ring(bx, 10, strong.with_alpha(0x30));
+            cv.ring(bx, 12, strong.with_alpha(0x30));
         } else {
-            cv.ring(bx, 10, c.border.with_alpha(0xa0));
+            cv.ring(bx, 12, c.border.with_alpha(0xa0));
         }
-        let b = Rect::new(bx.x, bx.y, bx.w, msg_h);
-        gp.msg_box = b;
-        self.gp_draw_msg(cv, gp, b);
-
-        let ry = b.bottom() + 4;
-        let sp = Rect::new(bx.x + 6, ry, 26, 26);
+        gp.msg_box = bx;
+        self.gp_draw_msg(cv, gp, bx);
+        let sp = Rect::new(bx.right() - 6 - 26, bx.y + 6, 26, 26);
         self.gp_icon_btn(cv, gp, sp, "ui/sparkle", Hit::Generate);
 
-        // Commit button with its chevron, one block.
+        // Commit across the width, with its options behind the chevron.
         let staged = gp.staged();
         let ready =
             !gp.msg.text().trim().is_empty() && (gp.amend || staged > 0 || (gp.include_all && !gp.changes.is_empty()));
         let label = if gp.amend { "Amend" } else { "Commit" };
-        let lw = self.tx.ui_width(label, true) + 22;
-        let cw = 22;
-        let blk = Rect::new(bx.right() - 6 - lw - cw, ry, lw + cw, 26);
-        let main = Rect::new(blk.x, blk.y, lw, 26);
-        let chev = Rect::new(main.right(), blk.y, cw, 26);
-        cv.fill_round(blk, 8, if ready { c.accent } else { c.accent.with_alpha(0x48) });
+        let ry = bx.bottom() + 8;
+        let blk = Rect::new(bx.x, ry, bx.w, 32);
+        let cw = 32;
+        let main = Rect::new(blk.x, blk.y, blk.w - cw, 32);
+        let chev = Rect::new(main.right(), blk.y, cw, 32);
+        cv.fill_round(blk, 10, if ready { c.accent } else { c.accent.with_alpha(0x48) });
         let over = c.on_accent.with_alpha(0x2a);
         if self.hv(main) {
-            cv.fill_round_clip(blk, 8, over, main);
+            cv.fill_round_clip(blk, 10, over, main);
         }
         if self.hv(chev) || gp.menu == Some(GpMenu::Commit) {
-            cv.fill_round_clip(blk, 8, over, chev);
+            cv.fill_round_clip(blk, 10, over, chev);
         }
         let text_col = if ready { c.on_accent } else { strong.with_alpha(0xc0) };
-        cv.fill(Rect::new(main.right(), blk.y + 6, 1, 14), text_col.with_alpha(0x50));
-        self.tx.draw_ui(cv, main.x + 11, main.y + 4, label, text_col, main, true);
-        self.tx.icon(cv, "ui/chevron_down", chev.x + 4, blk.y + 6, 14, text_col, chev);
+        cv.fill(Rect::new(main.right(), blk.y + 8, 1, 16), text_col.with_alpha(0x50));
+        let lw = self.tx.ui_width(label, true);
+        let content_w = 16 + 8 + lw;
+        let cx = main.x + (main.w - content_w) / 2;
+        self.tx.icon(cv, "ui/check", cx, blk.y + 8, 16, text_col, main);
+        self.tx.draw_ui(cv, cx + 24, blk.y + 7, label, text_col, main, true);
+        self.tx.icon(cv, "ui/chevron_down", chev.x + 8, blk.y + 8, 16, text_col, chev);
         gp.hits.push((main, Hit::CommitBtn));
         gp.hits.push((chev, Hit::Menu(GpMenu::Commit)));
 
-        // Between them: the notice of the last action, otherwise what is in scope.
-        let x0 = sp.right() + 8;
-        let room = blk.x - 8 - x0;
+        // Caption under the button: the notice of the last action, otherwise what is in scope.
+        let cy = blk.bottom() + 4;
+        let room = bx.w - 4;
         if let Some((m, ok, t)) = gp.notice.clone()
             && t.elapsed().as_secs() < 12
         {
             let txt = fit(&mut self.tx, &m, room, false);
-            self.tx.draw_ui(cv, x0, ry + 4, &txt, if ok { c.git_added } else { c.error }, bx, false);
+            self.tx.draw_ui_sized(cv, bx.x + 2, cy, &txt, if ok { c.git_added } else { c.error }, area, false, 12.0);
         } else {
             let (scope, add, del) = gp.composer_scope();
             let txt = fit(&mut self.tx, &scope, room, false);
-            self.tx.draw_ui(cv, x0, ry + 4, &txt, dim, bx, false);
-            let mut sx = x0 + self.tx.ui_width(&txt, false) + 8;
+            self.tx.draw_ui_sized(cv, bx.x + 2, cy, &txt, dim, area, false, 12.0);
+            let mut sx = bx.x + 2 + self.tx.ui_width_sized(&txt, false, 12.0) + 8;
             for (text, col) in [(format!("+{add}"), c.git_added), (format!("-{del}"), c.error)] {
                 let w = self.tx.ui_width_sized(&text, false, 12.0);
-                if (add > 0 || del > 0) && sx + w <= x0 + room {
-                    self.tx.draw_ui_sized(cv, sx, ry + 6, &text, col.with_alpha(0xcc), bx, false, 12.0);
+                if (add > 0 || del > 0) && sx + w <= bx.x + room {
+                    self.tx.draw_ui_sized(cv, sx, cy, &text, col.with_alpha(0xcc), area, false, 12.0);
                     sx += w + 6;
                 }
             }

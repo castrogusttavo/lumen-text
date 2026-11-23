@@ -31,6 +31,9 @@ impl App {
             }
             return false;
         }
+        if self.ai_cur_is_chat() {
+            return self.ai_chat_key(ev);
+        }
         if self.ai.term().is_none_or(|t| !t.alive) {
             // Empty state or a finished agent: Enter starts it again; anything else hands the
             // keyboard back to the editor (and still does what it does there).
@@ -60,7 +63,8 @@ impl App {
             }
             return true;
         }
-        self.term_type(Which::Ai, ev)
+        let id = self.ai.cur().map_or(0, |s| s.id);
+        self.term_type(Which::Ai(id), ev)
     }
 
     /// A key typed into the session filter field.
@@ -165,40 +169,37 @@ impl App {
             self.ai.focused = true;
             return true;
         }
-        let slot = self.slot_rect();
-        let hit = self.ai.hit_at(x, y).map(|(_, h)| h);
-        let in_strip = Rect::new(slot.x, slot.y, slot.w, SLOT_H).contains(x, y);
-        if !self.ai.open {
-            // The Git panel is shown: only its switch is ours.
-            if hit == Some(AiHit::TabAi) {
-                self.ai_show();
-            }
-            return in_strip;
-        }
-        let inside = slot.contains(x, y);
-        if !inside {
+        if !self.ai.open || !self.aipanel_rect().contains(x, y) {
             return false;
         }
+        let hit = self.ai.hit_at(x, y).map(|(_, h)| h);
         self.ai.focused = true;
         self.focus = Focus::Editor;
+        // A press inside a pane (its header buttons included) gives that session the keyboard.
+        if let Some(i) = self.ai_pane_at(x, y).and_then(|id| self.ai.index_of(id))
+            && i != self.ai.active
+            && !matches!(hit, Some(AiHit::Session(_) | AiHit::CloseSession(_) | AiHit::Split | AiHit::New(_)))
+        {
+            self.ai_activate(i);
+        }
         match hit {
-            Some(AiHit::TabGit) => {
-                self.ai_hide();
-                self.open_git_panel();
-            }
-            Some(AiHit::TabAi) | Some(AiHit::Status) => {}
             Some(AiHit::Close) => self.ai_hide(),
             Some(AiHit::Agent) => self.ai_choose_agent(),
-            Some(AiHit::New) => self.ai_new_session_menu(),
-            Some(AiHit::Restart) => self.ai_respawn(),
-            Some(AiHit::Filter) => self.ai.filter_focus = true,
-            Some(AiHit::FilterClear) => {
-                self.ai.filter = Default::default();
-                self.ai.filter_focus = true;
+            Some(AiHit::New(g)) => {
+                // The new session joins the group whose `+` was pressed.
+                self.ai.focus = g.min(self.ai.groups.len().saturating_sub(1));
+                self.ai_new_session_menu();
             }
-            Some(AiHit::Session(i)) => self.ai_tab_click(i, button),
+            Some(AiHit::Menu(g)) => self.ai_group_menu(g),
+            Some(AiHit::Restart) => self.ai_respawn(),
+            Some(AiHit::Split) => self.ai_split(),
+            Some(AiHit::Session(i)) => {
+                self.ai_tab_click(i, button);
+                if button == 0 && self.overlay.is_none() {
+                    self.ai_drag_press(i, x, y);
+                }
+            }
             Some(AiHit::CloseSession(i)) => self.ai_close_request(i),
-            Some(AiHit::Stop) => self.ai_stop(),
             Some(AiHit::Refresh) => {
                 self.ai_detect(true);
                 match self.ai_default_agent() {
@@ -223,14 +224,26 @@ impl App {
                     self.ai_pick(a.id);
                 }
             }
+            None if self.ai_cur_is_chat() => {
+                if y >= (self.aipanel_rect().y + self.ai_top_h()) as f64 {
+                    self.ai_chat_press(x, y);
+                }
+            }
             None => {
                 let alive = self.ai.term().is_some_and(|t| t.alive);
                 if alive && y >= (self.aipanel_rect().y + self.ai_top_h()) as f64 {
-                    self.term_press(Which::Ai, x, y, button);
+                    let id = self.ai.cur().map_or(0, |s| s.id);
+                    self.term_press(Which::Ai(id), x, y, button);
                 }
             }
         }
         true
+    }
+
+    /// The session shown in the pane under (x, y).
+    pub(crate) fn ai_pane_at(&self, x: f64, y: f64) -> Option<u64> {
+        let (_, g) = self.ai.pane_rects.iter().find(|(r, _)| r.contains(x, y))?;
+        self.ai.groups.get(*g).map(|gr| gr.active)
     }
 
     /// A click on session tab `i`: middle-click closes it, a second click soon after renames
@@ -260,8 +273,17 @@ impl App {
         if !self.ai.open || !self.aipanel_rect().contains(x, y) {
             return false;
         }
-        if self.ai.term().is_some() {
-            self.term_wheel(Which::Ai, delta);
+        let id = self.ai_pane_at(x, y).or_else(|| self.ai.cur().map(|s| s.id));
+        if let Some(id) = id {
+            match self.ai.index_of(id) {
+                Some(i) if self.ai.sessions[i].chat.is_some() => {
+                    let saved = self.ai.active;
+                    self.ai.active = i;
+                    self.ai_chat_wheel(delta, x, y);
+                    self.ai.active = saved;
+                }
+                _ => self.term_wheel(Which::Ai(id), delta),
+            }
         }
         true
     }
@@ -299,7 +321,10 @@ impl App {
         if self.ai.hit_at(x, y).is_some() {
             return Some(CursorIcon::Pointer);
         }
-        if !self.ai.open || !self.slot_rect().contains(x, y) {
+        if let Some(c) = self.ai_chat_cursor(x, y) {
+            return Some(c);
+        }
+        if !self.ai.open || !self.aipanel_rect().contains(x, y) {
             return None;
         }
         let body = y >= (self.aipanel_rect().y + self.ai_top_h()) as f64 && self.ai.term().is_some();
@@ -310,15 +335,13 @@ impl App {
     pub fn aipanel_hover_target(&self) -> Option<(Rect, i32)> {
         let (x, y) = self.mouse;
         let (r, h) = self.ai.hit_at(x, y)?;
-        let active_tab = (h == AiHit::TabAi && self.ai.open)
-            || (h == AiHit::TabGit && !self.ai.open)
-            || h == AiHit::Session(self.ai.active);
+        let active_tab = h == AiHit::Session(self.ai.active);
         let radius = match h {
             AiHit::CloseSession(_) => 4,
             AiHit::Session(_) => 7,
             _ => 8,
         };
-        (!active_tab && !matches!(h, AiHit::Status)).then_some((r, radius))
+        (!active_tab).then_some((r, radius))
     }
 
     /// The button under the pointer, for a tooltip.
@@ -329,23 +352,18 @@ impl App {
     pub fn aipanel_tip(&self, h: AiHit) -> TipText {
         let keys = |id: &str| crate::app_tooltip::shortcut_in(&self.keymap.entries(), id);
         let name = self.ai.agent().map_or("the agent", |a| a.name);
-        let status = self.ai.cur().map_or(Status::Starting, Session::status);
         let (title, keys, detail): (String, Option<String>, Option<String>) = match h {
-            AiHit::TabGit => ("Git".into(), keys("GitPanel"), Some("Changes and history".into())),
-            AiHit::TabAi => (
-                "AI".into(),
-                keys("AiPanel"),
-                Some(match self.ai.badge() {
-                    Some((b, _)) => b,
-                    None => format!("{} — {}", self.ai.agent().map_or("Agent", |a| a.name), status.label()),
-                }),
-            ),
-            AiHit::Agent => ("Choose agent…".into(), None, Some("Claude Code, Gemini CLI or Codex CLI".into())),
-            AiHit::Status => {
-                let title = self.ai.term().map(|t| t.grid.title.clone()).unwrap_or_default();
-                (status.label(), None, (!title.is_empty()).then_some(title))
+            AiHit::Split if self.ai.groups.len() > 1 => {
+                ("Unsplit".into(), None, Some("Every tab goes to the first group".into()))
             }
-            AiHit::New => ("New session…".into(), keys("AiNewSession"), Some("Start another agent alongside".into())),
+            AiHit::Split => {
+                ("Two groups side by side".into(), None, Some("Or drag a tab to the left or right half".into()))
+            }
+            AiHit::Menu(_) => ("Session".into(), None, Some("Restart, stop, rename, change agent, close".into())),
+            AiHit::Agent => ("Choose agent…".into(), None, Some("Claude Code, Gemini CLI or Codex CLI".into())),
+            AiHit::New(_) => {
+                ("New session…".into(), keys("AiNewSession"), Some("Start another agent alongside".into()))
+            }
             AiHit::Session(i) => match self.ai.sessions.get(i) {
                 Some(s) => (
                     format!("{} — {}", s.name, s.status().label()),
@@ -362,8 +380,7 @@ impl App {
             AiHit::Restart => {
                 ("Restart agent".into(), None, Some(format!("Relaunch {name} (picks up login or config changes)")))
             }
-            AiHit::Stop => ("Stop".into(), None, Some(format!("Hang up {name} and everything it started"))),
-            AiHit::Close => ("Hide panel".into(), keys("AiPanel"), Some("The agent keeps running".into())),
+            AiHit::Close => ("Back to the editor".into(), keys("AiPanel"), Some("The agents keep running".into())),
             AiHit::Refresh => ("Look for agents again".into(), None, None),
             AiHit::Ide if self.ai_bridge_connected() => (
                 "IDE bridge — connected".into(),
@@ -383,8 +400,6 @@ impl App {
                     Some("Click to review · Ctrl+Enter accepts · Esc rejects".into()),
                 )
             }
-            AiHit::Filter => ("Filter sessions".into(), None, Some("Type to narrow the tabs by name or agent".into())),
-            AiHit::FilterClear => ("Clear filter".into(), None, None),
             AiHit::Install(_) => (String::new(), None, None),
         };
         let more = match h {

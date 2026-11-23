@@ -67,7 +67,9 @@ impl App {
         }
 
         let commit_h = if gp.tab == Tab::Changes && gp.top.is_some() {
-            self.gp_msg_layout(&mut gp, p, strip_h);
+            if gp.form.is_none() {
+                self.gp_msg_layout(&mut gp, p, strip_h);
+            }
             gp.commit_area_h()
         } else {
             0
@@ -91,10 +93,17 @@ impl App {
             self.tx.draw_ui(cv, b.x + 14, b.y + 6, label, c.on_accent, b, false);
             gp.hits.push((b, Hit::Init));
         } else if gp.tab == Tab::Changes {
-            self.gp_draw_commit_area(cv, &mut gp, Rect::new(p.x + 1, comp_y, p.w - 1, commit_h));
+            let area = Rect::new(p.x + 1, comp_y, p.w - 1, commit_h);
+            if gp.form.is_some() {
+                self.gp_draw_form(cv, &mut gp, area);
+            } else {
+                self.gp_draw_commit_area(cv, &mut gp, area);
+            }
             self.gp_draw_changes(cv, &mut gp, body);
-        } else {
+        } else if gp.tab == Tab::History {
             self.gp_draw_history(cv, &mut gp, body);
+        } else {
+            self.gp_draw_checks(cv, &mut gp, body);
         }
         self.gp_draw_menu(cv, &mut gp, p);
         gp.hover = if p.contains(self.mouse.0, self.mouse.1) { gp.hit_at(self.mouse.0, self.mouse.1) } else { None };
@@ -259,7 +268,7 @@ impl App {
     /// to 10 (less when the panel is short, so the changes list keeps room), then it scrolls.
     pub(super) fn gp_msg_layout(&mut self, gp: &mut GitPanel, p: Rect, strip_h: i32) {
         let lh = Self::gp_msg_line();
-        let inner_w = (p.w - 1) - 2 * COMPOSER_MARGIN - 2 * MSG_PAD_X;
+        let inner_w = (p.w - 1) - 2 * COMPOSER_MARGIN - 2 * MSG_PAD_X - MSG_SPARKLE_W;
         let tx = &mut self.tx;
         gp.msg.layout(inner_w.max(1) as f32, &mut |s: &str| tx.ui_char_xs(s, false, None));
         let room = p.h - HEAD_H - BRANCH_H - strip_h - COMMIT_CHROME_H - MSG_LIST_ROOM - 2 * MSG_PAD_Y;
@@ -277,7 +286,7 @@ impl App {
         gp.hits.push((b, Hit::Msg));
         let lh = Self::gp_msg_line();
         let (ox, oy) = (b.x + MSG_PAD_X, b.y + MSG_PAD_Y);
-        let inner_w = b.w - 2 * MSG_PAD_X;
+        let inner_w = b.w - 2 * MSG_PAD_X - MSG_SPARKLE_W;
         // Scrolled rows slide under the padding, up to 4 px from the border.
         let clip = Rect::new(b.x + 4, b.y + 4, b.w - 8, b.h - 8);
         // Text centred in its row.

@@ -52,6 +52,13 @@ pub enum PanelTab {
     Docker,
 }
 
+impl PanelTab {
+    /// Everything but the terminals: the tabs of the tools header.
+    pub fn is_tool(self) -> bool {
+        self != PanelTab::Terminal
+    }
+}
+
 pub struct Panel {
     pub tab: PanelTab,
     pub open: bool,
@@ -367,26 +374,37 @@ impl App {
         let body = Rect::new(r.x, r.y + PANEL_HEADER + 1, r.w, (r.h - PANEL_HEADER - 1).max(0));
         let head = Rect::new(r.x, r.y + 1, r.w, PANEL_HEADER - 1);
         let ty = r.y + (PANEL_HEADER - 18) / 2 + 1;
-        // Pill tabs, like the git panel's: the active one tinted, the others dim (hover tint is the app's).
+        // The terminals and the tools are two separate things that share the panel's room: the
+        // terminals' header holds only their own strip; the tools' header only the tool tabs. Each
+        // is reached from its own rail button (Terminal; Containers, Build, Debug).
         let mut x = r.x + 8;
-        for (label, tab) in [
-            ("Output", PanelTab::Output),
-            ("Tests", PanelTab::Tests),
-            ("Build", PanelTab::Build),
-            ("Docker", PanelTab::Docker),
-            ("Terminal", PanelTab::Terminal),
-            ("Debug", PanelTab::Debug),
-        ] {
-            let w = self.tx.ui_width(label, true) + 20;
-            let active = self.panel.tab == tab;
-            let pill = Rect::new(x, r.y + 4, w, PANEL_HEADER - 7);
-            if active {
-                cv.fill_round(pill, 8, c.tab_active_fg.with_alpha(0x1e));
+        if self.panel.tab.is_tool() {
+            for (label, tab) in [
+                ("Output", PanelTab::Output),
+                ("Tests", PanelTab::Tests),
+                ("Build", PanelTab::Build),
+                ("Containers", PanelTab::Docker),
+                ("Debug", PanelTab::Debug),
+            ] {
+                let w = self.tx.ui_width(label, true) + 20;
+                let active = self.panel.tab == tab;
+                let pill = Rect::new(x, r.y + 4, w, PANEL_HEADER - 7);
+                if active {
+                    cv.fill_round(pill, 8, c.tab_active_fg.with_alpha(0x1e));
+                }
+                let tw = self.tx.ui_width(label, active);
+                self.tx.draw_ui(
+                    cv,
+                    x + (w - tw) / 2,
+                    ty,
+                    label,
+                    if active { c.tab_active_fg } else { dim },
+                    head,
+                    active,
+                );
+                self.layout.panel_tabs.push((pill, tab));
+                x += w + 4;
             }
-            let tw = self.tx.ui_width(label, active);
-            self.tx.draw_ui(cv, x + (w - tw) / 2, ty, label, if active { c.tab_active_fg } else { dim }, head, active);
-            self.layout.panel_tabs.push((pill, tab));
-            x += w + 4;
         }
         // The panel toggle as bound now (a rebinding shows its own combo; switched off: no hint).
         let mut hint_x = r.right() - 8;
