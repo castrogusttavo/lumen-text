@@ -98,6 +98,10 @@ pub enum Hit {
     PrFix,
     /// The search button of the header: focuses the filter box.
     Search,
+    /// The "COMMITTED ON BRANCH" header: fold / unfold the list.
+    BranchHead,
+    /// A commit of the branch: fold / unfold its files.
+    BranchCommit(usize),
 }
 
 /// The dropdowns of the panel.
@@ -384,6 +388,9 @@ pub struct GitPanel {
     pub max_scroll_pr: f64,
     /// The URL of a pull request just created, to open once the panel is back in the App.
     pub pending_url: Option<String>,
+    /// "COMMITTED ON BRANCH" folded, and the commits whose files are folded away.
+    pub branch_folded: bool,
+    pub branch_commits_folded: std::collections::HashSet<usize>,
 }
 
 /// What one refresh of the panel reads from git (on any thread; applied on the UI thread).
@@ -509,6 +516,8 @@ impl GitPanel {
             scroll_pr: 0.0,
             max_scroll_pr: 0.0,
             pending_url: None,
+            branch_folded: false,
+            branch_commits_folded: std::collections::HashSet::new(),
         };
         p.refresh();
         p
@@ -876,9 +885,14 @@ impl GitPanel {
             return;
         }
         v.push(Row::BranchHead);
+        if self.branch_folded {
+            return;
+        }
         for (i, c) in b.commits.iter().enumerate() {
             v.push(Row::BranchCommit(i));
-            v.extend((0..c.files.len()).map(|j| Row::BranchFile(i, j)));
+            if !self.branch_commits_folded.contains(&i) {
+                v.extend((0..c.files.len()).map(|j| Row::BranchFile(i, j)));
+            }
         }
     }
 

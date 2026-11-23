@@ -190,6 +190,22 @@ fn g_left_room(area: Rect, title_w: i32) -> i32 {
 // ───────────── drawing ─────────────
 
 impl App {
+    /// While the Checks tab is on screen the pull request is asked for again every so often (sooner
+    /// while checks are still running), so the results appear without a click.
+    pub fn gp_pr_tick(&mut self, now: Instant, want: &mut impl FnMut(Instant)) {
+        let Some(gp) = self.gitpanel.as_mut() else { return };
+        if gp.tab != Tab::Checks || !gp.detail.loaded || gp.detail.loading {
+            return;
+        }
+        let every = if gp.detail.info.as_ref().is_some_and(|i| i.pending() > 0) { 15 } else { 60 };
+        let Some(due) = gp.detail.at.map(|t| t + Duration::from_secs(every)) else { return };
+        if due <= now {
+            gp.request_detail();
+        } else {
+            want(due);
+        }
+    }
+
     /// The "Create PR" form that replaces the commit box: header with Generate, title, description,
     /// the base branch and the Create button (draft behind its chevron).
     pub(super) fn gp_draw_form(&mut self, cv: &mut Canvas, gp: &mut GitPanel, area: Rect) {
@@ -346,11 +362,18 @@ impl App {
     }
 
     /// The header of the committed list: "COMMITTED ON BRANCH n".
-    pub(super) fn gp_draw_branch_head(&mut self, cv: &mut Canvas, gp: &GitPanel, y: i32, body: Rect) {
-        let dim = self.theme.chrome.tab_inactive_fg;
+    pub(super) fn gp_draw_branch_head(&mut self, cv: &mut Canvas, gp: &mut GitPanel, y: i32, body: Rect) {
+        let (strong, dim) = (self.theme.chrome.tab_active_fg, self.theme.chrome.tab_inactive_fg);
         let n = gp.branch.as_ref().map_or(0, |b| b.commits.len());
+        let vis = Self::gp_vis(body, y, SEC_H);
+        let row = Rect::new(body.x, y, body.w, SEC_H);
+        if self.hv(row) && self.hv(vis) {
+            cv.fill_round_clip(Rect::new(body.x + 6, y, body.w - 12, SEC_H), 8, strong.with_alpha(0x0c), body);
+        }
+        gp.hits.push((row.intersect(&vis), Hit::BranchHead));
         let ty = y + (SEC_H - 16) / 2 + 1;
-        self.tx.icon(cv, "ui/chevron_down", body.x + 10, y + (SEC_H - 16) / 2, 16, dim, body);
+        let chev = if gp.branch_folded { "ui/chevron_right" } else { "ui/chevron_down" };
+        self.tx.icon(cv, chev, body.x + 10, y + (SEC_H - 16) / 2, 16, dim, body);
         let title = "COMMITTED ON BRANCH";
         self.tx.draw_ui_sized(cv, body.x + 30, ty, title, dim, body, true, 12.0);
         let tw = self.tx.ui_width_sized(title, true, 12.0);
@@ -358,16 +381,26 @@ impl App {
     }
 
     /// One commit of the branch: subject on the left, its short hash at the right.
-    pub(super) fn gp_draw_branch_commit(&mut self, cv: &mut Canvas, gp: &GitPanel, i: usize, y: i32, body: Rect) {
+    pub(super) fn gp_draw_branch_commit(&mut self, cv: &mut Canvas, gp: &mut GitPanel, i: usize, y: i32, body: Rect) {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
-        let Some(cm) = gp.branch.as_ref().and_then(|b| b.commits.get(i)) else { return };
+        let Some(cm) = gp.branch.as_ref().and_then(|b| b.commits.get(i)).cloned() else { return };
         let h = Self::row_height_branch_commit();
+        let vis = Self::gp_vis(body, y, h);
         let r = Rect::new(body.x + 6, y, body.w - 12, h);
-        if self.hv(r) && self.hv(Rect::new(body.x, body.y, body.w, body.h)) {
+        if self.hv(r) && self.hv(vis) {
             cv.fill_round_clip(r, 8, strong.with_alpha(0x0c), body);
         }
-        self.tx.icon(cv, "ui/git_commit", r.x + 8, y + (h - 16) / 2, 16, dim, body);
+        gp.hits.push((r.intersect(&vis), Hit::BranchCommit(i)));
+        // A commit with files shows a chevron: click folds them.
+        let icon = if cm.files.is_empty() {
+            "ui/git_commit"
+        } else if gp.branch_commits_folded.contains(&i) {
+            "ui/chevron_right"
+        } else {
+            "ui/chevron_down"
+        };
+        self.tx.icon(cv, icon, r.x + 8, y + (h - 16) / 2, 16, dim, body);
         let hw = self.tx.ui_width_sized(&cm.hash, false, 12.0);
         let subj = fit(&mut self.tx, &cm.subject, r.w - 34 - hw - 16, false);
         self.tx.draw_ui(cv, r.x + 32, y + (h - 18) / 2, &subj, strong, body, false);
@@ -429,9 +462,8 @@ impl App {
         let c = self.theme.chrome;
         let (strong, dim) = (c.tab_active_fg, c.tab_inactive_fg);
         cv.fill(Rect::new(body.x, body.y, body.w, 1), c.border);
-        // Ask on the first look and every so often while it is on screen.
-        let stale = gp.detail.at.is_none_or(|t| t.elapsed() > Duration::from_secs(45));
-        if !gp.detail.loading && (!gp.detail.loaded || stale) {
+        // Ask on the first look (`gp_pr_tick` asks again every so often).
+        if !gp.detail.loading && !gp.detail.loaded {
             gp.request_detail();
         }
         let center = |app: &mut App, cv: &mut Canvas, y: i32, text: &str, col: Rgba, bold: bool| {

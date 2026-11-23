@@ -230,14 +230,16 @@ fn ai_panel_runs_a_stub_agent_end_to_end() {
     }
     let st = app.ai.cur().map(Session::status);
     assert!(matches!(st, Some(Status::Exited(_))), "{st:?}");
-    // The AI page and the Git dock are separate: opening Git leaves the page, and the page covers
-    // the dock (which stays open underneath) when it comes back.
+    // The AI page and the Git dock are separate things that can be open together: Git stays at the
+    // right, beside the page.
     app.ai_show();
     assert!(app.ai.open);
     app.open_git_panel();
-    assert!(!app.ai.open && app.gitpanel.is_some());
-    app.ai_show();
-    assert!(app.ai.open && app.gitpanel.is_some() && !app.slot_shown(), "the page covers the Git dock");
+    assert!(app.ai.open && app.gitpanel.is_some(), "opening Git does not leave the page");
+    let (w, h) = (1200, 800);
+    let mut px = vec![0u32; (w * h) as usize];
+    app.render_into(&mut crate::ui::Canvas { px: &mut px, w, h }, 0.016);
+    assert!(app.aipanel_rect().right() <= app.slot_rect().x, "the page leaves room for the dock");
     drop(app);
     let _ = std::fs::remove_dir_all(&dir);
 }

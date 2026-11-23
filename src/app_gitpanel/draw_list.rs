@@ -23,7 +23,7 @@ impl App {
     }
 
     /// Visible part of a row of height `h` at `y` inside `body`.
-    fn gp_vis(body: Rect, y: i32, h: i32) -> Rect {
+    pub(super) fn gp_vis(body: Rect, y: i32, h: i32) -> Rect {
         Rect::new(body.x, y.max(body.y), body.w, ((y + h).min(body.bottom()) - y.max(body.y)).max(0))
     }
 

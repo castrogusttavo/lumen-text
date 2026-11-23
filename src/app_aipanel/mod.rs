@@ -120,7 +120,8 @@ impl App {
         let (w, h) = (self.size.0 as i32, self.size.1 as i32);
         let (top, bottom) = (self.layout.topbar.h, self.layout.status.h);
         let lx = self.rail_w();
-        Rect::new(lx, top, (w - lx).max(0), (h - top - bottom).max(0))
+        // The Git dock, when open, keeps its place at the right of the page.
+        Rect::new(lx, top, (w - lx - self.gitpanel_w()).max(0), (h - top - bottom).max(0))
     }
 
     /// Height of what sits above an agent's terminal: its group's strip of tabs.

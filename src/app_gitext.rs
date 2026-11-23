@@ -129,6 +129,7 @@ impl App {
             self.git_bg_msg(m, now);
         }
         self.pr_poll(now, want);
+        self.gp_pr_tick(now, want);
         self.pr_sync_marks();
         if std::mem::take(&mut self.gitbg.rebase_merge) {
             if self.gitpanel.is_none() {

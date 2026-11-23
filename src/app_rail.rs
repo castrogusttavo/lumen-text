@@ -86,8 +86,8 @@ impl App {
 
     fn rail_active(&self, b: RailBtn) -> bool {
         use crate::app_panel::PanelTab;
-        // The AI page covers everything else: only its own button is lit.
-        if self.ai.open && b != RailBtn::Ai {
+        // The AI page covers everything else but the Git dock: only those two buttons stay lit.
+        if self.ai.open && !matches!(b, RailBtn::Ai | RailBtn::Git) {
             return false;
         }
         match b {
@@ -157,7 +157,7 @@ impl App {
         };
         use crate::app_panel::PanelTab;
         // Any other button leaves the AI page (the agents keep running).
-        let from_ai = self.ai.open && !matches!(kind, RailBtn::Ai | RailBtn::Settings);
+        let from_ai = self.ai.open && !matches!(kind, RailBtn::Ai | RailBtn::Settings | RailBtn::Git);
         if from_ai {
             self.ai_hide();
         }
@@ -174,8 +174,6 @@ impl App {
                 }
             }
             RailBtn::Search => self.open_project_search(),
-            RailBtn::Git if from_ai && self.gitpanel.is_none() => self.open_git_panel(),
-            RailBtn::Git if from_ai => {}
             RailBtn::Git => self.git_button(),
             RailBtn::Ai => {
                 if self.ai.open {

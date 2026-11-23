@@ -418,6 +418,12 @@ impl App {
                     gp.tab = Tab::Changes;
                     gp.filter_focus = true;
                 }
+                Some(Hit::BranchHead) => gp.branch_folded = !gp.branch_folded,
+                Some(Hit::BranchCommit(i)) => {
+                    if !gp.branch_commits_folded.remove(&i) {
+                        gp.branch_commits_folded.insert(i);
+                    }
+                }
                 Some(Hit::PrOpen) => gp.open_form(),
                 Some(Hit::PrCancel) => gp.form = None,
                 Some(Hit::PrGenerate) => gp.generate_pr(),
