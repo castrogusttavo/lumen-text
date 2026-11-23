@@ -83,7 +83,10 @@ used only for blocking work (nothing in the IDE blocks today, so it never shows)
 | Output and Terminal text | Beam |
 | Tests / Build rows, chips, buttons | Hand; dead area Arrow |
 | Debug panel controls | Hand; console and watch inputs Beam |
-| Docker panel | Arrow in dead areas (rows and buttons still on the legacy Beam fallback, see below) |
+| Panel top edge (4 px each side, also while dragging) | Row |
+| Problems rows, fold headers, scope switch | Hand |
+| Debug toolbar buttons that cannot act right now | Not-allowed |
+| Docker panel buttons (refresh, start / stop / logs / remove) | Hand; dead areas Arrow |
 | Terminal tab strip, its close buttons | Hand |
 
 ## Modals and menus (open each, then sweep the whole window)
@@ -113,8 +116,6 @@ used only for blocking work (nothing in the IDE blocks today, so it never shows)
 ## Known gaps (fall back to the legacy cascade; see the report of the cursor agent)
 
 - Disabled controls give Hand like enabled ones: no NotAllowed anywhere yet.
-- Docker panel rows and buttons are clickable but the panel's hit list is private, so they show
-  Arrow (they used to show Beam).
 - Surfaces not yet in the registry (still correct through their own `*_cursor` helper):
   sidebar rows and edge, git / AI docks, terminal, markdown, image, multibuffer, SQL, OpenAPI,
   tests / build / fswatch panels, panel buttons, diff and merge buttons, hover popup, find bar,

@@ -507,7 +507,7 @@ impl VBar {
         if total <= visible + 0.5 || track.h < 24 || crate::display::scrollbar() == crate::display::Scrollbar::Never {
             return None;
         }
-        let th = (((track.h as f64) * (visible / total).clamp(0.0, 1.0)) as i32).clamp(32, track.h);
+        let th = (((track.h as f64) * (visible / total).clamp(0.0, 1.0)) as i32).clamp(32.min(track.h), track.h);
         let max = (total - visible).max(1e-9);
         let ty = track.y + (((track.h - th) as f64) * (pos / max).clamp(0.0, 1.0)) as i32;
         Some(VBar { track, thumb: Rect::new(track.x, ty, track.w, th) })
@@ -553,7 +553,7 @@ impl HBar {
         if total <= visible + 0.5 || track.w < 24 || crate::display::scrollbar() == crate::display::Scrollbar::Never {
             return None;
         }
-        let tw = (((track.w as f64) * (visible / total).clamp(0.0, 1.0)) as i32).clamp(32, track.w);
+        let tw = (((track.w as f64) * (visible / total).clamp(0.0, 1.0)) as i32).clamp(32.min(track.w), track.w);
         let max = (total - visible).max(1e-9);
         let tx = track.x + (((track.w - tw) as f64) * (pos / max).clamp(0.0, 1.0)) as i32;
         Some(HBar { track, thumb: Rect::new(tx, track.y, tw, track.h) })

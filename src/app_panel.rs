@@ -310,6 +310,44 @@ impl App {
 
     // ───────────── resize edge ─────────────
 
+    /// The panel's share of the cursor registry: the top resize edge (row-resize, wins over the
+    /// tab strip it overlaps), the clickable spots of the Problems, Debug and Docker tabs, and
+    /// not-allowed for the debug toolbar buttons that cannot act right now.
+    pub(crate) fn cursor_collect_panel(&self, reg: &mut crate::app_cursor::CursorReg) {
+        use crate::app_cursor::{Z_BASE, Z_EDGE};
+        use crate::app_debug::DebugHit;
+        use winit::window::CursorIcon::{NotAllowed, Pointer, RowResize, Text};
+        if let Some(e) = self.panel_edge_rect() {
+            reg.push(e, RowResize, Z_EDGE, "panel-edge");
+        }
+        if !self.panel.open {
+            return;
+        }
+        match self.panel.tab {
+            PanelTab::Problems => {
+                for r in self.problems_hit_rects() {
+                    reg.push(r, Pointer, Z_BASE, "problems-row");
+                }
+            }
+            PanelTab::Debug => {
+                for (r, h) in &self.layout.debug_hits {
+                    let (icon, label) = match h {
+                        DebugHit::ConsoleInput | DebugHit::WatchInput => (Text, "debug-input"),
+                        DebugHit::Tool(t) if !self.tool_enabled(*t) => (NotAllowed, "debug-tool-disabled"),
+                        _ => (Pointer, "debug-control"),
+                    };
+                    reg.push(*r, icon, Z_BASE, label);
+                }
+            }
+            PanelTab::Docker => {
+                for r in self.docker_hit_rects() {
+                    reg.push(r, Pointer, Z_BASE, "docker-button");
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// The grab band around the panel's top edge (None when the panel is closed).
     fn panel_edge_rect(&self) -> Option<Rect> {
         let r = self.layout.panel;

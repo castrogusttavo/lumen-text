@@ -223,6 +223,11 @@ impl App {
         }
     }
 
+    /// Every clickable rect of the panel as last drawn (refresh, row actions), for the cursor registry.
+    pub fn docker_hit_rects(&self) -> impl Iterator<Item = Rect> + '_ {
+        self.docker.hits.iter().map(|(r, _)| *r)
+    }
+
     pub fn docker_wheel(&mut self, delta: MouseScrollDelta) {
         let w = self.wheel_in(delta);
         let px = if w.pixels { w.dy } else { w.dy * ROW_H as f64 * 2.0 };
@@ -245,7 +250,7 @@ impl App {
         let c = self.theme.chrome;
         let hot = self.overlay.is_none() && r.contains(self.mouse.0, self.mouse.1);
         let tint = if hot {
-            cv.fill_round_clip(r, 6, c.tab_active_fg.with_alpha(0x18), clip);
+            cv.fill_round_clip(r, crate::ds::R_CTRL, c.hover_overlay, clip);
             if danger { c.error } else { c.tab_active_fg }
         } else {
             c.tab_inactive_fg
@@ -272,7 +277,7 @@ impl App {
         let w = 24 + self.tx.ui_width(label, false) + 20;
         let btn = Rect::new(body.x + 12, body.y + (TOOL_H - BTN_H) / 2, w, BTN_H);
         let hot = self.overlay.is_none() && btn.contains(self.mouse.0, self.mouse.1);
-        cv.fill_round_clip(btn, 8, strong.with_alpha(if hot { 0x1c } else { 0x0e }), bar);
+        cv.fill_round_clip(btn, crate::ds::R_ROW, if hot { c.pressed_overlay } else { c.hover_overlay }, bar);
         self.tx.icon(cv, "ui/rotate_cw", btn.x + 12, btn.y + (BTN_H - 14) / 2, 14, c.accent_text, bar);
         self.tx.draw_ui(cv, btn.x + 32, btn.y + (BTN_H - 18) / 2, label, strong, bar, false);
         self.docker.hits.push((btn, Hit::Refresh));

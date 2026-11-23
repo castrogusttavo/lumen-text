@@ -1536,8 +1536,8 @@ impl App {
         };
         let w = self.tx.ui_width(&label, false);
         let chip = Rect::new(x - 4, bar.y + 3, w + 34, TOOLBAR_H - 6);
-        if chip.contains(mx, my) {
-            cv.fill_round(chip, 5, fg.with_alpha(0x18));
+        if self.overlay.is_none() && chip.contains(mx, my) {
+            cv.fill_round(chip, ds::R_CTRL, c.hover_overlay);
         }
         self.tx.draw_ui(cv, x, bar.y + 7, &label, fg, bar, false);
         self.tx.icon(cv, "ui/chevron_down", x + w + 6, bar.y + 9, 12, dim, bar);
@@ -1799,8 +1799,8 @@ impl App {
         for (k, (icon, hit)) in head.iter().enumerate() {
             let bx = rect.right() - 26 - 22 * k as i32;
             let r = Rect::new(bx - 3, rect.y + 2, 20, SEC_H - 4);
-            if r.contains(self.mouse.0, self.mouse.1) {
-                cv.fill_round(r, 4, fg.with_alpha(0x18));
+            if self.overlay.is_none() && r.contains(self.mouse.0, self.mouse.1) {
+                cv.fill_round(r, ds::R_CTRL, c.hover_overlay);
             }
             self.tx.icon(cv, icon, bx, rect.y + 5, 14, dim, rect);
             self.layout.debug_hits.push((r, hit.clone()));
@@ -1839,7 +1839,7 @@ impl App {
             for (k, (icon, hit)) in row.actions.iter().enumerate() {
                 let ax = area.right() - 30 - 18 * k as i32;
                 let ar = Rect::new(ax - 2, y, 16, lh).intersect(&area);
-                if ar.contains(self.mouse.0, self.mouse.1) {
+                if self.overlay.is_none() && ar.contains(self.mouse.0, self.mouse.1) {
                     self.tx.icon(cv, icon, ax, y + (lh - 12) / 2, 12, fg, area);
                 } else {
                     self.tx.icon(cv, icon, ax, y + (lh - 12) / 2, 12, dim, area);
