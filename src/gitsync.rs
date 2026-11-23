@@ -528,7 +528,8 @@ fn finish(tx: &Sender<Msg>, wake: &(dyn Fn() + Send + Sync), r: Result<String, F
 /// One step of a job: never prompts (no terminal: new session; `GIT_TERMINAL_PROMPT=0`,
 /// `GH_PROMPT_DISABLED=1`), output piped.
 fn step_command(program: &str, top: &Path, args: &[String], env: &[(String, String)]) -> Command {
-    let mut cmd = Command::new(program);
+    // `gh` may live where a desktop launch has no `PATH` (Homebrew...): look there too.
+    let mut cmd = if program == "gh" { Command::new(crate::ghpr::gh_exe()) } else { Command::new(program) };
     if program == "git" {
         cmd.arg("-C").arg(top).env("PATH", crate::lspreg::git_hook_path(top));
     } else {

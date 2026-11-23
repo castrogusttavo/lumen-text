@@ -480,7 +480,7 @@ impl App {
             self.git_report("Releases need a GitHub remote: none of the remotes points at github.com", false);
             return None;
         };
-        match gh_status("gh") {
+        match gh_status(&crate::ghpr::gh_exe().to_string_lossy()) {
             GhStatus::Ready => Some(target),
             st => {
                 self.git_report(st.text(), false);

@@ -257,9 +257,19 @@ fn strs(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
+/// The `gh` executable: found in the tool folders a desktop launch lacks on its `PATH` (Homebrew,
+/// `~/.local/bin`...) as well as on it; plain `gh` when none holds it (the error then says so).
+pub fn gh_exe() -> std::path::PathBuf {
+    let name = if cfg!(windows) { "gh.exe" } else { "gh" };
+    std::env::split_paths(&crate::lspreg::child_path(Path::new(name)))
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| std::path::PathBuf::from("gh"))
+}
+
 /// Run `gh` in `dir`: never prompts, never checks for updates, no console window on Windows.
 pub fn gh(dir: &Path, args: &[String]) -> Result<String, GhErr> {
-    let mut cmd = Command::new("gh");
+    let mut cmd = Command::new(gh_exe());
     cmd.current_dir(dir)
         .args(args)
         .env("GH_PROMPT_DISABLED", "1")

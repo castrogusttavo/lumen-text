@@ -288,7 +288,7 @@ pub fn humanize(branch: &str) -> String {
 // ───────────── gh ─────────────
 
 fn gh(top: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("gh").current_dir(top).args(args).output().map_err(|e| {
+    let out = Command::new(crate::ghpr::gh_exe()).current_dir(top).args(args).output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound { "gh not found".to_string() } else { e.to_string() }
     })?;
     if out.status.success() {

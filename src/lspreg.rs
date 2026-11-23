@@ -642,9 +642,21 @@ pub fn search_dirs(root: &Path) -> Vec<PathBuf> {
 /// Per-user tool folders that are often missing from the PATH of an editor started from the
 /// desktop: Lumen's own server folder, cargo, pipx/uv, go, .NET global tools, Ruby user gems.
 fn user_tool_dirs() -> Vec<PathBuf> {
-    let Some(h) = home_dir().map(PathBuf::from) else { return Vec::new() };
+    // Where package managers put command line tools (`gh`, `go`, `node`...) that a desktop launch,
+    // unlike a terminal, does not have on its `PATH`: Homebrew (Linux and macOS), snap, system folders.
+    let system: Vec<PathBuf> = [
+        "/home/linuxbrew/.linuxbrew/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/snap/bin",
+        "C:\\Program Files\\GitHub CLI",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+    let Some(h) = home_dir().map(PathBuf::from) else { return system };
     let mut dirs: Vec<PathBuf> =
-        [".local/share/lumen-text/lsp/bin", ".cargo/bin", ".local/bin", "go/bin", ".dotnet/tools"]
+        [".local/share/lumen-text/lsp/bin", ".cargo/bin", ".local/bin", ".linuxbrew/bin", "go/bin", ".dotnet/tools"]
             .iter()
             .map(|r| h.join(r))
             .collect();
@@ -679,6 +691,7 @@ fn user_tool_dirs() -> Vec<PathBuf> {
         v.sort_by_key(|p| node_version_key(p));
         dirs.extend(v.into_iter().rev());
     }
+    dirs.extend(system);
     dirs
 }
 
