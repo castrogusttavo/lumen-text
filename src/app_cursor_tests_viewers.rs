@@ -97,7 +97,7 @@ fn the_markdown_preview_has_hands_on_links_and_beams_on_text() {
     let (mut hands, mut beams) = (0, 0);
     let mut y = r.y + 2;
     while y < r.bottom() {
-        let mut x = r.x + 2;
+        let mut x = r.x + 10; // the first pixels are the grab band of the split divider
         while x < r.right() {
             let (icon, label) = probe(&mut app, x as f64, y as f64);
             assert!(!is_resize(icon) && icon != C::Wait && icon != C::NotAllowed, "({x},{y}) {icon:?} {label}");
