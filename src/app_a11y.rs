@@ -445,6 +445,7 @@ impl App {
                     input: Some(p.field.text.clone()),
                     items,
                     sel: (n > 0).then(|| sel - a),
+                    ..Default::default()
                 });
                 s.area = Area::Palette;
             }

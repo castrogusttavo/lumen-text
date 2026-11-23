@@ -741,6 +741,7 @@ mod tests {
             input: Some("op".into()),
             items: vec![DialogItem { label: "Open".into(), detail: "Ctrl+O".into() }],
             sel: Some(0),
+            ..Default::default()
         });
         s.terminal =
             Some(TermView { title: "Terminal 1".into(), rows: vec!["$ ls".into(), "a b".into()], cursor: (1, 3) });
@@ -833,6 +834,7 @@ mod tests {
                 DialogItem { label: "b".into(), detail: "dir".into() },
             ],
             sel: Some(1),
+            ..Default::default()
         });
         s.area = Area::Palette;
         let u = build(&s, "");
