@@ -312,6 +312,21 @@ impl App {
         true
     }
 
+    /// Pointer regions of the open picker: the I-beam on the search field, a hand on the
+    /// "show all" switch and on every row that is on screen.
+    pub(crate) fn fontpicker_cursor(&self, reg: &mut crate::app_cursor::CursorReg) {
+        use crate::app_cursor::Z_MODAL;
+        use winit::window::CursorIcon::{Pointer, Text};
+        let Overlay::Font(p) = &self.overlay else { return };
+        let (r, toggle, list) = self.fontpicker_parts();
+        reg.push(Rect::new(r.x, r.y, r.w, INPUT_H), Text, Z_MODAL, "font-input");
+        if let Some(t) = toggle {
+            reg.push(t, Pointer, Z_MODAL, "font-toggle");
+        }
+        let shown = p.rows.len().saturating_sub(p.scroll).min(ROWS) as i32;
+        reg.push(Rect::new(list.x, list.y, list.w, shown * ROW_H), Pointer, Z_MODAL, "font-row");
+    }
+
     pub fn fontpicker_wheel(&mut self, delta: MouseScrollDelta) {
         let d = crate::scroller::wheel_rows_int(delta, ROW_H as f64);
         if let Overlay::Font(p) = &mut self.overlay {
@@ -347,8 +362,7 @@ impl App {
             Overlay::Font(p) => p.rows.len(),
             _ => 0,
         };
-        cv.shadow(r, 12);
-        cv.card(r, 12, c.widget_bg, c.border);
+        cv.float_card(r, crate::ds::R_FLOAT, &c, crate::ds::Elev::Modal);
         let title = if is_buffer { "Buffer font family" } else { "Interface font family" };
         self.tx.icon(cv, "ui/font", r.x + 18, r.y + (INPUT_H - 16) / 2, 16, dim, r);
         let (shown, col) =
@@ -437,8 +451,12 @@ impl App {
                 _ => self.tx.draw_ui(cv, pr.x + 14, pr.y + 20, "Pick a family to preview it", dim, pr, false),
             }
         }
-        let foot = format!("{total} fonts   Enter picks   Esc closes");
-        self.tx.draw_ui(cv, r.x + 16, r.bottom() - FOOT_H + 4, &foot, dim, r, false);
+        crate::ui_modal::draw_footer(cv, &mut self.tx, &c, r, &[("Enter", "pick"), ("Esc", "close")]);
+        let count = format!("{total} fonts");
+        let cw = self.tx.ui_width(&count, false);
+        let line = crate::ui::ui_line() as i32;
+        let cy = r.bottom() - FOOT_H + (FOOT_H - line) / 2 + 1;
+        self.tx.draw_ui(cv, r.right() - crate::ds::S4 - cw, cy, &count, dim, r, false);
     }
 }
 

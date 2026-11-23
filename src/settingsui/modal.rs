@@ -354,8 +354,7 @@ impl Modal {
         self.mo.begin_frame();
         // Reduce motion (config `reduce_motion`): absent from the values means "off".
         self.mo.reduce = self.settings.values.get("reduce_motion").and_then(Value::as_bool).unwrap_or(false);
-        cv.shadow(r, 14);
-        cv.card(r, 14, c.widget_bg, c.border);
+        cv.float_card(r, crate::ds::R_FLOAT, &c, crate::ds::Elev::Modal);
 
         // Header: page tabs + close button. The active tab's pill slides to the new tab.
         let mut x = r.x + 18;

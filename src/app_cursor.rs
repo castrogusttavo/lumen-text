@@ -167,7 +167,8 @@ impl App {
                     reg.push(*r, Pointer, Z_MODAL, "menu-row");
                 }
             }
-            Overlay::Picker(_) | Overlay::Prompt(_) | Overlay::Ctx(_) | Overlay::Font(_) => {
+            Overlay::Font(_) => self.fontpicker_cursor(&mut reg),
+            Overlay::Picker(_) | Overlay::Prompt(_) | Overlay::Ctx(_) => {
                 for (r, _) in &l.overlay_rows {
                     reg.push(*r, Pointer, Z_MODAL, "modal-row");
                 }

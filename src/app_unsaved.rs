@@ -381,6 +381,12 @@ impl App {
     pub fn unsaved_key(&mut self, key: &Key) {
         let Overlay::Ctx(m) = &mut self.overlay else { return };
         let Some(u) = m.unsaved.as_mut() else { return };
+        // Shift+Tab walks the buttons backwards, like every focus ring.
+        if matches!(key, Key::Named(NamedKey::Tab)) && self.mods.shift_key() {
+            u.step(-1);
+            self.request_redraw();
+            return;
+        }
         if let Some(choice) = u.key(key) {
             let pending = u.pending.clone();
             self.unsaved_answer(pending, choice);

@@ -70,6 +70,25 @@ pub fn classify(msg: &str) -> Option<ToastKind> {
     BAD.iter().any(|w| m.contains(*w)).then_some(ToastKind::Error)
 }
 
+/// Which window corner the stack grows from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Corner {
+    BottomRight,
+    BottomLeft,
+    TopRight,
+    TopLeft,
+}
+
+impl Corner {
+    fn right(self) -> bool {
+        matches!(self, Corner::BottomRight | Corner::TopRight)
+    }
+
+    fn bottom(self) -> bool {
+        matches!(self, Corner::BottomRight | Corner::BottomLeft)
+    }
+}
+
 pub struct Toast {
     kind: ToastKind,
     text: String,
@@ -94,6 +113,12 @@ pub struct Toasts {
 }
 
 impl Toasts {
+    /// The cards drawn last frame, for the sweep tests.
+    #[cfg(test)]
+    pub(crate) fn cards(&self) -> Vec<Rect> {
+        self.list.iter().filter(|t| !t.leaving && t.card.w > 0).map(|t| t.card).collect()
+    }
+
     /// Add a toast at `now`: the same message again only renews it; a fourth pushes the oldest out.
     pub fn push(&mut self, kind: ToastKind, text: &str, action: Option<(&str, Cmd)>, now: Instant) {
         let text = text.replace('\n', " ");
@@ -217,16 +242,54 @@ impl App {
         self.toasts.list.iter().find(|t| !t.leaving && t.card.contains(x, y)).map(|_| CursorIcon::Pointer)
     }
 
+    /// Rects a toast must not cover: the controls of whatever modal is up (the tour's buttons,
+    /// a menu or sheet's rows, the settings window) and the update card.
+    fn toast_avoid(&self) -> Vec<Rect> {
+        let mut v: Vec<Rect> = self.layout.overlay_rows.iter().map(|(r, _)| *r).collect();
+        if let Some(o) = &self.onboarding {
+            v.extend(o.rects.iter().map(|(r, _)| *r));
+        }
+        if let crate::app_overlay::Overlay::Settings(m) = &self.overlay {
+            v.push(m.rect());
+        }
+        v
+    }
+
+    /// The window corner the stack lives in: bottom right, unless that would sit on a control of
+    /// an open modal, then bottom left, top right, top left.
+    fn toast_corner(&self) -> Corner {
+        let (sw, sh) = (self.size.0 as i32, self.size.1 as i32);
+        let avoid = self.toast_avoid();
+        if avoid.is_empty() {
+            return Corner::BottomRight;
+        }
+        let fw = (MAX_TEXT + 6 * ds::S6).min(sw / 2);
+        let fh = MAX as i32 * (H + STACK_GAP);
+        let top = self.layout.topbar.bottom() + ds::S2;
+        let free = |c: Corner| {
+            let x = if c.right() { sw - ds::S4 - fw } else { ds::S4 };
+            let y = if c.bottom() { sh - ds::S4 - fh } else { top };
+            let foot = Rect::new(x, y, fw, fh);
+            !avoid.iter().any(|r| r.intersect(&foot).w > 0 && r.intersect(&foot).h > 0)
+        };
+        [Corner::BottomRight, Corner::BottomLeft, Corner::TopRight, Corner::TopLeft]
+            .into_iter()
+            .find(|c| free(*c))
+            .unwrap_or(Corner::BottomRight)
+    }
+
     pub fn draw_toasts(&mut self, cv: &mut Canvas) {
         if self.toasts.list.is_empty() {
             return;
         }
         let c = self.theme.chrome;
         let (sw, sh) = (self.size.0 as i32, self.size.1 as i32);
+        let corner = self.toast_corner();
         let mut bottom = sh - ds::S4;
-        if self.upd.card_rect.h > 0 {
+        if self.upd.card_rect.h > 0 && corner == Corner::BottomRight {
             bottom = bottom.min(self.upd.card_rect.y - ds::S2);
         }
+        let top = self.layout.topbar.bottom() + ds::S2;
         let right = sw - ds::S4;
         let mut list = std::mem::take(&mut self.toasts.list);
         for t in list.iter_mut() {
@@ -243,8 +306,10 @@ impl App {
             let room = (sw - 2 * ds::S4 - fixed).clamp(80, MAX_TEXT);
             let line = crate::ui::fit_ellipsis(&mut self.tx, &t.text, room, false);
             let w = fixed + self.tx.ui_width(&line, false);
-            let y = bottom - H - (t.slot.value * (H + STACK_GAP) as f32).round() as i32;
-            let x = right - w + ((1.0 - a) * SLIDE as f32).round() as i32;
+            let step = (t.slot.value * (H + STACK_GAP) as f32).round() as i32;
+            let y = if corner.bottom() { bottom - H - step } else { top + step };
+            let slide = ((1.0 - a) * SLIDE as f32).round() as i32;
+            let x = if corner.right() { right - w + slide } else { ds::S4 - slide };
             let r = Rect::new(x, y, w, H);
             t.card = r;
             let f = |col: Rgba| anim::fade(col, a);

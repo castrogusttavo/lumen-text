@@ -485,12 +485,22 @@ impl App {
                 crate::mdimg::blit(cv, crate::ui::sc(r.x + 16), crate::ui::sc(r.y + 15), l, full);
             }
         }
-        let x_btn = Rect::new(r.right() - 30, r.y + 8, 22, 22);
+        let hit = crate::ds::HIT_MIN;
+        let x_btn = Rect::new(r.right() - hit - crate::ds::S2, r.y + crate::ds::S2, hit, hit);
         let hot = x_btn.contains(self.mouse.0, self.mouse.1);
         if hot {
-            cv.fill_round(x_btn, 6, c.list_hover_bg);
+            cv.fill_round(x_btn, crate::ds::R_CTRL, c.hover_overlay);
         }
-        self.tx.icon(cv, "ui/close", x_btn.x + 4, x_btn.y + 4, 14, if hot { fg } else { dim }, r);
+        let ic = crate::ds::ICON_S;
+        self.tx.icon(
+            cv,
+            "ui/close",
+            x_btn.x + (hit - ic) / 2,
+            x_btn.y + (hit - ic) / 2,
+            ic,
+            if hot { fg } else { dim },
+            r,
+        );
         self.upd.rects.push((x_btn, Btn::Close));
         // Body.
         let mut y = r.y + 14 + title_lines.len() as i32 * 22 + 6;
@@ -507,27 +517,18 @@ impl App {
             let by = r.bottom() - 14 - btn_h;
             let mut x = r.right() - 12;
             for (btn, label, primary) in buttons.iter().rev() {
-                let bw = self.tx.ui_width(label, *primary) + 26;
+                let bw = self.tx.ui_width(label, true) + 2 * crate::ds::S4;
                 x -= bw;
                 let rect = Rect::new(x, by, bw, btn_h);
                 let hot = rect.contains(self.mouse.0, self.mouse.1);
-                if *primary {
-                    cv.fill_round(rect, 8, if hot { c.accent.shift(14) } else { c.accent });
+                let style = if *primary {
+                    crate::ui_kit::button::BtnStyle::Primary
                 } else {
-                    cv.card(rect, 8, if hot { c.list_hover_bg } else { c.widget_bg }, c.border);
-                }
-                let tw = self.tx.ui_width(label, *primary);
-                self.tx.draw_ui(
-                    cv,
-                    rect.x + (rect.w - tw) / 2,
-                    rect.y + (btn_h - 18) / 2,
-                    label,
-                    if *primary { c.on_accent } else { fg },
-                    rect,
-                    *primary,
-                );
+                    crate::ui_kit::button::BtnStyle::Secondary
+                };
+                crate::ui_kit::button::draw_button(cv, &mut self.tx, &c, rect, label, style, false, hot);
                 self.upd.rects.push((rect, *btn));
-                x -= 8;
+                x -= crate::ds::S2;
             }
             if let Some((btn, label)) = link {
                 let lw = self.tx.ui_width(label, false);

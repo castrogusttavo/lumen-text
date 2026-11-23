@@ -158,24 +158,21 @@ pub(super) fn empty_state(
     texts: (&str, &str, &str),
     action: Hit,
 ) {
-    let c = th.chrome;
     let (title, hint, label) = texts;
-    let cx = area.x + area.w / 2;
-    let mut y = area.y + (area.h / 5).clamp(16, 56);
-    rr(cv, Rect::new(cx - 24, y, 48, 48), 24, c.list_active_bg, area);
-    tx.icon(cv, "hugeicons/search", cx - 12, y + 12, 24, c.tab_inactive_fg, area);
-    y += 62;
-    let t = fit(tx, title, area.w - 40, true);
-    let w = tx.ui_width(&t, true);
-    tx.draw_ui(cv, cx - w / 2, y, &t, th.foreground, area, true);
-    y += 26;
-    let h = fit(tx, hint, area.w - 40, false);
-    let w = tx.ui_width(&h, false);
-    tx.draw_ui(cv, cx - w / 2, y, &h, c.tab_inactive_fg, area, false);
-    y += 34;
-    let bw = tx.ui_width(label, true) + 36;
-    let b = Rect::new(cx - bw / 2, y, bw, 30);
-    button_h(cv, tx, th, b, label, true, mo.is_hot(&action));
+    let y = crate::ui_kit::empty::empty_head(cv, tx, th, area, area, "hugeicons/search", title, hint);
+    let bw = (tx.ui_width(label, true) + 2 * crate::ds::S5).min((area.w - 2 * crate::ds::S4).max(40));
+    let b = Rect::new(area.x + (area.w - bw) / 2, y, bw, 30);
+    let label = fit(tx, label, bw - 2 * crate::ds::S3, true);
+    crate::ui_kit::button::draw_button(
+        cv,
+        tx,
+        &th.chrome,
+        b.intersect(&area),
+        &label,
+        crate::ui_kit::button::BtnStyle::Primary,
+        false,
+        mo.is_hot(&action),
+    );
     push_hit(hits, b, area, action);
 }
 
@@ -223,8 +220,7 @@ pub(super) fn draw_tip(
     let x = (at.0 + 12).min(bounds.right() - w - 6).max(bounds.x + 6);
     let y = if at.1 + 20 + h <= bounds.bottom() - 4 { at.1 + 20 } else { at.1 - h - 8 };
     let r = Rect::new(x, y.max(bounds.y + 4), w, h);
-    cv.shadow(r, 6);
-    cv.card(r, 6, c.widget_bg, c.border);
+    cv.float_card(r, crate::ds::R_CTRL, &c, crate::ds::Elev::Pop);
     tx.draw_ui(cv, r.x + 10, r.y + 5, text, th.foreground, r, false);
     if let Some(cb) = combo {
         draw_chips(tx, cv, th, r.x + 10 + tw + 10, r.y + h / 2, &[cb.to_string()], r.right() - 4, r, true);
@@ -700,8 +696,7 @@ pub(super) fn draw_settings(
         let pw = maxw.min(area.w - SIDE_W - 20);
         let py = if a.bottom() + 4 + ph <= area.bottom() - 6 { a.bottom() + 4 } else { (a.y - 4 - ph).max(area.y + 4) };
         let pr = Rect::new(a.right() - pw, py, pw, ph);
-        cv.shadow(pr, 8);
-        cv.card(pr, 8, c.widget_bg, c.border);
+        cv.float_card(pr, crate::ds::R_CARD, &c, crate::ds::Elev::Pop);
         hits.push((pr, Hit::Block));
         for (i, o) in opts.iter().enumerate().skip(dr.scroll).take(DROP_VIS) {
             let ir = Rect::new(pr.x + 4, pr.y + 4 + (i - dr.scroll) as i32 * 26, pr.w - 8, 26);
