@@ -17,15 +17,15 @@ mod app_cursor;
 #[cfg(test)]
 mod app_cursor_tests;
 #[cfg(test)]
-mod app_cursor_tests_shell;
+mod app_cursor_tests_docks;
 #[cfg(test)]
 mod app_cursor_tests_editor;
 #[cfg(test)]
-mod app_cursor_tests_docks;
+mod app_cursor_tests_overlays;
 #[cfg(test)]
 mod app_cursor_tests_panel;
 #[cfg(test)]
-mod app_cursor_tests_overlays;
+mod app_cursor_tests_shell;
 #[cfg(test)]
 mod app_cursor_tests_viewers;
 mod app_debug;
