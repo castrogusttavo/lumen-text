@@ -135,6 +135,29 @@ jobs:
           name: perf-log
           path: perf.log
 
+  ui-screenshots:
+    name: UI screenshots (dark and light)
+    # Informative only: never gates a merge or a release (the release job does not list it).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the binary
+        run: cargo build --release --locked
+      - name: Render the key screens (headless, no display)
+        run: tools/ui-screenshots.sh ui-screenshots target/release/lumen-text
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ui-screenshots
+          path: ui-screenshots/*.png
+          if-no-files-found: warn
+
   version:
     name: Compute version
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

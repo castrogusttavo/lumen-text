@@ -562,7 +562,7 @@ impl App {
             let w = self.tx.ui_width(label, false) + 20;
             let r = Rect::new(editor.right() - 10 - w, editor.y + 3, w, head_h - 6);
             let hov = r.contains(self.mouse.0, self.mouse.1);
-            cv.fill_round(r, 7, c.accent.with_alpha(if hov { 0x40 } else { 0x24 }));
+            cv.fill_round(r, ds::R_CTRL, c.accent.with_alpha(if hov { 0x40 } else { 0x24 }));
             self.tx.draw_ui(cv, r.x + 10, r.y + 3, label, c.accent_text, r, false);
             btns.push((r, DiffBtn::Flip));
             hint_right = r.x - 10;
@@ -572,7 +572,7 @@ impl App {
             let w = self.tx.ui_width(label, false) + 20;
             let r = Rect::new(editor.right() - 10 - w, editor.y + 3, w, head_h - 6);
             let hov = r.contains(self.mouse.0, self.mouse.1);
-            cv.fill_round(r, 7, c.accent.with_alpha(if hov { 0x40 } else { 0x24 }));
+            cv.fill_round(r, ds::R_CTRL, c.accent.with_alpha(if hov { 0x40 } else { 0x24 }));
             self.tx.draw_ui(cv, r.x + 10, r.y + 3, label, c.accent_text, r, false);
             btns.push((r, DiffBtn::Restore));
             hint_right = r.x - 10;
@@ -586,10 +586,10 @@ impl App {
             let r = Rect::new(hint_right - w, editor.y + 3, w, head_h - 6);
             let hov = r.contains(self.mouse.0, self.mouse.1);
             if on {
-                cv.fill_round(r, 7, c.accent.with_alpha(if hov { 0x50 } else { 0x38 }));
+                cv.fill_round(r, ds::R_CTRL, c.accent.with_alpha(if hov { 0x50 } else { 0x38 }));
             } else {
-                cv.fill_round(r, 7, fg.with_alpha(if hov { 0x1c } else { 0x0c }).over(c.sidebar_bg));
-                cv.ring(r, 7, c.border);
+                cv.fill_round(r, ds::R_CTRL, fg.with_alpha(if hov { 0x1c } else { 0x0c }).over(c.sidebar_bg));
+                cv.ring(r, ds::R_CTRL, c.border);
             }
             // A small check box: filled when whitespace is ignored.
             let bx = Rect::new(r.x + 9, r.y + (r.h - 10) / 2, 10, 10);
@@ -708,7 +708,7 @@ impl App {
                 } else {
                     c.accent.with_alpha(0x30)
                 };
-                cv.fill_round_clip(r, 6, fill.over(c.sidebar_bg), rr);
+                cv.fill_round_clip(r, ds::R_CTRL, fill.over(c.sidebar_bg), rr);
                 self.tx.draw_ui_sized(
                     cv,
                     r.x + 10,
@@ -728,10 +728,10 @@ impl App {
                 let y = lr.y + (a - first) as i32 * lh - off;
                 let r = Rect::new(rr.right() - 22 - bw, y + 1, bw, lh - 2);
                 let hov = editable && r.contains(self.mouse.0, self.mouse.1);
-                cv.fill_round_clip(r, 6, c.sidebar_bg, rr);
+                cv.fill_round_clip(r, ds::R_CTRL, c.sidebar_bg, rr);
                 cv.fill_round_clip(
                     r,
-                    6,
+                    ds::R_CTRL,
                     c.accent.with_alpha(if !editable {
                         0x10
                     } else if hov {
@@ -846,11 +846,11 @@ impl App {
         ] {
             let hov = r.contains(mx, my);
             let (fg, sub) = if accent {
-                cv.fill_round(r, 8, if hov { c.accent.with_alpha(0xe0).over(c.sidebar_bg) } else { c.accent });
+                cv.fill_round(r, ds::R_ROW, if hov { c.accent.with_alpha(0xe0).over(c.sidebar_bg) } else { c.accent });
                 (c.on_accent, c.on_accent.with_alpha(0xb0))
             } else {
-                cv.fill_round(r, 8, strong.with_alpha(if hov { 0x1c } else { 0x0c }).over(c.sidebar_bg));
-                cv.ring(r, 8, c.border);
+                cv.fill_round(r, ds::R_ROW, strong.with_alpha(if hov { 0x1c } else { 0x0c }).over(c.sidebar_bg));
+                cv.ring(r, ds::R_ROW, c.border);
                 (strong, dim)
             };
             self.tx.icon(cv, icon, r.x + 10, r.y + 7, 14, fg, r);
@@ -862,7 +862,7 @@ impl App {
         // Left: sparkle, who proposes, the file and how many more wait.
         let room = Rect::new(head.x, head.y, (rej.x - 12 - head.x).max(0), head.h);
         let disc = Rect::new(head.x + 12, head.y + 8, 24, 24);
-        cv.fill_round(disc, 12, c.accent.with_alpha(0x22).over(c.sidebar_bg));
+        cv.fill_round(disc, disc.w / 2, c.accent.with_alpha(0x22).over(c.sidebar_bg));
         self.tx.icon(cv, "ui/sparkle", disc.x + 5, disc.y + 5, 14, c.accent_text, room);
         let who = self.ide_proposer();
         let more = self.ai.bridge.proposals.len().saturating_sub(1);

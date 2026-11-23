@@ -26,6 +26,8 @@ mod app_cursor_tests_docks;
 mod app_cursor_tests_panel;
 #[cfg(test)]
 mod app_cursor_tests_overlays;
+#[cfg(test)]
+mod app_cursor_tests_viewers;
 mod app_debug;
 mod app_display;
 mod app_docker;

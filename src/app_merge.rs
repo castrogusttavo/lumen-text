@@ -9,6 +9,7 @@
 
 use crate::{
     app::App,
+    ds,
     merge3::{self, Kind, Merge, Row, State, Take},
     theme::Rgba,
     ui::{Canvas, Rect, line_h},
@@ -485,7 +486,7 @@ impl App {
         // Close.
         let close = Rect::new(bx - 26, head.y + 4, 26, 26);
         if close.contains(mx, my) {
-            cv.fill_round(close, 6, fg.with_alpha(0x22));
+            cv.fill_round(close, ds::R_CTRL, fg.with_alpha(0x22));
         }
         self.tx.icon(cv, "ui/close", close.x + 7, close.y + 7, 12, dim, head);
         btns.push((close, MergeBtn::Close));
@@ -498,10 +499,10 @@ impl App {
         let rb = Rect::new(bx - w, head.y + 4, w, 26);
         let hov = can && rb.contains(mx, my);
         if can {
-            cv.fill_round(rb, 7, if hov { c.accent.with_alpha(0xe0).over(c.sidebar_bg) } else { c.accent });
+            cv.fill_round(rb, ds::R_CTRL, if hov { c.accent.with_alpha(0xe0).over(c.sidebar_bg) } else { c.accent });
         } else {
-            cv.fill_round(rb, 7, fg.with_alpha(0x0c).over(c.sidebar_bg));
-            cv.ring(rb, 7, c.border);
+            cv.fill_round(rb, ds::R_CTRL, fg.with_alpha(0x0c).over(c.sidebar_bg));
+            cv.ring(rb, ds::R_CTRL, c.border);
         }
         let tint = if can { c.on_accent } else { dim };
         self.tx.icon(cv, "ui/check", rb.x + 10, rb.y + 7, 12, tint, rb);
@@ -515,7 +516,7 @@ impl App {
             let w = self.tx.ui_width(label, false) + 34;
             let r = Rect::new(bx - w, head.y + 4, w, 26);
             if r.contains(mx, my) {
-                cv.fill_round(r, 7, fg.with_alpha(0x1c));
+                cv.fill_round(r, ds::R_CTRL, fg.with_alpha(0x1c));
             }
             self.tx.icon(cv, icon, r.x + 8, r.y + 7, 12, fg, r);
             self.tx.draw_ui(cv, r.x + 24, r.y + 4, label, fg, r, false);
@@ -679,8 +680,8 @@ impl App {
                 let r = Rect::new(pane.right() - 18 - w, y + 1, w, lh - 2);
                 let col = if incoming { col_in } else { col_cur };
                 let hov = r.contains(mx, my);
-                cv.fill_round_clip(r, 6, c.sidebar_bg, pane);
-                cv.fill_round_clip(r, 6, col.with_alpha(if hov { 0x40 } else { 0x1c }), pane);
+                cv.fill_round_clip(r, ds::R_CTRL, c.sidebar_bg, pane);
+                cv.fill_round_clip(r, ds::R_CTRL, col.with_alpha(if hov { 0x40 } else { 0x1c }), pane);
                 let bx = Rect::new(r.x + 8, r.y + (r.h - 12) / 2, 12, 12);
                 if checked {
                     cv.fill_round_clip(bx, 3, col, pane);
