@@ -531,8 +531,6 @@ pub fn build(s: &Snapshot, said: &str) -> TreeUpdate {
             nodes.push((DIALOG_INPUT, input));
             ids.push(DIALOG_INPUT);
             focus = DIALOG_INPUT;
-        } else if d.controls.is_empty() {
-            focus = DIALOG;
         } else if !d.controls.iter().any(|c| c.selected) {
             focus = DIALOG;
         }
